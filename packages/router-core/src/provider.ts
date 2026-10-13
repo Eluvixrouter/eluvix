@@ -170,7 +170,7 @@ export async function detectLocalEngineModels(
       const data = await res.json();
 
       // Standard Ollama format: { models: [{ name, size }] }
-      if (Array.isArray(data.models)) {
+      if (Array.isArray(data.models) && data.models.length > 0) {
         return data.models.map((m: any) => ({
           name: m.name || m.model || String(m),
           sizeBytes: m.size || 0,
@@ -179,7 +179,7 @@ export async function detectLocalEngineModels(
       }
 
       // OpenAI format: { data: [{ id }] }
-      if (Array.isArray(data.data)) {
+      if (Array.isArray(data.data) && data.data.length > 0) {
         return data.data.map((m: any) => ({
           name: m.id || m.name || String(m),
           sizeBytes: 0,

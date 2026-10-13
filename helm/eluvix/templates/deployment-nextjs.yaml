@@ -1,0 +1,61 @@
+{{- if .Values.nextjs.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "eluvix.fullname" . }}-nextjs
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nextjs
+spec:
+  replicas: {{ .Values.nextjs.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "eluvix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nextjs
+  template:
+    metadata:
+      labels:
+        {{- include "eluvix.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nextjs
+    spec:
+      containers:
+        - name: nextjs
+          image: "{{ .Values.nextjs.image.repository }}:{{ .Values.nextjs.image.tag }}"
+          imagePullPolicy: {{ .Values.nextjs.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.nextjs.port }}
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: {{ .Values.nextjs.env.NODE_ENV | quote }}
+            - name: SWITCHYARD_URL
+              value: {{ .Values.nextjs.env.SWITCHYARD_URL | quote }}
+            - name: PORT
+              value: "{{ .Values.nextjs.port }}"
+          {{- if .Values.nextjs.persistence.enabled }}
+          volumeMounts:
+            - name: data-storage
+              mountPath: /app/apps/nextjs/data
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.nextjs.resources | nindent 12 }}
+      {{- if .Values.nextjs.persistence.enabled }}
+      volumes:
+        - name: data-storage
+          persistentVolumeClaim:
+            claimName: {{ include "eluvix.fullname" . }}-nextjs-data
+      {{- end }}
+{{- end }}

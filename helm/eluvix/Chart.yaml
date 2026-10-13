@@ -1,0 +1,17 @@
+apiVersion: v2
+name: eluvix
+description: Eluvix Sovereign AI Router and Local LLM Inference Stack
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ai
+  - llm
+  - router
+  - privacy
+  - switchyard
+  - ollama
+  - k3d
+maintainers:
+  - name: Eluvix Team
+    email: dev@eluvix.com

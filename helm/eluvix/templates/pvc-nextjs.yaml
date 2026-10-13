@@ -1,0 +1,18 @@
+{{- if and .Values.nextjs.enabled .Values.nextjs.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "eluvix.fullname" . }}-nextjs-data
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nextjs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.nextjs.persistence.storageClass }}
+  storageClassName: {{ .Values.nextjs.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.nextjs.persistence.size }}
+{{- end }}

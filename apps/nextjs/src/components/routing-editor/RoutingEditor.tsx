@@ -520,6 +520,10 @@ export default function RoutingEditor() {
   const [availableSecrets, setAvailableSecrets] = useState<{key: string, path: string}[]>([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{success?: boolean, message?: string} | null>(null);
+  const [selectedTier, setSelectedTier] = useState<'k3d' | 'compose' | 'docker' | 'local'>('k3d');
+  const [orchestratorStatus, setOrchestratorStatus] = useState<any>(null);
+  const [deployLogs, setDeployLogs] = useState<string[]>([]);
+  const [isCreatingCluster, setIsCreatingCluster] = useState(false);
 
   const [selectedLogContainer, setSelectedLogContainer] = useState<string | null>(null);
 
@@ -1042,11 +1046,47 @@ export default function RoutingEditor() {
     event.dataTransfer.dropEffect = 'move';
   }, []);
 
+  const fetchOrchestratorStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/orchestrator/status');
+      if (res.ok) {
+        const data = await res.json();
+        setOrchestratorStatus(data);
+      }
+    } catch (e) {
+      console.warn('Failed to query orchestrator status:', e);
+    }
+  }, []);
+
+  const handleCreateCluster = useCallback(async () => {
+    setIsCreatingCluster(true);
+    setDeployLogs(prev => [...prev, '🚀 Creating local k3d cluster "eluvix-local" with load balancer ports...']);
+    try {
+      const res = await fetch('/api/orchestrator/cluster', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create' })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Failed to create cluster');
+      showToast('k3d cluster created successfully');
+      setDeployLogs(prev => [...prev, data.stdout || '✓ k3d cluster created.']);
+      await fetchOrchestratorStatus();
+    } catch (e: any) {
+      showToast(`Cluster creation failed: ${e.message}`);
+      setDeployLogs(prev => [...prev, `❌ ${e.message}`]);
+    } finally {
+      setIsCreatingCluster(false);
+    }
+  }, [fetchOrchestratorStatus, showToast]);
+
   const onApplyToRouter = useCallback(async () => {
     const compiled = compileGraph(nodes as any, edges as any);
     setCompiledConfigs(compiled);
     setIsExportModalOpen(true);
     setDeployResult(null);
+    setDeployLogs([]);
+    fetchOrchestratorStatus();
 
     if (!compiled.rawRouterConfig) return;
     try {
@@ -1059,34 +1099,40 @@ export default function RoutingEditor() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `Router rejected config (HTTP ${res.status})`);
       }
-      setDeployResult({ success: true, message: 'Live router configuration applied.' });
+      setDeployResult({ success: true, message: 'Live router configuration applied to memory.' });
       showToast('Synchronized live router configuration');
     } catch (e: any) {
       console.warn('Failed to sync live router config:', e);
       setDeployResult({ success: false, message: `Apply failed: ${e.message}` });
       showToast(`Apply failed: ${e.message}`);
     }
-  }, [nodes, edges, showToast]);
+  }, [nodes, edges, showToast, fetchOrchestratorStatus]);
 
   const handleDeploy = async () => {
     setIsDeploying(true);
     setDeployResult(null);
+    setDeployLogs([`🚀 Deploying configuration to target: ${selectedTier.toUpperCase()}...`]);
     try {
       const res = await fetch('/api/orchestrator/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(compiledConfigs)
+        body: JSON.stringify({
+          tier: selectedTier,
+          compiledConfigs
+        })
       });
-      if (res.status === 404) {
-        throw new Error('Cluster Orchestrator not connected. Copy manifests to apply via kubectl or Helm.');
-      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to deploy');
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.message || 'Failed to deploy');
+      }
       
-      setDeployResult({ success: true, message: data.message || 'Deployment manifest submitted to cluster orchestrator.' });
-      setTimeout(() => setIsExportModalOpen(false), 2000);
+      setDeployLogs(data.logs || []);
+      setDeployResult({ success: true, message: data.message || `Successfully deployed to ${selectedTier.toUpperCase()}.` });
+      showToast(`Successfully deployed to ${selectedTier.toUpperCase()}`);
+      await fetchOrchestratorStatus();
     } catch (err: any) {
       setDeployResult({ success: false, message: err.message || 'Deployment error' });
+      setDeployLogs(prev => [...prev, `❌ ${err.message}`]);
     } finally {
       setIsDeploying(false);
     }
@@ -3184,7 +3230,14 @@ export default function RoutingEditor() {
           <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
             <div className="bg-gray-800 rounded-xl border border-gray-600 shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
               <div className="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-900">
-                <h3 className="text-xl font-bold text-white">Compiled Configurations</h3>
+                <div className="flex items-center gap-3">
+                  <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span>🚀</span> Deployment &amp; Cluster Orchestrator
+                  </h3>
+                  <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-mono border border-emerald-500/30">
+                    Tier: {selectedTier.toUpperCase()}
+                  </span>
+                </div>
                 <button 
                   onClick={() => setIsExportModalOpen(false)}
                   className="text-gray-400 hover:text-white"
@@ -3192,7 +3245,118 @@ export default function RoutingEditor() {
                   ✕
                 </button>
               </div>
+
+              {/* Deployment Tier Selector */}
+              <div className="p-4 bg-gray-900/80 border-b border-gray-700 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Select Deployment Target:</span>
+                  {selectedTier === 'k3d' && orchestratorStatus?.k3d && !orchestratorStatus.k3d.running && (
+                    <button
+                      onClick={handleCreateCluster}
+                      disabled={isCreatingCluster}
+                      className="px-2.5 py-1 text-xs bg-cyan-600 hover:bg-cyan-500 text-white rounded font-medium flex items-center gap-1.5 transition disabled:opacity-50"
+                    >
+                      <span>{isCreatingCluster ? '⏳' : '⚡'}</span>
+                      <span>{isCreatingCluster ? 'Creating Cluster...' : 'Create k3d Cluster'}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-4 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTier('k3d')}
+                    className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                      selectedTier === 'k3d'
+                        ? 'bg-cyan-950/60 border-cyan-500 shadow-md shadow-cyan-950/50'
+                        : 'bg-gray-800/60 border-gray-700 hover:bg-gray-800'
+                    }`}
+                  >
+                    <div className="font-semibold text-sm text-cyan-300 flex items-center gap-1.5">
+                      <span>☸️</span> k3d / Helm Cluster
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-1">
+                      {orchestratorStatus?.k3d?.running
+                        ? `🟢 Active (${orchestratorStatus.k3d.nodesCount} nodes)`
+                        : orchestratorStatus?.k3d?.exists
+                        ? '🟡 Stopped'
+                        : '⚪ Not created'}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTier('compose')}
+                    className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                      selectedTier === 'compose'
+                        ? 'bg-blue-950/60 border-blue-500 shadow-md shadow-blue-950/50'
+                        : 'bg-gray-800/60 border-gray-700 hover:bg-gray-800'
+                    }`}
+                  >
+                    <div className="font-semibold text-sm text-blue-300 flex items-center gap-1.5">
+                      <span>🐳</span> Docker Compose
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-1">
+                      {orchestratorStatus?.compose?.running
+                        ? `🟢 ${orchestratorStatus.compose.activeServices}/6 running`
+                        : '⚪ Stack stopped'}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTier('docker')}
+                    className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                      selectedTier === 'docker'
+                        ? 'bg-indigo-950/60 border-indigo-500 shadow-md shadow-indigo-950/50'
+                        : 'bg-gray-800/60 border-gray-700 hover:bg-gray-800'
+                    }`}
+                  >
+                    <div className="font-semibold text-sm text-indigo-300 flex items-center gap-1.5">
+                      <span>📦</span> Standalone Docker
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-1">
+                      {orchestratorStatus?.tools?.docker ? '🟢 Daemon active' : '⚪ Daemon stopped'}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTier('local')}
+                    className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
+                      selectedTier === 'local'
+                        ? 'bg-emerald-950/60 border-emerald-500 shadow-md shadow-emerald-950/50'
+                        : 'bg-gray-800/60 border-gray-700 hover:bg-gray-800'
+                    }`}
+                  >
+                    <div className="font-semibold text-sm text-emerald-300 flex items-center gap-1.5">
+                      <span>⚡</span> Local Native Host
+                    </div>
+                    <div className="text-[11px] text-gray-400 mt-1">
+                      ~/.config/eluvix
+                    </div>
+                  </button>
+                </div>
+              </div>
+
               <div className="p-6 overflow-y-auto flex-1 space-y-6">
+
+                {/* Live Deployment Logs Pane */}
+                {deployLogs.length > 0 && (
+                  <div className="p-3 bg-black/80 rounded-lg border border-gray-700 font-mono text-xs">
+                    <div className="text-gray-400 border-b border-gray-800 pb-1 mb-2 font-semibold flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <span className="animate-pulse">●</span> Orchestrator Execution Log
+                      </span>
+                      <span className="text-[10px] text-gray-500">{deployLogs.length} events</span>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto space-y-1 text-gray-300 select-text">
+                      {deployLogs.map((log, idx) => (
+                        <div key={idx} className="whitespace-pre-wrap">{log}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 
                 {compiledConfigs.eluvixJson && (
                   <div>
@@ -3315,11 +3479,24 @@ export default function RoutingEditor() {
                   </button>
                   <button
                     onClick={handleDeploy}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium disabled:opacity-50 text-sm flex items-center gap-1.5"
-                    title="Submit manifest to local/remote Kubernetes cluster orchestrator"
-                    disabled={isDeploying}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg shadow-emerald-950/50"
+                    title={`Submit and deploy configuration to ${selectedTier.toUpperCase()}`}
+                    disabled={isDeploying || isCreatingCluster}
                   >
-                    {isDeploying ? 'Deploying...' : 'Deploy to Cluster'}
+                    <span>{isDeploying ? '⏳' : '🚀'}</span>
+                    <span>
+                      {isDeploying
+                        ? 'Deploying...'
+                        : `Deploy to ${
+                            selectedTier === 'k3d'
+                              ? 'k3d Cluster (Helm)'
+                              : selectedTier === 'compose'
+                              ? 'Docker Compose'
+                              : selectedTier === 'docker'
+                              ? 'Docker Container'
+                              : 'Local Host (~/.config)'
+                          }`}
+                    </span>
                   </button>
                 </div>
               </div>

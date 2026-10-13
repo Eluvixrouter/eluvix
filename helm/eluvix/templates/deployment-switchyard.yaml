@@ -1,0 +1,56 @@
+{{- if .Values.switchyard.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "eluvix.fullname" . }}-switchyard
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: switchyard
+spec:
+  replicas: {{ .Values.switchyard.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "eluvix.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: switchyard
+  template:
+    metadata:
+      labels:
+        {{- include "eluvix.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: switchyard
+    spec:
+      containers:
+        - name: switchyard
+          image: "{{ .Values.switchyard.image.repository }}:{{ .Values.switchyard.image.tag }}"
+          imagePullPolicy: {{ .Values.switchyard.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.switchyard.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "{{ .Values.switchyard.port }}"
+            - name: CONFIG_PATH
+              value: "/etc/eluvix/eluvix.json"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/eluvix
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.switchyard.resources | nindent 12 }}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: {{ include "eluvix.fullname" . }}-routing-config
+{{- end }}

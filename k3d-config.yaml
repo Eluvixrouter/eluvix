@@ -1,0 +1,39 @@
+---
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: eluvix-local
+servers: 1
+agents: 1
+image: docker.io/rancher/k3s:v1.31.5-k3s1
+ports:
+  - port: 3000:3000
+    nodeFilters:
+      - loadbalancer
+  - port: 8080:8080
+    nodeFilters:
+      - loadbalancer
+  - port: 11434:11434
+    nodeFilters:
+      - loadbalancer
+  - port: 8002:8002
+    nodeFilters:
+      - loadbalancer
+  - port: 8003:8003
+    nodeFilters:
+      - loadbalancer
+  - port: 80:80
+    nodeFilters:
+      - loadbalancer
+  - port: 443:443
+    nodeFilters:
+      - loadbalancer
+registries:
+  create:
+    name: k3d-eluvix-registry.localhost
+    host: "0.0.0.0"
+    hostPort: "5001"
+options:
+  k3d:
+    wait: true
+    timeout: "120s"

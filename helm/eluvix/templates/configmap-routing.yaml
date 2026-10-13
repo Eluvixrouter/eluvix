@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eluvix.fullname" . }}-routing-config
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+data:
+  eluvix.json: |
+{{- if .Values.routingConfig.eluvixJson }}
+{{ .Values.routingConfig.eluvixJson | indent 4 }}
+{{- else }}
+    {
+      "upstreams": [
+        {
+          "id": "ollama",
+          "name": "Local Ollama Engine",
+          "endpoint": "http://{{ include "eluvix.fullname" . }}-ollama:11434",
+          "type": "ollama",
+          "priority": 1,
+          "models": ["smollm:135m"]
+        }
+      ],
+      "strategy": "cost-complexity",
+      "privacy": {
+        "anonymize": true,
+        "stripTokens": true
+      }
+    }
+{{- end }}
+  bifrost.yaml: |
+{{- if .Values.routingConfig.bifrostYaml }}
+{{ .Values.routingConfig.bifrostYaml | indent 4 }}
+{{- else }}
+    general_settings:
+      master_key: "sk-eluvix-master"
+    model_list:
+      - model_name: "default-local"
+        litellm_params:
+          model: "ollama/smollm:135m"
+          api_base: "http://{{ include "eluvix.fullname" . }}-ollama:11434"
+{{- end }}
+  routing.json: |
+{{- if .Values.routingConfig.agentRouterJson }}
+{{ .Values.routingConfig.agentRouterJson | indent 4 }}
+{{- else }}
+    {}
+{{- end }}
+  gateway.json: |
+{{- if .Values.routingConfig.agentGatewayJson }}
+{{ .Values.routingConfig.agentGatewayJson | indent 4 }}
+{{- else }}
+    {}
+{{- end }}

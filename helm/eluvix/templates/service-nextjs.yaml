@@ -1,0 +1,19 @@
+{{- if .Values.nextjs.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "eluvix.fullname" . }}-nextjs
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nextjs
+spec:
+  type: {{ .Values.nextjs.service.type }}
+  ports:
+    - port: {{ .Values.nextjs.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "eluvix.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: nextjs
+{{- end }}
