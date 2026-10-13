@@ -18,7 +18,7 @@ export default function RootLayout({
         <header className="sticky top-0 z-50 w-full border-b border-slate-800 bg-slate-950/80 backdrop-blur">
           <div className="container mx-auto flex h-16 items-center justify-between px-4 md:px-6">
             <Link href="/" className="flex items-center gap-2">
-              <span className="text-2xl font-bold tracking-tighter text-sky-400">Enclav<span className="text-white">ix</span></span>
+              <span className="text-2xl font-bold tracking-tighter text-sky-400">Eluv<span className="text-white">ix</span></span>
             </Link>
             <nav className="flex items-center gap-6 text-sm font-medium text-slate-300">
               <Link href="/docs/getting-started" className="hover:text-white transition-colors">Documentation</Link>

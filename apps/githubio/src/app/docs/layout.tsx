@@ -37,13 +37,18 @@ export default function DocsLayout({
                 </Link>
               </li>
               <li>
+                <Link href="/docs/layouts" className="text-slate-400 hover:text-sky-400 transition-colors">
+                  Topology Presets &amp; Layouts
+                </Link>
+              </li>
+              <li>
                 <Link href="/docs/switchyard" className="text-slate-400 hover:text-sky-400 transition-colors">
                   Switchyard Routing Engine
                 </Link>
               </li>
               <li>
                 <Link href="/docs/security" className="text-slate-400 hover:text-sky-400 transition-colors">
-                  Security & Privacy Guards
+                  Security &amp; Privacy Guards
                 </Link>
               </li>
               <li>
@@ -53,12 +58,12 @@ export default function DocsLayout({
               </li>
               <li>
                 <Link href="/docs/tools" className="text-slate-400 hover:text-sky-400 transition-colors">
-                  Native Tools & MCP
+                  Native Tools &amp; MCP
                 </Link>
               </li>
               <li>
                 <Link href="/docs/playground" className="text-slate-400 hover:text-sky-400 transition-colors">
-                  Trace Playground & Datasets
+                  Trace Playground &amp; Datasets
                 </Link>
               </li>
             </ul>
@@ -74,17 +79,22 @@ export default function DocsLayout({
               </li>
               <li>
                 <Link href="/docs/local-engines" className="text-slate-400 hover:text-sky-400 transition-colors">
-                  Local Engines & Docker
+                  Local Engines &amp; Docker
                 </Link>
               </li>
               <li>
                 <Link href="/docs/cloud-providers" className="text-slate-400 hover:text-sky-400 transition-colors">
-                  Cloud Providers & Agents
+                  Cloud Providers &amp; Agents
                 </Link>
               </li>
               <li>
                 <Link href="/docs/configurator" className="text-slate-400 hover:text-sky-400 transition-colors">
                   Client Configurator
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/provider" className="text-slate-400 hover:text-sky-400 transition-colors">
+                  GPU Compute Provider
                 </Link>
               </li>
               <li>

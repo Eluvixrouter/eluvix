@@ -1,91 +1,53 @@
-# OpenAI-Compatible API Reference
+# API Reference
 
-Eluvix provides a drop-in replacement for the OpenAI Chat Completions API. You can point existing tools, SDKs, and agentic frameworks (LangChain, LlamaIndex, AutoGen, Cursor, Continue) directly at your Eluvix instance.
+Eluvix provides a unified, production-grade REST API. In addition to being a drop-in replacement for the OpenAI Chat Completions specification, Eluvix exposes programmatic control over dynamic routing configurations, active local hardware discovery, Docker engine containers, canvas topology presets, GPU compute worker serving, and telemetry.
 
 ---
 
 ## Base URL & Authentication
 
-- **Base URL**: `https://127.0.0.1:3000/api/v1` (or your configured host and port)
-- **Authentication**: Bearer token using your `ADMIN_PASSWORD` (from `~/.config/eluvix/auth.json`)
+Eluvix supports two listening protocols for API consumers:
+
+- **HTTPS (Recommended)**: `https://127.0.0.1:3000/api/v1` (Encrypted local TLS via `mkcert`)
+- **HTTP (Loopback)**: `http://127.0.0.1:3080/api/v1` (Direct unencrypted loopback for CLI tools and scripts)
+
+### Authentication
+Requests to protected endpoints require an HTTP Authorization header containing your master `ADMIN_PASSWORD` (auto-generated in `~/.config/eluvix/auth.json` on first launch):
+
+```http
+Authorization: Bearer <ADMIN_PASSWORD>
+```
 
 ---
 
-## Chat Completions
+## 1. Chat Completions
 
 ### `POST /api/v1/chat/completions`
 
-Creates a model completion for the provided messages, executing routing through the Switchyard pipeline.
+Executes an intelligent chat completion through the Switchyard pipeline. Supports both non-streaming JSON responses and Server-Sent Events (SSE) streaming.
 
-#### Request Headers
+#### Headers
 ```http
 Content-Type: application/json
 Authorization: Bearer <ADMIN_PASSWORD>
 ```
 
-#### Request Body
-```json
-{
-  "model": "auto",
-  "messages": [
-    { "role": "system", "content": "You are a helpful assistant." },
-    { "role": "user", "content": "Explain how latency spillover works." }
-  ],
-  "temperature": 0.7,
-  "stream": false
-}
-```
+#### Request Parameters
 
-> **Note on `model`:** Passing `"auto"` enables dynamic complexity and multimodal routing. You can also specify a specific model name to target an upstream directly.
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `model` | `string` | **Yes** | `"auto"` | Target model name or `"auto"` to trigger dynamic complexity, code escalation, and multimodal vision routing. |
+| `messages` | `array` | **Yes** | — | Array of message objects (`role`, `content`). Content can be string or structured multimodal blocks (`image_url`). |
+| `stream` | `boolean` | No | `false` | When `true`, streams completion tokens as standard SSE `data: {...}\n\n` chunks. |
+| `temperature` | `number` | No | `0.7` | Sampling temperature between `0.0` and `2.0`. |
+| `max_tokens` | `number` | No | — | Maximum token limit for generated output. |
 
----
+#### Response Headers
+- `X-Eluvix-Selected-Upstream`: The upstream ID and backend that executed the request (e.g. `ollama-local`, `antigravity-cli`, `openai-cloud`).
+- `X-Eluvix-Complexity-Tier`: The complexity grade assigned by Switchyard (`simple`, `moderate`, `heavy`, `frontier`).
+- `X-Eluvix-Cache`: Returns `HIT` if served from the semantic response cache, or `MISS` if executed upstream.
 
-## SDK Integration Examples
-
-### Official Python SDK (`openai`)
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://127.0.0.1:3000/api/v1",
-    api_key="your_admin_password"
-)
-
-response = client.chat.completions.create(
-    model="auto",
-    messages=[
-        {"role": "user", "content": "Write a fast Fibonacci function in Rust."}
-    ]
-)
-
-print(response.choices[0].message.content)
-```
-
-### Official TypeScript / Node.js SDK (`openai`)
-
-```typescript
-import OpenAI from "openai";
-
-const client = new OpenAI({
-  baseURL: "https://127.0.0.1:3000/api/v1",
-  apiKey: "your_admin_password",
-});
-
-async function main() {
-  const completion = await client.chat.completions.create({
-    model: "auto",
-    messages: [{ role: "user", content: "Summarize quantum computing in one sentence." }],
-  });
-
-  console.log(completion.choices[0].message.content);
-}
-
-main();
-```
-
-### cURL
-
+#### Request Example (cURL)
 ```bash
 curl -k -X POST https://127.0.0.1:3000/api/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -93,35 +55,35 @@ curl -k -X POST https://127.0.0.1:3000/api/v1/chat/completions \
   -d '{
     "model": "auto",
     "messages": [
-      { "role": "user", "content": "Hello Eluvix!" }
-    ]
+      { "role": "system", "content": "You are a coding assistant." },
+      { "role": "user", "content": "Write a fast matrix multiplication function in C++." }
+    ],
+    "temperature": 0.2
   }'
 ```
 
 ---
 
-## Model Discovery
+## 2. Chat History & Traces
 
-### `GET /api/v1/models`
+### `GET /api/v1/chat/history`
 
-Lists all models currently available across connected local engines and cloud upstreams.
+Retrieves conversation sessions and persisted chat history recorded by the Trace Playground.
 
-#### Response
+#### Query Parameters
+- `session_id` *(optional)*: When supplied, returns all messages associated with the specified conversation session. When omitted, returns a list of all known unique session IDs.
+
+#### Response Example
 ```json
 {
-  "object": "list",
+  "success": true,
   "data": [
     {
-      "id": "llama3:8b",
-      "object": "model",
-      "owned_by": "ollama",
-      "capabilities": ["text", "code"]
-    },
-    {
-      "id": "gpt-4o",
-      "object": "model",
-      "owned_by": "openai",
-      "capabilities": ["text", "code", "vision"]
+      "id": 42,
+      "session_id": "sess_default_1710000000",
+      "timestamp": "2026-10-13T10:00:00Z",
+      "role": "user",
+      "content": "Explain latency spillover."
     }
   ]
 }
@@ -129,8 +91,155 @@ Lists all models currently available across connected local engines and cloud up
 
 ---
 
-## Analytics & Metrics
+## 3. Upstream Models & Dynamic Discovery
+
+### `GET /api/v1/models`
+Returns an OpenAI-compatible list of all models currently registered across active upstreams, including capability tags (`text`, `code`, `vision`).
+
+### `GET /api/v1/detect-models`
+Actively probes local network interfaces (Ollama on `11434`, vLLM on `8000`, Lemonade on `13305`) and CLI agents. Returns newly discovered engines and automatically populates candidate models in the Routing Editor.
+
+---
+
+## 4. Observability & Telemetry
 
 ### `GET /api/v1/analytics`
+Returns aggregate summary statistics: total request volume, average latency per upstream, error rates, and local $0 cost savings.
 
-Returns aggregate system telemetry including request counts, average latency per upstream, error rates, and token consumption.
+### `GET /api/v1/observability`
+Returns detailed real-time telemetry:
+- Live request feeds with latency breakdowns and status codes.
+- High-latency requests exceeding SLA thresholds.
+- Upstream node health check results.
+
+### `POST /api/v1/observability`
+Executes operational maintenance tasks:
+- `{"action": "ping"}`: Sends a lightweight synthetic completion to verify end-to-end pipeline health.
+- `{"action": "purge"}`: Clears historical entries from `request_logs`.
+
+---
+
+## 5. Dataset Fine-Tuning Export
+
+### `GET /api/v1/export`
+Exports conversations recorded in `chat_history` as an OpenAI-formatted JSONL file ready for direct ingestion into model fine-tuning frameworks (Axolotl, Unsloth, LLaMA-Factory).
+
+```bash
+curl -k https://127.0.0.1:3000/api/v1/export \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -o dataset.jsonl
+```
+
+---
+
+## 6. Dynamic Router Configuration
+
+### `GET /api/v1/config`
+Retrieves the active `@eluvix/router-core` configuration JSON (upstreams, routing strategies, latency thresholds, security guard settings).
+
+### `POST /api/v1/config`
+Updates and immediately hot-reloads the active router configuration without service restart. Validates upstream definitions and threshold numbers before saving.
+
+---
+
+## 7. Client Configurator Apply
+
+### `POST /api/v1/configurator/apply`
+Applies Eluvix model definitions directly into local developer tooling configurations:
+
+#### Request Body
+```json
+{
+  "client": "opencode",
+  "protocol": "https",
+  "selectedModels": ["llama3:8b", "qwen2.5-coder:7b"]
+}
+```
+Supported `client` targets: `"opencode"`, `"continue"`. Safely creates automatic timestamped configuration backups before applying changes.
+
+---
+
+## 8. Docker Container Lifecycle
+
+Eluvix provides container control endpoints to orchestrate local backend runtimes:
+
+- `GET /api/v1/docker/status`: Returns container running state, CPU, and memory stats.
+- `POST /api/v1/docker/up`: Spins up specified Compose services (`{"services": ["vllm", "agent-router"]}`).
+- `POST /api/v1/docker/down`: Gracefully halts containers to free up GPU VRAM.
+- `GET /api/v1/docker/logs?service=vllm`: Streams recent stdout/stderr container logs.
+
+---
+
+## 9. Canvas Layouts Management
+
+Enables programmatic CRUD for visual routing graph topologies (`lib/layouts`):
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/api/v1/layouts` | `GET` | Lists all saved layouts, active slug, and layouts directory path. |
+| `/api/v1/layouts` | `POST` | Saves a new layout topology (`slug`, `name`, `nodes`, `edges`, `viewport`). |
+| `/api/v1/layouts/[slug]` | `GET` | Fetches a specific layout by its slug. |
+| `/api/v1/layouts/[slug]` | `PUT` | Updates an existing layout definition. |
+| `/api/v1/layouts/[slug]` | `DELETE` | Deletes a custom layout (protects built-in examples). |
+| `/api/v1/layouts/active` | `GET` / `POST` | Gets or sets the currently active layout slug. |
+| `/api/v1/layouts/restore-examples` | `POST` | Restores the 12 official starter templates. |
+
+---
+
+## 10. GPU Compute Provider
+
+Manage the background Billama worker node daemon:
+
+- `GET /api/v1/provider/status`: Returns worker status (`ONLINE`, `SERVING`, `PAUSED`, `OFFLINE`), GPU specs, temperature, active jobs, and earnings.
+- `POST /api/v1/provider/config`: Updates server URL, worker token, floor pricing, thermal ceilings, and user pause toggles.
+- `POST /api/v1/provider/toggle`: Starts or stops the background worker daemon (`{"enabled": true}`).
+- `POST /api/v1/provider/benchmark`: Executes an inference speed benchmark against local models.
+
+---
+
+## 11. Native Tools API
+
+### `POST /api/v1/tools`
+Inspects and executes built-in server-side native tools:
+
+#### List Tools (`action: "list"`)
+```json
+{
+  "action": "list"
+}
+```
+
+#### Execute Tool (`action: "execute"`)
+```json
+{
+  "action": "execute",
+  "tool": "calculator",
+  "params": {
+    "expression": "42 * (100 / 4)"
+  }
+}
+```
+Available native tools:
+- `calculator`: Evaluates mathematical expressions using AST parsing without `eval()`.
+- `web_scraper`: Fetches external URLs with SSRF protection (private IP / localhost blocked) and extracts clean text.
+
+---
+
+## 12. Secrets Discovery (OpenBao / Vault)
+
+### `GET /api/secrets/discover`
+Discovers available API keys and credential paths stored in OpenBao or HashiCorp Vault. Used by the Agent Gateway to securely bind credentials into external tool runtime environments.
+
+---
+
+## HTTP Status Codes & Error Handling
+
+| Status Code | Description | Typical Cause |
+| :--- | :--- | :--- |
+| `200 OK` | Request succeeded. | Successful completion or query. |
+| `400 Bad Request` | Request rejected by Semantic Guard or invalid parameters. | Prompt injection attempt or malformed payload. |
+| `401 Unauthorized` | Authentication failed. | Missing or invalid `ADMIN_PASSWORD` Bearer token. |
+| `402 Payment Required` | Financial budget cap exceeded. | Request estimated cost exceeds `maxCostPerRequest`. |
+| `429 Too Many Requests` | Rate limit exceeded. | Request exceeds configured sliding-window RPM limit. |
+| `502 Bad Gateway` | Upstream failure. | All candidate engines in the routing queue failed or returned errors. |
+| `504 Gateway Timeout` | Execution timeout. | Upstream engine exceeded `timeoutMs` (default 15,000ms). |

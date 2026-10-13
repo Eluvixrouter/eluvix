@@ -86,6 +86,22 @@ export default function Home() {
               </p>
             </div>
 
+            <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-6 shadow-xl">
+              <div className="text-3xl mb-2">📐</div>
+              <h3 className="text-xl font-bold text-white">12 Topology Presets</h3>
+              <p className="text-slate-400 text-sm leading-relaxed">
+                Pre-configured architectures for airgapped enclaves, agentic coding with Google Antigravity AGY, edge low-latency chat, and tiered cost cascade.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-900/50 p-6 shadow-xl">
+              <div className="text-3xl mb-2">⛏️</div>
+              <h3 className="text-xl font-bold text-white">GPU Worker Mode</h3>
+              <p className="text-slate-400 text-sm leading-relaxed">
+                Monetize idle GPU workstations by serving distributed Billama workloads with automated benchmarking, thermal guards, and user-activity pausing.
+              </p>
+            </div>
+
           </div>
         </div>
       </section>

@@ -45,11 +45,13 @@ jobs:
         run: pnpm --filter githubio build
         env:
           NODE_ENV: production
-          BASE_PATH: /eluvix
+          BASE_PATH: ""
           NEXT_TELEMETRY_DISABLED: 1
 
-      - name: Add .nojekyll
-        run: touch apps/githubio/out/.nojekyll
+      - name: Add .nojekyll and CNAME
+        run: |
+          touch apps/githubio/out/.nojekyll
+          echo "eluvix.com" > apps/githubio/out/CNAME
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

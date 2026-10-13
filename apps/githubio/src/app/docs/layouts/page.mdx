@@ -1,0 +1,114 @@
+# Canvas Layouts & Topology Templates
+
+Eluvix includes a robust **Layout Management System** that allows developers to save, organize, export, and switch between complete routing topologies. It ships with 12 pre-configured, production-grade architectural presets designed for enterprise security, local-first engineering, autonomous coding, and high-throughput evaluation.
+
+---
+
+## Layout Management System
+
+In the Visual Routing Editor (`/editor`), the top toolbar provides direct access to layout management tools:
+
+- **Browse Presets & Layouts (`LayoutBrowserModal`)**: Open the interactive catalog of available topologies, filter by category (`starter`, `privacy`, `performance`, `agent`, `custom`), or search by tags.
+- **Save As (`SaveAsModal`)**: Save your current canvas state under a unique slug, name, category, and descriptive tags.
+- **Set as Active**: Marking a layout active instructs the backend Switchyard engine to immediately compile and hot-reload that configuration for incoming API traffic.
+- **Restore Defaults**: One-click reset that safely repopulates the 12 official starter templates without wiping custom user layouts.
+
+### Storage & Persistence
+Layout definitions are stored in the XDG user data directory (`~/.local/share/eluvix/layouts/` or `./data/layouts/`) as structured JSON files containing node coordinates, handle connection edges, viewport zoom levels, and custom node properties.
+
+---
+
+## The 12 Built-In Topology Templates
+
+### 1. Full Production Stack (`default`)
+- **Category**: `starter`
+- **Focus**: Enterprise All-Rounder
+- **Architecture**:
+  ```text
+  [ Client Input ] ──► [ Privacy Guard ] ──► [ Semantic Guard ]
+                                                      │
+                                                      ▼
+  [ Cloud Fallback ] ◄── [ Local Engines ] ◄── [ Switchyard Balancer ]
+  ```
+- **Description**: The recommended out-of-the-box configuration. Combines PII anonymization, DeBERTa prompt injection defense, Switchyard cost-complexity balancing, local Lemonade/Ollama nodes, and cloud API fallbacks.
+
+### 2. 100% Local Airgapped Cluster (`local-airgapped`)
+- **Category**: `privacy`
+- **Focus**: Sovereign Offline Inference
+- **Architecture**: Enforces zero outbound internet access. Routes exclusively to local Lemonade, vLLM, and Ollama instances.
+- **Best For**: Defense, healthcare, classified enclaves, or offline workstation deployments where data leakage to commercial cloud APIs is strictly prohibited.
+
+### 3. Local-First Coding with AGY Frontier (`local-coding-agy`)
+- **Category**: `agent`
+- **Focus**: Software Engineering & Code Generation
+- **Architecture**: Dispatches routine code completions and unit tests to local fast coding models (e.g. Qwen 2.5 Coder 7B), while automatically code-escalating architectural design and complex refactoring tasks to the **Google Antigravity CLI** (`agy`) with extended thinking budgets.
+
+### 4. Ultra-Low Latency Edge Chat (`low-latency-edge`)
+- **Category**: `performance`
+- **Focus**: Interactive Real-Time Applications
+- **Architecture**: Configured with `strategy: "lowest-latency"`. Measures real-time round-trip latency in SQLite telemetry logs and dispatches queries to whichever engine delivers sub-second response times.
+
+### 5. Tiered Cost Cascade Routing (`tiered-cost-cascade`)
+- **Category**: `performance`
+- **Focus**: Cloud Bill Reduction
+- **Architecture**: Configured with `strategy: "cascade-cost"`. Always executes against $0 local hardware first. If local nodes hit capacity, timeout, or report OOM, it escalates to mid-tier cloud APIs before touching expensive frontier models.
+
+### 6. Zero-Data-Leak Airgap Shield (`zero-data-leak-shield`)
+- **Category**: `privacy`
+- **Focus**: Hardened Compliance & Threat Defense
+- **Architecture**: Chains **Privacy Guard** (cryptographic SHA-256 hash masking) with **Semantic Guard** (strict `action: "block"` threshold at 0.90) and an isolated **Quarantine Sink**. Banned terms and suspicious prompt structures are blocked with zero information disclosed.
+
+### 7. Multi-Agent Autonomous Engineering (`multi-agent-orchestrator`)
+- **Category**: `agent`
+- **Focus**: Complex Autonomous Workflows
+- **Architecture**: Features a central **Task Router** projecting multiple intent ports:
+  - `#intent-code`: Routed to **OpenAI Codex CLI**
+  - `#intent-reasoning`: Routed to **Google Antigravity AGY**
+  - `#intent-refactor`: Routed to **Anthropic Claude Code CLI**
+  - `#intent-default`: Routed to Switchyard fallback
+
+### 8. Direct Google Antigravity AGY (`direct-antigravity`)
+- **Category**: `agent`
+- **Focus**: Dedicated Gemini Agent Loop
+- **Architecture**: Connects the entrypoint directly to the **Antigravity Node**, configured with `gemini-3.8-flash`, planning execution mode, autonomous shell permissions, and extended thinking budgets up to 4,096 tokens.
+
+### 9. Round-Robin Model Evaluation Lab (`model-eval-lab`)
+- **Category**: `starter`
+- **Focus**: A/B Benchmarking & Output Comparison
+- **Architecture**: Configured with `strategy: "round-robin"`. Distributes identical prompt workloads evenly across multiple competing local and cloud models to benchmark latency, token generation, and response quality.
+
+### 10. Multimodal & Vision Pipeline (`multimodal-vision-pipeline`)
+- **Category**: `performance`
+- **Focus**: Mixed Image & Text Ingestion
+- **Architecture**: Automatically filters candidate upstreams to include only engines advertising the `vision` capability tag whenever image payloads are detected, gracefully routing text-only queries to standard low-memory models.
+
+### 11. MCP Agent Toolkit Hub (`mcp-agent-hub`)
+- **Category**: `agent`
+- **Focus**: Tool Use & External API Integration
+- **Architecture**: Connects the **Agent Gateway** to multiple **MCP Tool Nodes** (Filesystem, WebScraper, Database Inspector). Configured with human-in-the-loop confirmation (`mode: "confirm"`) and automated output PII sanitization.
+
+### 12. Deep Observability & Semantic Debug (`deep-observability-debug`)
+- **Category**: `performance`
+- **Focus**: Forensic Analysis & Compliance Auditing
+- **Architecture**: Couples the **Observability Node** at 100% trace sampling rate with OpenTelemetry collector exports, Langfuse graph logging, and SLA alert boundaries set to 2,000ms.
+
+---
+
+## Custom Layout CRUD via REST API
+
+In addition to the visual canvas, layouts can be managed programmatically via `/api/v1/layouts`:
+
+```bash
+# List all saved layouts and current active slug
+curl -H "Authorization: Bearer <ADMIN_PASSWORD>" https://127.0.0.1:3000/api/v1/layouts
+
+# Activate a specific layout
+curl -X POST https://127.0.0.1:3000/api/v1/layouts/active \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "local-coding-agy"}'
+
+# Restore official example templates
+curl -X POST https://127.0.0.1:3000/api/v1/layouts/restore-examples \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>"
+```

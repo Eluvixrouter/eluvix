@@ -82,6 +82,30 @@ This starts:
 
 ---
 
+## Hardware Auto-Detection & Helper Scripts
+
+### 1. Hardware Detection & Docker Spinup
+To detect your local GPU hardware and spin up the matching Docker Compose profiles:
+
+```bash
+chmod +x scripts/docker-detect-and-spinup.sh
+./scripts/docker-detect-and-spinup.sh
+```
+
+This utility detects NVIDIA CUDA, AMD ROCm, Apple Silicon, or CPU, measures available VRAM, and boots the optimal container stack.
+
+### 2. Antigravity Agent CLI Bootstrapper (`install.sh`)
+Eluvix includes an automated Unix bootstrapper script to install the **Google Antigravity CLI** (`agy`):
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+The script automatically detects your platform (Linux x86_64/arm64, macOS Darwin, Android Termux, musl/glibc), verifies SHA-256 hashes, installs `agy` to `~/.local/bin`, and verifies PATH configuration.
+
+---
+
 ## Desktop Application
 
 Eluvix includes a native cross-platform desktop application built with Electron:

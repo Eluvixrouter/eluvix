@@ -1,0 +1,157 @@
+# GPU Compute Provider & Worker Mode
+
+Eluvix allows operators and individual developers to transform local GPU workstations, private clusters, and Apple Silicon devices into revenue-generating compute worker nodes. Through the **Provider Dashboard** (`/provider`) and the `@eluvix/router-core` provider daemon, your idle inference engines can securely join the **Billama Network** to serve distributed AI workloads.
+
+---
+
+## Architecture Overview
+
+When Provider Mode is enabled, Eluvix runs a background worker loop alongside the Switchyard proxy:
+
+```text
+       Billama Network Orchestrator (https://api.billama.dev)
+                                │
+                 Heartbeat & Job Dispatch (HTTPS)
+                                │
+                                ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                 Eluvix Provider Agent                  │
+       ├────────────────────────────────────────────────────────┤
+       │  1. Hardware & Thermal Guard: Checks GPU temp < 82°C   │
+       │  2. User Activity Sensor: Pauses when workstation busy │
+       │  3. Pricing Gate: Enforces input & output floor rates  │
+       │  4. Engine Dispatcher: Translates incoming job payload │
+       └────────────────────────┬───────────────────────────────┘
+                                │
+                   Local Inference Execution
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+   Local Ollama             Local vLLM           Lemonade Enclave
+(:11434 / llama3)        (:8000 / qwen)          (:13305 / deepseek)
+```
+
+---
+
+## Hardware Auto-Detection & Telemetry
+
+Eluvix includes native, multi-platform hardware detection that runs on boot and during periodic heartbeats:
+
+### 1. NVIDIA CUDA
+- Probes `nvidia-smi` with CSV formatting:
+  ```bash
+  nvidia-smi --query-gpu=name,memory.total,memory.free,temperature.gpu,utilization.gpu --format=csv,noheader,nounits
+  ```
+- Extracts GPU model name, total VRAM, free VRAM, core temperature in °C, and active utilization percentage.
+
+### 2. AMD ROCm
+- Probes `rocm-smi --showproductname --showmeminfo vram --csv`.
+- Discovers Radeon and Instinct accelerators with real-time VRAM allocation metrics.
+
+### 3. Apple Silicon (Metal Unified Memory)
+- Queries Darwin system controls (`sysctl -n hw.memsize` and `sysctl -n machdep.cpu.brand_string`).
+- Maps Apple M-series unified memory (e.g. M1/M2/M3/M4 Max/Ultra) into available VRAM pools for local quantized models.
+
+### 4. CPU & RAM Fallback
+- For developer testing or CPU-based models, automatically detects physical core count and free system memory.
+
+---
+
+## Connecting to the Network
+
+Navigate to **Provider** in the top navigation bar (`https://127.0.0.1:3000/provider`):
+
+1. **Server URL**: The orchestrator coordinator endpoint (defaults to `https://api.billama.dev`).
+2. **Node Token**: Your unique worker authorization token issued by your Billama account.
+3. **Node Name**: A human-readable identifier for your worker node (e.g. `rtx-4090-devbox`).
+4. **Engine Backend**:
+   - **Ollama**: Default `http://localhost:11434`
+   - **vLLM / vLLM-sr**: Default `http://localhost:8000`
+   - **Lemonade Enclave**: Default `http://localhost:13305`
+   - **Custom OpenAI-Compatible**: Any standard upstream endpoint
+5. **Click "Start Serving"**: Eluvix registers the node, sends initial hardware specs, and begins polling for job allocations.
+
+---
+
+## Automated Hardware Benchmarking
+
+Before accepting live production traffic, you can verify your local throughput using the built-in benchmark runner:
+
+1. Click **Run Benchmark** on the Provider dashboard (or trigger `POST /api/v1/provider/benchmark`).
+2. Eluvix dispatches a standardized synthetic prompt to your local inference backend.
+3. The benchmark reports:
+   - **Prompt Processing Speed**: Prompt evaluation tokens per second.
+   - **Generation Speed**: Completion tokens per second.
+   - **Time to First Token (TTFT)**: Initial latency before streaming begins.
+4. Benchmark scores are submitted to the network coordinator to calibrate your node's initial throughput classification.
+
+---
+
+## Pricing Modes & Financial Governance
+
+Operators maintain complete sovereignty over when and at what price their hardware executes external queries:
+
+| Pricing Mode | Description |
+| :--- | :--- |
+| **Market (`market`)** | Automatically accepts jobs at the prevailing network spot price, maximizing job utilization and node uptime. |
+| **Floor Pricing (`floor`)** | Restricts execution to jobs meeting or exceeding your custom minimum price per 1M tokens: <br/>• **Input Floor Price**: Minimum $/1M prompt tokens (e.g. `$0.25`)<br/>• **Output Floor Price**: Minimum $/1M completion tokens (e.g. `$0.50`) |
+
+Jobs offering compensation below your configured floor thresholds are automatically declined.
+
+---
+
+## Workstation Protection & Safety Guards
+
+To ensure serving background workloads never disrupts active development or damages hardware:
+
+### 1. Pause on User Activity (`pauseOnUserActive`)
+When enabled, Eluvix monitors interactive workstation activity (mouse, keyboard, active console sessions). If the developer is actively using the machine, serving automatically transitions to `PAUSED` to yield GPU memory and compute cycles. Once idle, serving resumes seamlessly.
+
+### 2. Thermal Ceiling Guard (`maxGpuTempC`)
+Operators can define a thermal safety limit (default: `82°C`). If GPU core temperature exceeds this threshold:
+- Active jobs finish gracefully.
+- Subsequent jobs are paused until the GPU cools down below safe operating margins.
+- A thermal warning is recorded in the node status.
+
+### 3. Maximum Concurrency (`maxConcurrency`)
+Limits the number of simultaneous inference streams handled by the local engine (default: `1`), preventing out-of-memory (OOM) kernel panics.
+
+---
+
+## Lifecycle States & Reputation System
+
+The provider daemon transitions through defined lifecycle states:
+
+```text
+[ OFFLINE ] ──► (Toggle On) ──► [ INITIALIZING ] ──► [ ONLINE ]
+     ▲                                                    │
+     │                                                    ▼
+ (Stopped) ◄── [ ERROR ] ◄── [ PAUSED ] ◄────────── [ SERVING ]
+```
+
+- **`OFFLINE`**: The worker daemon is inactive and draws zero network or GPU resources.
+- **`INITIALIZING`**: Probing local hardware, validating engine connectivity, and registering with coordinator.
+- **`ONLINE`**: Idle, healthy, and awaiting available job assignments.
+- **`SERVING`**: Actively streaming inference completions.
+- **`PAUSED`**: Temporarily halted due to active user input or thermal threshold safety trigger.
+- **`ERROR`**: Local engine disconnected or network authentication failure.
+
+### Reputation Score
+The network assigns a continuous **Reputation Score** (0–100%) based on:
+- Request success rates (HTTP 200 vs 5xx failures).
+- Heartbeat reliability and uptime.
+- Adherence to SLA completion latencies.
+
+High-reputation nodes receive priority routing for premium, high-paying jobs.
+
+---
+
+## Earnings & Job Audit Log
+
+All completed jobs are persisted to the local SQLite database (`provider_job_logs` table) and displayed in the Provider Activity Feed:
+
+- **Timestamp & Job ID**: Cryptographic job identifier.
+- **Model Executed**: Local model identifier (e.g. `llama3:8b`, `qwen2.5-coder:7b`).
+- **Token Volume**: Prompt and completion token counts.
+- **Execution Duration**: Milliseconds elapsed.
+- **Earned Amount (USD)**: Calculated compensation credited to your node wallet.

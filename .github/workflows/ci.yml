@@ -46,6 +46,6 @@ jobs:
       run: pnpm --filter githubio build
       env:
         NODE_ENV: production
-        BASE_PATH: /eluvix
+        BASE_PATH: ""
         NEXT_TELEMETRY_DISABLED: 1
 
