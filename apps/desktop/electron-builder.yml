@@ -1,0 +1,39 @@
+appId: com.eluvix.desktop
+productName: Eluvix
+artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+  synopsis: Local LLM token router and proxy with Billama integration
+  description: Connect your developer harnesses (OpenCode, VSCode) to local models or upstream providers seamlessly.
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+win:
+  target:
+    - nsis
+    - zip
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

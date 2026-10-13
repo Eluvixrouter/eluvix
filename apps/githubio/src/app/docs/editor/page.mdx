@@ -1,0 +1,127 @@
+# Visual Routing Editor
+
+The Eluvix Visual Routing Editor (accessible at `/editor`) is an interactive, graph-based canvas powered by React Flow for designing, inspecting, and compiling multimodal routing topologies, agent gateways, and security guardrails.
+
+---
+
+## Canvas Interface & Usability
+
+The editor provides a modern, dark-slate visual development environment with ergonomic design enhancements:
+- **Ergonomic Node Handles**: Enlarged, color-coded grab handles with extended hitboxes for effortless connection wiring.
+- **High-Visibility SVG Wires**: Thicker bezier connection wires with distinct color-coding based on the source port's operational layer.
+- **Dynamic Port Handles**: Nodes such as the **Task Router** and **Switchyard** dynamically project multiple semantic output ports (e.g. `#intent-code`, `#intent-reasoning`, `#tier-local`, `#tier-cloud`).
+- **Interactive In-Card Controls**: Direct on-canvas toggles, sliders, and inputs for immediate adjustments without opening deep modal menus.
+- **Properties Inspector Panel**: Selecting any node on the canvas opens a dedicated inspector panel on the right sidebar for fine-grained configuration.
+
+```text
+[ Client Entrypoint ]
+         │
+         ▼
+[ Privacy Guard Node ] ──► In-flight PII Masking (Token / Asterisk / Hash)
+         │
+         ▼
+[ Semantic Guard Node ] ──► Prompt Injection & Jailbreak Classifier
+         │
+         ▼
+[ Task Router Node ] ──► Semantic Intent Dispatcher
+         │
+         ├───► #intent-code ──────► [ Coding Agent Node ]
+         ├───► #intent-reasoning ─► [ Google Antigravity AGY ]
+         └───► #intent-default ───► [ Switchyard Router Node ]
+                                            │
+                                 ┌──────────┴──────────┐
+                                 ▼                     ▼
+                       [ Model Gateway ]        [ Cloud Providers ]
+                         (Local vLLM /           (Billama / OpenAI /
+                          Ollama Cache)           Claude Direct)
+```
+
+---
+
+## Comprehensive Node Catalog
+
+The Routing Editor organizes nodes into functional categories:
+
+### 1. Security Nodes
+- **Privacy Guard (`privacyGuardNode`)**:
+  - Enforces in-flight PII redaction using `token` (`[REDACTED_API_KEY]`), `asterisk` (`sk-••••`), or cryptographic `hash` (`[HASH:e3b0...]` via SHA-256).
+  - Built-in entity filters: API keys, SSNs, credit cards, emails, phone numbers, IP addresses.
+  - Exempted Whitelist: Domain and token exemptions (e.g. `internal.corp`, `localhost`).
+  - Custom Regex: Configurable user patterns with named identifiers.
+  - Audit Logging: Optional logging of redacted fragments for security auditing.
+- **Semantic Guard (`semanticGuardNode`)**:
+  - Embedding classifier firewall models (DeBERTa-v3, BGE-Small, MiniLM).
+  - Sensitivity slider (0.50–0.99).
+  - Enforcement actions: `block` (HTTP 400), `strip` (sanitized pass-through), `divert` (quarantine sink), `warn` (audit only).
+  - Active threat vectors: Instruction overrides, DAN jailbreaks, system prompt leaks, obfuscated attacks.
+  - Custom banned phrases blacklist.
+
+### 2. Routing & Intent Dispatchers
+- **Switchyard Router (`switchyardNode`)**:
+  - Layer 7 adaptive balancer supporting 5 routing strategies (`cost-complexity`, `cascade-cost`, `lowest-cost`, `lowest-latency`, `round-robin`).
+  - Configurable latency spillover circuit breaker (`spilloverThresholdMs`).
+  - Upstream network timeout (`timeoutMs`) and retry counts.
+  - Token complexity boundaries and automatic code escalation.
+  - Financial spending cap (`maxCostPerRequest`).
+- **Task Router (`taskRouterNode`)**:
+  - Dispatches queries based on semantic intent using Heuristic Regex, FastEmbed Similarity, or Micro-LLM classification.
+  - Dynamic intent target handles: `#intent-code`, `#intent-reasoning`, `#intent-fast`, `#intent-tools`, `#intent-default`.
+  - Routing modes: Balanced, Lowest Cost, Max Speed, Capability Match.
+
+### 3. Gateways & Proxies
+- **Model Gateway (`modelGatewayNode`)**:
+  - OpenAI-compatible Bifrost adapter for local and upstream models.
+  - In-memory semantic response cache with configurable TTL (seconds) and similarity threshold (`X-Eluvix-Cache: HIT`).
+  - Sliding-window RPM rate limiter with automatic HTTP 429 enforcement.
+  - Fallback strategies: Cheaper Tier, Same-Tier Alternative, Fail Fast.
+  - Global Enterprise System Prompt Prepend.
+- **Agent Gateway (`agentGatewayNode`)**:
+  - Secures Model Context Protocol (MCP) and Agent-to-Agent (A2A) tool invocations.
+  - Access policies: `restrictive` (whitelist only), `permissive` (internal VPC), `open` (public registry).
+  - Tool filter modes: `all`, `whitelist`, `blacklist`.
+  - Output PII sanitization: Scrubs sensitive data from tool returns before feeding to LLMs.
+  - OpenBao Secret Mapping: Directly maps encrypted API keys into tool runtime environments.
+
+### 4. Tools & Observability
+- **MCP Tool (`mcpToolNode`)**:
+  - Connects external MCP servers via SSE or stdio endpoints.
+  - Execution modes: `auto` (immediate), `confirm` (human-in-the-loop), `dry-run` (simulation).
+  - Configurable execution timeouts.
+- **Observability Node (`observabilityNode`)**:
+  - Multi-exporter telemetry engine: Embedded SQLite, OpenTelemetry Collector (OTLP/gRPC), Langfuse LLM Tracing, Prometheus.
+  - Trace sampling rate slider (1–100%).
+  - PII scrubbing from recorded traces.
+  - Full request input/output capture toggle.
+  - SLA latency alert threshold (ms).
+
+### 5. Agents & Runtimes
+- **Custom Agent (`agentNode`)**:
+  - Autonomous persona definitions with system instructions and temperature controls.
+  - Primary capability specialization: General, Coding, Research, Orchestration.
+  - Persistent multi-turn memory toggle.
+- **Local Engine Nodes (`lemonadeNode`, `vllmNode`, `ollamaNode`)**:
+  - Local GPU/NPU-accelerated runtimes.
+  - Priority scoring, max parallel concurrency, and context window limits.
+- **Cloud Providers & Agent CLI Nodes**:
+  - Billama Cloud, OpenAI Direct, Anthropic Claude Direct, Google Antigravity AGY, OpenAI Codex, Claude Code.
+
+---
+
+## Multi-Target Compiler (`compiler.ts`)
+
+Clicking **"Compile & Save"** converts visual graph connections into 10 synchronized configuration artifacts:
+
+| Configuration Artifact | Target System | Description |
+| :--- | :--- | :--- |
+| `eluvix.json` | `@eluvix/router-core` | Master runtime routing, guard, and caching configuration |
+| `bifrost.yaml` | Bifrost Proxy | Upstream model routing, caching, rate limits, and fallback policies |
+| `agent-router.json` | Agent Router | Intent classification engines, routing preference, and intent targets |
+| `semantic-router.ts` | Semantic Router | Embedding classifier routes, sensitivity thresholds, and threat vectors |
+| `privacy-guard.ts` | Privacy Guard | PII entity detection, redaction styles, whitelist, and custom regex |
+| `agent-gateway.json` | Agent Gateway | MCP access policies, tool filter lists, timeouts, and sanitization |
+| `observability.ts` | OpenTelemetry / Braintrust | Telemetry collector endpoints, sampling rates, and SLA alerts |
+| `antigravity.yaml` | Google AGY | Antigravity agent CLI execution mode, thinking budget, and sandboxes |
+| `codex.json` | OpenAI Codex | Codex CLI toolchain, reasoning effort, and approval policies |
+| `claudecode.json` | Claude Code | Claude Code permissions, tool toggles, and token budgets |
+
+Compiled configurations are saved to SQLite via `POST /api/v1/config` and immediately hot-reloaded without service downtime.

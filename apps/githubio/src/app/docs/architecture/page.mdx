@@ -1,0 +1,122 @@
+# Architecture & Core Concepts
+
+Eluvix is architected as a modular, local-first monorepo that separates routing logic, proxy adapters, storage, and visual presentation into cleanly decoupled packages.
+
+---
+
+## Monorepo Layout
+
+The repository is managed using `pnpm` workspaces:
+
+```text
+eluvix/
+├── packages/
+│   └── router-core/         # Core Switchyard engine, Privacy/Semantic guards, caching, and SQLite
+├── apps/
+│   ├── nextjs/              # Visual flow editor, live playground, activity monitor, and API server
+│   ├── desktop/             # Cross-platform Electron desktop client
+│   └── githubio/            # Documentation static site deployed via GitHub Pages
+├── docker/                  # Dockerfiles and production container service definitions
+└── scripts/                 # GPU hardware auto-detection and setup utilities
+```
+
+---
+
+## The Switchyard Routing Engine (`@eluvix/router-core`)
+
+The core routing engine is completely decoupled from UI code, allowing it to run embedded in Node.js services, edge functions, or daemon processes.
+
+### Request Lifecycle (`routeChatCompletion`)
+
+When an incoming `ChatRequest` enters Eluvix:
+
+```text
+Client Request (POST /api/v1/chat/completions)
+                     │
+                     ▼
+1. Budget & Rate Limiting Check ───► Sliding-window RPM & maxCostPerRequest
+                     │
+                     ▼
+2. Semantic Response Caching ──────► In-memory TTL Cache (0ms HIT)
+                     │
+                     ▼
+3. Privacy Guard Redaction ────────► PII Masking (token / asterisk / hash)
+                     │
+                     ▼
+4. Semantic Guard Inspection ──────► Prompt Injection & Jailbreak Classifier
+                     │
+                     ▼
+5. Complexity & Token Assessment ──► Middle-Truncation (Anti-OOM)
+                     │
+                     ▼
+6. Upstream Mesh Filtering ────────► Filters by capability tags (e.g. vision)
+                     │
+                     ▼
+7. Latency Spillover Sorting ──────► Evaluates recent SQLite telemetry logs
+                     │
+                     ▼
+8. Resilient Execution & Fallback ─► Tiers: Local -> Spillover -> Cloud Gateway
+```
+
+1. **Rate Limiting & Budgeting**: Sliding-window RPM limits and financial cost caps (`maxCostPerRequest`) are checked upfront.
+2. **Semantic Caching**: Computes query fingerprints to serve recurring requests instantly with `X-Eluvix-Cache: HIT`.
+3. **Privacy Guard**: Intercepts requests to scrub PII (SSNs, API keys, IPs, emails) using named tokens, asterisks, or SHA-256 hashes.
+4. **Semantic Guard**: Scans prompt structures for adversarial instruction overrides and jailbreaks, returning early 400s or diverting to sinks.
+5. **Anti-OOM Context Management**: Automatically applies middle-truncation when prompt tokens exceed upstream context windows.
+6. **Capability Tag Matching**: Filters upstreams to match required capabilities (e.g., multimodal vision when an image payload is detected).
+7. **Latency Spillover**: De-prioritizes slow local nodes exceeding latency thresholds (default `3,000ms`).
+8. **Fault-Tolerant Execution**: Automatically retries and falls back across tiers if a node fails or times out.
+
+---
+
+## Multi-Target Compiler (`compiler.ts`)
+
+Eluvix compiles visual graph topologies into 10 unified configuration artifacts simultaneously:
+
+```text
+                     Visual Canvas State (React Flow)
+                                    │
+                                    ▼
+                         [ compileGraph() ]
+                                    │
+    ┌──────────────┬────────────────┼──────────────┬──────────────┐
+    ▼              ▼                ▼              ▼              ▼
+eluvix.json  bifrost.yaml  agent-router.json  semantic-router  privacy-guard
+    │              │                │              │              │
+    ▼              ▼                ▼              ▼              ▼
+agent-gateway  observability  antigravity.yaml   codex.json   claudecode.json
+```
+
+Each artifact is specialized for its target runtime while sharing unified policy definitions across security, routing, and credentials.
+
+---
+
+## Storage & Database Layer
+
+Eluvix uses `node:sqlite` (or `better-sqlite3`) for zero-overhead, ultra-low latency local persistence without external database servers.
+
+Storage paths adhere to the **XDG Base Directory Specification**:
+- **Configuration**: `~/.config/eluvix/` (`auth.json`, local TLS certs)
+- **Data & History**: `~/.local/share/eluvix/` or `./data/eluvix.db`
+
+### Core SQLite Tables
+- **`request_logs`**: Stores timestamps, upstream IDs, models, latency in milliseconds, token throughput, and status codes. Powers live dashboard analytics and dynamic latency spillover calculations.
+- **`chat_history`**: Persists conversation sessions from the Trace Playground, enabling inspection, auditing, and one-click JSONL dataset export for model fine-tuning.
+- **`layouts`**: Stores user-authored canvas topologies, custom nodes, and example presets.
+
+---
+
+## Architectural Boundaries: L7 Proxy vs Host Runtimes
+
+Eluvix maintains a clean separation between dynamic Layer 7 routing and underlying host infrastructure:
+
+- **Configurable at Runtime (Canvas / API)**:
+  - Routing strategies, token complexity thresholds, and code escalation.
+  - Upstream network timeouts and retry counts.
+  - Semantic response caching TTL and similarity thresholds.
+  - Rate limits (RPM/TPM) and financial spending caps.
+  - PII masking styles and prompt injection sensitivity thresholds.
+- **Bound at Host Boot (Docker / Container / systemd)**:
+  - GPU hardware device allocation (`CUDA_VISIBLE_DEVICES`).
+  - Container host port bindings (e.g. `0.0.0.0:8080`).
+  - Model weights, KV-cache precision (FP16 vs INT4), and memory cgroup ceilings.

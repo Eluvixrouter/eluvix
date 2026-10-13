@@ -1,0 +1,93 @@
+# Security & Privacy Guardrails
+
+Eluvix is engineered with sovereign privacy and enterprise data protection as foundational pillars. It operates as an intelligent, in-flight firewall between client applications and generative AI models.
+
+---
+
+## Authentication & Credentials Architecture
+
+Eluvix secures both the web console and the programmatic API using a unified credentials system:
+
+### Automatic Credential Generation
+Upon initial startup:
+1. Eluvix creates the XDG configuration directory: `~/.config/eluvix/`.
+2. It generates a cryptographically random admin password and a 256-bit NextAuth secret.
+3. Credentials are saved to `~/.config/eluvix/auth.json` with strict POSIX permissions (`0o600`), readable only by the process owner.
+4. The generated password is displayed in the startup console log for initial sign-in.
+
+### API Authentication
+Programmatic requests to endpoints (such as `/api/v1/chat/completions`) require the master admin password via an HTTP Authorization header:
+
+```http
+Authorization: Bearer <ADMIN_PASSWORD>
+```
+
+---
+
+## Automated Local TLS & HTTPS
+
+Eluvix provisions real HTTPS certificates locally to eliminate cleartext credential leakage on LANs and development machines:
+1. `server.mjs` checks for `mkcert` on the system path during boot.
+2. It automatically provisions and caches locally trusted TLS certificates for:
+   - `localhost`
+   - `127.0.0.1`
+   - `::1`
+   - `eluvix.local`
+3. It binds an HTTPS listener on port `3000` (or `PORT`) and an HTTP redirect listener on port `3080` (or `HTTP_PORT`), seamlessly upgrading browser connections to HTTPS.
+
+---
+
+## Privacy Guard (In-Flight PII Redaction)
+
+The **Privacy Guard** (`@eluvix/router-core`) inspects incoming prompts and scrubs sensitive personal identifiable information before prompts are transmitted to upstream models:
+
+### Redaction Formatting Styles
+- **Named Token (`token`)**: Substitutes entities with descriptive tokens (e.g. `[REDACTED_API_KEY]`, `[REDACTED_SSN]`, `[REDACTED_EMAIL]`). Allows models to preserve semantic structure and entity references.
+- **Asterisk Masking (`asterisk`)**: Preserves entity prefix characters while masking sensitive digits with bullets (e.g. `sk-••••••••`, `•••-••-1234`).
+- **Cryptographic Hash (`hash`)**: Replaces entities with deterministic SHA-256 hash digests (e.g. `[HASH:e3b0c44298fc...]`). Enables entity resolution across multi-turn chats without exposing raw PII.
+
+### Built-in Sensitive Entity Types
+The Privacy Guard includes pre-compiled, high-throughput regular expression engines for:
+- **API Keys & Secrets**: OpenAI (`sk-...`), Anthropic (`sk-ant-...`), AWS Access Keys, GitHub Personal Access Tokens.
+- **Social Security Numbers (SSN)**: Standard 9-digit US SSN formats.
+- **Credit Card Numbers**: Major credit card format patterns (Visa, Mastercard, Amex, Discover).
+- **Email Addresses**: RFC-compliant email address strings.
+- **Phone Numbers**: International and domestic phone formats.
+- **IP Addresses**: IPv4 and IPv6 addresses.
+
+### Exempted Whitelist
+Allows specific domains, internal tokens, or test handles (e.g. `internal.corp`, `localhost`, `test@company.com`) to bypass masking, preventing false-positive redaction of legitimate operational data.
+
+### Custom Regex Patterns
+Operators can supply domain-specific regular expressions with named tags (e.g. Employee IDs, Patient Record Numbers, Internal Project Codewords) in the Properties Inspector.
+
+### Security Audit Logging
+When enabled, redacted fragments and their replacement styles are recorded in an encrypted audit stream for compliance verification (SOC 2, HIPAA, GDPR).
+
+---
+
+## Semantic Guard (Prompt Injection Firewall)
+
+The **Semantic Guard** acts as an application firewall against prompt injection attacks, jailbreaks, and adversarial manipulation:
+
+### Embedding & Classifier Models
+- **DeBERTa-v3-Injection**: Specialized transformer classifier tuned for prompt injection detection.
+- **BGE-Small-EN-v1.5**: Dense semantic embedding similarity matcher against known adversarial clusters.
+- **MiniLM-L6-v2**: Ultra-fast heuristic semantic analyzer for high-throughput pipelines.
+
+### Active Threat Vectors
+The Semantic Guard actively profiles requests for four distinct threat categories:
+1. **Instruction Override**: Attempts to negate system instructions (e.g. `ignore all previous directions`, `disregard safety guidelines`).
+2. **DAN / Jailbreak Personas**: Known adversarial personas and simulation exploits (e.g. `Do Anything Now`, `developer mode active`).
+3. **System Prompt Leakage**: Probing techniques designed to extract upstream instructions or secrets (e.g. `repeat everything above verbatim`, `print your system prompt`).
+4. **Obfuscated Attacks**: Encoded attack payloads designed to evade keyword filters (Base64, ROT13, leetspeak).
+
+### Configurable Enforcement Actions
+When a prompt triggers the sensitivity threshold (0.50–0.99):
+- **Block (`block`)** *(Default)*: Rejects the request immediately with an HTTP `400 Bad Request`, preventing compute consumption.
+- **Strip (`strip`)**: Removes the adversarial prefix or exploit string, allowing legitimate query contents to proceed.
+- **Divert (`divert`)**: Routes the request to a quarantined sink model for security honeypot analysis.
+- **Warn (`warn`)**: Logs the adversarial event in telemetry while permitting the request to execute.
+
+### Custom Banned Phrases
+Blacklist specific keywords or company-confidential project names from ever reaching upstream models.

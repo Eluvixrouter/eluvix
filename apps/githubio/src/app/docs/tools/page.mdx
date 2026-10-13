@@ -1,0 +1,57 @@
+# Native Tools & Agent Gateways
+
+Eluvix is an agent-ready orchestration gateway. It allows developers and operators to bind external capabilities directly into model reasoning loops through native tools, Model Context Protocol (MCP) servers, and secure Agent Gateways.
+
+---
+
+## Agent Gateway Node (`agentGatewayNode`)
+
+The **Agent Gateway** acts as a security boundary between language models and external tool execution environments:
+
+### Access Policies
+- **Restrictive (`restrictive`)** *(Recommended)*: Only explicitly connected and whitelisted tools can be called by models.
+- **Permissive (`permissive`)**: Allows models to query approved internal VPC tool services.
+- **Open (`open`)**: Connects to public MCP registries for broad capability discovery.
+
+### Tool Filtering Modes
+- **Allow All (`all`)**: Exposes all connected tools to the LLM's function declaration manifest.
+- **Strict Whitelist (`whitelist`)**: Filters declarations down to an approved subset of functions.
+- **Blacklist Risky Tools (`blacklist`)**: Suppresses destructive tools (e.g. `rm`, `drop_database`, `execute_arbitrary_shell`).
+
+### Output PII Sanitization
+When enabled, tool execution results are passed through the **Privacy Guard** before being returned to the model context. This prevents database queries or web scraper output from introducing external PII into subsequent reasoning turns.
+
+### Tool Execution Timeouts
+Operators can configure granular execution timeout windows (e.g. `10,000ms`) per gateway, preventing stalled third-party APIs from hanging agent loops.
+
+### OpenBao Secret Injection
+Eluvix integrates with **OpenBao / HashiCorp Vault** secret engines (`/api/secrets/discover`). The Agent Gateway can automatically inject decrypted API keys or bearer tokens into outbound tool requests without exposing credentials in client canvases or client responses.
+
+---
+
+## Model Context Protocol (MCP)
+
+Eluvix natively supports the **Model Context Protocol (MCP)**, the open standard for connecting AI systems to external data sources, enterprise tools, and local development environments.
+
+### MCP Tool Node (`mcpToolNode`)
+The visual editor provides dedicated MCP Tool nodes:
+- **Server Endpoint**: Connects via Server-Sent Events (SSE) or local standard I/O (stdio).
+- **Execution Modes**:
+  - **Automatic (`auto`)**: Executes tool calls immediately upon model request.
+  - **Human-in-the-Loop (`confirm`)**: Halts execution and presents a confirmation modal before running potentially dangerous actions.
+  - **Dry Run (`dry-run`)**: Simulates tool execution and returns a mocked response for safe evaluation.
+- **Parameter Validation**: Automatically verifies model-supplied arguments against JSON schema definitions before network dispatch.
+
+---
+
+## Native Built-in Tools
+
+Eluvix includes zero-dependency native tools served directly from `/api/v1/tools`:
+
+### 1. Calculator
+- Evaluates arithmetic and mathematical expressions securely without executing arbitrary code.
+- Ideal for small or fast reasoning models requiring exact numerical precision.
+
+### 2. Web Scraper
+- Fetches external URLs, strips boilerplate HTML markup, and extracts clean, readable markdown or plain text.
+- Formats extracted content directly into the model's context for summarization or comparative analysis.

@@ -1,0 +1,27 @@
+{
+  "name": "@eluvix/router-core",
+  "version": "1.0.0",
+  "description": "Core routing logic for Eluvix",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,114 @@
+# Switchyard Routing Engine
+
+**Switchyard** is the Layer 7 (L7) adaptive routing engine in Eluvix (`@eluvix/router-core`). Operating between client applications and heterogeneous LLM runtimes, Switchyard dynamically balances cost, latency, capability, and model availability.
+
+---
+
+## Architecture Overview
+
+Switchyard decouples upstream model backends from client API consumers. Instead of hardcoding model endpoints or vendor-specific SDKs, clients target a virtual model identifier (e.g. `auto`, `code`, or specific model tags), and Switchyard resolves the optimal execution path in real time.
+
+```text
+Incoming Chat Request (model: "auto")
+                 │
+                 ▼
+ ┌───────────────────────────────────────────────┐
+ │             Switchyard Engine                 │
+ ├───────────────────────────────────────────────┤
+ │  1. Budget Guard: maxCostPerRequest check     │
+ │  2. Anti-OOM: Token context estimation        │
+ │  3. Prompt Profiler: Keyword & code scoring   │
+ │  4. Latency Circuit Breaker: Spillover filter │
+ │  5. Tier Selection: Execution strategy        │
+ └──────────────────────┬────────────────────────┘
+                        │
+         ┌──────────────┼──────────────┐
+         ▼              ▼              ▼
+   [Tier 1: $0]    [Tier 2: AGY]  [Tier 3: Cloud]
+   Local vLLM /    Google Gemini  OpenAI o3-mini /
+   Ollama          Antigravity    Claude 3.7 Sonnet
+```
+
+---
+
+## Routing Strategies
+
+Switchyard provides five configurable execution strategies selectable per-graph or dynamically per-request:
+
+### 1. Cost & Complexity Matrix (`cost-complexity`) *(Default)*
+The primary intelligent routing mode. Switchyard computes an in-flight complexity score from prompt token counts, code blocks (` ``` `), structured schema definitions, and reasoning keywords.
+- **Low Complexity** (&lt; Moderate threshold): Dispatches to local $0 models (e.g. Llama 3 8B, Qwen 2.5 Coder 7B).
+- **Moderate Complexity** (between Moderate and Heavy): Routes to local high-parameter models or high-throughput CLI agents (Antigravity AGY).
+- **High Complexity** (&gt; Heavy threshold or code-escalated): Escalates to frontier cloud models (OpenAI o3-mini, Anthropic Claude 3.7 Sonnet).
+
+### 2. Strict Cost Escalation (`cascade-cost`)
+Sequential tier progression designed to minimize cloud expenditures:
+- Always executes against local $0 engines first.
+- If all local nodes fail, timeout, or report out-of-memory (OOM), Switchyard escalates sequentially to the next tier without dropping client requests.
+
+### 3. Lowest Cost First (`lowest-cost`)
+Sorts available upstreams strictly by estimated cost per 1k tokens. $0 local nodes always take top priority; when local nodes are saturated or unavailable, the cheapest commercial API candidate is chosen.
+
+### 4. Lowest Latency (`lowest-latency`)
+Continuously tracks rolling round-trip response times in the local SQLite database (`request_logs`). Dispatches queries to the engine with the lowest measured ping and inference latency.
+
+### 5. Round Robin (`round-robin`)
+Distributes requests uniformly across all healthy upstreams meeting capability tags, ideal for load balancing multiple parallel local GPU workers.
+
+---
+
+## Token Complexity & Prompt Profiling
+
+Switchyard grades prompt difficulty using token boundaries configured in the Visual Routing Editor:
+
+| Parameter | Default | Description |
+| :--- | :--- | :--- |
+| `moderateThreshold` | `300 tokens` | Transition point from simple conversational queries to moderate tasks. |
+| `heavyThreshold` | `1,500 tokens` | Transition point triggering high-parameter models or local reasoning engines. |
+| `frontierThreshold` | `6,000 tokens` | Transition point requiring frontier cloud models. |
+| `codeEscalation` | `true` | Automatically escalates complexity when Markdown code fences (` ``` `) are detected. |
+
+---
+
+## Resiliency & Fault Tolerance
+
+### Upstream Timeout (`timeoutMs`)
+Per-target network timeout (default: `15,000ms`). Requests exceeding this duration are aborted cleanly using `AbortSignal.timeout(timeoutMs)`, triggering fallback to the next candidate tier.
+
+### Max Retries (`retryCount`)
+Specifies the number of immediate retry attempts per target before considering the upstream unhealthy (default: `1`).
+
+### Latency Spillover Circuit Breaker (`spilloverThresholdMs`)
+Monitors recent telemetry logs. If a local engine's average response time exceeds the configured threshold (default: `3,000ms`), Switchyard automatically spills subsequent traffic over to cloud or secondary tiers to prevent queuing bottlenecks.
+
+---
+
+## Financial Governance: Budget Ceilings
+
+### Max Cost per Request (`maxCostPerRequest`)
+Enforces a strict financial spending cap per completion (e.g. `$0.05`). 
+- Switchyard estimates upstream cost using `(prompt_tokens / 1000) * costPer1kTokens`.
+- Any candidate engine exceeding this cap is automatically bypassed in favor of $0 local models.
+- If no affordable candidate is found, Switchyard returns an explicit budget rejection, preventing runaway API bills from autonomous agent loops.
+
+---
+
+## Configuration Example (`bifrost.yaml` & `eluvix.json`)
+
+When compiled from the visual editor, Switchyard policies are exported as portable configurations:
+
+```yaml
+version: 1.0
+routing_strategy: cost-complexity
+switchyard_balancer:
+  strategy: cost-complexity
+  timeout_ms: 15000
+  retry_count: 1
+  spillover_threshold_ms: 3000
+  code_escalation: true
+  max_cost_per_request: 0.05
+  complexity_thresholds:
+    moderate: 300
+    heavy: 1500
+    frontier: 6000
+```

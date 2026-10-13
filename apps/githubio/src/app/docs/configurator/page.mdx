@@ -1,0 +1,68 @@
+# Client Configurator & Model Auto-Generation
+
+The **Client Configurator** (`/configurator`) is an interactive tool built directly into Eluvix that automatically discovers all models running on your local machine and upstream providers, and generates tailored configuration files and snippets for developer tools and AI coding assistants.
+
+---
+
+## Supported AI Clients & Tools
+
+| Client / Tool | Configuration Target | Features Supported |
+| :--- | :--- | :--- |
+| **OpenCode** | `~/.config/opencode/opencode.json` | Model presets, context limits, one-click local auto-apply |
+| **Continue.dev** | `~/.continue/config.json` | Tab autocomplete & chat models array, one-click auto-apply |
+| **Cursor & Windsurf** | OpenAI Compatible Settings | Dedicated Base URL, API key, and model copy buttons |
+| **Aider** | `~/.aider.conf.yml` or CLI flags | Quick run shell one-liner and YAML config snippet |
+| **Cline / Claude Dev** | Custom OpenAI Compatible Provider | JSON schema for direct import into Cline settings |
+| **Python / LiteLLM / LangChain** | `openai` Python SDK | Streaming and completion code examples |
+| **Shell & .env** | Environment variables | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `NODE_EXTRA_CA_CERTS` |
+
+---
+
+## Connection Protocols
+
+Eluvix supports two network interfaces for tool integrations:
+
+### 1. HTTPS (`https://127.0.0.1:3000/api/v1`) — Recommended
+- Encrypted local TLS using `mkcert`.
+- Ideal for browser-based extensions, secure web clients, and tools where TLS is mandatory.
+- For Node.js-based tools (like OpenCode or VS Code extensions), export the trusted local root CA:
+  ```bash
+  export NODE_EXTRA_CA_CERTS="$HOME/.local/share/mkcert/rootCA.pem"
+  ```
+
+### 2. HTTP (`http://127.0.0.1:3080/api/v1`) — Loopback
+- Plain loopback HTTP listener that directly serves all `/api/` endpoints without SSL/TLS overhead or certificate trust requirements.
+- Ideal for CLI tools, Python scripts, or terminal agents that do not load local root CA certificates.
+- Browser HTML navigation to port 3080 is automatically upgraded to HTTPS, while `/api/*` endpoints are processed directly over HTTP.
+
+---
+
+## Dynamic Model Discovery & Sync
+
+The Configurator features an active upstream discovery scanner:
+1. Click **Scan Upstreams** in the Configurator header.
+2. Eluvix queries all configured backends:
+   - **Lemonade Router** (`:13305`)
+   - **Local Ollama** (`:11434`)
+   - **Local vLLM / vLLM-sr** (`:8000`, `:8001`)
+   - **Google Antigravity Agent** (`agy` CLI)
+   - **Claude Code Agent** (`:8082`)
+   - **Billama Cloud**
+3. Detected models automatically populate the selection matrix with appropriate context window lengths and max completion output token limits.
+
+---
+
+## One-Click Local Configuration Application
+
+For locally installed tools like **OpenCode** and **Continue.dev**, the Configurator can apply the configuration directly to your system:
+
+1. Select your desired models in the **Model Selection** table.
+2. Select your preferred protocol (**HTTPS** or **HTTP**).
+3. Open the **OpenCode** or **Continue.dev** tab.
+4. Click **Apply to Local Config**.
+5. Eluvix safely creates an automatic timestamped backup (e.g. `opencode.json.bak-<timestamp>`), merges the `Eluvix` provider and models into your configuration file, and validates the output.
+
+You can verify the configuration immediately in your terminal:
+```bash
+opencode models Eluvix
+```

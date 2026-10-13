@@ -1,0 +1,51 @@
+# Trace Playground & Fine-Tuning Datasets
+
+The **Trace Playground** (available at `/playground` in the Next.js dashboard) is an interactive developer workbench for experimenting with prompts, testing routing pipelines, and curating fine-tuning datasets.
+
+---
+
+## Interactive Chat & Trace Inspector
+
+Unlike standard LLM chat interfaces, the Trace Playground exposes the complete internal execution metadata for every interaction:
+
+- **Upstream Selected**: Shows whether the query resolved to a local GPU or escalated to a cloud fallback.
+- **Complexity Score**: Displays the complexity grade (e.g. `Tier 1: Low`, `Tier 3: Frontier`) calculated by the complexity estimator.
+- **Latency Breakdown**: Measures end-to-end response time alongside TTFT (Time to First Token).
+- **Guardrail Actions**: Indicates whether the Privacy Guard redacted any PII tokens or whether the Semantic Guard performed safety validations.
+
+---
+
+## Session Persistence
+
+All playground conversations are automatically committed to the local SQLite database (`chat_history` table).
+
+You can:
+- Switch between active conversation threads.
+- Inspect raw request and response payloads.
+- Re-run specific prompts with alternative temperature or system instruction parameters.
+
+---
+
+## Exporting Fine-Tuning Datasets (JSONL)
+
+High-quality local conversations can be converted into ready-to-train datasets with a single click or API call.
+
+### One-Click UI Export
+
+In the Playground, click **"Export Dataset"** to download an `.jsonl` file formatted to the OpenAI Fine-Tuning standard:
+
+```json
+{"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Explain latency spillover."}, {"role": "assistant", "content": "Latency spillover routes requests..."}]}
+```
+
+### Programmatic Export Endpoint
+
+You can also fetch exported datasets via the REST API:
+
+```bash
+curl -k https://127.0.0.1:3000/api/v1/export \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -o fine_tuning_dataset.jsonl
+```
+
+The resulting file can be fed directly into fine-tuning pipelines (such as Axolotl, Unsloth, LLaMA-Factory, or OpenAI fine-tuning) to distill cloud model outputs into small local models.

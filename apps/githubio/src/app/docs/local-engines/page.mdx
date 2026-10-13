@@ -1,0 +1,50 @@
+# Local Engines & Docker Orchestration
+
+Eluvix is built to orchestrate and harness local hardware, providing deep integration with popular local inference engines and container runtimes.
+
+---
+
+## Supported Local Inference Backends
+
+Eluvix connects out-of-the-box with:
+
+1. **Ollama**: Seamless discovery of models served on `http://127.0.0.1:11434`.
+2. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000`.
+3. **Lemonade**: Local hardware and private enclave inference runtimes.
+
+---
+
+## Automated Local Model Discovery
+
+Eluvix includes a discovery API at `/api/v1/detect-models`:
+
+- It actively probes standard local ports (11434 for Ollama, 8000 for vLLM).
+- It queries the engine's model list and tags each model with inferred capabilities (`vision`, `code`, `chat`).
+- Discovered models appear automatically as available options in the Visual Routing Editor.
+
+---
+
+## Containerized Docker Orchestration
+
+Eluvix provides built-in Docker management APIs, allowing you to monitor and control backend inference containers directly from the web interface:
+
+- **Check Status**: `GET /api/v1/docker/status` returns whether engine containers (e.g. `agent-router`, `vllm`) are running, stopped, or unhealthy.
+- **Start Services**: `POST /api/v1/docker/up` spins up required services using `docker compose`.
+- **Stop Services**: `POST /api/v1/docker/down` gracefully halts containers to free up GPU VRAM.
+- **Inspect Logs**: `GET /api/v1/docker/logs` streams recent stdout/stderr output from the target container.
+
+---
+
+## Hardware Auto-Detection Script
+
+The repository includes a hardware auto-detection script at `scripts/docker-detect-and-spinup.sh`:
+
+```bash
+chmod +x scripts/docker-detect-and-spinup.sh
+./scripts/docker-detect-and-spinup.sh
+```
+
+This utility:
+1. Detects available GPU hardware (NVIDIA CUDA via `nvidia-smi`, Apple Silicon, or CPU fallback).
+2. Calculates available VRAM to recommend optimal quantization levels (Q4, Q8, FP16).
+3. Configures and starts the appropriate Docker Compose profiles for your hardware.

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eluvix Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1>Eluvix Desktop</h1>
+          <p class="subtitle">Local Token Routing &amp; OpenAI-Compatible Edge Proxy</p>
+        </div>
+      </div>
+      <div class="header-actions" style="display: flex; align-items: center; gap: 8px;">
+        <button id="providerNavBtn" class="btn-sm btn-benchmark" title="Jump to Sell GPU Time panel">⚡ Sell GPU Time</button>
+        <button id="openEditorBtn" class="btn-sm btn-accent" title="Open Visual Node Routing Editor">🔀 Node Routing Editor</button>
+        <div class="status-pill" id="statusPill">
+          <span class="status-dot"></span>
+          <span id="statusText">Starting Proxy...</span>
+          <button id="copyEndpointBtn" class="btn-sm" title="Copy OpenAI Base URL">Copy Base URL</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="content-grid">
+      <!-- Left Column: Upstreams & Configuration -->
+      <section class="config-section">
+        <!-- Sell GPU Time Card -->
+        <div class="card provider-card" id="providerCard">
+          <div class="card-badge" style="background: #d97706; color: #fff;">MONETIZE GPU</div>
+          <div class="provider-header">
+            <div class="provider-title-group">
+              <span style="font-size: 20px;">⚡</span>
+              <div>
+                <h2>Sell GPU Time with Billama</h2>
+                <div class="provider-badge offline" id="providerBadge">
+                  <span class="status-dot" style="background: #94a3b8; box-shadow: none;"></span>
+                  <span id="providerBadgeText">OFFLINE</span>
+                </div>
+              </div>
+            </div>
+            <div class="provider-actions">
+              <button id="providerToggleBtn" class="btn-start-sharing">▶ Start Sharing</button>
+            </div>
+          </div>
+
+          <div class="preemption-banner">
+            <span>🛡️</span>
+            <span><strong>Consumer Zero-Lag:</strong> Local queries to Eluvix immediately pause provider jobs.</span>
+          </div>
+
+          <!-- Telemetry Grid -->
+          <div class="provider-grid">
+            <div class="provider-stat">
+              <div class="stat-label">Total Earned</div>
+              <div class="stat-value" id="providerEarnedVal" style="color: #34d399;">$0.0000</div>
+              <div class="stat-sub" id="providerReputationSub">100% Reputation</div>
+            </div>
+            <div class="provider-stat">
+              <div class="stat-label">Tokens Served</div>
+              <div class="stat-value" id="providerTokensVal" style="color: #38bdf8;">0</div>
+              <div class="stat-sub" id="providerJobsSub">0 jobs</div>
+            </div>
+            <div class="provider-stat">
+              <div class="stat-label">GPU Model</div>
+              <div class="stat-value" id="providerGpuVal" style="font-size: 11px;">Detecting...</div>
+              <div class="stat-sub" id="providerVramSub">0 GB VRAM</div>
+            </div>
+            <div class="provider-stat">
+              <div class="stat-label">GPU Temp</div>
+              <div class="stat-value" id="providerTempVal" style="color: #fbbf24;">--°C</div>
+              <div class="stat-sub" id="providerTempSub">Safe limit: 82°C</div>
+            </div>
+          </div>
+
+          <!-- Quick Action Buttons -->
+          <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center;">
+            <button id="providerBenchmarkBtn" class="btn-sm btn-benchmark">🧪 Run Local Benchmark</button>
+            <button id="providerSettingsToggleBtn" class="btn-sm">⚙️ Provider Settings</button>
+          </div>
+
+          <!-- Expandable Settings Panel -->
+          <div class="provider-settings-panel hidden" id="providerSettingsPanel">
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label for="providerNodeToken">Billama Node Token (optional)</label>
+              <input type="password" id="providerNodeToken" placeholder="blm_node_... (from web dashboard)" />
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label for="providerEngineType">Engine Type &amp; Endpoint</label>
+              <div style="display: flex; gap: 6px;">
+                <select id="providerEngineType" style="background: #0f172a; border: 1px solid var(--border); color: #fff; border-radius: 6px; padding: 6px;">
+                  <option value="ollama">Ollama (:11434)</option>
+                  <option value="vllm">vLLM (:8000)</option>
+                  <option value="lemonade">Lemonade (:13305)</option>
+                </select>
+                <input type="text" id="providerEngineUrl" value="http://localhost:11434" style="flex: 1;" />
+              </div>
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label for="providerPricingMode">Pricing Strategy</label>
+              <select id="providerPricingMode" style="background: #0f172a; border: 1px solid var(--border); color: #fff; border-radius: 6px; padding: 6px;">
+                <option value="market">Market Dynamic (Recommended)</option>
+                <option value="floor">Strict Floor Price</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom: 8px;">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="providerPauseOnUser" checked />
+                <span>Pause when local desktop user queries Eluvix</span>
+              </label>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button id="providerSaveSettingsBtn" class="btn btn-primary btn-sm">Save Settings</button>
+              <span id="providerSaveMsg" style="font-size: 11px; color: #6ee7b7;"></span>
+            </div>
+          </div>
+
+          <!-- Mini Job Log Feed -->
+          <div class="provider-jobs-mini" id="providerJobsFeed">
+            <div style="color: #64748b; font-size: 10px; font-style: italic;">No provider jobs executed yet.</div>
+          </div>
+        </div>
+
+        <!-- Billama First-Class Citizen Card -->
+        <div class="card billama-card">
+          <div class="card-badge">RECOMMENDED</div>
+          <h2>🌟 Billama Cloud Integration</h2>
+          <p>
+            Connect your desktop router directly to the Billama high-performance cloud mesh for enterprise caching, fallbacks, and intelligent model orchestration.
+          </p>
+          <div class="form-group">
+            <label for="billamaApiKey">Billama API Key</label>
+            <div class="input-with-button">
+              <input type="password" id="billamaApiKey" placeholder="sk-bl-..." />
+              <button id="saveBillamaBtn" class="btn btn-primary">Save Key</button>
+            </div>
+            <span class="input-hint">Your key is stored locally on your desktop and never shared.</span>
+          </div>
+        </div>
+
+        <!-- Local Nodes & Upstreams -->
+        <div class="card">
+          <div class="card-header-flex">
+            <h2>Active Upstream Nodes</h2>
+            <div style="display: flex; gap: 8px;">
+              <button id="detectAllBtn" class="btn-sm btn-accent" title="Detect models from all running local nodes">🔍 Detect All Models</button>
+              <button id="addUpstreamBtn" class="btn-sm">+ Add Node</button>
+            </div>
+          </div>
+          <p class="card-desc">Traffic routes to the highest priority node capable of serving the requested model.</p>
+          <div class="upstreams-list" id="upstreamsList">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Integration Quickstart -->
+        <div class="card integration-card">
+          <h2>🔌 Harness Integration (OpenCode / Cursor / VSCode)</h2>
+          <p>Point any OpenAI-compatible tool to your local Eluvix instance:</p>
+          <pre class="code-block" id="snippetBlock">export OPENAI_BASE_URL="http://127.0.0.1:3000/v1"
+export OPENAI_API_KEY="sk-eluvix-local"</pre>
+          <button id="copySnippetBtn" class="btn-secondary btn-sm">Copy Env Vars</button>
+        </div>
+      </section>
+
+      <!-- Right Column: Live Request Inspector -->
+      <section class="logs-section">
+        <div class="card logs-card">
+          <div class="card-header-flex">
+            <h2>Live Token Traffic Inspector</h2>
+            <div class="log-actions">
+              <button id="testPromptBtn" class="btn-sm btn-accent">⚡ Send Test Request</button>
+              <button id="clearLogsBtn" class="btn-sm">Clear</button>
+            </div>
+          </div>
+          <p class="card-desc">Real-time stream of intercepted OpenAI-compatible completions.</p>
+          <div class="logs-container" id="logsContainer">
+            <div class="empty-logs" id="emptyLogs">
+              Waiting for requests from local tools (OpenCode, Cursor, curl)...
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

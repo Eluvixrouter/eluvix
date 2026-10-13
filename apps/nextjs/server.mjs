@@ -1,0 +1,169 @@
+import { createServer as createHttpsServer } from 'node:https';
+import { createServer as createHttpServer } from 'node:http';
+import { parse, fileURLToPath } from 'node:url';
+import path from 'node:path';
+import fs from 'node:fs';
+import next from 'next';
+import { getOrCreateLocalCert, getOrCreateAuthConfig } from '@eluvix/router-core';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const auth = getOrCreateAuthConfig();
+
+if (!process.env.ADMIN_PASSWORD) {
+  process.env.ADMIN_PASSWORD = auth.adminPassword;
+}
+if (!process.env.NEXTAUTH_SECRET) {
+  process.env.NEXTAUTH_SECRET = auth.nextAuthSecret;
+}
+
+function resolveHost() {
+  const envHost = process.env.ELUVIX_HOST;
+  if (envHost) return envHost;
+  const raw = process.env.HOSTNAME || '';
+  // Fall back to loopback if HOSTNAME is empty, '0.0.0.0', or a Docker hex container ID
+  if (!raw || /^[0-9a-f]{12,}$/i.test(raw) || raw === '0.0.0.0') {
+    return '127.0.0.1';
+  }
+  return raw;
+}
+
+const dev = process.env.NODE_ENV !== 'production';
+const hostname = process.env.BIND_HOST || resolveHost();
+const httpsPort = parseInt(process.env.PORT || '3000', 10);
+// HTTP redirect port (default 3080, or customizable via HTTP_PORT)
+const httpPort = parseInt(process.env.HTTP_PORT || '3080', 10);
+
+if (!process.env.NEXTAUTH_URL) {
+  process.env.NEXTAUTH_URL = `https://${hostname}:${httpsPort}`;
+}
+
+// In development mode, clean any stale production build artifacts to prevent CSS/manifest mismatches
+if (dev) {
+  const buildIdPath = path.join(__dirname, '.next', 'BUILD_ID');
+  if (fs.existsSync(buildIdPath)) {
+    console.log('[Dev] Clearing stale production .next artifacts for clean development styling...');
+    try {
+      fs.rmSync(path.join(__dirname, '.next'), { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+const app = next({ dev, dir: __dirname, hostname, port: httpsPort });
+const handle = app.getRequestHandler();
+
+async function startServer() {
+  await app.prepare();
+
+  const certs = getOrCreateLocalCert(['localhost', '127.0.0.1', '::1', 'eluvix.local']);
+
+  if (certs) {
+    let currentHttpsPort = httpsPort;
+
+    // Primary HTTPS server for Next.js
+    const httpsServer = createHttpsServer(
+      { key: certs.key, cert: certs.cert },
+      (req, res) => {
+        // Redirect localhost to 127.0.0.1 to avoid NextAuth host mismatch issues
+        if (req.headers.host && req.headers.host.startsWith('localhost:')) {
+          const redirectUrl = `https://${hostname}:${currentHttpsPort}${req.url}`;
+          res.writeHead(301, {
+            Location: redirectUrl,
+            'Content-Type': 'text/html'
+          });
+          res.end(`Redirecting to <a href="${redirectUrl}">${hostname}</a>...\n`);
+          return;
+        }
+
+        if (!req.headers['x-forwarded-proto']) {
+          req.headers['x-forwarded-proto'] = 'https';
+        }
+        if (!req.headers['x-forwarded-host'] && req.headers.host) {
+          req.headers['x-forwarded-host'] = req.headers.host;
+        }
+        const parsedUrl = parse(req.url, true);
+        handle(req, res, parsedUrl);
+      }
+    );
+
+    httpsServer.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        const nextPort = currentHttpsPort + 1;
+        console.warn(`HTTPS Port ${currentHttpsPort} is in use, trying ${nextPort}...`);
+        currentHttpsPort = nextPort;
+        httpsServer.listen(currentHttpsPort, hostname);
+      } else {
+        console.error(err);
+      }
+    });
+
+    httpsServer.listen(currentHttpsPort, hostname, () => {
+      // Ensure NextAuth knows the correct URL if the port changed
+      process.env.NEXTAUTH_URL = `https://${hostname}:${currentHttpsPort}`;
+
+      console.log(`\n  ▲ Next.js 14.2.35`);
+      console.log(`  - Local:        https://${hostname}:${currentHttpsPort}`);
+      console.log(`  - TLS:          Enabled (mkcert)`);
+      console.log(`  - Admin Pass:   ${auth.adminPassword}`);
+      console.log(`  - Config Path:  ${auth.authFile}`);
+
+      // Start HTTP Server (serves /api directly for local clients, auto-redirects browser HTML to HTTPS)
+      const httpServer = createHttpServer((req, res) => {
+        const parsedUrl = parse(req.url, true);
+        if (parsedUrl.pathname && parsedUrl.pathname.startsWith('/api/')) {
+          handle(req, res, parsedUrl);
+          return;
+        }
+
+        const hostWithoutPort = (req.headers.host || hostname).split(':')[0];
+        const redirectUrl = `https://${hostWithoutPort}:${currentHttpsPort}${req.url}`;
+        res.writeHead(301, {
+          Location: redirectUrl,
+          'Content-Type': 'text/html'
+        });
+        res.end(`Redirecting to <a href="${redirectUrl}">HTTPS</a>...\n`);
+      });
+
+      httpServer.on('error', (err) => {
+        if (err.code !== 'EADDRINUSE') {
+          console.warn('[HTTP Redirect Server]', err.message);
+        }
+      });
+
+      httpServer.listen(httpPort, hostname, () => {
+        console.log(`  - Auto-Upgrade: http://${hostname}:${httpPort} ➔ https://${hostname}:${currentHttpsPort}\n`);
+      });
+    });
+  } else {
+    // Plain HTTP mode if mkcert is not available
+    let currentHttpPort = httpsPort;
+    const server = createHttpServer((req, res) => {
+      const parsedUrl = parse(req.url, true);
+      handle(req, res, parsedUrl);
+    });
+
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        const nextPort = currentHttpPort + 1;
+        console.warn(`Port ${currentHttpPort} is in use, trying ${nextPort}...`);
+        currentHttpPort = nextPort;
+        server.listen(currentHttpPort, hostname);
+      } else {
+        console.error(err);
+      }
+    });
+
+    server.listen(currentHttpPort, hostname, () => {
+      process.env.NEXTAUTH_URL = `http://${hostname}:${currentHttpPort}`;
+      console.log(`\n  ▲ Next.js 14.2.35`);
+      console.log(`  - Local:        http://${hostname}:${currentHttpPort}`);
+      console.log(`  - TLS:          Disabled`);
+      console.log(`  - Admin Pass:   ${auth.adminPassword}`);
+      console.log(`  - Config Path:  ${auth.authFile}\n`);
+    });
+  }
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

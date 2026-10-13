@@ -1,0 +1,49 @@
+# Multimodal (Vision) Routing
+
+Eluvix natively understands multimodal payloads conforming to OpenAI's structured image content specifications.
+
+---
+
+## Multimodal Payload Format
+
+Incoming requests can interleave textual content and base64 or URL-referenced images in the standard chat completions payload:
+
+```json
+{
+  "model": "auto",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Analyze this chart and summarize key trends."
+        },
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "https://example.com/chart.png"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## Dynamic Capability Detection
+
+When a request reaches the Switchyard router:
+1. The **Complexity Estimator** parses the payload structure.
+2. If any message contains a content block with `"type": "image_url"`, the request is tagged with `hasImages = true`.
+3. The router queries its upstream registry and **filters out any node lacking the `vision` capability tag**.
+
+---
+
+## Routing Benefits
+
+- **Prevents Model Crashes**: Standard text-only models (such as `llama3:8b` or `mistral`) crash or return validation errors when supplied with raw image URLs. By filtering upstreams, Eluvix prevents these avoidable failures.
+- **Cost Optimization**: Text-only tasks remain routed to compact, efficient text models, while multimodal tasks are directed to vision-capable engines such as `gpt-4o`, `claude-3-opus`, or local `llava` instances.
+- **Seamless Fallback**: If a local vision model runs out of VRAM, the request cascades to the next configured multimodal provider without client interruption.

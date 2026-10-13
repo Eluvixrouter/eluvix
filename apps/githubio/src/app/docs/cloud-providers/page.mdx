@@ -1,0 +1,74 @@
+# Cloud Providers & Agent Runtimes
+
+Eluvix provides first-class support for both direct commercial cloud LLM providers and local autonomous agent CLI runtimes. Runtimes can be placed onto the canvas, wired into Switchyard routing tiers, and governed by Privacy and Semantic Guards.
+
+---
+
+## Direct Cloud Providers
+
+Direct cloud provider nodes connect to commercial hosted APIs without external CLI dependencies:
+
+### 1. Billama Cloud (`billamaNode`)
+A cloud-hosted serverless model inference provider:
+- **Default Endpoint**: `https://api.billama.dev`
+- **Authentication**: Custom Bearer API key
+- **Capabilities**: Multimodal vision, custom cost rates (`costPer1kTokens`), and priority tier weighting.
+
+### 2. OpenAI Direct (`openaiNode`)
+Direct integration with the OpenAI API:
+- **Default Endpoint**: `https://api.openai.com/v1`
+- **Authentication**: `sk-...` API key with optional `organization` identifier.
+- **Direct Execution**: Bypasses local CLI tooling (Codex) when simple, stateless HTTP completions are preferred.
+
+### 3. Anthropic Claude Direct (`claudeNode`)
+Direct integration with the Anthropic Messages API:
+- **Default Endpoint**: `https://api.anthropic.com/v1`
+- **Authentication**: `sk-ant-...` API key.
+- **Capabilities**: Direct access to Claude 3.7 Sonnet, Claude 3.5 Haiku, and multimodal vision models.
+
+---
+
+## Autonomous Agent CLI Runtimes
+
+Eluvix seamlessly bridges autonomous coding agents and terminal toolchains into the routing mesh:
+
+### 1. Google Antigravity Agent (`antigravityNode`)
+Integrates the Google Gemini-powered Antigravity agent CLI (`agy`):
+- **Execution Mode**:
+  - **CLI via `agy`** *(Recommended)*: Spawns the local `agy --print` binary non-interactively without opening external network ports.
+  - **Agent Router Daemon**: Routes through `eluvix-agent-router` on port `8002`.
+  - **HTTP Bridge**: Routes to external agent server instances.
+- **Models**: `gemini-3.8-flash`, `gemini-3.8-pro`, or custom models.
+- **Extended Thinking**: Configurable reasoning token budget (512–8,192 tokens).
+- **Toolchain Controls**: Toggles for write tools, subagents, and network access.
+- **Compilation Output**: Serializes to `antigravity.yaml`.
+
+### 2. OpenAI Codex CLI (`codexNode`)
+Integrates the OpenAI Codex terminal utility:
+- **Models**: `o3-mini`, `o1`, `o1-mini`, or custom models.
+- **Reasoning Effort**: Configurable reasoning depth (`low`, `medium`, `high`).
+- **Approval Modes**: `confirm-risky`, `auto-approve`, or `read-only`.
+- **Built-in Capabilities**: Code Interpreter, Bash execution, and File Editor.
+- **Compilation Output**: Serializes to `codex.json`.
+
+### 3. Anthropic Claude Code CLI (`claudeCodeNode`)
+Integrates the Claude Code command-line toolchain:
+- **Models**: `claude-3-7-sonnet` with thinking budget up to 64,000 tokens.
+- **Permission Modes**: `accept-non-destructive`, `confirm-all`, or `unrestricted`.
+- **Tool Approvals**: Granular toggles for Bash command execution, File editing, Grep search, and Subagent delegation.
+- **Compilation Output**: Serializes to `claudecode.json`.
+
+---
+
+## Compiler Output Comparison
+
+When compiling the visual canvas, cloud providers and agent runtimes emit specialized configuration artifacts:
+
+| Provider / Runtime | Canvas Node | Generated Artifact | Primary Use Case |
+| :--- | :--- | :--- | :--- |
+| **Billama Cloud** | `billamaNode` | `bifrost.yaml` (`providers.billama`) | Cloud serverless fallback |
+| **OpenAI Direct** | `openaiNode` | `bifrost.yaml` (`providers.openai`) | Direct stateless completions |
+| **Anthropic Direct** | `claudeNode` | `bifrost.yaml` (`providers.claude`) | Direct stateless completions |
+| **Google Antigravity** | `antigravityNode` | `antigravity.yaml` | Multi-agent autonomous coding |
+| **OpenAI Codex** | `codexNode` | `codex.json` | Local terminal coding agent |
+| **Claude Code** | `claudeCodeNode` | `claudecode.json` | Refactoring & repo-wide search |

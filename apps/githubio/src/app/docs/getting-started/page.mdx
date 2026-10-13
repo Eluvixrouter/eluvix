@@ -1,0 +1,97 @@
+# Getting Started
+
+Welcome to **Eluvix**, an intelligent, privacy-first, multimodal LLM routing gateway and orchestration dashboard. Eluvix unifies your local hardware (Ollama, vLLM, Lemonade) and frontier cloud models (OpenAI, Anthropic) into a single resilient, OpenAI-compatible endpoint.
+
+---
+
+## Prerequisites
+
+Before setting up Eluvix, ensure your environment meets the following requirements:
+
+- **Node.js**: `v22.13.0+` (LTS recommended, required for built-in `node:sqlite`)
+- **pnpm**: `v11.0.0+` (`pnpm@11.24.0` is configured in `package.json`)
+- **mkcert** *(Recommended)*: For automated local TLS certificate generation
+- **Docker & Docker Compose** *(Optional)*: For production deployments and containerized local model engines
+- **Git**
+
+---
+
+## Quickstart (Local Development)
+
+### 1. Clone Repository & Install Dependencies
+
+```bash
+git clone https://github.com/Eluvixrouter/eluvix.git
+cd eluvix
+
+# Install workspace dependencies
+pnpm install
+```
+
+### 2. Configure Environment (Optional)
+
+Eluvix is zero-config by default. On its first boot, it automatically generates a secure 8-character random admin password and a NextAuth session secret, storing them in `~/.config/eluvix/auth.json`.
+
+If you prefer to define credentials manually, create a `.env` file in the root or `apps/nextjs`:
+
+```bash
+cp .env.example .env
+```
+
+Available environment variables:
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `ADMIN_PASSWORD` | Master password for console login and API authentication | Auto-generated in `~/.config/eluvix/auth.json` |
+| `NEXTAUTH_SECRET` | Secret key used to encrypt session JWT tokens | Auto-generated in `~/.config/eluvix/auth.json` |
+| `NEXTAUTH_URL` | Canonical URL for NextAuth callbacks | Auto-detected from host and port |
+| `PORT` | HTTPS port for the Next.js server | `3000` |
+| `HTTP_PORT` | HTTP port that auto-redirects to HTTPS | `3080` |
+| `HOSTNAME` | Listening network interface | `127.0.0.1` |
+
+### 3. Launch Development Server
+
+```bash
+pnpm dev
+```
+
+During startup:
+- `@eluvix/router-core` is compiled.
+- If `mkcert` is installed, a trusted local TLS certificate is issued for `localhost`, `127.0.0.1`, and `eluvix.local`.
+- If credentials do not yet exist, a fresh admin password is generated and printed in your terminal.
+- Two HTTP servers are initialized:
+  - **HTTPS Server**: `https://127.0.0.1:3000` (Main Dashboard & API)
+  - **HTTP Upgrade Server**: `http://127.0.0.1:3080` (Automatically redirects incoming browser traffic to HTTPS)
+
+Open your browser to `https://127.0.0.1:3000` (or `http://127.0.0.1:3080`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
+
+---
+
+## Production Deployment (Docker)
+
+Eluvix provides production-ready Docker Compose configurations for containerized deployments:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+This starts:
+- The Next.js dashboard and API in optimized `standalone` output mode.
+- Persistent SQLite storage mapped to `./data`.
+- Background health checks and automated restart policies.
+
+---
+
+## Desktop Application
+
+Eluvix includes a native cross-platform desktop application built with Electron:
+
+```bash
+# Build desktop assets
+pnpm desktop:build
+
+# Package for your local operating system (Linux AppImage/deb, Windows exe, macOS dmg)
+pnpm desktop:dist
+```
+
+For more details, see the [Desktop Application Guide](/docs/desktop).

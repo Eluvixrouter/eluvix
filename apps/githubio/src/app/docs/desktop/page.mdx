@@ -1,0 +1,55 @@
+# Desktop Application
+
+The Eluvix Desktop client (located in `apps/desktop`) packages the full Eluvix routing dashboard and orchestration controls into a native desktop window powered by Electron.
+
+---
+
+## Features
+
+- **System Tray Integration**: Run Eluvix in the background with quick access to server logs and status.
+- **Dedicated Environment**: Isolates your routing console from browser tabs, extensions, and cache conflicts.
+- **Local IPC Hooks**: Communicates directly with the local Switchyard core and local filesystem storage.
+
+---
+
+## Development
+
+To run the desktop application in development mode:
+
+```bash
+# Ensure router-core and nextjs packages are built
+pnpm --filter @eluvix/router-core build
+
+# Launch the desktop client
+pnpm desktop:build
+```
+
+---
+
+## Distribution & Packaging
+
+Eluvix uses `electron-builder` to package binaries across multiple platforms:
+
+### Linux
+```bash
+pnpm --filter @eluvix/desktop run dist:linux
+```
+Outputs:
+- **AppImage** (universal portable Linux executable)
+- **.deb** (Debian / Ubuntu package)
+- **.rpm** (Fedora / RHEL package)
+
+### Windows
+```bash
+pnpm --filter @eluvix/desktop run dist:win
+```
+Outputs:
+- **NSIS Installer** (.exe)
+- **Portable .exe**
+
+### macOS
+```bash
+pnpm --filter @eluvix/desktop run dist:mac
+```
+Outputs:
+- **.dmg** disk image (Apple Silicon and Intel architectures)

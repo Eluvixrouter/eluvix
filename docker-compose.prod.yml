@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  nextjs:
+    build:
+      context: .
+      dockerfile: apps/nextjs/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+    volumes:
+      # Mount the sqlite DB for chat history & metrics persistence
+      - ./data:/app/apps/nextjs/data
+    restart: unless-stopped
+    depends_on:
+      - switchyard
+
+  switchyard:
+    image: node:18-alpine
+    command: >
+      sh -c "corepack enable pnpm && pnpm install --frozen-lockfile && pnpm -r run build && cd apps/switchyard && node dist/index.js"
+    volumes:
+      - .:/app
+    working_dir: /app
+    ports:
+      - "8002:8002"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped

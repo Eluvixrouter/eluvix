@@ -1,0 +1,136 @@
+# OpenAI-Compatible API Reference
+
+Eluvix provides a drop-in replacement for the OpenAI Chat Completions API. You can point existing tools, SDKs, and agentic frameworks (LangChain, LlamaIndex, AutoGen, Cursor, Continue) directly at your Eluvix instance.
+
+---
+
+## Base URL & Authentication
+
+- **Base URL**: `https://127.0.0.1:3000/api/v1` (or your configured host and port)
+- **Authentication**: Bearer token using your `ADMIN_PASSWORD` (from `~/.config/eluvix/auth.json`)
+
+---
+
+## Chat Completions
+
+### `POST /api/v1/chat/completions`
+
+Creates a model completion for the provided messages, executing routing through the Switchyard pipeline.
+
+#### Request Headers
+```http
+Content-Type: application/json
+Authorization: Bearer <ADMIN_PASSWORD>
+```
+
+#### Request Body
+```json
+{
+  "model": "auto",
+  "messages": [
+    { "role": "system", "content": "You are a helpful assistant." },
+    { "role": "user", "content": "Explain how latency spillover works." }
+  ],
+  "temperature": 0.7,
+  "stream": false
+}
+```
+
+> **Note on `model`:** Passing `"auto"` enables dynamic complexity and multimodal routing. You can also specify a specific model name to target an upstream directly.
+
+---
+
+## SDK Integration Examples
+
+### Official Python SDK (`openai`)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://127.0.0.1:3000/api/v1",
+    api_key="your_admin_password"
+)
+
+response = client.chat.completions.create(
+    model="auto",
+    messages=[
+        {"role": "user", "content": "Write a fast Fibonacci function in Rust."}
+    ]
+)
+
+print(response.choices[0].message.content)
+```
+
+### Official TypeScript / Node.js SDK (`openai`)
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "https://127.0.0.1:3000/api/v1",
+  apiKey: "your_admin_password",
+});
+
+async function main() {
+  const completion = await client.chat.completions.create({
+    model: "auto",
+    messages: [{ role: "user", content: "Summarize quantum computing in one sentence." }],
+  });
+
+  console.log(completion.choices[0].message.content);
+}
+
+main();
+```
+
+### cURL
+
+```bash
+curl -k -X POST https://127.0.0.1:3000/api/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(jq -r .adminPassword ~/.config/eluvix/auth.json)" \
+  -d '{
+    "model": "auto",
+    "messages": [
+      { "role": "user", "content": "Hello Eluvix!" }
+    ]
+  }'
+```
+
+---
+
+## Model Discovery
+
+### `GET /api/v1/models`
+
+Lists all models currently available across connected local engines and cloud upstreams.
+
+#### Response
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "llama3:8b",
+      "object": "model",
+      "owned_by": "ollama",
+      "capabilities": ["text", "code"]
+    },
+    {
+      "id": "gpt-4o",
+      "object": "model",
+      "owned_by": "openai",
+      "capabilities": ["text", "code", "vision"]
+    }
+  ]
+}
+```
+
+---
+
+## Analytics & Metrics
+
+### `GET /api/v1/analytics`
+
+Returns aggregate system telemetry including request counts, average latency per upstream, error rates, and token consumption.

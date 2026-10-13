@@ -1,0 +1,52 @@
+# Observability & Telemetry
+
+Eluvix features comprehensive, enterprise-grade observability across every model invocation, agent tool call, and routing decision. Telemetry is available through both the visual canvas configuration and the real-time **Observability & Activity Monitor** (`/observability`).
+
+---
+
+## Observability Canvas Node (`observabilityNode`)
+
+In the Visual Routing Editor, the Observability node configures pipeline-wide telemetry collection and remote export pipelines:
+
+### Telemetry Exporter Options
+- **Embedded SQLite (`sqlite`)** *(Default)*: Zero-overhead local persistence in `~/.local/share/eluvix/eluvix.db`. Provides instant dashboard analytics without deploying external monitoring infrastructure.
+- **OpenTelemetry Collector (`otlp`)**: Emits standardized OpenTelemetry traces and spans over OTLP/gRPC to collectors such as Jaeger, Datadog, or Grafana Tempo.
+- **Langfuse Platform (`langfuse`)**: Streams detailed LLM execution graphs, token metrics, generation parameters, and tool call traces to self-hosted or cloud Langfuse instances.
+- **Prometheus (`prometheus`)**: Exposes a `/metrics` scrape endpoint for Prometheus and Grafana dashboards.
+
+### Trace Sampling Rate
+Configurable slider (1% to 100%) to control telemetry volume on high-throughput enterprise gateways, preventing trace storage exhaustion while maintaining statistical significance.
+
+### Privacy & PII Scrubbing
+When enabled (`scrubPii: true`), telemetry recorders pass all inputs and outputs through the Privacy Guard before persisting traces, ensuring that sensitive user data is never stored in external log aggregators or APM systems.
+
+### Full I/O Capture
+Toggle between lightweight metadata logging (latency, tokens, status codes) and complete payload capture (raw prompts, responses, tool arguments) for forensic debugging.
+
+### SLA Latency Alert Threshold
+Defines a critical latency boundary (default: `5,000ms`). Requests taking longer than this threshold trigger visual SLA warning badges on the dashboard and in exported trace spans.
+
+---
+
+## Live Activity Monitor (`/observability`)
+
+The web dashboard provides real-time operational intelligence with sub-second responsiveness:
+
+| Dashboard Component | Description |
+| :--- | :--- |
+| **Total Requests & Success Rate** | Cumulative request volume with breakdown of HTTP `200 OK` vs `4xx`/`5xx` error states. |
+| **Latency Distribution Tiers** | Latency tracked across models and upstreams, classified into speed tiers (`< 500ms Ultra-Fast`, `500-2000ms Standard`, `> 2000ms Deep Thinking`). |
+| **Token Throughput** | Total tokens processed, segmented into prompt tokens and completion tokens. |
+| **Local Cost Savings** | Running calculation of financial savings achieved by routing queries to local $0 hardware instead of commercial frontier APIs. |
+| **Upstream Health Matrix** | Real-time ping status for Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
+
+---
+
+## Interactive Audit Feed & Tooling
+
+- **Live Streaming Polling (`● LIVE 3s`)**: Auto-refreshes every 3 seconds with a pause toggle for inspecting specific traces.
+- **Audit Feed Filtering**: Filter logs by status (`All`, `2xx Success`, `4xx/5xx Errors`) or search across model names and upstream endpoints.
+- **Log Inspector Modal**: Click 🔍 on any request row to review complete headers, latency timings, and token metrics.
+- **JSON Export**: Export recent request histories as structured JSON files for offline compliance reviews.
+- **Send Test Ping**: Dispatches a lightweight synthetic completion through the active pipeline to verify end-to-end health.
+- **Purge Logs**: Clear historical logs from `request_logs` to reset benchmarks.
