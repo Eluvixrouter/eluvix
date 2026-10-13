@@ -30,21 +30,19 @@ export default function Home() {
           {/* Subtitle with exciting value props */}
           <p className="mx-auto max-w-3xl text-slate-300 text-base sm:text-lg md:text-xl leading-relaxed mb-10">
             Big Tech treats your private prompts, proprietary code, and trade secrets as free training data while charging premium token tolls. <strong className="text-white font-semibold">Eluvix</strong> is the sovereign routing gateway that sanitizes PII in-flight, routes 85%+ of workloads to your <strong className="text-emerald-400 font-semibold">$0 local GPU</strong>, and only escalates to cloud frontier models when deep reasoning truly demands it.
-          </p>
-
-          {/* CTA Buttons */}
+          </p>          {/* CTA Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-16">
             <Link 
-              href="/docs/getting-started" 
+              href="/app" 
               className="inline-flex h-13 items-center justify-center rounded-xl bg-sky-500 px-8 text-sm font-bold text-slate-950 shadow-[0_0_30px_rgba(56,189,248,0.4)] transition-all hover:bg-sky-400 hover:scale-105 active:scale-95"
             >
-              Get Started Free ➔
+              ⚡ Launch Live App Demo ➔
             </Link>
             <Link 
-              href="/docs/architecture" 
-              className="inline-flex h-13 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/80 px-8 text-sm font-bold text-slate-200 shadow-sm transition-all hover:bg-slate-800 hover:border-slate-600"
+              href="/docs/getting-started" 
+              className="inline-flex h-13 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/80 px-7 text-sm font-bold text-slate-200 shadow-sm transition-all hover:bg-slate-800 hover:border-slate-600"
             >
-              Read the Architecture
+              Quickstart &amp; Install
             </Link>
             <Link 
               href="/docs/provider" 
@@ -58,7 +56,7 @@ export default function Home() {
           <div className="max-w-5xl mx-auto rounded-2xl p-2 bg-gradient-to-b from-sky-500/30 via-slate-800/50 to-slate-900/50 border border-sky-500/30 shadow-[0_0_50px_rgba(56,189,248,0.2)] relative group overflow-hidden">
             <div className="relative rounded-xl overflow-hidden bg-slate-950 aspect-[16/9] w-full">
               <Image 
-                src="/hero-banner.jpg"
+                src="/hero-banner.jpg" 
                 alt="Eluvix Cybernetic AI Routing Core & Privacy Shield" 
                 fill
                 priority
@@ -68,10 +66,10 @@ export default function Home() {
               
               {/* Floating Overlay HUD Badges */}
               <div className="absolute top-4 left-4 flex flex-wrap gap-2">
-                <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-slate-950/80 backdrop-blur border border-sky-500/30 text-xs font-mono text-sky-400">
+                <Link href="/app" className="flex items-center gap-2 px-3 py-1 rounded-md bg-slate-950/90 backdrop-blur border border-sky-500/40 text-xs font-mono text-sky-400 hover:border-sky-300 transition">
                   <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                  GATEWAY: 127.0.0.1:3000
-                </div>
+                  GATEWAY: 127.0.0.1:3000 (Open Demo ➔)
+                </Link>
                 <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-md bg-slate-950/80 backdrop-blur border border-emerald-500/30 text-xs font-mono text-emerald-400">
                   <span>SILICON: RTX 4090 ($0/tok)</span>
                 </div>

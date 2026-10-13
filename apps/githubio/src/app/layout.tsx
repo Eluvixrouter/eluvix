@@ -36,7 +36,10 @@ export default function RootLayout({
               <Logo size="md" />
             </Link>
 
-            <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+            <nav className="hidden md:flex items-center gap-5 text-sm font-medium text-slate-300">
+              <Link href="/app" className="text-sky-400 font-bold hover:text-sky-300 transition-colors flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/10 border border-sky-500/20 shadow-sm">
+                <span>⚡</span> Live App Demo
+              </Link>
               <Link href="/docs/getting-started" className="hover:text-sky-400 transition-colors">Documentation</Link>
               <Link href="/docs/architecture" className="hover:text-sky-400 transition-colors">Architecture</Link>
               <Link href="/docs/api" className="hover:text-sky-400 transition-colors">API Reference</Link>
