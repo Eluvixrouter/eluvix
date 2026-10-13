@@ -12,6 +12,14 @@ export default function DocsLayout({
       <aside className="w-full md:w-64 shrink-0">
         <div className="sticky top-24 space-y-6">
           
+          <div className="flex items-center gap-2.5 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 shadow-md">
+            <span className="text-xl">🛡️</span>
+            <div>
+              <div className="text-xs font-bold text-white">Sovereign Gateway</div>
+              <div className="text-[10px] text-sky-400 font-mono">v1.0.0 • eluvix.com</div>
+            </div>
+          </div>
+
           <div>
             <h3 className="font-bold text-slate-100 mb-3 uppercase tracking-wider text-xs">Getting Started</h3>
             <ul className="space-y-2 text-sm">
