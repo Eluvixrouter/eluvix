@@ -5,7 +5,8 @@
   "scripts": {
     "build": "pnpm -r run build",
     "test": "pnpm -r --if-present run test",
-    "dev": "pnpm --filter nextjs dev",
+    "predev": "pnpm --filter @eluvix/router-core build",
+    "dev": "pnpm --filter @eluvix/router-core build && pnpm --filter nextjs dev",
     "desktop:build": "pnpm --filter @eluvix/desktop build",
     "desktop:dist": "pnpm --filter @eluvix/desktop dist",
     "desktop:pack": "pnpm --filter @eluvix/desktop pack"
