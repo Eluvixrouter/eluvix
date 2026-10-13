@@ -22,6 +22,17 @@ on:
       - 'pnpm-workspace.yaml'
       - '.github/workflows/desktop-build.yml'
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish binaries to GitHub Release'
+        required: false
+        type: boolean
+        default: false
+      tag_name:
+        description: 'Release Tag name (optional, e.g. v0.1.0)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -34,6 +45,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -68,20 +83,14 @@ jobs:
       - name: Package Desktop app (Linux)
         if: runner.os == 'Linux'
         run: pnpm --filter @eluvix/desktop run dist:linux
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package Desktop app (macOS)
         if: runner.os == 'macOS'
         run: pnpm --filter @eluvix/desktop run dist:mac
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package Desktop app (Windows)
         if: runner.os == 'Windows'
         run: pnpm --filter @eluvix/desktop run dist:win
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -93,17 +102,57 @@ jobs:
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.exe
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      - name: Create GitHub Release on Tag
-        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
+  release:
+    name: Publish Release Binaries
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eluvix-desktop-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Display downloaded binaries
+        run: ls -lh release-artifacts
+
+      - name: Generate SHA256 Checksums
+        run: |
+          cd release-artifacts
+          for f in *; do [ -f "$f" ] && [ "$f" != "SHA256SUMS.txt" ] && sha256sum "$f"; done > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determine Release Tag
+        id: release_tag
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            echo "tag=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(node -p "require('./apps/desktop/package.json').version")
+            echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_tag.outputs.tag }}
+          name: Eluvix ${{ steps.release_tag.outputs.tag }}
           files: |
-            apps/desktop/release/*.AppImage
-            apps/desktop/release/*.deb
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-            apps/desktop/release/*.exe
+            release-artifacts/*.AppImage
+            release-artifacts/*.deb
+            release-artifacts/*.dmg
+            release-artifacts/*.zip
+            release-artifacts/*.exe
+            release-artifacts/SHA256SUMS.txt
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

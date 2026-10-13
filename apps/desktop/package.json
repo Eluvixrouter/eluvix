@@ -2,10 +2,11 @@
   "name": "@eluvix/desktop",
   "version": "0.1.0",
   "description": "Eluvix Desktop - Local token router and OpenAI-compatible proxy with Billama integration",
+  "author": "Eluvix Team",
   "main": "dist/main/index.js",
   "scripts": {
     "build": "tsc && pnpm run copy-assets",
-    "copy-assets": "mkdir -p dist && cp -r src/renderer dist/ && (cp -r assets dist/ 2>/dev/null || true)",
+    "copy-assets": "node scripts/copy-assets.mjs",
     "start": "electron .",
     "pack": "pnpm run build && electron-builder --dir",
     "dist": "pnpm run build && electron-builder",
