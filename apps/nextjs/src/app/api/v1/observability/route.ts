@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getRequestLogs, getDb } from '@eluvix/router-core';
+import { getRequestLogs, getDb, getCachedAntigravityModels } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
 import { spawn } from 'node:child_process';
 
@@ -20,9 +20,11 @@ import { normalizeProbeUrl } from '@/lib/api-helpers';
 
 async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
   const start = Date.now();
-  const models = (upstream.models || []).filter((m: string) => m !== '*');
+  const rawModels = (upstream.models || []).filter((m: string) => m !== '*');
 
   if (upstream.type === 'antigravity' || upstream.endpoint?.startsWith('cli://')) {
+    const agyBaseIds = getCachedAntigravityModels().map(m => m.baseId);
+    const models = Array.from(new Set([...rawModels, ...agyBaseIds]));
     const cliPath = upstream.antigravity?.cliPath || 'agy';
     const isAvailable = await new Promise<boolean>((resolve) => {
       let resolved = false;
@@ -64,6 +66,7 @@ async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
     };
   }
 
+  const models = rawModels;
   if (upstream.endpoint?.startsWith('http')) {
     try {
       const controller = new AbortController();
@@ -168,14 +171,15 @@ export async function GET(req: Request) {
       upstreamDistribution[upstreamId] = (upstreamDistribution[upstreamId] || 0) + 1;
     });
 
-    // Local cost savings calculation ($0.005 estimated per local completion vs commercial cloud API)
-    const localRequestsCount = rawLogs.filter(l => {
+    // Local cost savings calculation ($0.005 estimated per successful local completion vs commercial cloud API)
+    const localRequestsCount = successLogs.filter(l => {
       const up = (l.upstream_id || '').toLowerCase();
       return (
         up.includes('ollama') ||
         up.includes('vllm') ||
         up.includes('lemonade') ||
-        up.includes('switchyard')
+        up.includes('switchyard') ||
+        up.includes('antigravity')
       );
     }).length;
     const estimatedSavings = (localRequestsCount * 0.005).toFixed(3);

@@ -2,24 +2,28 @@
   "fallbackStrategy": "priority",
   "upstreams": [
     {
+      "id": "local-lemonade",
+      "name": "Lemonade Router",
+      "type": "lemonade",
+      "endpoint": "http://localhost:13305",
+      "priority": 30,
+      "models": [
+        "llama3.2-1b-FLM",
+        "Qwen3.5-4B-MTP-GGUF",
+        "LMX-Omni-5.5B-Lite",
+        "*"
+      ]
+    },
+    {
       "id": "local-vllm",
       "name": "Local vLLM",
       "type": "vllm",
       "endpoint": "http://localhost:8000",
-      "priority": 25,
+      "priority": 10,
       "models": [
         "meta-llama/Llama-3-8b",
-        "meta-llama/Llama-3-70b"
-      ]
-    },
-    {
-      "id": "local-vllm-sr",
-      "name": "Local vLLM-sr",
-      "type": "vllm-sr",
-      "endpoint": "http://localhost:8001",
-      "priority": 22,
-      "models": [
-        "meta-llama/Llama-3-8b-instruct"
+        "meta-llama/Llama-3-70b",
+        "mistralai/Mistral-7B-Instruct-v0.3"
       ]
     },
     {
@@ -27,22 +31,25 @@
       "name": "Local Ollama",
       "type": "ollama",
       "endpoint": "http://localhost:11434",
-      "priority": 20,
+      "priority": 22,
       "models": [
         "llama3",
         "llama3.1",
         "qwen2.5-coder",
-        "mistral"
+        "mistral",
+        "*"
       ]
     },
     {
-      "id": "local-lemonade",
-      "name": "Lemonade Router",
-      "type": "lemonade",
-      "endpoint": "http://localhost:13305",
-      "priority": 18,
+      "id": "local-vllm-sr",
+      "name": "Local vLLM-sr",
+      "type": "vllm-sr",
+      "endpoint": "http://localhost:8001",
+      "priority": 20,
       "models": [
-        "*"
+        "meta-llama/Llama-3-8b-instruct",
+        "mistralai/Mistral-7B-v0.1",
+        "vllm-sr-semantic-guard"
       ]
     },
     {
@@ -50,9 +57,10 @@
       "name": "Local Switchyard Node",
       "type": "switchyard",
       "endpoint": "http://localhost:8080",
-      "priority": 15,
+      "priority": 18,
       "models": [
-        "deepseek-ai/deepseek-coder-6.7b"
+        "deepseek-ai/deepseek-coder-6.7b",
+        "*"
       ]
     },
     {
@@ -61,7 +69,7 @@
       "type": "billama",
       "endpoint": "https://api.billama.dev",
       "apiKey": "",
-      "priority": 10,
+      "priority": 16,
       "models": [
         "*"
       ]
@@ -72,10 +80,37 @@
       "type": "openai-compatible",
       "endpoint": "https://api.openai.com",
       "apiKey": "",
-      "priority": 5,
+      "priority": 12,
       "models": [
         "gpt-4o",
-        "gpt-4o-mini"
+        "gpt-4o-mini",
+        "*"
+      ]
+    },
+    {
+      "id": "antigravity-agent",
+      "name": "Google Antigravity Agent (AGY)",
+      "type": "antigravity",
+      "endpoint": "cli://agy",
+      "priority": 28,
+      "models": [
+        "gemini-4-argon",
+        "gemini-3.8-flash",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "gpt-oss-120b",
+        "*"
+      ]
+    },
+    {
+      "id": "claude-code-agent",
+      "name": "Claude Code Agent",
+      "type": "openai-compatible",
+      "endpoint": "http://localhost:8082/v1",
+      "priority": 10,
+      "models": [
+        "claude-3-7-sonnet",
+        "*"
       ]
     }
   ]

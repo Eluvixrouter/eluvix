@@ -54,5 +54,60 @@ describe('Orchestration Subsystem', () => {
     expect(res.success).toBe(true);
     expect(res.tier).toBe('local');
     expect(res.logs.length).toBeGreaterThan(0);
+    expect(res.logs.some(l => l.includes('Synchronized') && l.includes('opencode.json'))).toBe(true);
+  });
+
+  it('should non-destructively synchronize models and limits into opencode.json', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-opencode-sync-'));
+    try {
+      const openCodePath = path.join(tempDir, 'opencode.json');
+      fs.writeFileSync(
+        openCodePath,
+        JSON.stringify({
+          $schema: 'https://opencode.ai/config.json',
+          model: 'Eluvix/auto',
+          provider: {
+            CustomProvider: { name: 'Preserved' }
+          }
+        }),
+        'utf-8'
+      );
+
+      const logs: string[] = [];
+      const originalModels = ['gemini-4-argon', '*'];
+      orchestratorManager.syncOpenCodeConfig(
+        {
+          upstreams: [
+            {
+              id: 'antigravity-agent',
+              name: 'Google Antigravity Agent (AGY)',
+              type: 'antigravity',
+              endpoint: 'cli://agy',
+              priority: 25,
+              models: originalModels
+            }
+          ]
+        },
+        tempDir,
+        openCodePath,
+        logs
+      );
+
+      // Should not mutate originalModels array in-place
+      expect(originalModels).toEqual(['gemini-4-argon', '*']);
+
+      const synced = JSON.parse(fs.readFileSync(openCodePath, 'utf-8'));
+      expect(synced.provider.CustomProvider.name).toBe('Preserved');
+      expect(synced.provider.Eluvix).toBeDefined();
+      expect(synced.provider.Eluvix.models['gemini-4-argon'].limit.context).toBe(2097152);
+      expect(synced.provider.Eluvix.models['claude-opus-5-5'].limit.context).toBe(200000);
+      expect(synced.provider.Eluvix.models['gpt-oss-120b'].limit.context).toBe(131072);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

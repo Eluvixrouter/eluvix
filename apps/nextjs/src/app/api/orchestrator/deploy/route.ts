@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { orchestratorManager, DeploymentTier } from '@/lib/orchestration/manager';
+import { reloadConfig } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +30,13 @@ export async function POST(req: Request) {
       tier,
       compiledConfigs
     });
+
+    if (tier === 'local' && result.success) {
+      try {
+        reloadConfig();
+        result.logs.push('✓ Reloaded active in-memory Next.js Switchyard router configuration.');
+      } catch {}
+    }
 
     return NextResponse.json({
       success: result.success,

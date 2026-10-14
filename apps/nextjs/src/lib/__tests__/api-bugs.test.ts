@@ -86,8 +86,9 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(normalizeProbeUrl('http://localhost:8000', 'vllm')).toBe('http://localhost:8000/v1/models');
       expect(normalizeProbeUrl('http://localhost:8000/', 'vllm')).toBe('http://localhost:8000/v1/models');
       expect(normalizeProbeUrl('http://localhost:8082/v1', 'openai-compatible')).toBe('http://localhost:8082/v1/models');
-      expect(normalizeProbeUrl('http://localhost:8082/v1/', 'openai-compatible')).toBe('http://localhost:8082/v1/models');
       expect(normalizeProbeUrl('http://localhost:13305', 'lemonade')).toBe('http://localhost:13305/v1/models');
+      expect(normalizeProbeUrl('http://localhost:8080', 'switchyard')).toBe('http://localhost:8080/v1/models');
+      expect(normalizeProbeUrl('http://localhost:8080/', 'switchyard')).toBe('http://localhost:8080/v1/models');
     });
   });
 

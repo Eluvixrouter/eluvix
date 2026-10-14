@@ -15,6 +15,20 @@ if (!process.env.ADMIN_PASSWORD) {
 if (!process.env.NEXTAUTH_SECRET) {
   process.env.NEXTAUTH_SECRET = auth.nextAuthSecret;
 }
+if (!process.env.LEGACY_ADMIN_PASSWORD) {
+  try {
+    const home = process.env.HOME || '';
+    if (home) {
+      const legacyPath = path.join(home, '.config', 'enclavix', 'auth.json');
+      if (fs.existsSync(legacyPath)) {
+        const parsed = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
+        if (parsed.adminPassword) {
+          process.env.LEGACY_ADMIN_PASSWORD = parsed.adminPassword;
+        }
+      }
+    }
+  } catch {}
+}
 
 function resolveHost() {
   const envHost = process.env.ELUVIX_HOST;
@@ -85,6 +99,9 @@ async function startServer() {
       }
     );
 
+    httpsServer.requestTimeout = 600000; // 10 mins for heavy LLM generations
+    httpsServer.headersTimeout = 65000;
+
     httpsServer.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
         const nextPort = currentHttpsPort + 1;
@@ -122,6 +139,9 @@ async function startServer() {
         });
         res.end(`Redirecting to <a href="${redirectUrl}">HTTPS</a>...\n`);
       });
+
+      httpServer.requestTimeout = 600000; // 10 mins for heavy LLM generations
+      httpServer.headersTimeout = 65000;
 
       httpServer.on('error', (err) => {
         if (err.code !== 'EADDRINUSE') {

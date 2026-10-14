@@ -375,6 +375,8 @@ export default function ObservabilityPage() {
                 className={`p-3.5 rounded-lg border flex flex-col justify-between transition ${
                   node.status === 'online'
                     ? 'bg-slate-950/80 border-slate-800 hover:border-emerald-500/50'
+                    : node.status === 'degraded'
+                    ? 'bg-slate-950/80 border-amber-900/60 hover:border-amber-500/50'
                     : 'bg-slate-950/40 border-slate-850 opacity-60'
                 }`}
               >
@@ -387,10 +389,18 @@ export default function ObservabilityPage() {
                       className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${
                         node.status === 'online'
                           ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                          : node.status === 'degraded'
+                          ? 'bg-amber-950/80 text-amber-400 border border-amber-800/80'
                           : 'bg-slate-800 text-slate-400 border border-slate-700'
                       }`}
                     >
-                      <span className={`w-1.5 h-1.5 rounded-full ${node.status === 'online' ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        node.status === 'online'
+                          ? 'bg-emerald-400'
+                          : node.status === 'degraded'
+                          ? 'bg-amber-400'
+                          : 'bg-slate-500'
+                      }`} />
                       {node.status.toUpperCase()}
                     </span>
                   </div>
@@ -402,7 +412,11 @@ export default function ObservabilityPage() {
 
                 <div className="mt-3 pt-2.5 border-t border-slate-850 flex items-center justify-between text-[11px]">
                   <span className="text-slate-400 font-medium">
-                    {node.status === 'online' ? `${node.latencyMs} ms` : 'Unreachable'}
+                    {node.status === 'online'
+                      ? `${node.latencyMs} ms`
+                      : node.status === 'degraded'
+                      ? `${node.latencyMs} ms (Degraded)`
+                      : 'Unreachable'}
                   </span>
                   <span className="text-sky-400 font-mono text-[10px]">
                     {node.modelsCount} model(s)

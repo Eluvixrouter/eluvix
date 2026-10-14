@@ -15,6 +15,11 @@ function estimateComplexity(messages) {
   return { score: 1, label: 'simple' };
 }
 
+let activeSwConfig = {
+  strategy: 'cost-complexity',
+  upstreams: []
+};
+
 const server = http.createServer(async (req, res) => {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -29,10 +34,34 @@ const server = http.createServer(async (req, res) => {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (url.pathname === '/health' || url.pathname === '/healthz') {
+  if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'switchyard', port: PORT }));
     return;
+  }
+
+  if (url.pathname === '/v1/config' || url.pathname === '/config') {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(activeSwConfig));
+      return;
+    }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body || '{}');
+          activeSwConfig = { ...activeSwConfig, ...parsed };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, config: activeSwConfig }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
   }
 
   if (url.pathname === '/v1/models' || url.pathname === '/models') {

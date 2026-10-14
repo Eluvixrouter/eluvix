@@ -98,9 +98,9 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
   switchyardNode: { 
     strategy: 'cost-complexity', 
     failover: 'enabled',
-    timeoutMs: 15000,
+    timeoutMs: 60000,
     retryCount: 1,
-    spilloverThresholdMs: 3000,
+    spilloverThresholdMs: 30000,
     codeEscalation: true,
     complexityThresholds: { moderate: 300, heavy: 1500, frontier: 6000 },
     maxCostPerRequest: 0.05
@@ -165,6 +165,8 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
   antigravityNode: {
     label: 'Antigravity Agent',
     model: 'gemini-3.8-flash',
+    effort: 'auto',
+    cleanHeadless: true,
     executionMode: 'cli',
     cliPath: 'agy',
     endpoint: 'cli://agy',
@@ -274,9 +276,9 @@ const initialNodes: Node[] = [
     data: {
       strategy: 'cost-complexity',
       failover: 'enabled',
-      timeoutMs: 15000,
+      timeoutMs: 60000,
       retryCount: 1,
-      spilloverThresholdMs: 3000,
+      spilloverThresholdMs: 30000,
       codeEscalation: true,
       complexityThresholds: { moderate: 300, heavy: 1500, frontier: 6000 },
       maxCostPerRequest: 0.05
@@ -829,7 +831,7 @@ export default function RoutingEditor() {
     if (!confirmDiscard('create a new canvas')) return;
     const starterNodes: Node[] = [
       { id: 'input-1', type: 'inputNode', position: { x: 100, y: 200 }, data: { label: 'Client Input' } },
-      { id: 'switchyard-1', type: 'switchyardNode', position: { x: 450, y: 180 }, data: { strategy: 'cost-complexity', failover: 'enabled', timeoutMs: 15000, retryCount: 1, spilloverThresholdMs: 3000, codeEscalation: true, complexityThresholds: { moderate: 300, heavy: 1500, frontier: 6000 }, maxCostPerRequest: 0.05 } }
+      { id: 'switchyard-1', type: 'switchyardNode', position: { x: 450, y: 180 }, data: { strategy: 'cost-complexity', failover: 'enabled', timeoutMs: 60000, retryCount: 1, spilloverThresholdMs: 30000, codeEscalation: true, complexityThresholds: { moderate: 300, heavy: 1500, frontier: 6000 }, maxCostPerRequest: 0.05 } }
     ];
     const starterEdges: Edge[] = [
       { id: 'e-in-sw', source: 'input-1', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } }
@@ -1090,10 +1092,30 @@ export default function RoutingEditor() {
 
     if (!compiled.rawRouterConfig) return;
     try {
+      // Non-destructive apply: preserve existing registered upstreams not on canvas
+      let payloadToSave = compiled.rawRouterConfig;
+      try {
+        const currentRes = await fetch('/api/v1/config');
+        if (currentRes.ok) {
+          const currentConfig = await currentRes.json();
+          if (currentConfig && Array.isArray(currentConfig.upstreams) && Array.isArray(payloadToSave.upstreams)) {
+            const canvasIds = new Set(payloadToSave.upstreams.map((u: any) => u.id));
+            const preserved = currentConfig.upstreams.filter((u: any) => !canvasIds.has(u.id));
+            payloadToSave = {
+              ...currentConfig,
+              ...payloadToSave,
+              upstreams: [...payloadToSave.upstreams, ...preserved]
+            };
+          }
+        }
+      } catch (mergeErr) {
+        console.warn('Could not merge with existing router config:', mergeErr);
+      }
+
       const res = await fetch('/api/v1/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(compiled.rawRouterConfig)
+        body: JSON.stringify(payloadToSave)
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -1778,10 +1800,11 @@ export default function RoutingEditor() {
                           value={(node.data.model as string) || 'gemini-3.8-flash'}
                           onChange={(e) => updateData('model', e.target.value)}
                         >
-                          <option value="gemini-3.8-flash">Gemini 3.8 Flash (Default)</option>
-                          <option value="gemini-3.1-pro">Gemini 3.1 Pro (Deep Coding)</option>
-                          <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
-                          <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                          <option value="gemini-4-argon">Gemini 4 Argon (Next-Gen Flagship)</option>
+                          <option value="gemini-3.8-flash">Gemini 3.8 Flash (Fast & Reasoning)</option>
+                          <option value="claude-opus-5-5">Claude Opus 5.5 (Deep Reasoning)</option>
+                          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (Fast Frontier)</option>
+                          <option value="gpt-oss-120b">GPT-OSS 120B (Open Weights)</option>
                           <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
                           <option value="custom">Custom Identifier...</option>
                         </select>
@@ -1799,6 +1822,20 @@ export default function RoutingEditor() {
                           />
                         </div>
                       )}
+
+                      <div>
+                        <label className="block text-xs mb-1">Reasoning Effort (--effort)</label>
+                        <select
+                          className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white text-sm"
+                          value={(node.data.effort as string) || 'auto'}
+                          onChange={(e) => updateData('effort', e.target.value)}
+                        >
+                          <option value="auto">⚡ Auto (Mapped from Complexity Score)</option>
+                          <option value="low" disabled={String(node.data.model || '').startsWith('gpt-oss-120b')}>Low (Fastest TTFT)</option>
+                          <option value="medium">Medium (Balanced Reasoning)</option>
+                          <option value="high" disabled={String(node.data.model || '').startsWith('gpt-oss-120b')}>High (Deep Architectural Thinking)</option>
+                        </select>
+                      </div>
 
                       <div>
                         <label className="block text-xs mb-1">Terminal Sandbox Mode</label>
@@ -1843,6 +1880,15 @@ export default function RoutingEditor() {
                       </div>
 
                       <div className="space-y-1.5 pt-2 border-t border-gray-700">
+                        <label className="flex items-center text-xs gap-2 cursor-pointer" title="Isolates .gemini plugin registry to prevent IDE SessionStart hooks and reduce prefill by ~26k tokens">
+                          <input 
+                            type="checkbox" 
+                            className="rounded bg-gray-900 border-gray-700 text-cyan-500"
+                            checked={(node.data.cleanHeadless as boolean) !== false}
+                            onChange={(e) => updateData('cleanHeadless', e.target.checked)}
+                          />
+                          <span>Clean Headless Mode (Zero Plugin Hooks)</span>
+                        </label>
                         <label className="flex items-center text-xs gap-2 cursor-pointer">
                           <input 
                             type="checkbox" 
@@ -2788,11 +2834,11 @@ export default function RoutingEditor() {
                         <input
                           type="number"
                           min={1000}
-                          max={60000}
+                          max={600000}
                           step={1000}
                           className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white font-mono text-xs focus:border-amber-500 outline-none"
-                          value={node.data.timeoutMs !== undefined ? Number(node.data.timeoutMs) : 15000}
-                          onChange={(e) => updateData('timeoutMs', parseInt(e.target.value, 10) || 15000)}
+                          value={node.data.timeoutMs !== undefined ? Number(node.data.timeoutMs) : 60000}
+                          onChange={(e) => updateData('timeoutMs', parseInt(e.target.value, 10) || 60000)}
                         />
                       </div>
                     </div>
@@ -3059,11 +3105,11 @@ export default function RoutingEditor() {
                             <input
                               type="number"
                               min={1000}
-                              max={120000}
+                              max={600000}
                               step={1000}
                               className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white font-mono text-xs focus:border-blue-500 outline-none"
-                              value={node.data.timeoutMs !== undefined ? Number(node.data.timeoutMs) : 15000}
-                              onChange={(e) => updateData('timeoutMs', parseInt(e.target.value, 10) || 15000)}
+                              value={node.data.timeoutMs !== undefined ? Number(node.data.timeoutMs) : 60000}
+                              onChange={(e) => updateData('timeoutMs', parseInt(e.target.value, 10) || 60000)}
                             />
                           </div>
                           <div>
@@ -3085,11 +3131,11 @@ export default function RoutingEditor() {
                           <input
                             type="number"
                             min={500}
-                            max={30000}
+                            max={120000}
                             step={500}
                             className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white font-mono text-xs focus:border-blue-500 outline-none"
-                            value={node.data.spilloverThresholdMs !== undefined ? Number(node.data.spilloverThresholdMs) : 3000}
-                            onChange={(e) => updateData('spilloverThresholdMs', parseInt(e.target.value, 10) || 3000)}
+                            value={node.data.spilloverThresholdMs !== undefined ? Number(node.data.spilloverThresholdMs) : 30000}
+                            onChange={(e) => updateData('spilloverThresholdMs', parseInt(e.target.value, 10) || 30000)}
                           />
                           <p className="text-[10px] text-slate-500 mt-0.5">
                             Spills over to cloud/higher tier if local engine exceeds this latency.

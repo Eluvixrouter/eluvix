@@ -236,13 +236,23 @@ function generateEluvixConfig(
     // Use cli://agy for direct CLI invocation; use port 8002 for agent-router daemon (port 8080 is reserved for Switchyard)
     const endpoint = node.data?.endpoint || (execMode === 'cli' ? `cli://${cliPath}` : 'http://localhost:8002/v1');
 
+    const agyModels = Array.from(new Set([
+      String(modelId),
+      'gemini-4-argon',
+      'gemini-3.8-flash',
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'gpt-oss-120b',
+      '*'
+    ]));
+
     upstreams.push({
       id: String(node.id),
       name: `Antigravity Agent (${modelId})`,
       type: execMode === 'cli' ? 'antigravity' : 'openai-compatible',
       endpoint: endpoint,
       priority: Number(node.data?.priority || 28),
-      models: [modelId, '*'],
+      models: agyModels,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
@@ -250,6 +260,8 @@ function generateEluvixConfig(
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       antigravity: {
         model: modelId,
+        effort: node.data?.effort || 'auto',
+        cleanHeadless: node.data?.cleanHeadless !== false,
         executionMode: execMode,
         cliPath: cliPath,
         endpoint: endpoint,
@@ -435,9 +447,9 @@ function generateEluvixConfig(
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
     strategy: switchyardStrategy,
-    timeoutMs: Number(swData.timeoutMs ?? 15000),
+    timeoutMs: Number(swData.timeoutMs ?? 60000),
     retryCount: Number(swData.retryCount ?? 1),
-    spilloverThresholdMs: Number(swData.spilloverThresholdMs ?? 3000),
+    spilloverThresholdMs: Number(swData.spilloverThresholdMs ?? 30000),
     codeEscalation: swData.codeEscalation !== false,
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
@@ -542,9 +554,9 @@ function generateBifrostYaml(
       Array.isArray(swData.routes) ? swData.routes : [];
     
     yaml += `switchyard_balancer:\n  strategy: ${strategy}\n  failover: enabled\n`;
-    yaml += `  timeout_ms: ${swData.timeoutMs ?? 15000}\n`;
+    yaml += `  timeout_ms: ${swData.timeoutMs ?? 60000}\n`;
     yaml += `  retry_count: ${swData.retryCount ?? 1}\n`;
-    yaml += `  spillover_threshold_ms: ${swData.spilloverThresholdMs ?? 3000}\n`;
+    yaml += `  spillover_threshold_ms: ${swData.spilloverThresholdMs ?? 30000}\n`;
     yaml += `  code_escalation: ${swData.codeEscalation !== false}\n`;
     yaml += `  max_cost_per_request: ${swData.maxCostPerRequest ?? 0.05}\n`;
     yaml += `  complexity_thresholds:\n`;
@@ -657,6 +669,8 @@ function generateBifrostYaml(
     yaml += `  - id: ${node.id}\n`;
     yaml += `    type: antigravity\n`;
     yaml += `    model: "${model}"\n`;
+    yaml += `    effort: ${node.data?.effort || 'auto'}\n`;
+    yaml += `    clean_headless: ${node.data?.cleanHeadless !== false}\n`;
     yaml += `    sandbox_mode: ${node.data?.sandboxMode || 'standard'}\n`;
     yaml += `    agent_behavior: ${node.data?.agentBehavior || 'autonomous'}\n`;
     yaml += `    subagents: ${node.data?.enableSubagents !== false}\n`;

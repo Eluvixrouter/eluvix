@@ -110,10 +110,22 @@ describe('Switchyard Core Routing Logic', () => {
     expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(50000);
   });
 
-  it('isAntigravitySupportedModel correctly identifies agy supported models and rejects gpt-oss-20b-FLM', async () => {
+  it('isAntigravitySupportedModel correctly identifies agy supported models and rejects dropped/local models', async () => {
     const { isAntigravitySupportedModel } = await import('../index.js');
+    expect(isAntigravitySupportedModel('gemini-4-argon', [])).toBe(true);
+    expect(isAntigravitySupportedModel('gemini-4-argo', [])).toBe(true);
+    expect(isAntigravitySupportedModel('gemini-4-argon-high', [])).toBe(true);
     expect(isAntigravitySupportedModel('gemini-3.8-flash', [])).toBe(true);
+    expect(isAntigravitySupportedModel('gemini-3.1-pro', [])).toBe(false);
+    expect(isAntigravitySupportedModel('gemini-3.6-flash', [])).toBe(false);
+    expect(isAntigravitySupportedModel('gemini-3.7-flash', [])).toBe(false);
+    expect(isAntigravitySupportedModel('gemini-2.5-pro', [])).toBe(false);
+    expect(isAntigravitySupportedModel('gemini-2.5-flash', [])).toBe(false);
+    expect(isAntigravitySupportedModel('claude-opus-5-5', [])).toBe(true);
     expect(isAntigravitySupportedModel('claude-opus-5-5-low', [])).toBe(true);
+    expect(isAntigravitySupportedModel('claude-sonnet-5-5', [])).toBe(true);
+    expect(isAntigravitySupportedModel('claude-sonnet-5-5-high', [])).toBe(true);
+    expect(isAntigravitySupportedModel('gpt-oss-120b', [])).toBe(true);
     expect(isAntigravitySupportedModel('gpt-oss-120b-medium', [])).toBe(true);
     expect(isAntigravitySupportedModel('gpt-oss-20b-FLM', [])).toBe(false);
     expect(isAntigravitySupportedModel('llama3.2-1b-FLM', [])).toBe(false);
@@ -356,6 +368,274 @@ describe('Switchyard Core Routing Logic', () => {
       expect(res3.status).toBe(429);
       const body = await res3.json();
       expect(body.error.type).toBe('rate_limit_exceeded');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('detects tools in complexity and routes auto to tool-capable models/upstreams', async () => {
+    const { estimatePromptComplexity } = await import('../index.js');
+    const assessed = estimatePromptComplexity(
+      [{ role: 'user', content: 'Explore project' }],
+      { hasTools: true, toolsCount: 4 }
+    );
+    expect(assessed.hasTools).toBe(true);
+    expect(assessed.score).toBeGreaterThanOrEqual(3);
+    expect(assessed.features).toContain('tools (4)');
+
+    const originalFetch = globalThis.fetch;
+    let requestedUrl = '';
+    let requestedPayload: any = null;
+    globalThis.fetch = vi.fn().mockImplementation(async (url: any, opts: any) => {
+      requestedUrl = url.toString();
+      requestedPayload = JSON.parse(opts.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'tool executed' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    try {
+      const toolRouter = new Eluvix({
+        strategy: 'cost-complexity',
+        upstreams: [
+          {
+            id: 'local-lemonade',
+            name: 'Lemonade Router',
+            type: 'lemonade',
+            endpoint: 'http://localhost:13305',
+            priority: 30,
+            models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', '*'],
+            costPer1kTokens: 0,
+            maxComplexityScore: 3,
+            capabilities: ['tool-calling']
+          }
+        ]
+      });
+
+      const res = await toolRouter.routeChatCompletion({
+        model: 'auto',
+        messages: [{ role: 'user', content: 'Analyze directory' }],
+        tools: [{ type: 'function', function: { name: 'list_dir' } }]
+      });
+
+      expect(res.status).toBe(200);
+      expect(requestedPayload.model).toBe('Qwen3.5-4B-MTP-GGUF');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('parseAgyModelsOutput strips ANSI spinners and groups model variants and effort tiers accurately', async () => {
+    const { parseAgyModelsOutput } = await import('../index.js');
+    const sampleStdout = [
+      '\r\x1b[36m⠋\x1b[0m Fetching available models...\r\x1b[36m⠙\x1b[0m Fetching available models...',
+      'gemini-4-argon-medium     Gemini 4 Argon (Medium)',
+      'gemini-4-argon-high       Gemini 4 Argon (High)',
+      'gemini-4-argon-low        Gemini 4 Argon (Low)',
+      'gemini-3.8-flash-high     Gemini 3.8 Flash (High)',
+      'gemini-3.8-flash-medium   Gemini 3.8 Flash (Medium)',
+      'gemini-3.8-flash-low      Gemini 3.8 Flash (Low)',
+      'claude-opus-5-5-low       Claude Opus 5.5 (Low)',
+      'claude-opus-5-5-medium    Claude Opus 5.5 (Medium)',
+      'claude-opus-5-5-high      Claude Opus 5.5 (High)',
+      'claude-sonnet-5-5-low     Claude Sonnet 5.5 (Low)',
+      'claude-sonnet-5-5-medium  Claude Sonnet 5.5 (Medium)',
+      'claude-sonnet-5-5-high    Claude Sonnet 5.5 (High)',
+      'gpt-oss-120b-medium       GPT-OSS 120B (Medium)'
+    ].join('\n');
+
+    const models = parseAgyModelsOutput(sampleStdout);
+    expect(models).toHaveLength(5);
+
+    const argon = models.find(m => m.baseId === 'gemini-4-argon');
+    expect(argon).toBeDefined();
+    expect(argon?.efforts).toEqual(['low', 'medium', 'high']);
+    expect(argon?.contextLimit).toBe(2097152);
+
+    const gptOss = models.find(m => m.baseId === 'gpt-oss-120b');
+    expect(gptOss).toBeDefined();
+    expect(gptOss?.efforts).toEqual(['medium']);
+    expect(gptOss?.defaultEffort).toBe('medium');
+  });
+
+  it('resolveAntigravityEffort maps complexity scores in auto mode and clamps to model capabilities', async () => {
+    const { resolveAntigravityEffort } = await import('../index.js');
+
+    // Auto mode across complexity scores 1-4
+    expect(resolveAntigravityEffort('gemini-4-argon', 'auto', 1)).toEqual({
+      baseModel: 'gemini-4-argon',
+      effort: 'low'
+    });
+    expect(resolveAntigravityEffort('gemini-4-argon', 'auto', 3)).toEqual({
+      baseModel: 'gemini-4-argon',
+      effort: 'medium'
+    });
+    expect(resolveAntigravityEffort('gemini-4-argon', 'auto', 4)).toEqual({
+      baseModel: 'gemini-4-argon',
+      effort: 'high'
+    });
+
+    // Explicit suffix overrides configured effort
+    expect(resolveAntigravityEffort('claude-opus-5-5-high', 'low', 1)).toEqual({
+      baseModel: 'claude-opus-5-5',
+      effort: 'high'
+    });
+
+    // Alias gemini-4-argo normalizes to gemini-4-argon
+    expect(resolveAntigravityEffort('gemini-4-argo', 'medium', 2)).toEqual({
+      baseModel: 'gemini-4-argon',
+      effort: 'medium'
+    });
+
+    // gpt-oss-120b clamps low and high to medium
+    expect(resolveAntigravityEffort('gpt-oss-120b', 'low', 1)).toEqual({
+      baseModel: 'gpt-oss-120b',
+      effort: 'medium'
+    });
+    expect(resolveAntigravityEffort('gpt-oss-120b', 'high', 4)).toEqual({
+      baseModel: 'gpt-oss-120b',
+      effort: 'medium'
+    });
+  });
+
+  it('parseAgyStreamJsonLine parses init, step_update text_delta, and final result usage', async () => {
+    const { parseAgyStreamJsonLine } = await import('../index.js');
+
+    const initEv = parseAgyStreamJsonLine('{"event":"init","conversation_id":"conv-123","init":{"model":"gemini-4-argon"}}');
+    expect(initEv).toEqual({ type: 'init', conversationId: 'conv-123' });
+
+    const deltaEv = parseAgyStreamJsonLine('{"event":"step_update","step_update":{"conversation_id":"conv-123","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"Hello world"}}');
+    expect(deltaEv).toEqual({ type: 'delta', conversationId: 'conv-123', textDelta: 'Hello world' });
+
+    const resultEv = parseAgyStreamJsonLine('{"event":"result","result":{"conversation_id":"conv-123","status":"SUCCESS","response":"Hello world!","usage":{"input_tokens":1850,"output_tokens":12,"thinking_tokens":64,"cache_read_tokens":1200,"total_tokens":1926}}}');
+    expect(resultEv.type).toBe('result');
+    expect(resultEv.response).toBe('Hello world!');
+    expect(resultEv.usage).toEqual({
+      prompt_tokens: 1850,
+      completion_tokens: 12,
+      total_tokens: 1926,
+      thinking_tokens: 64,
+      cache_read_tokens: 1200
+    });
+  });
+
+  it('prepareCleanAgyHome creates isolated .gemini profile with empty plugins registry', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const { prepareCleanAgyHome } = await import('../index.js');
+
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-agy-home-test-'));
+    try {
+      fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
+      fs.writeFileSync(path.join(tempHome, '.gemini', 'oauth_creds.json'), '{"token":"test"}', 'utf-8');
+
+      const cleanHome = prepareCleanAgyHome(tempHome);
+      const cleanConfigPath = path.join(cleanHome, '.gemini', 'config', 'config.json');
+      expect(fs.existsSync(cleanConfigPath)).toBe(true);
+
+      const parsedConfig = JSON.parse(fs.readFileSync(cleanConfigPath, 'utf-8'));
+      expect(parsedConfig.plugins).toEqual({});
+
+      const symlinkedCreds = path.join(cleanHome, '.gemini', 'oauth_creds.json');
+      expect(fs.existsSync(symlinkedCreds)).toBe(true);
+
+      // Verify broken symlink replacement
+      const brokenLink = path.join(cleanHome, '.gemini', 'google_accounts.json');
+      fs.symlinkSync(path.join(tempHome, 'nonexistent.json'), brokenLink);
+      fs.writeFileSync(path.join(tempHome, '.gemini', 'google_accounts.json'), '{"account":"user@example.com"}', 'utf-8');
+      prepareCleanAgyHome(tempHome);
+      expect(fs.existsSync(brokenLink)).toBe(true);
+    } finally {
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it('prevents local wildcard upstreams from hijacking gpt-oss-120b and preserves >8k context when frontier upstream is present', async () => {
+    const router = new Eluvix({
+      strategy: 'cost-complexity',
+      upstreams: [
+        {
+          id: 'local-lemonade',
+          name: 'Lemonade',
+          type: 'lemonade',
+          endpoint: 'http://localhost:13305',
+          priority: 30,
+          models: ['llama3.2-1b-FLM', '*'],
+          costPer1kTokens: 0,
+          maxComplexityScore: 2
+        },
+        {
+          id: 'antigravity-agent',
+          name: 'AGY',
+          type: 'antigravity',
+          endpoint: 'cli://agy',
+          priority: 28,
+          models: ['gemini-3.8-flash', '*'],
+          costPer1kTokens: 0,
+          maxComplexityScore: 4
+        }
+      ]
+    });
+
+    // Lemonade should not match gpt-oss-120b via wildcard
+    expect(router.matchesModel(router.getUpstreams()[0], 'gpt-oss-120b')).toBe(false);
+    // Antigravity should match gpt-oss-120b even if only gemini-3.8-flash and '*' are listed
+    expect(router.matchesModel(router.getUpstreams()[1], 'gpt-oss-120b')).toBe(true);
+
+    // Verify >8000 token prompt is NOT truncated when a frontier upstream (maxComplexityScore: 4) is available
+    const originalFetch = globalThis.fetch;
+    let receivedMessagesCount = 0;
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: any, opts: any) => {
+      const body = JSON.parse(opts.body);
+      receivedMessagesCount = body.messages.length;
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+
+    try {
+      const frontierRouter = new Eluvix({
+        strategy: 'cost-complexity',
+        upstreams: [
+          {
+            id: 'local-small',
+            name: 'Local Small',
+            type: 'ollama',
+            endpoint: 'http://localhost:11434',
+            priority: 30,
+            models: ['*'],
+            maxComplexityScore: 2
+          },
+          {
+            id: 'frontier-cloud',
+            name: 'Frontier Cloud',
+            type: 'openai-compatible',
+            endpoint: 'https://api.openai.com',
+            priority: 10,
+            models: ['*'],
+            maxComplexityScore: 4
+          }
+        ]
+      });
+
+      const originalMessages = [
+        { role: 'system', content: 'System instruction' },
+        { role: 'user', content: 'Turn 1 ' + 'a'.repeat(15000) },
+        { role: 'assistant', content: 'Turn 2 ' + 'b'.repeat(15000) },
+        { role: 'user', content: 'Turn 3 ' + 'c'.repeat(15000) },
+        { role: 'user', content: 'Turn 4 final question' }
+      ];
+      const res = await frontierRouter.routeChatCompletion({
+        model: 'auto',
+        messages: originalMessages
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-eluvix-upstream')).toBe('frontier-cloud');
+      expect(res.headers.get('x-eluvix-complexity')).toBe('4');
+      expect(receivedMessagesCount).toBe(5);
     } finally {
       globalThis.fetch = originalFetch;
     }

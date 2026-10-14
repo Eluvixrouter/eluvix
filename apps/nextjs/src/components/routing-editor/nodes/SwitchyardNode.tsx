@@ -38,9 +38,9 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   if (data) {
     if (!data.strategy) data.strategy = strategy;
     if (!data.routes) data.routes = routes;
-    if (data.timeoutMs === undefined) data.timeoutMs = 15000;
+    if (data.timeoutMs === undefined) data.timeoutMs = 60000;
     if (data.retryCount === undefined) data.retryCount = 1;
-    if (data.spilloverThresholdMs === undefined) data.spilloverThresholdMs = 3000;
+    if (data.spilloverThresholdMs === undefined) data.spilloverThresholdMs = 30000;
     if (data.codeEscalation === undefined) data.codeEscalation = true;
     if (!data.complexityThresholds) {
       data.complexityThresholds = { moderate: 300, heavy: 1500, frontier: 6000 };
@@ -197,7 +197,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
         <div className="pt-2 border-t border-gray-800/80 grid grid-cols-2 gap-1.5 text-[9px] font-mono text-gray-300">
           <div className="flex items-center gap-1 bg-gray-950/80 px-2 py-1 rounded border border-gray-800" title="Upstream Timeout">
             <span className="text-blue-400">⏱️</span>
-            <span>{data?.timeoutMs || 15000}ms</span>
+            <span>{data?.timeoutMs || 60000}ms</span>
           </div>
           <div className="flex items-center gap-1 bg-gray-950/80 px-2 py-1 rounded border border-gray-800" title="Max Retries">
             <span className="text-amber-400">🔁</span>
@@ -205,7 +205,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
           </div>
           <div className="flex items-center gap-1 bg-gray-950/80 px-2 py-1 rounded border border-gray-800" title="Latency Spillover Circuit Breaker">
             <span className="text-cyan-400">🌊</span>
-            <span>Spill: {data?.spilloverThresholdMs || 3000}ms</span>
+            <span>Spill: {data?.spilloverThresholdMs || 30000}ms</span>
           </div>
           <div className="flex items-center gap-1 bg-gray-950/80 px-2 py-1 rounded border border-gray-800" title="Max Budget Ceiling">
             <span className="text-emerald-400">💰</span>

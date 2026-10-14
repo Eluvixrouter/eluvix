@@ -12,11 +12,22 @@ export default function PlaygroundPage() {
   
   const [sessions, setSessions] = useState<any[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('auto');
+  const [availableModels, setAvailableModels] = useState<string[]>(['auto']);
 
   useEffect(() => {
     // Generate an initial session id if none exists
     setCurrentSessionId(uuidv4());
     fetchSessions();
+    fetch('/api/v1/models')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && Array.isArray(data.data)) {
+          const list = data.data.map((m: any) => m.id);
+          setAvailableModels(list.length > 0 ? list : ['auto']);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const fetchSessions = async () => {
@@ -65,7 +76,7 @@ export default function PlaygroundPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'meta-llama/Llama-3-8b', // Dummy target
+          model: selectedModel || 'auto',
           messages: newMessages,
           session_id: currentSessionId
         })
@@ -97,6 +108,23 @@ export default function PlaygroundPage() {
           <span className="text-2xl">🧪</span>
           <h1 className="text-xl font-bold text-sky-400">Playground &amp; Trace Viewer</h1>
         </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-slate-400 font-semibold hidden md:inline">Target Model:</label>
+          <select
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            className="bg-slate-900 border border-slate-700 text-sky-300 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-sky-500 font-mono font-medium max-w-[220px] truncate"
+            title="Select model to target or test auto-routing"
+          >
+            {availableModels.map((m) => (
+              <option key={m} value={m}>
+                {m === 'auto' ? '⚡ auto (Intelligent Router)' : m}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="flex gap-2.5 items-center">
           <Link href="/observability" className="text-xs bg-purple-600 hover:bg-purple-500 text-white font-semibold px-3 py-1.5 rounded transition flex items-center gap-1">
             <span>📊</span> Observability

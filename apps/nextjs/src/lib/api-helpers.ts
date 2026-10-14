@@ -170,7 +170,7 @@ export function normalizeProbeUrl(endpoint: string, type: string): string {
   if (type === 'ollama') {
     return `${baseWithoutV1}/api/tags`;
   }
-  if (type === 'lemonade' || type === 'openai-compatible' || type === 'vllm' || type === 'vllm-sr') {
+  if (type === 'lemonade' || type === 'openai-compatible' || type === 'vllm' || type === 'vllm-sr' || type === 'switchyard') {
     return `${baseWithoutV1}/v1/models`;
   }
   return trimmed;

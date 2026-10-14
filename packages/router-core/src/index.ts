@@ -57,6 +57,14 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 export * from './provider.js';
+export * from './antigravity-models.js';
+import {
+  discoverAntigravityModels,
+  getCachedAntigravityModels,
+  resolveAntigravityEffort,
+  prepareCleanAgyHome,
+  parseAgyStreamJsonLine
+} from './antigravity-models.js';
 import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard } from './guard.js';
 
@@ -83,7 +91,8 @@ export interface AntigravityConfig {
   thinkingBudget?: number;
   subagents?: boolean;
   maxSubagentDepth?: number;
-  effort?: 'low' | 'medium' | 'high';
+  effort?: 'auto' | 'low' | 'medium' | 'high';
+  cleanHeadless?: boolean;
 }
 
 export interface UpstreamConfig {
@@ -109,6 +118,7 @@ export interface PromptComplexityAssessment {
   tokenEstimate: number;
   features: string[];
   hasImages?: boolean;
+  hasTools?: boolean;
 }
 
 export function estimatePromptComplexity(
@@ -118,10 +128,20 @@ export function estimatePromptComplexity(
     heavy?: number;
     frontier?: number;
     codeEscalation?: boolean;
+    hasTools?: boolean;
+    toolsCount?: number;
   }
 ): PromptComplexityAssessment {
   if (!messages || messages.length === 0) {
-    return { score: 1, label: 'simple', tokenEstimate: 0, features: ['empty'], hasImages: false };
+    const hasTools = customThresholds?.hasTools ?? false;
+    return {
+      score: hasTools ? 3 : 1,
+      label: hasTools ? 'heavy' : 'simple',
+      tokenEstimate: 0,
+      features: hasTools ? [`tools (${customThresholds?.toolsCount ?? 1})`] : ['empty'],
+      hasImages: false,
+      hasTools
+    };
   }
 
   let hasImages = false;
@@ -170,6 +190,11 @@ export function estimatePromptComplexity(
     features.push('image payload');
   }
 
+  const hasTools = customThresholds?.hasTools ?? false;
+  if (hasTools) {
+    features.push(`tools (${customThresholds?.toolsCount ?? 1})`);
+  }
+
   const frontierLimit = customThresholds?.frontier ?? 6000;
   const heavyLimit = customThresholds?.heavy ?? 1500;
   const moderateLimit = customThresholds?.moderate ?? 300;
@@ -183,8 +208,8 @@ export function estimatePromptComplexity(
     score = 4;
     label = 'frontier';
   }
-  // Level 3: Heavy / Coding / In-depth reasoning
-  else if (tokenEstimate > heavyLimit || (codeEscalate && codeBlockMatches >= 1) || reasoningCount >= 2 || isStructured) {
+  // Level 3: Heavy / Coding / In-depth reasoning / Tool-calling
+  else if (tokenEstimate > heavyLimit || (codeEscalate && codeBlockMatches >= 1) || reasoningCount >= 2 || isStructured || hasTools) {
     score = 3;
     label = 'heavy';
   }
@@ -204,7 +229,8 @@ export function estimatePromptComplexity(
     label,
     tokenEstimate,
     features,
-    hasImages
+    hasImages,
+    hasTools
   };
 }
 
@@ -222,6 +248,8 @@ export interface ChatRequest {
   messages: ChatMessage[];
   temperature?: number;
   stream?: boolean;
+  tools?: any[];
+  tool_choice?: any;
 }
 
 export interface DiscoveredModel {
@@ -240,6 +268,21 @@ export interface UpstreamDiscoveryResult {
 }
 
 export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeoutMs = 5000): Promise<UpstreamDiscoveryResult> {
+  if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
+    const cliPath = upstream.antigravity?.cliPath || 'agy';
+    const discovered = await discoverAntigravityModels(cliPath);
+    const models = [...discovered.models.map(m => m.baseId), '*'];
+    const details: DiscoveredModel[] = discovered.models.map(m => ({
+      id: m.baseId,
+      name: m.displayName,
+      recipe: 'antigravity-cli',
+      ownedBy: 'antigravity',
+      labels: [m.tier, ...m.efforts.map(e => `effort:${e}`)],
+      contextLength: m.contextLimit
+    }));
+    return { models, details };
+  }
+
   const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
   const candidateUrls: string[] = [];
   const baseWithoutV1 = trimmed.replace(/\/v1$/, '');
@@ -440,7 +483,7 @@ export class Eluvix {
     return results;
   }
 
-  public async routeChatCompletion(request: ChatRequest): Promise<Response> {
+  public async routeChatCompletion(request: ChatRequest, options?: { signal?: AbortSignal }): Promise<Response> {
     let effectiveRequest = request;
 
     // 0a. Privacy Guard Check (PII Detection & Anonymization)
@@ -552,16 +595,18 @@ export class Eluvix {
       }
     }
 
-    // 0e. System Prompt Prepend
+    // 0e. System Prompt Prepend (clone messages to avoid mutating caller's request object)
     if (this.config.modelGateway?.systemPromptPrepend && effectiveRequest.messages) {
       const prepend = this.config.modelGateway.systemPromptPrepend;
-      const firstSys = effectiveRequest.messages.find(m => m.role === 'system');
+      const clonedMessages = effectiveRequest.messages.map(m => ({ ...m }));
+      const firstSys = clonedMessages.find(m => m.role === 'system');
       if (firstSys && typeof firstSys.content === 'string') {
         firstSys.content = `${prepend}\n\n${firstSys.content}`;
+        effectiveRequest = { ...effectiveRequest, messages: clonedMessages };
       } else {
         effectiveRequest = {
           ...effectiveRequest,
-          messages: [{ role: 'system', content: prepend }, ...effectiveRequest.messages]
+          messages: [{ role: 'system', content: prepend }, ...clonedMessages]
         };
       }
     }
@@ -576,32 +621,47 @@ export class Eluvix {
 
     const switchyardConfig = this.config.switchyard || {};
     const strategy: RoutingStrategy = switchyardConfig.strategy || this.config.strategy || 'cost-complexity';
+    const hasTools = Array.isArray(effectiveRequest.tools) && effectiveRequest.tools.length > 0;
+    const toolsCount = hasTools ? effectiveRequest.tools!.length : 0;
     const complexity = estimatePromptComplexity(effectiveRequest.messages || [], {
       ...switchyardConfig.complexityThresholds,
-      codeEscalation: switchyardConfig.codeEscalation
+      codeEscalation: switchyardConfig.codeEscalation,
+      hasTools,
+      toolsCount
     });
     console.log(
       `[Switchyard Balancer] Routing Strategy: ${strategy} | Prompt Complexity: Score ${complexity.score} (${complexity.label}, tokens ~${complexity.tokenEstimate}, features: [${complexity.features.join(', ')}])`
     );
 
-    // Context Truncation Logic
+    // Context Truncation Logic: Only truncate for small local-only pools where no frontier/large-context upstream exists
     const MAX_LOCAL_TOKENS = 8000;
-    if (complexity.tokenEstimate > MAX_LOCAL_TOKENS && effectiveRequest.messages) {
-      console.warn(`[Switchyard] Context window exceeded (${complexity.tokenEstimate} > ${MAX_LOCAL_TOKENS}). Truncating...`);
+    const hasLargeContextUpstream = matchingUpstreams.some(
+      u =>
+        (u.maxComplexityScore ?? 2) >= 4 ||
+        u.type === 'antigravity' ||
+        u.type === 'openai-compatible' ||
+        u.type === 'anthropic' ||
+        u.type === 'billama'
+    );
+    if (!hasLargeContextUpstream && complexity.tokenEstimate > MAX_LOCAL_TOKENS && effectiveRequest.messages) {
+      console.warn(`[Switchyard] Local context window exceeded (${complexity.tokenEstimate} > ${MAX_LOCAL_TOKENS}). Truncating...`);
       const msgs = effectiveRequest.messages;
       if (msgs.length > 3) {
-        effectiveRequest.messages = [
-          msgs[0],
-          { role: 'system', content: '[System Note: Middle conversation history truncated to preserve context window]' },
-          ...msgs.slice(-2)
-        ];
+        effectiveRequest = {
+          ...effectiveRequest,
+          messages: [
+            msgs[0],
+            { role: 'system', content: '[System Note: Middle conversation history truncated to preserve context window]' },
+            ...msgs.slice(-2)
+          ]
+        };
         const newComplexity = estimatePromptComplexity(effectiveRequest.messages, {
           ...switchyardConfig.complexityThresholds,
-          codeEscalation: switchyardConfig.codeEscalation
+          codeEscalation: switchyardConfig.codeEscalation,
+          hasTools,
+          toolsCount
         });
         complexity.tokenEstimate = newComplexity.tokenEstimate;
-        complexity.score = newComplexity.score;
-        complexity.label = newComplexity.label;
       }
     }
 
@@ -614,11 +674,42 @@ export class Eluvix {
       }
     }
 
+    if (complexity.hasTools) {
+      const toolCapable = targetUpstreams.filter(u =>
+        u.capabilities?.includes('tool-calling') ||
+        u.capabilities?.includes('tools') ||
+        u.type === 'antigravity' ||
+        u.type === 'openai-compatible' ||
+        u.type === 'anthropic' ||
+        (Array.isArray(u.models) && u.models.some(m => /qwen|coder|tool|gemini|claude|gpt-4|gpt-oss/i.test(m)))
+      );
+      if (toolCapable.length > 0) {
+        targetUpstreams = toolCapable;
+      }
+    }
+
+    const hasExactModelMatch = (u: UpstreamConfig, model: string): number => {
+      if (u.models?.includes(model)) return 1;
+      if ((u.type === 'antigravity' || u.endpoint?.startsWith('cli://')) && isAntigravitySupportedModel(model, u.models)) {
+        return 1;
+      }
+      return 0;
+    };
+
     if (strategy === 'cost-complexity') {
       targetUpstreams.sort((a, b) => {
+        // 0. Exact model match takes precedence over wildcard '*' match
+        if (effectiveRequest.model !== 'auto') {
+          const exactA = hasExactModelMatch(a, effectiveRequest.model);
+          const exactB = hasExactModelMatch(b, effectiveRequest.model);
+          if (exactA !== exactB) {
+            return exactB - exactA;
+          }
+        }
+
         // Evaluate capability score (local engines default to 2-3, cloud gateways default to 4)
-        const capA = a.maxComplexityScore ?? (a.type === 'openai-compatible' || a.type === 'billama' ? 4 : 2);
-        const capB = b.maxComplexityScore ?? (b.type === 'openai-compatible' || b.type === 'billama' ? 4 : 2);
+        const capA = a.maxComplexityScore ?? (a.type === 'openai-compatible' || a.type === 'billama' || a.type === 'antigravity' ? 4 : 2);
+        const capB = b.maxComplexityScore ?? (b.type === 'openai-compatible' || b.type === 'billama' || b.type === 'antigravity' ? 4 : 2);
 
         const capableA = capA >= complexity.score ? 1 : 0;
         const capableB = capB >= complexity.score ? 1 : 0;
@@ -640,6 +731,11 @@ export class Eluvix {
       });
     } else if (strategy === 'lowest-cost') {
       targetUpstreams.sort((a, b) => {
+        if (effectiveRequest.model !== 'auto') {
+          const exactA = hasExactModelMatch(a, effectiveRequest.model);
+          const exactB = hasExactModelMatch(b, effectiveRequest.model);
+          if (exactA !== exactB) return exactB - exactA;
+        }
         const costA = a.costPer1kTokens ?? (a.type === 'openai-compatible' || a.type === 'billama' ? 0.005 : 0);
         const costB = b.costPer1kTokens ?? (b.type === 'openai-compatible' || b.type === 'billama' ? 0.005 : 0);
         if (costA !== costB) return costA - costB;
@@ -647,6 +743,11 @@ export class Eluvix {
       });
     } else if (strategy === 'cascade-cost') {
       targetUpstreams.sort((a, b) => {
+        if (effectiveRequest.model !== 'auto') {
+          const exactA = hasExactModelMatch(a, effectiveRequest.model);
+          const exactB = hasExactModelMatch(b, effectiveRequest.model);
+          if (exactA !== exactB) return exactB - exactA;
+        }
         const tierOrderA = a.tier ? parseInt(a.tier.replace(/\D/g, ''), 10) || 99 : 99;
         const tierOrderB = b.tier ? parseInt(b.tier.replace(/\D/g, ''), 10) || 99 : 99;
         if (tierOrderA !== tierOrderB) return tierOrderA - tierOrderB;
@@ -659,6 +760,11 @@ export class Eluvix {
       });
     } else if (strategy === 'lowest-latency') {
       targetUpstreams.sort((a, b) => {
+        if (effectiveRequest.model !== 'auto') {
+          const exactA = hasExactModelMatch(a, effectiveRequest.model);
+          const exactB = hasExactModelMatch(b, effectiveRequest.model);
+          if (exactA !== exactB) return exactB - exactA;
+        }
         const latA = a.latencyMs ?? (a.type === 'openai-compatible' || a.type === 'billama' ? 500 : 25);
         const latB = b.latencyMs ?? (b.type === 'openai-compatible' || b.type === 'billama' ? 500 : 25);
         if (latA !== latB) return latA - latB;
@@ -669,14 +775,21 @@ export class Eluvix {
       this.roundRobinIndex++;
       targetUpstreams = [...targetUpstreams.slice(idx), ...targetUpstreams.slice(0, idx)];
     } else {
-      targetUpstreams.sort((a, b) => b.priority - a.priority);
+      targetUpstreams.sort((a, b) => {
+        if (effectiveRequest.model !== 'auto') {
+          const exactA = hasExactModelMatch(a, effectiveRequest.model);
+          const exactB = hasExactModelMatch(b, effectiveRequest.model);
+          if (exactA !== exactB) return exactB - exactA;
+        }
+        return b.priority - a.priority;
+      });
     }
 
     // Latency Spillover Filter
     try {
       const recentLogs = getRequestLogs(50);
       const overloadedUpstreams = new Set<string>();
-      const spilloverThreshold = switchyardConfig.spilloverThresholdMs ?? 3000;
+      const spilloverThreshold = switchyardConfig.spilloverThresholdMs ?? 30000;
 
       for (const upstream of targetUpstreams) {
         if (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic' || upstream.type === 'antigravity') continue; // don't punish cloud or agent reasoning endpoints
@@ -702,7 +815,7 @@ export class Eluvix {
       console.warn('Failed to evaluate latency spillover, continuing normal routing.');
     }
 
-    const upstreamTimeout = switchyardConfig.timeoutMs ?? 15000;
+    const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
     const retryCount = Math.max(1, switchyardConfig.retryCount ?? 1);
 
     // Attempt the highest priority upstream first with retry and budget guardrails
@@ -720,13 +833,14 @@ export class Eluvix {
         const startTime = Date.now();
         try {
           console.log(`Attempting to route to upstream: ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
-          const response = await this.forwardRequest(upstream, effectiveRequest, upstreamTimeout);
+          const response = await this.forwardRequest(upstream, effectiveRequest, upstreamTimeout, options?.signal, complexity.score);
           const duration_ms = Date.now() - startTime;
           
           if (response.ok) {
             let completionTokens = parseInt(response.headers.get('x-eluvix-completion-tokens') || '0', 10);
-            let promptTokens = complexity.tokenEstimate;
+            let promptTokens = parseInt(response.headers.get('x-eluvix-prompt-tokens') || '0', 10) || complexity.tokenEstimate;
             const servedModel = response.headers.get('x-eluvix-model') || effectiveRequest.model;
+            const effortHeader = response.headers.get('x-eluvix-effort');
             
             let responseBody: any = response.body;
             if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
@@ -746,15 +860,17 @@ export class Eluvix {
               } catch {}
             }
 
-            // Fire and forget logging
-            logRequest({
-              model: servedModel,
-              upstream_id: upstream.id,
-              status: response.status,
-              duration_ms,
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens
-            });
+            // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
+            if (!(effectiveRequest.stream && (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')))) {
+              logRequest({
+                model: servedModel,
+                upstream_id: upstream.id,
+                status: response.status,
+                duration_ms,
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens
+              });
+            }
             
             const newResponse = new Response(responseBody, {
               status: response.status,
@@ -765,6 +881,9 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-model', servedModel);
             newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
+            if (effortHeader) {
+              newResponse.headers.set('x-eluvix-effort', effortHeader);
+            }
             
             return newResponse;
           } else {
@@ -786,10 +905,13 @@ export class Eluvix {
     if (!upstream || !Array.isArray(upstream.models)) return false;
     if (requestedModel === 'auto') return upstream.models.length > 0;
     if (upstream.models.includes(requestedModel)) return true;
+    if ((upstream.type === 'antigravity' || upstream.endpoint?.startsWith('cli://')) && isAntigravitySupportedModel(requestedModel, upstream.models)) {
+      return true;
+    }
     if (upstream.models.includes('*')) {
       // Local inference engines shouldn't greedily capture explicit cloud/agent models
       if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'switchyard'].includes(upstream.type)) {
-        if (/^(gemini-|claude-)/i.test(requestedModel)) return false;
+        if (/^(gemini-|claude-|gpt-oss-120b)/i.test(requestedModel)) return false;
       }
       // Antigravity shouldn't greedily capture explicit local engine models
       if (upstream.type === 'antigravity') {
@@ -802,14 +924,27 @@ export class Eluvix {
     return false;
   }
 
-  private async forwardRequest(upstream: UpstreamConfig, request: ChatRequest, timeoutMs = 15000): Promise<Response> {
+  private async forwardRequest(
+    upstream: UpstreamConfig,
+    request: ChatRequest,
+    timeoutMs = 60000,
+    clientSignal?: AbortSignal,
+    complexityScore: 1 | 2 | 3 | 4 = 1
+  ): Promise<Response> {
     // Translate 'auto' to a concrete model that this upstream supports
     let effectiveModel = request.model;
     if (request.model === 'auto') {
-      effectiveModel = upstream.models.find(m => m !== '*' && m !== 'auto') || upstream.antigravity?.model || 'default';
+      const hasTools = Array.isArray(request.tools) && request.tools.length > 0;
+      if (hasTools) {
+        effectiveModel = upstream.models.find(m =>
+          m !== '*' && m !== 'auto' && /qwen|coder|tool|gemini|claude|gpt-4|gpt-oss/i.test(m)
+        ) || upstream.models.find(m => m !== '*' && m !== 'auto') || upstream.antigravity?.model || 'default';
+      } else {
+        effectiveModel = upstream.models.find(m => m !== '*' && m !== 'auto') || upstream.antigravity?.model || 'default';
+      }
     } else if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
       if (!isAntigravitySupportedModel(request.model, upstream.models)) {
-        effectiveModel = upstream.antigravity?.model || 'gemini-3.8-flash';
+        effectiveModel = upstream.antigravity?.model || 'gemini-4-argon';
       }
     }
     const effectiveRequest: ChatRequest = {
@@ -818,7 +953,7 @@ export class Eluvix {
     };
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-      return this.forwardAntigravityCli(upstream, effectiveRequest);
+      return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs);
     }
 
     const headers: Record<string, string> = {
@@ -844,27 +979,124 @@ export class Eluvix {
       headers,
       body: JSON.stringify(effectiveRequest)
     };
-    if (typeof AbortSignal !== 'undefined' && typeof (AbortSignal as any).timeout === 'function') {
-      fetchOptions.signal = (AbortSignal as any).timeout(timeoutMs);
+
+    const controller = new AbortController();
+    let timeoutTimer: NodeJS.Timeout | null = null;
+
+    const resetTimeout = (ms: number, reason: string) => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        controller.abort(new DOMException(reason, 'TimeoutError'));
+      }, ms);
+    };
+
+    if (clientSignal) {
+      if (clientSignal.aborted) {
+        throw new DOMException('Client aborted request', 'AbortError');
+      }
+      clientSignal.addEventListener('abort', () => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        controller.abort(clientSignal.reason || new DOMException('Client aborted request', 'AbortError'));
+      }, { once: true });
     }
 
-    const res = await fetch(url, fetchOptions);
+    // Initial connection / TTFT timeout
+    resetTimeout(timeoutMs, `Connection or first token timed out after ${timeoutMs}ms`);
 
-    const resHeaders = new Headers(res.headers);
-    resHeaders.set('x-eluvix-model', effectiveModel);
-    return new Response(res.body, {
-      status: res.status,
-      statusText: res.statusText,
-      headers: resHeaders
-    });
+    try {
+      const res = await fetch(url, {
+        ...fetchOptions,
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        return res;
+      }
+
+      // If streaming, verify that the upstream can produce the first chunk before returning
+      // This enables transparent Switchyard failover if an upstream accepts headers but hangs during TTFT
+      if (effectiveRequest.stream && res.body && typeof (res.body as any).getReader === 'function') {
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        const firstRead = await reader.read();
+
+        if (firstRead.done) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          throw new Error(`Upstream ${upstream.name} closed stream before producing any tokens`);
+        }
+
+        // Successfully received first chunk!
+        const idleTimeoutMs = Math.max(60000, timeoutMs);
+        const stream = new ReadableStream({
+          async start(streamController) {
+            // Deliver the first chunk
+            streamController.enqueue(firstRead.value);
+
+            try {
+              while (true) {
+                resetTimeout(idleTimeoutMs, `Stream idle timeout (${idleTimeoutMs}ms with no chunks)`);
+                const { done, value } = await reader.read();
+                if (done) {
+                  if (timeoutTimer) clearTimeout(timeoutTimer);
+                  streamController.close();
+                  break;
+                }
+                streamController.enqueue(value);
+              }
+            } catch (err) {
+              if (timeoutTimer) clearTimeout(timeoutTimer);
+              streamController.error(err);
+            }
+          },
+          cancel(reason) {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            reader.cancel(reason).catch(() => {});
+            controller.abort(reason);
+          }
+        });
+
+        const resHeaders = new Headers(res.headers);
+        resHeaders.set('x-eluvix-model', effectiveModel);
+        return new Response(stream, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: resHeaders
+        });
+      }
+
+      // Non-streaming response: clear timeout once headers and body are ready
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+
+      const resHeaders = new Headers(res.headers);
+      resHeaders.set('x-eluvix-model', effectiveModel);
+      return new Response(res.body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: resHeaders
+      });
+    } catch (err) {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      throw err;
+    }
   }
 
-  private async forwardAntigravityCli(upstream: UpstreamConfig, request: ChatRequest): Promise<Response> {
+  private async forwardAntigravityCli(
+    upstream: UpstreamConfig,
+    request: ChatRequest,
+    complexityScore: 1 | 2 | 3 | 4 = 1,
+    clientSignal?: AbortSignal,
+    upstreamTimeoutMs = 60000
+  ): Promise<Response> {
+    const startTime = Date.now();
     const cliPath = upstream.antigravity?.cliPath || 'agy';
-    // Validate model compatibility with Antigravity
     const isAgyModel = isAntigravitySupportedModel(request.model, upstream.models);
-    const model = isAgyModel ? request.model : (upstream.antigravity?.model || 'gemini-3.8-flash');
-    
+    const requestedModel = isAgyModel ? request.model : (upstream.antigravity?.model || 'gemini-4-argon');
+    const { baseModel: model, effort } = resolveAntigravityEffort(
+      requestedModel,
+      upstream.antigravity?.effort,
+      complexityScore
+    );
+
     // Working directory isolation
     const homeDir = os.homedir();
     const defaultWorkspace = path.join(homeDir, '.eluvix', 'workspace');
@@ -875,32 +1107,279 @@ export class Eluvix {
       }
     } catch {}
 
+    // Clean Headless Mode: isolate .gemini config to prevent IDE plugin SessionStart hooks & 28k token bloat
+    const useCleanHeadless = upstream.antigravity?.cleanHeadless !== false;
+    const effectiveHome = useCleanHeadless ? prepareCleanAgyHome(homeDir) : homeDir;
+
     // Build prompt with system instructions preserved and byte budgeting under 100KB
     const promptText = buildCliPrompt(request.messages || [], 100000);
 
-    return new Promise((resolve) => {
-      // In headless CLI execution, auto-approve tools
-      const args: string[] = ['--disable-slash-commands', '--dangerously-skip-permissions', '--print-timeout', '60s'];
-      if (model && model !== 'default') {
-        args.push('--model', model);
-        const effort = upstream.antigravity?.effort || 'low';
-        args.push('--effort', effort);
-      }
-      // Default to sandbox unless explicitly set to 'bypass'
-      if (upstream.antigravity?.sandbox !== 'bypass') {
-        args.push('--sandbox');
-      }
-      args.push('--print', promptText);
+    const printTimeoutSec = Math.max(15, Math.floor(upstreamTimeoutMs / 1000));
+    const processTimeoutMs = Math.max(20000, upstreamTimeoutMs + 5000);
 
+    const args: string[] = [
+      '--disable-slash-commands',
+      '--dangerously-skip-permissions',
+      '--print-timeout',
+      `${printTimeoutSec}s`,
+      '--output-format',
+      'stream-json'
+    ];
+    if (model && model !== 'default') {
+      args.push('--model', model);
+      args.push('--effort', effort);
+    }
+    if (upstream.antigravity?.sandbox !== 'bypass') {
+      args.push('--sandbox');
+    }
+    args.push('--print', promptText);
+
+    const childEnv = {
+      ...process.env,
+      HOME: effectiveHome
+    };
+
+    // Real-time SSE Streaming Mode
+    if (request.stream) {
+      return new Promise((resolve) => {
+        const child = spawn(cliPath, args, {
+          cwd: workingDir,
+          env: childEnv,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true
+        });
+
+        let resolvedInitial = false;
+        let streamClosed = false;
+        let emittedDelta = false;
+        let killTimer: NodeJS.Timeout | null = null;
+        const timeoutMs = processTimeoutMs;
+        const completionId = `chatcmpl-agy-${Date.now()}`;
+        const created = Math.floor(Date.now() / 1000);
+        const encoder = new TextEncoder();
+        let streamControllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+        const killProcessGroup = () => {
+          try {
+            if (child.pid) {
+              process.kill(-child.pid, 'SIGTERM');
+              killTimer = setTimeout(() => {
+                try {
+                  if (child.pid) process.kill(-child.pid, 'SIGKILL');
+                } catch {}
+              }, 2000);
+            }
+          } catch {}
+        };
+
+        if (clientSignal) {
+          clientSignal.addEventListener('abort', () => {
+            killProcessGroup();
+          }, { once: true });
+        }
+
+        const timer = setTimeout(() => {
+          if (!resolvedInitial) {
+            resolvedInitial = true;
+            killProcessGroup();
+            resolve(new Response(JSON.stringify({
+              error: {
+                message: `agy CLI execution timed out after ${timeoutMs / 1000}s`,
+                type: 'timeout_error',
+                code: 'gateway_timeout'
+              }
+            }), { status: 504, headers: { 'Content-Type': 'application/json' } }));
+          } else if (!streamClosed && streamControllerRef) {
+            streamClosed = true;
+            killProcessGroup();
+            try { streamControllerRef.close(); } catch {}
+          }
+        }, timeoutMs);
+
+        let lineBuffer = '';
+        let stderr = '';
+        let exactPromptTokens = Math.ceil(promptText.length / 4);
+        let exactCompletionTokens = 0;
+
+        const ensureStreamStarted = () => {
+          if (resolvedInitial) return;
+          resolvedInitial = true;
+          const sseStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamControllerRef = controller;
+              const roleChunk = {
+                id: completionId,
+                object: 'chat.completion.chunk',
+                created,
+                model,
+                choices: [{
+                  index: 0,
+                  delta: { role: 'assistant', content: '' },
+                  finish_reason: null
+                }]
+              };
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(roleChunk)}\n\n`));
+            },
+            cancel() {
+              streamClosed = true;
+              clearTimeout(timer);
+              killProcessGroup();
+            }
+          });
+
+          resolve(new Response(sseStream, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              'Connection': 'keep-alive',
+              'x-eluvix-model': model,
+              'x-eluvix-effort': effort
+            }
+          }));
+        };
+
+        const enqueueContentDelta = (text: string) => {
+          if (!text || streamClosed || !streamControllerRef) return;
+          emittedDelta = true;
+          const deltaChunk = {
+            id: completionId,
+            object: 'chat.completion.chunk',
+            created,
+            model,
+            choices: [{
+              index: 0,
+              delta: { content: text },
+              finish_reason: null
+            }]
+          };
+          streamControllerRef.enqueue(encoder.encode(`data: ${JSON.stringify(deltaChunk)}\n\n`));
+        };
+
+        const processLine = (line: string) => {
+          const ev = parseAgyStreamJsonLine(line);
+          if (ev.type === 'delta' && ev.textDelta) {
+            ensureStreamStarted();
+            enqueueContentDelta(ev.textDelta);
+          } else if (ev.type === 'result') {
+            if (ev.usage) {
+              exactPromptTokens = ev.usage.prompt_tokens;
+              exactCompletionTokens = ev.usage.completion_tokens;
+            }
+            if (ev.status && ev.status.toUpperCase() === 'ERROR') {
+              return;
+            }
+            ensureStreamStarted();
+            if (!emittedDelta && ev.response) {
+              enqueueContentDelta(ev.response);
+            }
+          }
+        };
+
+        child.stdout.on('data', (chunk) => {
+          lineBuffer += chunk.toString();
+          const lines = lineBuffer.split('\n');
+          lineBuffer = lines.pop() || '';
+          for (const line of lines) {
+            processLine(line);
+          }
+        });
+
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk.toString();
+        });
+
+        child.on('error', (err) => {
+          clearTimeout(timer);
+          if (killTimer) clearTimeout(killTimer);
+          killProcessGroup();
+          if (!resolvedInitial) {
+            resolvedInitial = true;
+            resolve(new Response(JSON.stringify({
+              error: {
+                message: `Failed to execute agy CLI (${cliPath}): ${err.message}`,
+                type: 'antigravity_cli_error'
+              }
+            }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+          } else if (!streamClosed && streamControllerRef) {
+            streamClosed = true;
+            try { streamControllerRef.close(); } catch {}
+          }
+        });
+
+        child.on('close', (code) => {
+          clearTimeout(timer);
+          if (killTimer) clearTimeout(killTimer);
+          try {
+            if (child.pid) process.kill(-child.pid, 'SIGTERM');
+          } catch {}
+
+          if (lineBuffer.trim()) {
+            processLine(lineBuffer);
+            lineBuffer = '';
+          }
+
+          if (!resolvedInitial) {
+            resolvedInitial = true;
+            const errDetail = stderr.trim() || `Process exited with code ${code}`;
+            resolve(new Response(JSON.stringify({
+              error: {
+                message: `agy CLI exited with code ${code}: ${errDetail}`,
+                type: 'antigravity_cli_error'
+              }
+            }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+            return;
+          }
+
+          if (!streamClosed && streamControllerRef) {
+            streamClosed = true;
+            const stopChunk = {
+              id: completionId,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [{
+                index: 0,
+                delta: {},
+                finish_reason: 'stop'
+              }],
+              usage: {
+                prompt_tokens: exactPromptTokens,
+                completion_tokens: exactCompletionTokens,
+                total_tokens: exactPromptTokens + exactCompletionTokens
+              }
+            };
+            try {
+              streamControllerRef.enqueue(encoder.encode(`data: ${JSON.stringify(stopChunk)}\n\n`));
+              streamControllerRef.enqueue(encoder.encode('data: [DONE]\n\n'));
+              streamControllerRef.close();
+            } catch {}
+          }
+
+          logRequest({
+            model,
+            upstream_id: upstream.id,
+            status: code === 0 ? 200 : 502,
+            duration_ms: Date.now() - startTime,
+            prompt_tokens: exactPromptTokens,
+            completion_tokens: exactCompletionTokens
+          });
+        });
+      });
+    }
+
+    // Non-Streaming Execution Mode (parses stream-json for exact response & token telemetry)
+    return new Promise((resolve) => {
       const child = spawn(cliPath, args, {
         cwd: workingDir,
+        env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true
       });
 
       let resolved = false;
       let killTimer: NodeJS.Timeout | null = null;
-      const timeoutMs = 65000;
+      const timeoutMs = processTimeoutMs;
 
       const killProcessGroup = () => {
         try {
@@ -914,6 +1393,12 @@ export class Eluvix {
           }
         } catch {}
       };
+
+      if (clientSignal) {
+        clientSignal.addEventListener('abort', () => {
+          killProcessGroup();
+        }, { once: true });
+      }
 
       const timer = setTimeout(() => {
         if (!resolved) {
@@ -961,7 +1446,6 @@ export class Eluvix {
         const cleanStdout = stdout.trim();
         const cleanStderr = stderr.trim();
 
-        // If command failed or had no stdout but stderr reported an error, fail over
         if (code !== 0 || (!cleanStdout && cleanStderr)) {
           const errDetail = cleanStderr || `Process exited with code ${code}`;
           resolve(new Response(JSON.stringify({
@@ -973,7 +1457,41 @@ export class Eluvix {
           return;
         }
 
-        const responseContent = cleanStdout || cleanStderr;
+        // Parse stream-json NDJSON lines if present, with plain text fallback
+        let deltaAccumulated = '';
+        let finalResultText: string | undefined;
+        let exactUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
+        const plainLines: string[] = [];
+
+        for (const line of cleanStdout.split('\n')) {
+          const ev = parseAgyStreamJsonLine(line);
+          if (ev.type === 'delta' && ev.textDelta) {
+            deltaAccumulated += ev.textDelta;
+          } else if (ev.type === 'result') {
+            if (ev.response !== undefined) {
+              finalResultText = ev.response.trim();
+            }
+            if (ev.usage) {
+              exactUsage = {
+                prompt_tokens: ev.usage.prompt_tokens,
+                completion_tokens: ev.usage.completion_tokens,
+                total_tokens: ev.usage.total_tokens
+              };
+            }
+          } else if (ev.type === 'ignore' && !line.trim().startsWith('{')) {
+            plainLines.push(line);
+          }
+        }
+
+        const responseContent =
+          finalResultText ??
+          (deltaAccumulated.trim() || plainLines.join('\n').trim() || cleanStderr);
+
+        const usage = exactUsage || {
+          prompt_tokens: Math.ceil(promptText.length / 4),
+          completion_tokens: Math.ceil(responseContent.length / 4),
+          total_tokens: Math.ceil((promptText.length + responseContent.length) / 4)
+        };
 
         const payload = {
           id: `chatcmpl-agy-${Date.now()}`,
@@ -990,11 +1508,7 @@ export class Eluvix {
               finish_reason: 'stop'
             }
           ],
-          usage: {
-            prompt_tokens: Math.ceil(promptText.length / 4),
-            completion_tokens: Math.ceil(responseContent.length / 4),
-            total_tokens: Math.ceil((promptText.length + responseContent.length) / 4)
-          }
+          usage
         };
 
         resolve(new Response(JSON.stringify(payload), {
@@ -1002,7 +1516,9 @@ export class Eluvix {
           headers: {
             'Content-Type': 'application/json',
             'x-eluvix-model': model,
-            'x-eluvix-completion-tokens': payload.usage.completion_tokens.toString()
+            'x-eluvix-effort': effort,
+            'x-eluvix-prompt-tokens': usage.prompt_tokens.toString(),
+            'x-eluvix-completion-tokens': usage.completion_tokens.toString()
           }
         }));
       });
@@ -1013,8 +1529,20 @@ export class Eluvix {
 export function isAntigravitySupportedModel(modelName: string, upstreamModels: string[] = []): boolean {
   if (!modelName || modelName === 'auto') return false;
   if (upstreamModels.includes(modelName)) return true;
-  // Gemini models: gemini-3.8-flash, gemini-3.7-flash, gemini-3.1-pro, etc.
-  if (/^gemini-(?:3\.[1678]|2\.[05])/i.test(modelName)) return true;
+
+  // Reject explicitly retired Google Gemini models (3.1, 3.6, 3.7, 2.5)
+  if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(modelName)) return false;
+
+  // Check dynamically discovered / cached Antigravity catalog
+  const catalog = getCachedAntigravityModels();
+  const lower = modelName.toLowerCase();
+  for (const entry of catalog) {
+    if (entry.baseId.toLowerCase() === lower) return true;
+    if (entry.variants.some(v => v.toLowerCase() === lower)) return true;
+  }
+
+  // Gemini models: gemini-4-argon (and variants: gemini-4-argo, gemini-4-argon-high/medium/low), gemini-3.8-flash (and variants)
+  if (/^gemini-(?:4-argon|4-argo|3\.8)/i.test(modelName)) return true;
   // Claude models supported by Antigravity: claude-opus-5-5, claude-sonnet-5-5
   if (/^claude-(?:opus|sonnet)/i.test(modelName)) return true;
   // GPT-OSS: only 120b

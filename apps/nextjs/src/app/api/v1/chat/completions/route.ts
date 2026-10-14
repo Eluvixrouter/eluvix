@@ -17,19 +17,21 @@ export async function POST(req: Request) {
     const router = getRouter();
     
     // Use the core routing logic
-    const response = await router.routeChatCompletion(body);
+    const response = await router.routeChatCompletion(body, { signal: req.signal });
 
     const contentType = response.headers.get('content-type') || '';
     const upstreamHeader = response.headers.get('x-eluvix-upstream') || '';
     const complexityHeader = response.headers.get('x-eluvix-complexity') || '';
     const tokensHeader = response.headers.get('x-eluvix-tokens') || '';
     const modelHeader = response.headers.get('x-eluvix-model') || '';
+    const effortHeader = response.headers.get('x-eluvix-effort') || '';
 
     const traceHeaders: Record<string, string> = {};
     if (upstreamHeader) traceHeaders['x-eluvix-upstream'] = upstreamHeader;
     if (complexityHeader) traceHeaders['x-eluvix-complexity'] = complexityHeader;
     if (tokensHeader) traceHeaders['x-eluvix-tokens'] = tokensHeader;
     if (modelHeader) traceHeaders['x-eluvix-model'] = modelHeader;
+    if (effortHeader) traceHeaders['x-eluvix-effort'] = effortHeader;
 
     // If upstream or guard returned an error status, return JSON error with exact status
     if (!response.ok) {
@@ -70,7 +72,10 @@ export async function POST(req: Request) {
 
       // If upstream returned JSON, synthesize standard OpenAI SSE chunks
       const json = await response.json();
-      const content = json.choices?.[0]?.message?.content ?? json.choices?.[0]?.text ?? '';
+      const message = json.choices?.[0]?.message || {};
+      const content = message.content ?? json.choices?.[0]?.text ?? '';
+      const toolCalls = message.tool_calls;
+      const finishReason = json.choices?.[0]?.finish_reason || (toolCalls ? 'tool_calls' : 'stop');
       const model = json.model || body.model || 'auto';
       const id = json.id || `chatcmpl-${Date.now()}`;
       const created = json.created || Math.floor(Date.now() / 1000);
@@ -108,6 +113,22 @@ export async function POST(req: Request) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkContent)}\n\n`));
           }
 
+          // Chunk 2b: Tool calls payload
+          if (toolCalls) {
+            const chunkTools = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [{
+                index: 0,
+                delta: { tool_calls: toolCalls },
+                finish_reason: null
+              }]
+            };
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkTools)}\n\n`));
+          }
+
           // Chunk 3: Finish reason
           const chunkStop = {
             id,
@@ -117,7 +138,7 @@ export async function POST(req: Request) {
             choices: [{
               index: 0,
               delta: {},
-              finish_reason: 'stop'
+              finish_reason: finishReason
             }]
           };
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkStop)}\n\n`));

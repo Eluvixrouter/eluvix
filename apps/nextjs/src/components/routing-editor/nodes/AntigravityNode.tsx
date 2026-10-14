@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export interface AntigravityNodeData {
   label?: string;
   model?: string;
   customModel?: string;
+  effort?: 'auto' | 'low' | 'medium' | 'high';
+  cleanHeadless?: boolean;
   executionMode?: 'cli' | 'agent-router' | 'custom-http';
   cliPath?: string;
   endpoint?: string;
@@ -26,22 +28,34 @@ export interface AntigravityNodeData {
   systemInstructions?: string;
 }
 
-const MODEL_PRESETS = [
-  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Default - Fast & Reasoning)', tier: 'Standard' },
-  { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro (Deep Coding & Architecture)', tier: 'Frontier' },
-  { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash-Lite (Low Latency / Cost)', tier: 'Economy' },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (Deep Analysis)', tier: 'Frontier' },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash (Lightweight)', tier: 'Economy' },
-  { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet (Hybrid Reasoning)', tier: 'External' },
-  { id: 'custom', name: '✏️ Custom / Local Identifier...', tier: 'Custom' }
+interface PresetOption {
+  id: string;
+  name: string;
+  tier: string;
+  efforts?: string[];
+}
+
+const DEFAULT_MODEL_PRESETS: PresetOption[] = [
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon (Next-Gen Flagship & Deep Thinking)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Fast & Extended Reasoning)', tier: 'Standard', efforts: ['low', 'medium', 'high'] },
+  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5 (Deep Reasoning & Architecture)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },
+  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5 (Fast Frontier & Coding)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },
+  { id: 'gpt-oss-120b', name: 'GPT-OSS 120B (High-Parameter Open Weights)', tier: 'Frontier', efforts: ['medium'] },
+  { id: 'claude-3-7-sonnet', name: 'Claude 3.7 Sonnet (Hybrid Reasoning)', tier: 'External', efforts: ['low', 'medium', 'high'] },
+  { id: 'custom', name: '✏️ Custom / Local Identifier...', tier: 'Custom', efforts: ['low', 'medium', 'high'] }
 ];
 
 export default function AntigravityNode({ id, data }: { id: string; data: AntigravityNodeData }) {
   const { updateNodeData } = useReactFlow();
   const [activeTab, setActiveTab] = useState<'model' | 'access' | 'sandbox' | 'tools'>('model');
 
+  const [modelPresets, setModelPresets] = useState<PresetOption[]>(DEFAULT_MODEL_PRESETS);
+  const [syncingModels, setSyncingModels] = useState<boolean>(false);
+
   const [model, setModel] = useState<string>(data?.model || 'gemini-3.8-flash');
   const [customModel, setCustomModel] = useState<string>(data?.customModel || '');
+  const [effort, setEffort] = useState<'auto' | 'low' | 'medium' | 'high'>(data?.effort || 'auto');
+  const [cleanHeadless, setCleanHeadless] = useState<boolean>(data?.cleanHeadless !== false);
   const [executionMode, setExecutionMode] = useState<'cli' | 'agent-router' | 'custom-http'>(data?.executionMode || 'cli');
   const [cliPath, setCliPath] = useState<string>(data?.cliPath || 'agy');
   const [endpoint, setEndpoint] = useState<string>(data?.endpoint || 'http://localhost:8002/v1');
@@ -74,9 +88,44 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
     }
   }, [id, data, updateNodeData]);
 
+  const fetchDiscoveredModels = useCallback(async (refresh = false) => {
+    setSyncingModels(true);
+    try {
+      const res = await fetch(`/api/v1/antigravity/models${refresh ? '?refresh=true' : ''}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (Array.isArray(json.models) && json.models.length > 0) {
+          const dynamicOptions: PresetOption[] = json.models.map((m: any) => ({
+            id: m.baseId,
+            name: `${m.displayName} [${m.efforts.join('/')}]`,
+            tier: m.tier || 'Frontier',
+            efforts: m.efforts
+          }));
+          dynamicOptions.push({
+            id: 'custom',
+            name: '✏️ Custom / Local Identifier...',
+            tier: 'Custom',
+            efforts: ['low', 'medium', 'high']
+          });
+          setModelPresets(dynamicOptions);
+        }
+      }
+    } catch {
+      // Keep default presets on network error
+    } finally {
+      setSyncingModels(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDiscoveredModels(false);
+  }, [fetchDiscoveredModels]);
+
   // Ensure defaults are assigned on initial render
   if (data) {
     if (!data.model) data.model = model;
+    if (!data.effort) data.effort = effort;
+    if (data.cleanHeadless === undefined) data.cleanHeadless = cleanHeadless;
     if (!data.executionMode) data.executionMode = executionMode;
     if (!data.cliPath) data.cliPath = cliPath;
     if (!data.endpoint) data.endpoint = endpoint;
@@ -85,10 +134,20 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
     if (data.enableWriteTools === undefined) data.enableWriteTools = enableWriteTools;
   }
 
+  const activePreset = modelPresets.find(p => p.id === model);
+  const supportedEfforts = activePreset?.efforts || (model.startsWith('gpt-oss-120b') ? ['medium'] : ['low', 'medium', 'high']);
+
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
     setModel(val);
-    syncData({ model: val });
+    const preset = modelPresets.find(p => p.id === val);
+    const nextEfforts = preset?.efforts || (val.startsWith('gpt-oss-120b') ? ['medium'] : ['low', 'medium', 'high']);
+    if (effort !== 'auto' && !nextEfforts.includes(effort)) {
+      setEffort('auto');
+      syncData({ model: val, effort: 'auto' });
+    } else {
+      syncData({ model: val });
+    }
   };
 
   const handleSandboxChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -195,13 +254,24 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
       {activeTab === 'model' && (
         <div className="space-y-2.5 text-xs text-gray-300">
           <div>
-            <label className="block text-[11px] font-semibold text-gray-400 mb-1">Gemini / AGY Model</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-semibold text-gray-400">Gemini / AGY Model</label>
+              <button
+                type="button"
+                onClick={() => fetchDiscoveredModels(true)}
+                disabled={syncingModels}
+                title="Refresh models from agy CLI"
+                className="text-[10px] text-cyan-400 hover:text-cyan-300 font-mono flex items-center gap-1 disabled:opacity-50"
+              >
+                <span>{syncingModels ? '⏳ Syncing...' : '🔄 Sync CLI'}</span>
+              </button>
+            </div>
             <select
               className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-cyan-400 rounded p-1.5 text-white text-xs outline-none cursor-pointer"
               value={model}
               onChange={handleModelChange}
             >
-              {MODEL_PRESETS.map((p) => (
+              {modelPresets.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -223,6 +293,44 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
               />
             </div>
           )}
+
+          {/* Reasoning Effort Selector */}
+          <div className="p-2 rounded bg-gray-950 border border-gray-800 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-gray-300">Reasoning Effort (--effort)</span>
+              <span className="text-[10px] text-cyan-400 font-mono uppercase">{effort}</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {(['auto', 'low', 'medium', 'high'] as const).map((level) => {
+                const isSupported = level === 'auto' || supportedEfforts.includes(level);
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    disabled={!isSupported}
+                    onClick={() => {
+                      setEffort(level);
+                      syncData({ effort: level });
+                    }}
+                    className={`py-1 px-1.5 rounded text-[10px] font-mono uppercase transition ${
+                      effort === level
+                        ? 'bg-cyan-600 text-white font-bold shadow-sm'
+                        : isSupported
+                          ? 'bg-gray-900 text-gray-400 hover:text-white border border-gray-800'
+                          : 'bg-gray-900/40 text-gray-600 border border-gray-800/40 cursor-not-allowed'
+                    }`}
+                  >
+                    {level}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[9px] text-gray-500">
+              {effort === 'auto'
+                ? 'Adapts dynamically to Switchyard complexity score (1-2→low, 3→medium, 4→high).'
+                : `Fixed at ${effort} reasoning effort.`}
+            </p>
+          </div>
 
           {/* Extended Thinking */}
           <div className="p-2 rounded bg-gray-950 border border-gray-800 space-y-1.5">
@@ -390,6 +498,18 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
 
           <div className="p-2 rounded bg-gray-950 border border-gray-800 space-y-2">
             <div className="text-[11px] font-semibold text-gray-400">Security Guardrails</div>
+            <label className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer" title="Isolates .gemini plugin registry to prevent IDE SessionStart hooks and reduce prefill by ~26k tokens">
+              <span>Clean Headless Mode (Zero Plugin Hooks)</span>
+              <input
+                type="checkbox"
+                checked={cleanHeadless}
+                onChange={(e) => {
+                  setCleanHeadless(e.target.checked);
+                  syncData({ cleanHeadless: e.target.checked });
+                }}
+                className="rounded bg-gray-800 border-gray-700 text-cyan-500 focus:ring-0"
+              />
+            </label>
             <label className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer">
               <span>Workspace Isolation (Boundary Lock)</span>
               <input

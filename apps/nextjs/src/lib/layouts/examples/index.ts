@@ -210,7 +210,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
         position: { x: 1000, y: 280 },
         data: {
           label: 'Google Antigravity Frontier',
-          model: 'gemini-3.1-pro',
+          model: 'gemini-4-argon',
           executionMode: 'cli',
           cliPath: 'agy',
           endpoint: 'cli://agy',

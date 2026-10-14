@@ -45,18 +45,18 @@ const DEFAULT_CONFIG: RouterConfig = {
       type: 'lemonade',
       endpoint: 'http://localhost:13305',
       priority: 30,
-      models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', '*'],
+      models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', 'LMX-Omni-5.5B-Lite', '*'],
       tier: 'tier-1',
       costPer1kTokens: 0.0,
-      maxComplexityScore: 2
+      maxComplexityScore: 3
     },
     {
       id: 'local-vllm',
       name: 'Local vLLM',
       type: 'vllm',
       endpoint: 'http://localhost:8000',
-      priority: 25,
-      models: ['meta-llama/Llama-3-8b', 'meta-llama/Llama-3-70b', '*'],
+      priority: 10,
+      models: ['meta-llama/Llama-3-8b', 'meta-llama/Llama-3-70b', 'mistralai/Mistral-7B-Instruct-v0.3'],
       tier: 'tier-1',
       costPer1kTokens: 0.0,
       maxComplexityScore: 3
@@ -107,17 +107,31 @@ const DEFAULT_CONFIG: RouterConfig = {
       maxComplexityScore: 4
     },
     {
+      id: 'openai-direct',
+      name: 'OpenAI Direct',
+      type: 'openai-compatible',
+      endpoint: 'https://api.openai.com',
+      apiKey: '',
+      priority: 12,
+      models: ['gpt-4o', 'gpt-4o-mini', '*'],
+      tier: 'tier-3',
+      costPer1kTokens: 0.005,
+      maxComplexityScore: 4
+    },
+    {
       id: 'antigravity-agent',
       name: 'Google Antigravity Agent (AGY)',
       type: 'antigravity',
       endpoint: 'cli://agy',
-      priority: 15,
-      models: ['gemini-3.8-flash', '*'],
+      priority: 28,
+      models: ['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-oss-120b', '*'],
       tier: 'tier-3',
       costPer1kTokens: 0.0,
-      maxComplexityScore: 3,
+      maxComplexityScore: 4,
       antigravity: {
         model: 'gemini-3.8-flash',
+        effort: 'auto',
+        cleanHeadless: true,
         executionMode: 'cli',
         cliPath: 'agy',
         sandbox: 'standard',

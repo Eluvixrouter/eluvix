@@ -81,6 +81,22 @@ const DEFAULT_CONFIG: RouterConfig = {
       apiKey: '',
       priority: 5,
       models: ['gpt-4o', 'gpt-4o-mini']
+    },
+    {
+      id: 'antigravity-agent',
+      name: 'Google Antigravity Agent (AGY)',
+      type: 'antigravity',
+      endpoint: 'cli://agy',
+      priority: 15,
+      models: ['gemini-3.8-flash', '*']
+    },
+    {
+      id: 'claude-code-agent',
+      name: 'Claude Code Agent',
+      type: 'openai-compatible',
+      endpoint: 'http://localhost:8082/v1',
+      priority: 10,
+      models: ['claude-3-7-sonnet', '*']
     }
   ]
 };
@@ -748,6 +764,7 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                           <option value="switchyard">Switchyard</option>
                           <option value="openai-compatible">OpenAI-compatible</option>
                           <option value="billama">Billama</option>
+                          <option value="antigravity">Antigravity (AGY)</option>
                         </select>
                       </div>
 

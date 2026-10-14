@@ -6,7 +6,8 @@ out/
 release/
 *.log
 .DS_Store
-data/
+/data/
 *.db
 *.pem
 *.tmp*
+*.tsbuildinfo

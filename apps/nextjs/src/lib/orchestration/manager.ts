@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
+import { getCachedAntigravityModels, inferModelMetadata } from '@eluvix/router-core';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
 
@@ -207,20 +208,53 @@ export class OrchestrationManager {
    */
   private async deployLocal(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
     logs.push('[Level 1: Local] Preparing local configuration deployment...');
-    const configDir = path.join(os.homedir(), '.config', 'eluvix');
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
+    const configDir = isTest
+      ? path.join(os.tmpdir(), 'eluvix-test-config')
+      : path.join(os.homedir(), '.config', 'eluvix');
     fs.mkdirSync(configDir, { recursive: true });
 
     const targetFile = path.join(configDir, 'config.json');
     const configData = req.compiledConfigs.rawRouterConfig || JSON.parse(req.compiledConfigs.eluvixJson || '{}');
-    fs.writeFileSync(targetFile, JSON.stringify(configData, null, 2), 'utf-8');
+
+    // Non-destructive merge: preserve existing registered upstreams not in this deployment
+    let mergedConfig = configData;
+    if (fs.existsSync(targetFile)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(targetFile, 'utf-8'));
+        if (Array.isArray(existing.upstreams) && Array.isArray(configData.upstreams)) {
+          const newIds = new Set(configData.upstreams.map((u: any) => u.id));
+          const preserved = existing.upstreams.filter((u: any) => !newIds.has(u.id));
+          mergedConfig = {
+            ...existing,
+            ...configData,
+            upstreams: [...configData.upstreams, ...preserved]
+          };
+        }
+      } catch (mergeErr) {
+        console.warn('Could not merge existing local config, proceeding with new:', mergeErr);
+      }
+    }
+
+    fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), 'utf-8');
     logs.push(`✓ Written active router config to ${targetFile}`);
+
+    // Synchronize active Eluvix models & auth into OpenCode config (~/.config/opencode/opencode.json)
+    try {
+      const openCodeTarget = isTest
+        ? path.join(configDir, 'opencode.json')
+        : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+      this.syncOpenCodeConfig(mergedConfig, configDir, openCodeTarget, logs);
+    } catch (syncErr) {
+      console.warn('Could not sync OpenCode config:', syncErr);
+    }
 
     // If local switchyard server is reachable, trigger hot-reload
     try {
       const res = await fetch('http://127.0.0.1:8080/v1/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configData)
+        body: JSON.stringify(mergedConfig)
       });
       if (res.ok) {
         logs.push('✓ Live local Switchyard balancer (port 8080) synchronized successfully.');
@@ -238,6 +272,113 @@ export class OrchestrationManager {
       logs,
       durationMs: Date.now() - startTime
     };
+  }
+
+  /**
+   * Non-destructively synchronizes active Eluvix upstreams, models, context limits, and auth token
+   * into OpenCode's configuration file (~/.config/opencode/opencode.json).
+   */
+  public syncOpenCodeConfig(
+    routerConfig: any,
+    eluvixConfigDir: string,
+    openCodePath: string,
+    logs: string[] = []
+  ): void {
+    let existingOpenCode: any = {
+      $schema: 'https://opencode.ai/config.json',
+      autoupdate: false,
+      model: 'Eluvix/auto',
+      small_model: 'Eluvix/auto',
+      provider: {}
+    };
+
+    if (fs.existsSync(openCodePath)) {
+      try {
+        existingOpenCode = JSON.parse(fs.readFileSync(openCodePath, 'utf-8'));
+      } catch {}
+    }
+
+    // Resolve current Eluvix admin password / bearer token
+    let apiKey = existingOpenCode?.provider?.Eluvix?.options?.apiKey || 'BPlOdDCF';
+    const authFile = path.join(eluvixConfigDir, 'auth.json');
+    if (fs.existsSync(authFile)) {
+      try {
+        const authJson = JSON.parse(fs.readFileSync(authFile, 'utf-8'));
+        if (authJson.adminPassword) {
+          apiKey = authJson.adminPassword;
+        }
+      } catch {}
+    }
+
+    if (!existingOpenCode.provider || typeof existingOpenCode.provider !== 'object') {
+      existingOpenCode.provider = {};
+    }
+
+    const existingEluvix = existingOpenCode.provider.Eluvix || {};
+    const existingModels: Record<string, any> = {
+      ...(existingEluvix.models || {})
+    };
+
+    // Always ensure 'auto' mesh router entry exists
+    existingModels['auto'] = existingModels['auto'] || {
+      name: 'Auto (Intelligent Mesh Router)',
+      limit: { context: 131072, output: 8192 }
+    };
+
+    const upstreams = Array.isArray(routerConfig?.upstreams) ? routerConfig.upstreams : [];
+    const agyCatalog = getCachedAntigravityModels();
+
+    for (const upstream of upstreams) {
+      const upstreamModels: string[] = Array.isArray(upstream.models) ? [...upstream.models] : [];
+      if (upstream.type === 'antigravity') {
+        for (const agyEntry of agyCatalog) {
+          if (!upstreamModels.includes(agyEntry.baseId)) {
+            upstreamModels.push(agyEntry.baseId);
+          }
+        }
+      }
+
+      for (const modelId of upstreamModels) {
+        if (!modelId || modelId === '*' || modelId === 'auto') continue;
+        if (existingModels[modelId]) continue;
+
+        const agyMatch = agyCatalog.find(a => a.baseId.toLowerCase() === modelId.toLowerCase());
+        if (agyMatch) {
+          existingModels[modelId] = {
+            name: `${agyMatch.displayName} (Google Antigravity AGY)`,
+            limit: {
+              context: agyMatch.contextLimit,
+              output: agyMatch.outputLimit
+            }
+          };
+        } else {
+          const meta = inferModelMetadata(modelId);
+          existingModels[modelId] = {
+            name: `${modelId} (${upstream.name || upstream.type || 'Eluvix'})`,
+            limit: {
+              context: meta.contextLimit,
+              output: meta.outputLimit
+            }
+          };
+        }
+      }
+    }
+
+    existingOpenCode.provider.Eluvix = {
+      ...existingEluvix,
+      name: existingEluvix.name || 'Eluvix Router (local)',
+      npm: existingEluvix.npm || '@ai-sdk/openai-compatible',
+      options: {
+        ...(existingEluvix.options || {}),
+        apiKey,
+        baseURL: existingEluvix?.options?.baseURL || 'http://127.0.0.1:3080/api/v1'
+      },
+      models: existingModels
+    };
+
+    fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
+    fs.writeFileSync(openCodePath, JSON.stringify(existingOpenCode, null, 2), 'utf-8');
+    logs.push(`✓ Synchronized ${Object.keys(existingModels).length} models to ${openCodePath}`);
   }
 
   /**
