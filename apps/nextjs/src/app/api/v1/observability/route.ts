@@ -18,6 +18,9 @@ interface UpstreamHealth {
 
 import { normalizeProbeUrl } from '@/lib/api-helpers';
 
+let agyHealthCache: { isAvailable: boolean; timestamp: number } | null = null;
+const AGY_HEALTH_TTL_MS = 10000;
+
 async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
   const start = Date.now();
   const rawModels = (upstream.models || []).filter((m: string) => m !== '*');
@@ -26,32 +29,39 @@ async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
     const agyBaseIds = getCachedAntigravityModels().map(m => m.baseId);
     const models = Array.from(new Set([...rawModels, ...agyBaseIds]));
     const cliPath = upstream.antigravity?.cliPath || 'agy';
-    const isAvailable = await new Promise<boolean>((resolve) => {
-      let resolved = false;
-      const child = spawn(cliPath, ['--version'], { stdio: 'ignore' });
-      const timeoutId = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          try { child.kill(); } catch {}
-          resolve(false);
-        }
-      }, 1000);
+    let isAvailable = false;
 
-      child.on('error', () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeoutId);
-          resolve(false);
-        }
+    if (agyHealthCache && (Date.now() - agyHealthCache.timestamp < AGY_HEALTH_TTL_MS)) {
+      isAvailable = agyHealthCache.isAvailable;
+    } else {
+      isAvailable = await new Promise<boolean>((resolve) => {
+        let resolved = false;
+        const child = spawn(cliPath, ['--version'], { stdio: 'ignore' });
+        const timeoutId = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            try { child.kill('SIGTERM'); } catch {}
+            resolve(false);
+          }
+        }, 1000);
+
+        child.on('error', () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            resolve(false);
+          }
+        });
+        child.on('close', (code) => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            resolve(code === 0);
+          }
+        });
       });
-      child.on('close', (code) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeoutId);
-          resolve(code === 0);
-        }
-      });
-    });
+      agyHealthCache = { isAvailable, timestamp: Date.now() };
+    }
 
     const latencyMs = Date.now() - start;
     return {

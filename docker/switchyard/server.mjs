@@ -133,6 +133,46 @@ const server = http.createServer(async (req, res) => {
           }
         };
 
+        if (payload.stream) {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive'
+          });
+          const id = `chatcmpl-sw-${Date.now()}`;
+          const created = Math.floor(Date.now() / 1000);
+          const chunkRole = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: requestedModel,
+            choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }]
+          };
+          res.write(`data: ${JSON.stringify(chunkRole)}\n\n`);
+
+          const chunkContent = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: requestedModel,
+            choices: [{ index: 0, delta: { content: reply.choices[0].message.content }, finish_reason: null }]
+          };
+          res.write(`data: ${JSON.stringify(chunkContent)}\n\n`);
+
+          const chunkStop = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: requestedModel,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            usage: reply.usage
+          };
+          res.write(`data: ${JSON.stringify(chunkStop)}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(reply));
       } catch (err) {

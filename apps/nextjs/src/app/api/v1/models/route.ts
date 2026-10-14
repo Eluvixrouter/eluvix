@@ -14,7 +14,7 @@ export async function GET() {
   modelSet.add('auto');
   upstreams.forEach(u => {
     (u.models || []).forEach(m => {
-      if (m !== '*') {
+      if (m !== '*' && !/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(m)) {
         modelSet.add(m);
       }
     });

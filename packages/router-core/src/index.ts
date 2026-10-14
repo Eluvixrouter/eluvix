@@ -484,7 +484,10 @@ export class Eluvix {
   }
 
   public async routeChatCompletion(request: ChatRequest, options?: { signal?: AbortSignal }): Promise<Response> {
-    let effectiveRequest = request;
+    let effectiveRequest: ChatRequest = {
+      ...request,
+      model: request.model || this.config.defaultModel || 'auto'
+    };
 
     // 0a. Privacy Guard Check (PII Detection & Anonymization)
     if (this.config.privacyGuard?.enabled && request.messages) {
@@ -905,19 +908,13 @@ export class Eluvix {
     if (!upstream || !Array.isArray(upstream.models)) return false;
     if (requestedModel === 'auto') return upstream.models.length > 0;
     if (upstream.models.includes(requestedModel)) return true;
-    if ((upstream.type === 'antigravity' || upstream.endpoint?.startsWith('cli://')) && isAntigravitySupportedModel(requestedModel, upstream.models)) {
-      return true;
+    if (upstream.type === 'antigravity' || upstream.endpoint?.startsWith('cli://')) {
+      return isAntigravitySupportedModel(requestedModel, upstream.models);
     }
     if (upstream.models.includes('*')) {
       // Local inference engines shouldn't greedily capture explicit cloud/agent models
       if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'switchyard'].includes(upstream.type)) {
         if (/^(gemini-|claude-|gpt-oss-120b)/i.test(requestedModel)) return false;
-      }
-      // Antigravity shouldn't greedily capture explicit local engine models
-      if (upstream.type === 'antigravity') {
-        if (/(-FLM|-GGUF|-vLLM)$/i.test(requestedModel) || /^(llama3|meta-llama|deepseek|qwen)/i.test(requestedModel)) {
-          return false;
-        }
       }
       return true;
     }
@@ -1174,7 +1171,22 @@ export class Eluvix {
 
         if (clientSignal) {
           clientSignal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            if (killTimer) clearTimeout(killTimer);
             killProcessGroup();
+            if (!resolvedInitial) {
+              resolvedInitial = true;
+              resolve(new Response(JSON.stringify({
+                error: {
+                  message: 'Client aborted request',
+                  type: 'client_closed_request',
+                  code: 'request_cancelled'
+                }
+              }), { status: 499, headers: { 'Content-Type': 'application/json' } }));
+            } else if (!streamClosed && streamControllerRef) {
+              streamClosed = true;
+              try { streamControllerRef.close(); } catch {}
+            }
           }, { once: true });
         }
 
@@ -1197,6 +1209,7 @@ export class Eluvix {
         }, timeoutMs);
 
         let lineBuffer = '';
+        let rawStdout = '';
         let stderr = '';
         let exactPromptTokens = Math.ceil(promptText.length / 4);
         let exactCompletionTokens = 0;
@@ -1277,7 +1290,9 @@ export class Eluvix {
         };
 
         child.stdout.on('data', (chunk) => {
-          lineBuffer += chunk.toString();
+          const str = chunk.toString();
+          rawStdout += str;
+          lineBuffer += str;
           const lines = lineBuffer.split('\n');
           lineBuffer = lines.pop() || '';
           for (const line of lines) {
@@ -1320,15 +1335,21 @@ export class Eluvix {
           }
 
           if (!resolvedInitial) {
-            resolvedInitial = true;
-            const errDetail = stderr.trim() || `Process exited with code ${code}`;
-            resolve(new Response(JSON.stringify({
-              error: {
-                message: `agy CLI exited with code ${code}: ${errDetail}`,
-                type: 'antigravity_cli_error'
-              }
-            }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
-            return;
+            const cleanStdout = rawStdout.trim();
+            if (code === 0 && cleanStdout) {
+              ensureStreamStarted();
+              enqueueContentDelta(cleanStdout);
+            } else {
+              resolvedInitial = true;
+              const errDetail = stderr.trim() || `Process exited with code ${code}`;
+              resolve(new Response(JSON.stringify({
+                error: {
+                  message: `agy CLI exited with code ${code}: ${errDetail}`,
+                  type: 'antigravity_cli_error'
+                }
+              }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+              return;
+            }
           }
 
           if (!streamClosed && streamControllerRef) {
@@ -1396,7 +1417,18 @@ export class Eluvix {
 
       if (clientSignal) {
         clientSignal.addEventListener('abort', () => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          if (killTimer) clearTimeout(killTimer);
           killProcessGroup();
+          resolve(new Response(JSON.stringify({
+            error: {
+              message: 'Client aborted request',
+              type: 'client_closed_request',
+              code: 'request_cancelled'
+            }
+          }), { status: 499, headers: { 'Content-Type': 'application/json' } }));
         }, { once: true });
       }
 

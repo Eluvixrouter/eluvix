@@ -158,14 +158,15 @@ export function getRequestLogs(limit = 50): RequestLog[] {
   }
 }
 
-export function saveChatMessage(sessionId: string, role: string, content: string) {
+export function saveChatMessage(sessionId: string, role: string, content: any) {
   try {
     const db = getDb();
+    const textContent = typeof content === 'string' ? content : JSON.stringify(content);
     const stmt = db.prepare(`
       INSERT INTO chat_history (session_id, role, content)
       VALUES (?, ?, ?)
     `);
-    stmt.run(sessionId, role, content);
+    stmt.run(sessionId, role, textContent);
   } catch (err: any) {
     console.error('Failed to log chat message:', err.message);
   }

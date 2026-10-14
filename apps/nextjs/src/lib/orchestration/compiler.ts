@@ -223,7 +223,7 @@ function generateEluvixConfig(
   antigravityNodes.forEach(node => {
     const modelId = node.data?.model === 'custom' 
       ? (node.data?.customModel || 'custom-agent') 
-      : (node.data?.model || 'gemini-3.8-flash');
+      : (node.data?.model || 'gemini-4-argon');
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-2',
       tierName: 'Tier 2: Antigravity Autonomous Agent',
@@ -665,7 +665,7 @@ function generateBifrostYaml(
   });
 
   antigravityNodes.forEach(node => {
-    const model = node.data?.model === 'custom' ? (node.data?.customModel || 'custom') : (node.data?.model || 'gemini-3.8-flash');
+    const model = node.data?.model === 'custom' ? (node.data?.customModel || 'custom') : (node.data?.model || 'gemini-4-argon');
     yaml += `  - id: ${node.id}\n`;
     yaml += `    type: antigravity\n`;
     yaml += `    model: "${model}"\n`;
@@ -737,8 +737,8 @@ function generateAntigravitySetup(nodes: Node[], edges: Edge[]): string {
 
   nodes.forEach(node => {
     const model = node.data?.model === 'custom'
-      ? (node.data?.customModel || 'gemini-3.8-flash')
-      : (node.data?.model || 'gemini-3.8-flash');
+      ? (node.data?.customModel || 'gemini-4-argon')
+      : (node.data?.model || 'gemini-4-argon');
     const sandbox = node.data?.sandboxMode || 'standard';
     const behavior = node.data?.agentBehavior === 'interactive'
       ? 'types.AgentBehavior.INTERACTIVE'
@@ -792,7 +792,7 @@ function generateAntigravitySetup(nodes: Node[], edges: Edge[]): string {
   setup += '# CLI settings.json equivalent (~/.gemini/antigravity-cli/settings.json):\n';
   const cliSettings = nodes.map(n => ({
     id: n.id,
-    model: n.data?.model === 'custom' ? n.data?.customModel : (n.data?.model || 'gemini-3.8-flash'),
+    model: n.data?.model === 'custom' ? n.data?.customModel : (n.data?.model || 'gemini-4-argon'),
     sandbox: n.data?.sandboxMode || 'standard',
     agent_behavior: n.data?.agentBehavior || 'autonomous',
     subagents: n.data?.enableSubagents !== false,

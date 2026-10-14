@@ -5,15 +5,31 @@ import { getRouter } from '@/lib/router';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  let body: any;
   try {
-    const body = await req.json();
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ success: false, error: 'Invalid JSON request body' }, { status: 400 });
+  }
+
+  if (!body || typeof body !== 'object' || !Array.isArray(body.messages) || body.messages.length === 0) {
+    return NextResponse.json({ success: false, error: "Missing required parameter: 'messages' must be a non-empty array" }, { status: 400 });
+  }
+
+  try {
     const { session_id, ...forwardBody } = body;
     
     // Route in-process via Eluvix core router
     const router = getRouter();
     const res = await router.routeChatCompletion(forwardBody);
 
-    const data = await res.json();
+    let data: any;
+    try {
+      data = await res.json();
+    } catch {
+      const text = await res.text().catch(() => '');
+      data = { error: { message: text || 'Request failed' } };
+    }
     
     // Extract our custom trace headers
     const upstream = res.headers.get('x-eluvix-upstream') || 'unknown';

@@ -129,7 +129,7 @@ const DEFAULT_CONFIG: RouterConfig = {
       costPer1kTokens: 0.0,
       maxComplexityScore: 4,
       antigravity: {
-        model: 'gemini-3.8-flash',
+        model: 'gemini-4-argon',
         effort: 'auto',
         cleanHeadless: true,
         executionMode: 'cli',

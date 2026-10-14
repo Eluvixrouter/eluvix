@@ -8,6 +8,21 @@ import { getConfigPath, saveConfig, validateConfig, ConfigValidationError } from
 import { Eluvix } from '@eluvix/router-core';
 
 describe('API Bug Fixes Regression Suite', () => {
+  let testDir: string;
+  const originalConfig = process.env.XDG_CONFIG_HOME;
+
+  beforeEach(() => {
+    testDir = path.join(os.tmpdir(), `eluvix-config-vitest-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    process.env.XDG_CONFIG_HOME = path.join(testDir, 'config');
+  });
+
+  afterEach(() => {
+    process.env.XDG_CONFIG_HOME = originalConfig;
+    try {
+      if (testDir) fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   describe('Tool Evaluator: evaluateMathExpression', () => {
     it('evaluates basic arithmetic and respect operator precedence', () => {
       expect(evaluateMathExpression('2 + 2 * 4')).toBe(10);
@@ -115,20 +130,6 @@ describe('API Bug Fixes Regression Suite', () => {
   });
 
   describe('Configuration & Models Validation', () => {
-    let testDir: string;
-    const originalConfig = process.env.XDG_CONFIG_HOME;
-
-    beforeEach(() => {
-      testDir = path.join(os.tmpdir(), `eluvix-config-vitest-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      process.env.XDG_CONFIG_HOME = path.join(testDir, 'config');
-    });
-
-    afterEach(() => {
-      process.env.XDG_CONFIG_HOME = originalConfig;
-      try {
-        if (testDir) fs.rmSync(testDir, { recursive: true, force: true });
-      } catch {}
-    });
 
     it('resolves config path dynamically against XDG_CONFIG_HOME and writes atomically', () => {
       const cfgPath = getConfigPath();
@@ -185,5 +186,120 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(router.matchesModel(badUpstream, 'llama3')).toBe(false);
       expect(router.matchesModel(badUpstream, 'auto')).toBe(false);
     });
+
+    it('router-core matchesModel prevents antigravity from capturing arbitrary models via wildcard', () => {
+      const router = new Eluvix({
+        upstreams: []
+      });
+
+      const agyUpstream: any = {
+        id: 'antigravity-agent',
+        name: 'Antigravity',
+        type: 'antigravity',
+        endpoint: 'cli://agy',
+        models: ['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-oss-120b', '*']
+      };
+
+      // Supported models and auto must match
+      expect(router.matchesModel(agyUpstream, 'auto')).toBe(true);
+      expect(router.matchesModel(agyUpstream, 'gemini-4-argon')).toBe(true);
+      expect(router.matchesModel(agyUpstream, 'claude-opus-5-5')).toBe(true);
+      expect(router.matchesModel(agyUpstream, 'gpt-oss-120b')).toBe(true);
+
+      // Foreign or nonexistent models must NOT be hijacked by antigravity via '*'
+      expect(router.matchesModel(agyUpstream, 'nonexistent-model-xyz')).toBe(false);
+      expect(router.matchesModel(agyUpstream, 'llama3')).toBe(false);
+      expect(router.matchesModel(agyUpstream, 'deepseek-ai/deepseek-coder-6.7b')).toBe(false);
+    });
+  });
+
+  describe('Chat Completions API Validation', () => {
+    it('rejects missing or empty messages array with HTTP 400', async () => {
+      const { POST } = await import('../../app/api/v1/chat/completions/route');
+
+      // Empty body object {}
+      const res1 = await POST(new Request('http://localhost/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }));
+      expect(res1.status).toBe(400);
+      const json1 = await res1.json();
+      expect(json1.error.code).toBe('missing_required_parameter');
+
+      // Empty messages array []
+      const res2 = await POST(new Request('http://localhost/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [] })
+      }));
+      expect(res2.status).toBe(400);
+      const json2 = await res2.json();
+      expect(json2.error.code).toBe('missing_required_parameter');
+
+      // Invalid JSON
+      const res3 = await POST(new Request('http://localhost/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'invalid-json{'
+      }));
+      expect(res3.status).toBe(400);
+      const json3 = await res3.json();
+      expect(json3.error.code).toBe('invalid_json');
+    });
+
+    it('returns 404 for model_not_found when model cannot be routed', async () => {
+      const { saveConfig } = await import('../router');
+      saveConfig({
+        strategy: 'priority',
+        upstreams: [
+          {
+            id: 'local-node',
+            name: 'Local Node',
+            type: 'ollama',
+            endpoint: 'http://localhost:11434',
+            priority: 1,
+            models: ['llama3']
+          }
+        ]
+      });
+
+      const { POST } = await import('../../app/api/v1/chat/completions/route');
+
+      const res = await POST(new Request('http://localhost/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'this-model-does-not-exist-anywhere-999',
+          messages: [{ role: 'user', content: 'test' }]
+        })
+      }));
+      expect(res.status).toBe(404);
+      const json = await res.json();
+      expect(json.error.code).toBe('model_not_found');
+    });
+  });
+
+  describe('Database Multimodal Chat Logging', () => {
+    it('safely serializes object/array multimodal content in saveChatMessage without throwing', async () => {
+      const { saveChatMessage, getChatHistory } = await import('@eluvix/router-core');
+
+      const sessionId = `test-multimodal-${Date.now()}`;
+      const multimodalContent = [
+        { type: 'text', text: 'Analyze this image' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo...' } }
+      ];
+
+      expect(() => {
+        saveChatMessage(sessionId, 'user', multimodalContent);
+      }).not.toThrow();
+
+      const history = getChatHistory(sessionId);
+      expect(history.length).toBe(1);
+      expect(history[0].role).toBe('user');
+      expect(typeof history[0].content).toBe('string');
+      expect(history[0].content).toContain('Analyze this image');
+    });
   });
 });
+

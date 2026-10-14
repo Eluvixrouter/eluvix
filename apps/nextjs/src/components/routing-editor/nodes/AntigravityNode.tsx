@@ -52,7 +52,7 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
   const [modelPresets, setModelPresets] = useState<PresetOption[]>(DEFAULT_MODEL_PRESETS);
   const [syncingModels, setSyncingModels] = useState<boolean>(false);
 
-  const [model, setModel] = useState<string>(data?.model || 'gemini-3.8-flash');
+  const [model, setModel] = useState<string>(data?.model || 'gemini-4-argon');
   const [customModel, setCustomModel] = useState<string>(data?.customModel || '');
   const [effort, setEffort] = useState<'auto' | 'low' | 'medium' | 'high'>(data?.effort || 'auto');
   const [cleanHeadless, setCleanHeadless] = useState<boolean>(data?.cleanHeadless !== false);

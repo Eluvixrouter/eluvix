@@ -4,9 +4,52 @@ import { getRouter, getProviderAgent } from '@/lib/router';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  let body: any;
   try {
-    const body = await req.json();
-    
+    body = await req.json();
+  } catch (err: any) {
+    return NextResponse.json(
+      {
+        error: {
+          message: `Invalid JSON in request body: ${err.message}`,
+          type: 'invalid_request_error',
+          param: null,
+          code: 'invalid_json'
+        }
+      },
+      { status: 400 }
+    );
+  }
+
+  if (!body || typeof body !== 'object') {
+    return NextResponse.json(
+      {
+        error: {
+          message: 'Request body must be a valid JSON object.',
+          type: 'invalid_request_error',
+          param: null,
+          code: 'invalid_request'
+        }
+      },
+      { status: 400 }
+    );
+  }
+
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    return NextResponse.json(
+      {
+        error: {
+          message: "Missing required parameter: 'messages' must be a non-empty array.",
+          type: 'invalid_request_error',
+          param: 'messages',
+          code: 'missing_required_parameter'
+        }
+      },
+      { status: 400 }
+    );
+  }
+
+  try {
     // Prioritize consumer activity: pause background GPU provider jobs
     try {
       getProviderAgent().notifyConsumerActive(30000);
@@ -167,10 +210,69 @@ export async function POST(req: Request) {
     });
   } catch (error) {
     const err = error as Error;
+    const msg = err.message || 'Internal server error';
+
+    if (msg.startsWith('No upstream available for model:')) {
+      const isVision = msg.includes('with vision capability');
+      return NextResponse.json(
+        {
+          error: {
+            message: msg,
+            type: 'invalid_request_error',
+            param: isVision ? 'messages' : 'model',
+            code: isVision ? 'vision_not_supported' : 'model_not_found'
+          }
+        },
+        { status: isVision ? 400 : 404 }
+      );
+    }
+
+    if (msg === 'All upstreams failed to process the request.') {
+      return NextResponse.json(
+        {
+          error: {
+            message: msg,
+            type: 'upstream_error',
+            param: null,
+            code: 'bad_gateway'
+          }
+        },
+        { status: 502 }
+      );
+    }
+
+    if (err.name === 'AbortError' || msg.includes('Client aborted') || msg.includes('client_closed_request')) {
+      return NextResponse.json(
+        {
+          error: {
+            message: 'Client aborted request.',
+            type: 'client_closed_request',
+            param: null,
+            code: 'request_cancelled'
+          }
+        },
+        { status: 499 }
+      );
+    }
+
+    if (err.name === 'TimeoutError' || msg.includes('timed out')) {
+      return NextResponse.json(
+        {
+          error: {
+            message: msg,
+            type: 'timeout_error',
+            param: null,
+            code: 'gateway_timeout'
+          }
+        },
+        { status: 504 }
+      );
+    }
+
     return NextResponse.json(
       {
         error: {
-          message: err.message || 'Internal server error',
+          message: msg,
           type: 'server_error',
           param: null,
           code: null

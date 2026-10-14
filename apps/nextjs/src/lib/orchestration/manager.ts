@@ -325,6 +325,13 @@ export class OrchestrationManager {
       limit: { context: 131072, output: 8192 }
     };
 
+    // Purge retired Gemini models (3.1, 3.6, 3.7, 2.5) if lingering from past sessions
+    for (const key of Object.keys(existingModels)) {
+      if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(key)) {
+        delete existingModels[key];
+      }
+    }
+
     const upstreams = Array.isArray(routerConfig?.upstreams) ? routerConfig.upstreams : [];
     const agyCatalog = getCachedAntigravityModels();
 
