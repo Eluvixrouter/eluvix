@@ -80,17 +80,33 @@ jobs:
       - name: Build Desktop app
         run: pnpm --filter @eluvix/desktop build
 
+      # Packaging invokes electron-builder directly (the build step above
+      # already produced dist/) with --publish never:
+      # - electron-builder's own publishing is never used here — the
+      #   release job below ships the uploaded artifacts. Without
+      #   --publish never, its update-info generation crashes on PR builds
+      #   ("Cannot read properties of null (reading 'channel')") because
+      #   GITHUB_TOKEN makes it infer a GitHub publish target with no
+      #   release channel.
+      # - On Windows this also avoids `pnpm run`: pnpm exports npm_execpath
+      #   pointing at its pnpm.mjs, and @electron/rebuild (spawned by
+      #   electron-builder to rebuild better-sqlite3) tries to execute
+      #   that .mjs as a native binary, which Windows rejects ("%1 is not
+      #   a valid Win32 application").
       - name: Package Desktop app (Linux)
         if: runner.os == 'Linux'
-        run: pnpm --filter @eluvix/desktop run dist:linux
+        working-directory: apps/desktop
+        run: ./node_modules/.bin/electron-builder --linux --publish never
 
       - name: Package Desktop app (macOS)
         if: runner.os == 'macOS'
-        run: pnpm --filter @eluvix/desktop run dist:mac
+        working-directory: apps/desktop
+        run: ./node_modules/.bin/electron-builder --mac --publish never
 
       - name: Package Desktop app (Windows)
         if: runner.os == 'Windows'
-        run: pnpm --filter @eluvix/desktop run dist:win
+        working-directory: apps/desktop
+        run: .\node_modules\.bin\electron-builder.cmd --win --publish never
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

@@ -6,6 +6,19 @@ directories:
   output: release
   buildResources: assets
 
+# Explicit publish target. Without it, electron-builder auto-detects a
+# GitHub publisher from the GITHUB_TOKEN env var (set at job level in CI)
+# but cannot resolve owner/repo there, producing a [null] publish config
+# that crashes update-info generation ("Cannot read properties of null
+# (reading 'channel')") on every CI build. CI passes --publish never, so
+# nothing is uploaded by electron-builder — the workflow's release job
+# ships the artifacts — but the resolved config is also what the
+# packaged app's auto-update metadata (app-update.yml) is built from.
+publish:
+  provider: github
+  owner: Eluvixrouter
+  repo: eluvix
+
 files:
   - dist/**/*
   - package.json
@@ -19,6 +32,8 @@ linux:
     - target: deb
       arch:
         - x64
+  # Required by the .deb (fpm) target; package.json's author has no email.
+  maintainer: Joshua Edward McLaughlin Cox <josh@webhosting.coop>
   category: Development
   synopsis: Local LLM token router and proxy with Billama integration
   description: Connect your developer harnesses (OpenCode, VSCode) to local models or upstream providers seamlessly.
