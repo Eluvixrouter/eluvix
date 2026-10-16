@@ -83,14 +83,6 @@ const DEFAULT_CONFIG: RouterConfig = {
       models: ['gpt-4o', 'gpt-4o-mini']
     },
     {
-      id: 'antigravity-agent',
-      name: 'Google Antigravity Agent (AGY)',
-      type: 'antigravity',
-      endpoint: 'cli://agy',
-      priority: 15,
-      models: ['gemini-3.8-flash', '*']
-    },
-    {
       id: 'claude-code-agent',
       name: 'Claude Code Agent',
       type: 'openai-compatible',

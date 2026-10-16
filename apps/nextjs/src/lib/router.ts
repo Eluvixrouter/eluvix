@@ -119,26 +119,6 @@ const DEFAULT_CONFIG: RouterConfig = {
       maxComplexityScore: 4
     },
     {
-      id: 'antigravity-agent',
-      name: 'Google Antigravity Agent (AGY)',
-      type: 'antigravity',
-      endpoint: 'cli://agy',
-      priority: 28,
-      models: ['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-oss-120b', '*'],
-      tier: 'tier-3',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 4,
-      antigravity: {
-        model: 'gemini-4-argon',
-        effort: 'auto',
-        cleanHeadless: true,
-        executionMode: 'cli',
-        cliPath: 'agy',
-        sandbox: 'standard',
-        behavior: 'autonomous'
-      }
-    },
-    {
       id: 'claude-code-agent',
       name: 'Claude Code Agent',
       type: 'openai-compatible',
