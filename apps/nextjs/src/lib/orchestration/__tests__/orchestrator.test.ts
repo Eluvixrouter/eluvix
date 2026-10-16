@@ -25,6 +25,10 @@ describe('Orchestration Subsystem', () => {
     expect(typeof root).toBe('string');
   });
 
+  // getStatus() shells out to docker/k3d/kubectl/helm with per-probe
+  // timeouts of 3-5s each, so its wall-clock time is environment-dependent:
+  // instant where the tools are absent, several seconds on a CI runner
+  // where they exist. The default 5s test timeout is too tight there.
   it('should query orchestrator status across all 4 levels', async () => {
     const status = await orchestratorManager.getStatus();
     expect(status.tools).toBeDefined();
@@ -35,7 +39,7 @@ describe('Orchestration Subsystem', () => {
     expect(status.k3d).toBeDefined();
     expect(status.compose).toBeDefined();
     expect(status.local).toBeDefined();
-  });
+  }, 60_000);
 
   it('should successfully deploy local level 1 config', async () => {
     const sampleConfig = {
