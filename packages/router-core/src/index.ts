@@ -93,6 +93,7 @@ export interface AntigravityConfig {
   maxSubagentDepth?: number;
   effort?: 'auto' | 'low' | 'medium' | 'high';
   cleanHeadless?: boolean;
+  dangerouslySkipPermissions?: boolean;
 }
 
 export interface UpstreamConfig {
@@ -1085,7 +1086,13 @@ export class Eluvix {
     upstreamTimeoutMs = 60000
   ): Promise<Response> {
     const startTime = Date.now();
-    const cliPath = upstream.antigravity?.cliPath || 'agy';
+    const rawCli = (upstream.antigravity?.cliPath || 'agy').trim();
+    const baseCli = path.basename(rawCli);
+    if (!['agy', 'antigravity'].includes(baseCli)) {
+      throw new Error(`Execution denied: '${baseCli}' is not an authorized Antigravity CLI binary.`);
+    }
+    const cliPath = rawCli;
+
     const isAgyModel = isAntigravitySupportedModel(request.model, upstream.models);
     const requestedModel = isAgyModel ? request.model : (upstream.antigravity?.model || 'gemini-4-argon');
     const { baseModel: model, effort } = resolveAntigravityEffort(
@@ -1116,19 +1123,20 @@ export class Eluvix {
 
     const args: string[] = [
       '--disable-slash-commands',
-      '--dangerously-skip-permissions',
       '--print-timeout',
       `${printTimeoutSec}s`,
       '--output-format',
       'stream-json'
     ];
+    if (upstream.antigravity?.dangerouslySkipPermissions === true) {
+      args.push('--dangerously-skip-permissions');
+    }
     if (model && model !== 'default') {
       args.push('--model', model);
       args.push('--effort', effort);
     }
-    if (upstream.antigravity?.sandbox !== 'bypass') {
-      args.push('--sandbox');
-    }
+    // Always enforce sandbox execution
+    args.push('--sandbox');
     args.push('--print', promptText);
 
     const childEnv = {

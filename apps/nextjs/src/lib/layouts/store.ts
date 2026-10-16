@@ -30,7 +30,7 @@ export function getLayoutsDirectoryPath(): string {
 function atomicWrite(filePath: string, contents: string): void {
   const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
   try {
-    fs.writeFileSync(tmpPath, contents, 'utf-8');
+    fs.writeFileSync(tmpPath, contents, { encoding: 'utf-8', mode: 0o600 });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}

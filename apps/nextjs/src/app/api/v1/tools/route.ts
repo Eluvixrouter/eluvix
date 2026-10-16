@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-import { evaluateMathExpression, isBlockedHost } from '@/lib/api-helpers';
+import { evaluateMathExpression, isBlockedHost, isBlockedDns } from '@/lib/api-helpers';
 
 export async function POST(req: Request) {
   try {
@@ -54,36 +54,73 @@ export async function POST(req: Request) {
           return NextResponse.json({ success: false, error: "url string parameter is required" }, { status: 400 });
         }
 
-        let parsedUrl: URL;
+        let currentUrl: URL;
         try {
-          parsedUrl = new URL(params.url);
+          currentUrl = new URL(params.url);
         } catch {
           return NextResponse.json({ success: false, error: "Invalid URL provided" }, { status: 400 });
         }
 
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
           return NextResponse.json({ success: false, error: "Only http and https protocols are supported" }, { status: 400 });
         }
 
-        if (isBlockedHost(parsedUrl.hostname)) {
-          return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
+        let hops = 0;
+        let res: Response | null = null;
+
+        while (hops < 5) {
+          if (isBlockedHost(currentUrl.hostname)) {
+            return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
+          }
+          if (await isBlockedDns(currentUrl.hostname)) {
+            return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
+          }
+
+          try {
+            res = await fetch(currentUrl.toString(), {
+              signal: AbortSignal.timeout(8000),
+              headers: {
+                'User-Agent': 'Eluvix-Scraper/1.0'
+              },
+              redirect: 'manual'
+            });
+          } catch (fetchErr: any) {
+            return NextResponse.json({ success: false, error: `Failed to scrape URL: ${fetchErr.message}` }, { status: 502 });
+          }
+
+          if ([301, 302, 303, 307, 308].includes(res.status)) {
+            const loc = res.headers.get('location');
+            if (!loc) {
+              return NextResponse.json({ success: false, error: "Redirect header missing location" }, { status: 502 });
+            }
+            try {
+              currentUrl = new URL(loc, currentUrl);
+            } catch {
+              return NextResponse.json({ success: false, error: "Invalid redirect URL" }, { status: 502 });
+            }
+            if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
+              return NextResponse.json({ success: false, error: "Only http and https protocols are supported" }, { status: 400 });
+            }
+            hops++;
+            continue;
+          }
+          break;
+        }
+
+        if (!res) {
+          return NextResponse.json({ success: false, error: "Failed to scrape URL: No response" }, { status: 502 });
+        }
+
+        if (!res.ok) {
+          return NextResponse.json({ success: false, error: `Upstream web server returned status ${res.status}` }, { status: 502 });
         }
 
         try {
-          const res = await fetch(parsedUrl.toString(), {
-            signal: AbortSignal.timeout(8000),
-            headers: {
-              'User-Agent': 'Eluvix-Scraper/1.0'
-            }
-          });
-
-          if (!res.ok) {
-            return NextResponse.json({ success: false, error: `Upstream web server returned status ${res.status}` }, { status: 502 });
-          }
-
           const html = await res.text();
-          // Super basic HTML tag stripper for the native tool
-          const text = html.replace(/<[^>]*>?/gm, ' ').replace(/\s\s+/g, ' ').substring(0, 5000);
+          const cleanHtml = html
+            .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+            .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ');
+          const text = cleanHtml.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim().substring(0, 5000);
           return NextResponse.json({ success: true, result: text });
         } catch (fetchErr: any) {
           return NextResponse.json({ success: false, error: `Failed to scrape URL: ${fetchErr.message}` }, { status: 502 });

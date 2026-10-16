@@ -24,7 +24,7 @@ describe('Authentication & XDG Directory Generation', () => {
     }
   });
 
-  it('generates a random 8-letter alphabetical password', () => {
+  it('generates a random 8-letter alphabetical password when specified', () => {
     const password = generateRandomLetters(8);
     expect(password).toHaveLength(8);
     expect(/^[a-zA-Z]{8}$/.test(password)).toBe(true);
@@ -35,8 +35,8 @@ describe('Authentication & XDG Directory Generation', () => {
     expect(result.isNew).toBe(true);
     expect(fs.existsSync(result.configDir)).toBe(true);
     expect(fs.existsSync(result.authFile)).toBe(true);
-    expect(result.adminPassword).toHaveLength(8);
-    expect(/^[a-zA-Z]{8}$/.test(result.adminPassword)).toBe(true);
+    expect(result.adminPassword).toHaveLength(24);
+    expect(/^[a-zA-Z]{24}$/.test(result.adminPassword)).toBe(true);
 
     const saved = JSON.parse(fs.readFileSync(result.authFile, 'utf8'));
     expect(saved.adminPassword).toBe(result.adminPassword);

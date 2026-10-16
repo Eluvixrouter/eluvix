@@ -18,29 +18,58 @@ export async function GET(req: NextRequest) {
   const customReadable = new ReadableStream({
     start(controller) {
       const docker = spawn("docker", ["logs", "-f", "--tail", "50", `eluvix-${cleanContainer}`]);
+      let closed = false;
+
+      const safeClose = () => {
+        if (!closed) {
+          closed = true;
+          try { controller.close(); } catch { /* ignore */ }
+        }
+      };
 
       docker.stdout.on("data", (data) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.toString())}\n\n`));
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.toString())}\n\n`));
+          } catch {
+            safeClose();
+          }
+        }
       });
 
       docker.stderr.on("data", (data) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.toString())}\n\n`));
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data.toString())}\n\n`));
+          } catch {
+            safeClose();
+          }
+        }
       });
 
       docker.on("close", () => {
-        try { controller.close(); } catch { /* ignore */ }
+        safeClose();
       });
       
       docker.on("error", (err) => {
-        try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify("Error: " + err.message)}\n\n`));
-          controller.close();
-        } catch { /* ignore */ }
+        if (!closed) {
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify("Error: " + err.message)}\n\n`));
+          } catch { /* ignore */ }
+          safeClose();
+        }
       });
 
-      // Cleanup on disconnect
+      // Cleanup on disconnect or after 10m max streaming timeout
+      const maxStreamTimer = setTimeout(() => {
+        try { docker.kill(); } catch {}
+        safeClose();
+      }, 10 * 60 * 1000);
+
       req.signal.addEventListener("abort", () => {
-        docker.kill();
+        clearTimeout(maxStreamTimer);
+        try { docker.kill(); } catch {}
+        safeClose();
       });
     },
   });

@@ -245,7 +245,7 @@ export default function Home() {
           ...prev,
           [upstream.id]: {
             count: 0,
-            message: data.message || `No models detected at ${upstream.endpoint}. Server may be offline.`,
+            message: data.message || data.error || `No models detected at ${upstream.endpoint}. Server may be offline.`,
             isError: true
           }
         }));

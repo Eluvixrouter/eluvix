@@ -131,8 +131,9 @@ async function startServer() {
           return;
         }
 
-        const hostWithoutPort = (req.headers.host || hostname).split(':')[0];
-        const redirectUrl = `https://${hostWithoutPort}:${currentHttpsPort}${req.url}`;
+        const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
+        const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname) ? rawHost : hostname;
+        const redirectUrl = `https://${safeHost}:${currentHttpsPort}${req.url}`;
         res.writeHead(301, {
           Location: redirectUrl,
           'Content-Type': 'text/html'

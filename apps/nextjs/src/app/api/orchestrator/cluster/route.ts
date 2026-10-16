@@ -8,10 +8,10 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const action = body.action || 'status';
 
-    if (!['create', 'delete', 'start', 'stop'].includes(action)) {
+    if (!['create', 'delete', 'start', 'stop', 'status'].includes(action)) {
       return NextResponse.json({
         success: false,
-        error: `Invalid cluster action: ${action}. Allowed: create, delete, start, stop.`
+        error: `Invalid cluster action: ${action}. Allowed: create, delete, start, stop, status.`
       }, { status: 400 });
     }
 

@@ -20,11 +20,32 @@ let activeSwConfig = {
   upstreams: []
 };
 
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    try {
+      const u = new URL(origin);
+      const host = u.hostname.replace(/^\[|\]$/g, '');
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1' ||
+        host.endsWith('.local') ||
+        u.protocol === 'app:' ||
+        u.protocol === 'vscode-webview:'
+      ) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.setHeader('Vary', 'Origin');
+      }
+    } catch {}
+  }
+}
+
 const server = http.createServer(async (req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // CORS restricted to local origins
+  applyCors(req, res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -41,6 +62,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/v1/config' || url.pathname === '/config') {
+    const expectedToken = process.env.SWITCHYARD_AUTH_TOKEN || process.env.ADMIN_PASSWORD;
+    if (expectedToken && req.method === 'POST') {
+      const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (authHeader !== expectedToken) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
+        return;
+      }
+    }
+
     if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(activeSwConfig));

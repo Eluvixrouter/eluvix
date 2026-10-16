@@ -18,21 +18,21 @@ export interface AuthConfigResult {
 }
 
 /**
- * Generates a random alphabetical string of specified length (default 8 letters)
+ * Generates a cryptographically secure random alphabetical string of specified length (default 24 letters)
+ * without modulo bias.
  */
-export function generateRandomLetters(length = 8): string {
+export function generateRandomLetters(length = 24): string {
   const letters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const bytes = crypto.randomBytes(length);
   let result = '';
   for (let i = 0; i < length; i++) {
-    result += letters[bytes[i] % letters.length];
+    result += letters[crypto.randomInt(0, letters.length)];
   }
   return result;
 }
 
 /**
  * Ensures the XDG config and data directories exist. If an auth config does not exist,
- * generates a random 8-letter password and nextauth secret, writing it to auth.json.
+ * generates a random 24-letter password and nextauth secret, writing it to auth.json.
  */
 export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
   const { configDir, dataDir } = getAppPaths(appName);
@@ -59,7 +59,7 @@ export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
   }
 
   if (!authConfig.adminPassword) {
-    authConfig.adminPassword = generateRandomLetters(8);
+    authConfig.adminPassword = generateRandomLetters(24);
     isNew = true;
   }
 

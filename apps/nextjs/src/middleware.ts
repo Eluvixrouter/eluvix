@@ -41,8 +41,8 @@ export async function middleware(req: NextRequest) {
   const origin = req.headers.get('origin');
 
   // 1. CSRF Origin Protection: Block cross-origin requests from untrusted web pages
-  if (origin && origin !== 'null') {
-    if (!isLocalOrigin(origin)) {
+  if (origin) {
+    if (origin === 'null' || !isLocalOrigin(origin)) {
       return NextResponse.json(
         {
           error: {
@@ -68,7 +68,7 @@ export async function middleware(req: NextRequest) {
     // Check Bearer token
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7).trim();
-      const legacyPassword = process.env.LEGACY_ADMIN_PASSWORD || 'YnwIthTd';
+      const legacyPassword = process.env.LEGACY_ADMIN_PASSWORD;
       const isExpected = expectedPassword ? await secureTokenCompare(token, expectedPassword) : false;
       const isLegacy = legacyPassword ? await secureTokenCompare(token, legacyPassword) : false;
       if (isExpected || isLegacy) {

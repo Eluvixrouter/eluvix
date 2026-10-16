@@ -4,6 +4,11 @@ import { getRouter, getConfig, saveConfig } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
 
+function isMetadataHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '').trim();
+  return host === '169.254.169.254' || host.startsWith('169.254.') || host === 'metadata.google.internal';
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -36,11 +41,45 @@ export async function POST(req: Request) {
       });
     }
 
+    // Validate endpoint if provided directly (allow local/LAN LLM servers, block cloud metadata)
+    if (body.endpoint && !String(body.endpoint).startsWith('cli://')) {
+      try {
+        const u = new URL(body.endpoint);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+          return NextResponse.json(
+            { success: false, error: 'Only http and https endpoint protocols are supported' },
+            { status: 400 }
+          );
+        }
+        if (isMetadataHost(u.hostname)) {
+          return NextResponse.json(
+            { success: false, error: 'Access to cloud metadata addresses is blocked' },
+            { status: 403 }
+          );
+        }
+      } catch {
+        return NextResponse.json(
+          { success: false, error: 'Invalid endpoint URL provided' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Single upstream detect: either by ID or by passed config object
     let targetUpstream: UpstreamConfig | undefined;
     if (body.id) {
       const currentConfig = getConfig();
-      targetUpstream = currentConfig.upstreams.find(u => u.id === body.id);
+      const saved = currentConfig.upstreams.find(u => u.id === body.id);
+      if (saved) {
+        const endpointChanged = Boolean(body.endpoint && body.endpoint.trim() !== saved.endpoint.trim());
+        targetUpstream = {
+          ...saved,
+          endpoint: body.endpoint || saved.endpoint,
+          type: body.type || saved.type,
+          // Never send a stored API key to a newly changed endpoint host
+          apiKey: endpointChanged ? body.apiKey : (body.apiKey || saved.apiKey)
+        };
+      }
     }
 
     if (!targetUpstream && body.endpoint) {

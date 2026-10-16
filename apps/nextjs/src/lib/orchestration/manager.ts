@@ -236,7 +236,7 @@ export class OrchestrationManager {
       }
     }
 
-    fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), 'utf-8');
+    fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
     logs.push(`✓ Written active router config to ${targetFile}`);
 
     // Synchronize active Eluvix models & auth into OpenCode config (~/.config/opencode/opencode.json)
@@ -384,7 +384,7 @@ export class OrchestrationManager {
     };
 
     fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
-    fs.writeFileSync(openCodePath, JSON.stringify(existingOpenCode, null, 2), 'utf-8');
+    fs.writeFileSync(openCodePath, JSON.stringify(existingOpenCode, null, 2), { encoding: 'utf-8', mode: 0o600 });
     logs.push(`✓ Synchronized ${Object.keys(existingModels).length} models to ${openCodePath}`);
   }
 
@@ -504,66 +504,72 @@ export class OrchestrationManager {
 
     // 4. Write temporary custom values containing compiled configs
     const tempValuesPath = path.join(this.repoRoot, 'helm', 'eluvix', '.temp-compiled-values.yaml');
-    const customValues = {
-      routingConfig: {
-        eluvixJson: req.compiledConfigs.eluvixJson || '',
-        bifrostYaml: req.compiledConfigs.bifrostYaml || '',
-        agentRouterJson: req.compiledConfigs.agentRouterJson || '',
-        agentGatewayJson: req.compiledConfigs.agentGatewayJson || ''
+    try {
+      const customValues = {
+        routingConfig: {
+          eluvixJson: req.compiledConfigs.eluvixJson || '',
+          bifrostYaml: req.compiledConfigs.bifrostYaml || '',
+          agentRouterJson: req.compiledConfigs.agentRouterJson || '',
+          agentGatewayJson: req.compiledConfigs.agentGatewayJson || ''
+        }
+      };
+      fs.writeFileSync(tempValuesPath, JSON.stringify(customValues, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      logs.push('✓ Injected compiled routing graphs into Helm values.');
+
+      // 5. Deploy / Upgrade Helm release
+      logs.push('🚀 Running Helm upgrade --install eluvix...');
+      const helmResult = await executeSafeCommand('helm', [
+        'upgrade',
+        '--install',
+        'eluvix',
+        path.join(this.repoRoot, 'helm', 'eluvix'),
+        '-f',
+        path.join(this.repoRoot, 'helm', 'eluvix', 'values-local.yaml'),
+        '-f',
+        tempValuesPath,
+        '--namespace',
+        'eluvix',
+        '--kube-context',
+        'k3d-eluvix-local'
+      ], {
+        cwd: this.repoRoot,
+        timeoutMs: 120000
+      });
+
+      logs.push(helmResult.stdout);
+      if (!helmResult.success) {
+        logs.push(helmResult.stderr);
+        return {
+          success: false,
+          tier: 'k3d',
+          message: `Helm deployment failed: ${helmResult.stderr}`,
+          logs,
+          durationMs: Date.now() - startTime
+        };
       }
-    };
-    fs.writeFileSync(tempValuesPath, JSON.stringify(customValues, null, 2), 'utf-8');
-    logs.push('✓ Injected compiled routing graphs into Helm values.');
 
-    // 5. Deploy / Upgrade Helm release
-    logs.push('🚀 Running Helm upgrade --install eluvix...');
-    const helmResult = await executeSafeCommand('helm', [
-      'upgrade',
-      '--install',
-      'eluvix',
-      path.join(this.repoRoot, 'helm', 'eluvix'),
-      '-f',
-      path.join(this.repoRoot, 'helm', 'eluvix', 'values-local.yaml'),
-      '-f',
-      tempValuesPath,
-      '--namespace',
-      'eluvix',
-      '--kube-context',
-      'k3d-eluvix-local'
-    ], {
-      cwd: this.repoRoot,
-      timeoutMs: 120000
-    });
-
-    // Cleanup temp values
-    try { fs.unlinkSync(tempValuesPath); } catch {}
-
-    logs.push(helmResult.stdout);
-    if (!helmResult.success) {
-      logs.push(helmResult.stderr);
+      logs.push('✨ Helm release "eluvix" deployed successfully on k3d cluster.');
       return {
-        success: false,
+        success: true,
         tier: 'k3d',
-        message: `Helm deployment failed: ${helmResult.stderr}`,
+        message: 'Successfully deployed Eluvix to k3d Kubernetes cluster via Helm.',
         logs,
         durationMs: Date.now() - startTime
       };
+    } finally {
+      // Guaranteed cleanup of temp values
+      try {
+        if (fs.existsSync(tempValuesPath)) {
+          fs.unlinkSync(tempValuesPath);
+        }
+      } catch {}
     }
-
-    logs.push('✨ Helm release "eluvix" deployed successfully on k3d cluster.');
-    return {
-      success: true,
-      tier: 'k3d',
-      message: 'Successfully deployed Eluvix to k3d Kubernetes cluster via Helm.',
-      logs,
-      durationMs: Date.now() - startTime
-    };
   }
 
   /**
    * Manages k3d cluster lifecycle actions
    */
-  public async manageCluster(action: 'create' | 'delete' | 'start' | 'stop') {
+  public async manageCluster(action: 'create' | 'delete' | 'start' | 'stop' | 'status') {
     const scriptPath = path.join(this.repoRoot, 'scripts', 'k3d-cluster.sh');
     let scriptArg = 'status';
     if (action === 'create' || action === 'start') scriptArg = 'up';

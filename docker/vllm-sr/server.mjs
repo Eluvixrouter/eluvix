@@ -18,10 +18,31 @@ function inspectPromptGuard(messages) {
   return { passed: true };
 }
 
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    try {
+      const u = new URL(origin);
+      const host = u.hostname.replace(/^\[|\]$/g, '');
+      if (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1' ||
+        host.endsWith('.local') ||
+        u.protocol === 'app:' ||
+        u.protocol === 'vscode-webview:'
+      ) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.setHeader('Vary', 'Origin');
+      }
+    } catch {}
+  }
+}
+
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  applyCors(req, res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);

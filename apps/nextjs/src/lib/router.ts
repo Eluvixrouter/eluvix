@@ -25,7 +25,7 @@ function atomicWriteFile(filePath: string, content: string): void {
   }
   const tmpPath = `${filePath}.tmp.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs.writeFileSync(tmpPath, content, 'utf-8');
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf-8', mode: 0o600 });
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try {

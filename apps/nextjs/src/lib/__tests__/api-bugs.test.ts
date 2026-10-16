@@ -72,6 +72,10 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(isBlockedHost('169.254.169.254')).toBe(true);
       expect(isBlockedHost('169.254.1.1')).toBe(true);
       expect(isBlockedHost('fe80::1')).toBe(true);
+      expect(isBlockedHost('::ffff:169.254.169.254')).toBe(true);
+      expect(isBlockedHost('::ffff:127.0.0.1')).toBe(true);
+      expect(isBlockedHost('100.64.0.1')).toBe(true);
+      expect(isBlockedHost('198.18.0.1')).toBe(true);
     });
 
     it('blocks RFC 1918 private IPv4 subnets', () => {
@@ -119,12 +123,14 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(isValidContainerName('router')).toBe(true);
     });
 
-    it('rejects flag injection and invalid characters', () => {
+    it('rejects flag injection and invalid or unallowlisted characters/names', () => {
       expect(isValidContainerName('--all')).toBe(false);
       expect(isValidContainerName('-it')).toBe(false);
       expect(isValidContainerName('; rm -rf /')).toBe(false);
       expect(isValidContainerName('vllm && echo pwned')).toBe(false);
       expect(isValidContainerName('container with spaces')).toBe(false);
+      expect(isValidContainerName('unauthorized-database')).toBe(false);
+      expect(isValidContainerName('redis')).toBe(false);
       expect(isValidContainerName('')).toBe(false);
     });
   });

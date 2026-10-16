@@ -2,6 +2,19 @@ import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { getOrCreateAuthConfig } from "@eluvix/router-core";
 
+import crypto from "node:crypto";
+
+function secureCompare(a: string, b: string): boolean {
+  try {
+    const enc = new TextEncoder();
+    const hashA = crypto.createHash("sha256").update(enc.encode(a)).digest();
+    const hashB = crypto.createHash("sha256").update(enc.encode(b)).digest();
+    return crypto.timingSafeEqual(hashA, hashB);
+  } catch {
+    return false;
+  }
+}
+
 const authConfig = getOrCreateAuthConfig();
 
 const handler = NextAuth({
@@ -17,7 +30,7 @@ const handler = NextAuth({
         const currentAuth = getOrCreateAuthConfig();
         const expectedPassword = process.env.ADMIN_PASSWORD || currentAuth.adminPassword;
 
-        if (credentials.password === expectedPassword) {
+        if (expectedPassword && typeof credentials.password === 'string' && secureCompare(credentials.password, expectedPassword)) {
           return { id: "1", name: "Admin" };
         }
         
@@ -38,7 +51,8 @@ const handler = NextAuth({
       }
       try {
         const parsed = new URL(url);
-        if (parsed.origin === baseUrl || parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+        const baseParsed = new URL(baseUrl);
+        if (parsed.origin === baseParsed.origin) {
           return url;
         }
       } catch {}
