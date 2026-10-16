@@ -11,6 +11,14 @@ export type RoutingStrategy =
 export interface SwitchyardConfig {
   strategy?: RoutingStrategy;
   timeoutMs?: number;
+  /**
+   * Total wall-clock budget for failover, in milliseconds. The first
+   * upstream attempt always gets its full timeoutMs; once the budget is
+   * exhausted, no further upstream attempts are started, so a request
+   * with N dead upstreams fails in ~budget instead of N x timeoutMs.
+   * Defaults to 120000.
+   */
+  failoverBudgetMs?: number;
   retryCount?: number;
   spilloverThresholdMs?: number;
   codeEscalation?: boolean;
@@ -75,6 +83,41 @@ import {
 } from './antigravity-models.js';
 import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard } from './guard.js';
+
+/** One recorded stage of upstream selection, in execution order. */
+export interface RouteTraceStep {
+  stage: 'model-match' | 'egress-policy' | 'vision-filter' | 'tools-filter' | 'ranking';
+  detail: string;
+  /** Upstream ids surviving this stage, when the stage filters. */
+  kept?: string[];
+  /** Upstream ids removed by this stage, when the stage filters. */
+  removed?: string[];
+}
+
+/**
+ * A non-executing explanation of how routeChatCompletion would select an
+ * upstream for a request: the deterministic selection stages, the ranked
+ * failover order, and the first candidate that would be tried. Runtime
+ * adjustments (latency spillover, per-attempt cost ceiling, retries) are
+ * not modeled. When selection would fail, `error` carries the message
+ * routing would throw and `chosenUpstreamId` is null.
+ */
+export interface RouteExplanation {
+  model: string;
+  strategy: RoutingStrategy;
+  egressPolicy?: EgressPolicy;
+  complexity: {
+    score: number;
+    label: string;
+    tokenEstimate: number;
+    hasImages: boolean;
+    hasTools: boolean;
+  };
+  steps: RouteTraceStep[];
+  rankedUpstreams: Array<{ id: string; name: string; type: UpstreamType }>;
+  chosenUpstreamId: string | null;
+  error?: string;
+}
 
 export type UpstreamType = 
   | 'openai-compatible'
@@ -144,6 +187,31 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
   return false;
+}
+
+/**
+ * Whether an upstream can serve requests that contain images. An explicit
+ * 'vision' capability wins; otherwise capability is inferred from the
+ * provider type and the served model names — the same style of inference
+ * routing already applies to tool calling. Inference matters because most
+ * configurations declare no capabilities at all: previously every image
+ * request dead-ended with "no upstream with vision capability" even when
+ * a multimodal provider (OpenAI-compatible, Anthropic, Billama,
+ * Antigravity, or a local vision model like llava / *-vl / omni) was
+ * configured and reachable.
+ */
+export function isVisionCapableUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  if (upstream.capabilities?.includes('vision')) return true;
+  if (
+    upstream.type === 'openai-compatible' ||
+    upstream.type === 'anthropic' ||
+    upstream.type === 'antigravity' ||
+    upstream.type === 'billama'
+  ) {
+    return true;
+  }
+  return Array.isArray(upstream.models) && upstream.models.some(m => /gpt-4o|gpt-4-turbo|claude|gemini|llava|-vl\b|vision|omni/i.test(m));
 }
 
 export interface PromptComplexityAssessment {
@@ -648,12 +716,224 @@ export class Eluvix {
       }
     }
 
-    let matchingUpstreams = this.config.upstreams.filter(u => 
+    const selection = this.selectTargetUpstreams(effectiveRequest);
+    effectiveRequest = selection.effectiveRequest;
+    const complexity = selection.complexity;
+    let targetUpstreams = selection.targetUpstreams;
+    const switchyardConfig = this.config.switchyard || {};
+
+    // Latency Spillover Filter
+    try {
+      const recentLogs = getRequestLogs(50);
+      const overloadedUpstreams = new Set<string>();
+      const spilloverThreshold = switchyardConfig.spilloverThresholdMs ?? 30000;
+
+      for (const upstream of targetUpstreams) {
+        if (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic' || upstream.type === 'antigravity') continue; // don't punish cloud or agent reasoning endpoints
+        const upstreamLogs = recentLogs.filter(l => l.upstream_id === upstream.id);
+        if (upstreamLogs.length >= 3) {
+          const avg = upstreamLogs.slice(0, 5).reduce((acc, log) => acc + (log.duration_ms || 0), 0) / Math.min(5, upstreamLogs.length);
+          if (avg > spilloverThreshold) {
+            console.warn(`[Switchyard] Upstream ${upstream.id} is overloaded (avg latency ${Math.round(avg)}ms > ${spilloverThreshold}ms). Deprioritizing.`);
+            overloadedUpstreams.add(upstream.id);
+          }
+        }
+      }
+
+      if (overloadedUpstreams.size > 0 && targetUpstreams.length > 1) {
+        // Push overloaded upstreams to the bottom
+        targetUpstreams.sort((a, b) => {
+          const aOver = overloadedUpstreams.has(a.id) ? 1 : 0;
+          const bOver = overloadedUpstreams.has(b.id) ? 1 : 0;
+          return aOver - bOver;
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to evaluate latency spillover, continuing normal routing.');
+    }
+
+    const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
+    const retryCount = Math.max(1, switchyardConfig.retryCount ?? 1);
+    // Failover budget: without a bound, N dead upstreams cost N x
+    // upstreamTimeout before the request fails (8 shipped defaults x 60s
+    // = 8 minutes). The first attempt always runs; once the budget is
+    // exhausted no NEW attempt is started.
+    const failoverBudgetMs = switchyardConfig.failoverBudgetMs ?? 120000;
+    const routeStartTime = Date.now();
+    let attemptsMade = 0;
+    let budgetExhausted = false;
+
+    // Attempt the highest priority upstream first with retry and budget guardrails
+    for (const upstream of targetUpstreams) {
+      if (attemptsMade > 0 && Date.now() - routeStartTime >= failoverBudgetMs) {
+        console.warn(`[Switchyard] Failover budget of ${failoverBudgetMs}ms exhausted after ${attemptsMade} attempt(s); not trying ${upstream.name} or any later candidate.`);
+        budgetExhausted = true;
+        break;
+      }
+      // Check max cost ceiling if configured
+      if (switchyardConfig.maxCostPerRequest != null && upstream.costPer1kTokens != null) {
+        const estimatedCost = (complexity.tokenEstimate / 1000) * upstream.costPer1kTokens;
+        if (estimatedCost > switchyardConfig.maxCostPerRequest && targetUpstreams.length > 1) {
+          console.warn(`[Switchyard] Upstream ${upstream.name} estimated cost ($${estimatedCost.toFixed(4)}) exceeds ceiling ($${switchyardConfig.maxCostPerRequest}). Skipping to cheaper candidate.`);
+          continue;
+        }
+      }
+
+      for (let attempt = 1; attempt <= retryCount; attempt++) {
+        if (attempt > 1 && Date.now() - routeStartTime >= failoverBudgetMs) {
+          budgetExhausted = true;
+          break;
+        }
+        attemptsMade++;
+        const startTime = Date.now();
+        try {
+          console.log(`Attempting to route to upstream: ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
+          const response = await this.forwardRequest(upstream, effectiveRequest, upstreamTimeout, options?.signal, complexity.score);
+          const duration_ms = Date.now() - startTime;
+          
+          if (response.ok) {
+            let completionTokens = parseInt(response.headers.get('x-eluvix-completion-tokens') || '0', 10);
+            let promptTokens = parseInt(response.headers.get('x-eluvix-prompt-tokens') || '0', 10) || complexity.tokenEstimate;
+            const servedModel = response.headers.get('x-eluvix-model') || effectiveRequest.model;
+            const effortHeader = response.headers.get('x-eluvix-effort');
+            
+            let responseBody: any = response.body;
+            if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
+              try {
+                const rawData = await response.text();
+                const parsed = JSON.parse(rawData);
+                if (parsed.usage?.completion_tokens != null) {
+                  completionTokens = parsed.usage.completion_tokens;
+                }
+                if (parsed.usage?.prompt_tokens != null) {
+                  promptTokens = parsed.usage.prompt_tokens;
+                }
+                if (cacheConfig?.enabled && cacheKey) {
+                  this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
+                }
+                responseBody = new Blob([rawData]).stream();
+              } catch {}
+            }
+
+            // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
+            if (!(effectiveRequest.stream && (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')))) {
+              logRequest({
+                model: servedModel,
+                upstream_id: upstream.id,
+                status: response.status,
+                duration_ms,
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens
+              });
+            }
+            
+            const newResponse = new Response(responseBody, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: new Headers(response.headers)
+            });
+            newResponse.headers.set('x-eluvix-upstream', upstream.id);
+            newResponse.headers.set('x-eluvix-model', servedModel);
+            newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
+            newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
+            if (effortHeader) {
+              newResponse.headers.set('x-eluvix-effort', effortHeader);
+            }
+            
+            return newResponse;
+          } else {
+            console.warn(`Upstream ${upstream.name} failed with status ${response.status}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
+            try {
+              await response.text();
+            } catch {}
+          }
+        } catch (err) {
+          console.error(`Error connecting to upstream ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}:`, err);
+        }
+      }
+    }
+
+    if (budgetExhausted) {
+      throw new Error(`All upstreams failed to process the request. Failover timed out after ${Date.now() - routeStartTime}ms (budget ${failoverBudgetMs}ms, ${attemptsMade} attempt(s) made); remaining candidates were not tried.`);
+    }
+    throw new Error('All upstreams failed to process the request.');
+  }
+
+  /**
+   * Explain how a request would be routed, without executing it: no
+   * upstream is contacted and nothing is logged to the request history.
+   * Useful for dashboards, debugging "why did my prompt go there?", and
+   * previewing a configuration before applying it.
+   */
+  public explainRoute(request: ChatRequest): RouteExplanation {
+    const effectiveRequest: ChatRequest = {
+      ...request,
+      model: request.model || this.config.defaultModel || 'auto'
+    };
+    try {
+      const selection = this.selectTargetUpstreams(effectiveRequest, { silent: true });
+      return {
+        model: effectiveRequest.model,
+        strategy: selection.strategy,
+        egressPolicy: this.config.egressPolicy,
+        complexity: {
+          score: selection.complexity.score,
+          label: selection.complexity.label,
+          tokenEstimate: selection.complexity.tokenEstimate,
+          hasImages: !!selection.complexity.hasImages,
+          hasTools: !!selection.complexity.hasTools
+        },
+        steps: selection.steps,
+        rankedUpstreams: selection.targetUpstreams.map(u => ({ id: u.id, name: u.name, type: u.type })),
+        chosenUpstreamId: selection.targetUpstreams[0]?.id ?? null
+      };
+    } catch (err: any) {
+      return {
+        model: effectiveRequest.model,
+        strategy: this.config.switchyard?.strategy || this.config.strategy || 'cost-complexity',
+        egressPolicy: this.config.egressPolicy,
+        complexity: { score: 0, label: 'unknown', tokenEstimate: 0, hasImages: false, hasTools: false },
+        steps: err?.routeSteps ?? [],
+        rankedUpstreams: [],
+        chosenUpstreamId: null,
+        error: err?.message || 'Routing failed'
+      };
+    }
+  }
+
+  /**
+   * The deterministic core of routing: model matching, egress enforcement,
+   * complexity estimation, context truncation, vision/tools filtering, and
+   * strategy ranking. Shared by routeChatCompletion (which then applies
+   * runtime adjustments — latency spillover, cost ceiling — and executes)
+   * and explainRoute (which reports this selection without executing).
+   * Selection failures throw an Error carrying a `routeSteps` trace.
+   */
+  private selectTargetUpstreams(effectiveRequest: ChatRequest, options?: { silent?: boolean }): {
+    effectiveRequest: ChatRequest;
+    complexity: PromptComplexityAssessment;
+    strategy: RoutingStrategy;
+    targetUpstreams: UpstreamConfig[];
+    steps: RouteTraceStep[];
+  } {
+    const steps: RouteTraceStep[] = [];
+    const fail = (message: string): never => {
+      const err: any = new Error(message);
+      err.routeSteps = steps;
+      throw err;
+    };
+    let matchingUpstreams = this.config.upstreams.filter(u =>
       this.matchesModel(u, effectiveRequest.model)
     );
+    steps.push({
+      stage: 'model-match',
+      detail: `model "${effectiveRequest.model}" matched ${matchingUpstreams.length} of ${this.config.upstreams.length} upstreams`,
+      kept: matchingUpstreams.map(u => u.id),
+      removed: this.config.upstreams.filter(u => !matchingUpstreams.includes(u)).map(u => u.id)
+    });
 
     if (matchingUpstreams.length === 0) {
-      throw new Error(`No upstream available for model: ${effectiveRequest.model}`);
+      fail(`No upstream available for model: ${effectiveRequest.model}`);
     }
 
     // Egress policy enforcement: a local-only configuration must never send
@@ -665,8 +945,14 @@ export class Eluvix {
       if (excluded.length > 0) {
         console.warn(`[Switchyard Egress] egressPolicy=local-only excluded non-local upstreams: ${excluded.map(u => u.id).join(', ')}`);
       }
+      steps.push({
+        stage: 'egress-policy',
+        detail: 'egressPolicy=local-only: only local upstreams may serve this request',
+        kept: localUpstreams.map(u => u.id),
+        removed: excluded.map(u => u.id)
+      });
       if (localUpstreams.length === 0) {
-        throw new Error(`No local upstream available for model: ${effectiveRequest.model} (egressPolicy: local-only)`);
+        fail(`No local upstream available for model: ${effectiveRequest.model} (egressPolicy: local-only)`);
       }
       matchingUpstreams = localUpstreams;
     }
@@ -681,7 +967,7 @@ export class Eluvix {
       hasTools,
       toolsCount
     });
-    console.log(
+    if (!options?.silent) console.log(
       `[Switchyard Balancer] Routing Strategy: ${strategy} | Prompt Complexity: Score ${complexity.score} (${complexity.label}, tokens ~${complexity.tokenEstimate}, features: [${complexity.features.join(', ')}])`
     );
 
@@ -720,9 +1006,16 @@ export class Eluvix {
     let targetUpstreams = [...matchingUpstreams];
 
     if (complexity.hasImages) {
-      targetUpstreams = targetUpstreams.filter(u => u.capabilities?.includes('vision'));
+      const beforeVision = targetUpstreams;
+      targetUpstreams = targetUpstreams.filter(u => isVisionCapableUpstream(u));
+      steps.push({
+        stage: 'vision-filter',
+        detail: 'request contains images: only vision-capable upstreams (explicit capability, vision-capable provider type, or vision model) may serve it',
+        kept: targetUpstreams.map(u => u.id),
+        removed: beforeVision.filter(u => !targetUpstreams.includes(u)).map(u => u.id)
+      });
       if (targetUpstreams.length === 0) {
-        throw new Error(`No upstream available for model: ${effectiveRequest.model} with vision capability.`);
+        fail(`No upstream available for model: ${effectiveRequest.model} with vision capability.`);
       }
     }
 
@@ -736,6 +1029,12 @@ export class Eluvix {
         (Array.isArray(u.models) && u.models.some(m => /qwen|coder|tool|gemini|claude|gpt-4|gpt-oss/i.test(m)))
       );
       if (toolCapable.length > 0) {
+        steps.push({
+          stage: 'tools-filter',
+          detail: 'request uses tools: preferring tool-capable upstreams',
+          kept: toolCapable.map(u => u.id),
+          removed: targetUpstreams.filter(u => !toolCapable.includes(u)).map(u => u.id)
+        });
         targetUpstreams = toolCapable;
       }
     }
@@ -837,120 +1136,12 @@ export class Eluvix {
       });
     }
 
-    // Latency Spillover Filter
-    try {
-      const recentLogs = getRequestLogs(50);
-      const overloadedUpstreams = new Set<string>();
-      const spilloverThreshold = switchyardConfig.spilloverThresholdMs ?? 30000;
-
-      for (const upstream of targetUpstreams) {
-        if (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic' || upstream.type === 'antigravity') continue; // don't punish cloud or agent reasoning endpoints
-        const upstreamLogs = recentLogs.filter(l => l.upstream_id === upstream.id);
-        if (upstreamLogs.length >= 3) {
-          const avg = upstreamLogs.slice(0, 5).reduce((acc, log) => acc + (log.duration_ms || 0), 0) / Math.min(5, upstreamLogs.length);
-          if (avg > spilloverThreshold) {
-            console.warn(`[Switchyard] Upstream ${upstream.id} is overloaded (avg latency ${Math.round(avg)}ms > ${spilloverThreshold}ms). Deprioritizing.`);
-            overloadedUpstreams.add(upstream.id);
-          }
-        }
-      }
-
-      if (overloadedUpstreams.size > 0 && targetUpstreams.length > 1) {
-        // Push overloaded upstreams to the bottom
-        targetUpstreams.sort((a, b) => {
-          const aOver = overloadedUpstreams.has(a.id) ? 1 : 0;
-          const bOver = overloadedUpstreams.has(b.id) ? 1 : 0;
-          return aOver - bOver;
-        });
-      }
-    } catch (err) {
-      console.warn('Failed to evaluate latency spillover, continuing normal routing.');
-    }
-
-    const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
-    const retryCount = Math.max(1, switchyardConfig.retryCount ?? 1);
-
-    // Attempt the highest priority upstream first with retry and budget guardrails
-    for (const upstream of targetUpstreams) {
-      // Check max cost ceiling if configured
-      if (switchyardConfig.maxCostPerRequest != null && upstream.costPer1kTokens != null) {
-        const estimatedCost = (complexity.tokenEstimate / 1000) * upstream.costPer1kTokens;
-        if (estimatedCost > switchyardConfig.maxCostPerRequest && targetUpstreams.length > 1) {
-          console.warn(`[Switchyard] Upstream ${upstream.name} estimated cost ($${estimatedCost.toFixed(4)}) exceeds ceiling ($${switchyardConfig.maxCostPerRequest}). Skipping to cheaper candidate.`);
-          continue;
-        }
-      }
-
-      for (let attempt = 1; attempt <= retryCount; attempt++) {
-        const startTime = Date.now();
-        try {
-          console.log(`Attempting to route to upstream: ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
-          const response = await this.forwardRequest(upstream, effectiveRequest, upstreamTimeout, options?.signal, complexity.score);
-          const duration_ms = Date.now() - startTime;
-          
-          if (response.ok) {
-            let completionTokens = parseInt(response.headers.get('x-eluvix-completion-tokens') || '0', 10);
-            let promptTokens = parseInt(response.headers.get('x-eluvix-prompt-tokens') || '0', 10) || complexity.tokenEstimate;
-            const servedModel = response.headers.get('x-eluvix-model') || effectiveRequest.model;
-            const effortHeader = response.headers.get('x-eluvix-effort');
-            
-            let responseBody: any = response.body;
-            if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
-              try {
-                const rawData = await response.text();
-                const parsed = JSON.parse(rawData);
-                if (parsed.usage?.completion_tokens != null) {
-                  completionTokens = parsed.usage.completion_tokens;
-                }
-                if (parsed.usage?.prompt_tokens != null) {
-                  promptTokens = parsed.usage.prompt_tokens;
-                }
-                if (cacheConfig?.enabled && cacheKey) {
-                  this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
-                }
-                responseBody = new Blob([rawData]).stream();
-              } catch {}
-            }
-
-            // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
-            if (!(effectiveRequest.stream && (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')))) {
-              logRequest({
-                model: servedModel,
-                upstream_id: upstream.id,
-                status: response.status,
-                duration_ms,
-                prompt_tokens: promptTokens,
-                completion_tokens: completionTokens
-              });
-            }
-            
-            const newResponse = new Response(responseBody, {
-              status: response.status,
-              statusText: response.statusText,
-              headers: new Headers(response.headers)
-            });
-            newResponse.headers.set('x-eluvix-upstream', upstream.id);
-            newResponse.headers.set('x-eluvix-model', servedModel);
-            newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
-            newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
-            if (effortHeader) {
-              newResponse.headers.set('x-eluvix-effort', effortHeader);
-            }
-            
-            return newResponse;
-          } else {
-            console.warn(`Upstream ${upstream.name} failed with status ${response.status}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
-            try {
-              await response.text();
-            } catch {}
-          }
-        } catch (err) {
-          console.error(`Error connecting to upstream ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}:`, err);
-        }
-      }
-    }
-
-    throw new Error('All upstreams failed to process the request.');
+    steps.push({
+      stage: 'ranking',
+      detail: `strategy "${strategy}" ranked the surviving upstreams; the first is tried first, the rest are failover order`,
+      kept: targetUpstreams.map(u => u.id)
+    });
+    return { effectiveRequest, complexity, strategy, targetUpstreams, steps };
   }
 
   public matchesModel(upstream: UpstreamConfig, requestedModel: string): boolean {

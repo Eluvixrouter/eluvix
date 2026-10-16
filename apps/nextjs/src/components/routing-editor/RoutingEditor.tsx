@@ -38,6 +38,7 @@ import BillamaNode from './nodes/BillamaNode';
 import OpenAiNode from './nodes/OpenAiNode';
 import ClaudeNode from './nodes/ClaudeNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
+import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
 import LayoutBrowserModal from './LayoutBrowserModal';
 import { LayoutMetadata } from '@/lib/layouts/types';
@@ -519,6 +520,9 @@ export default function RoutingEditor() {
 
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [compiledConfigs, setCompiledConfigs] = useState<any>(null);
+  const [pendingApply, setPendingApply] = useState<any>(null);
+  const [applyDiff, setApplyDiff] = useState<ConfigDiff | null>(null);
+  const [applyDiffKnown, setApplyDiffKnown] = useState(true);
   const [availableSecrets, setAvailableSecrets] = useState<{key: string, path: string}[]>([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{success?: boolean, message?: string} | null>(null);
@@ -1084,13 +1088,47 @@ export default function RoutingEditor() {
 
   const onApplyToRouter = useCallback(async () => {
     const compiled = compileGraph(nodes as any, edges as any);
+    if (!compiled.rawRouterConfig) {
+      setCompiledConfigs(compiled);
+      setIsExportModalOpen(true);
+      return;
+    }
+    // Authoritative apply deletes every live upstream that is not on the
+    // canvas. Fetch the live config and show the user the exact diff —
+    // especially the removals — before anything is written.
+    let current: any = null;
+    let known = true;
+    try {
+      const res = await fetch('/api/v1/config');
+      if (res.ok) {
+        current = await res.json();
+      } else {
+        known = false;
+      }
+    } catch {
+      known = false;
+    }
+    setApplyDiffKnown(known);
+    setApplyDiff(diffRouterConfigs(current, compiled.rawRouterConfig));
+    setPendingApply(compiled);
+  }, [nodes, edges]);
+
+  const cancelApplyToRouter = useCallback(() => {
+    setPendingApply(null);
+    setApplyDiff(null);
+  }, []);
+
+  const confirmApplyToRouter = useCallback(async () => {
+    const compiled = pendingApply;
+    if (!compiled?.rawRouterConfig) return;
+    setPendingApply(null);
+    setApplyDiff(null);
     setCompiledConfigs(compiled);
     setIsExportModalOpen(true);
     setDeployResult(null);
     setDeployLogs([]);
     fetchOrchestratorStatus();
 
-    if (!compiled.rawRouterConfig) return;
     try {
       // Authoritative apply: the canvas is the source of truth for the live
       // router configuration. Upstreams that are not on the canvas are
@@ -1114,7 +1152,7 @@ export default function RoutingEditor() {
       setDeployResult({ success: false, message: `Apply failed: ${e.message}` });
       showToast(`Apply failed: ${e.message}`);
     }
-  }, [nodes, edges, showToast, fetchOrchestratorStatus]);
+  }, [pendingApply, showToast, fetchOrchestratorStatus]);
 
   const handleDeploy = async () => {
     setIsDeploying(true);
@@ -3255,6 +3293,97 @@ export default function RoutingEditor() {
                 </div>
               );
             })()}
+          </div>
+        )}
+
+        {applyDiff && pendingApply && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+            <div className="bg-gray-800 rounded-xl border border-gray-600 shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+              <div className="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-900">
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <span>⚠️</span> Apply changes to the live router?
+                </h3>
+                <button
+                  onClick={cancelApplyToRouter}
+                  className="text-gray-400 hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="p-4 overflow-y-auto flex flex-col gap-4 text-sm">
+                <p className="text-gray-300">
+                  Applying is authoritative: the live router configuration becomes exactly what is on this canvas.
+                  {applyDiff.removed.length > 0 && (
+                    <span className="text-red-300 font-semibold"> {applyDiff.removed.length} upstream(s) will be removed.</span>
+                  )}
+                </p>
+                {!applyDiffKnown && (
+                  <div className="bg-amber-900/40 border border-amber-600/50 text-amber-200 rounded-lg p-3">
+                    The current live config could not be loaded, so removals cannot be shown. The list below only reflects what will be written.
+                  </div>
+                )}
+                {applyDiff.isEmpty && applyDiffKnown && (
+                  <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3 text-gray-300">
+                    No changes — the live config already matches this canvas.
+                  </div>
+                )}
+                {applyDiff.removed.length > 0 && (
+                  <div>
+                    <h4 className="text-red-300 font-semibold mb-1.5">🗑️ Will be removed</h4>
+                    <ul className="flex flex-col gap-1">
+                      {applyDiff.removed.map(u => (
+                        <li key={u.id} className="bg-red-950/40 border border-red-800/50 rounded px-2.5 py-1.5 font-mono text-xs text-red-200">
+                          {u.name} <span className="text-red-400">({u.id} · {u.endpoint})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {applyDiff.added.length > 0 && (
+                  <div>
+                    <h4 className="text-emerald-300 font-semibold mb-1.5">➕ Will be added</h4>
+                    <ul className="flex flex-col gap-1">
+                      {applyDiff.added.map(u => (
+                        <li key={u.id} className="bg-emerald-950/40 border border-emerald-800/50 rounded px-2.5 py-1.5 font-mono text-xs text-emerald-200">
+                          {u.name} <span className="text-emerald-400">({u.id} · {u.endpoint})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {applyDiff.changed.length > 0 && (
+                  <div>
+                    <h4 className="text-amber-300 font-semibold mb-1.5">✏️ Will be changed</h4>
+                    <ul className="flex flex-col gap-1">
+                      {applyDiff.changed.map(c => (
+                        <li key={c.id} className="bg-amber-950/40 border border-amber-800/50 rounded px-2.5 py-1.5 font-mono text-xs text-amber-200">
+                          {c.name} <span className="text-amber-400">({c.id}: {c.fields.join(', ')})</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {applyDiff.egressPolicy && (
+                  <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3 text-gray-300 font-mono text-xs">
+                    Egress policy: {applyDiff.egressPolicy.from ?? '(legacy default)'} → {applyDiff.egressPolicy.to ?? '(legacy default)'}
+                  </div>
+                )}
+              </div>
+              <div className="p-4 border-t border-gray-700 bg-gray-900 flex justify-end gap-2">
+                <button
+                  onClick={cancelApplyToRouter}
+                  className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded font-medium transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmApplyToRouter}
+                  className={`px-4 py-2 text-sm text-white rounded font-medium transition ${applyDiff.removed.length > 0 ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
+                >
+                  Apply to live router
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

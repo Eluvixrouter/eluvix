@@ -1,0 +1,141 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`DEFAULT_CONFIG single source of truth > matches the pinned snapshot (any defaults change is a deliberate, reviewed edit) 1`] = `
+{
+  "egressPolicy": "local-only",
+  "fallbackStrategy": "priority",
+  "strategy": "cost-complexity",
+  "upstreams": [
+    {
+      "capabilities": [
+        "vision",
+      ],
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:13305",
+      "id": "local-lemonade",
+      "maxComplexityScore": 3,
+      "models": [
+        "llama3.2-1b-FLM",
+        "Qwen3.5-4B-MTP-GGUF",
+        "LMX-Omni-5.5B-Lite",
+        "*",
+      ],
+      "name": "Lemonade Router",
+      "priority": 30,
+      "tier": "tier-1",
+      "type": "lemonade",
+    },
+    {
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:8000",
+      "id": "local-vllm",
+      "maxComplexityScore": 3,
+      "models": [
+        "meta-llama/Llama-3-8b",
+        "meta-llama/Llama-3-70b",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+      ],
+      "name": "Local vLLM",
+      "priority": 10,
+      "tier": "tier-1",
+      "type": "vllm",
+    },
+    {
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:11434",
+      "id": "local-ollama",
+      "maxComplexityScore": 3,
+      "models": [
+        "llama3",
+        "llama3.1",
+        "qwen2.5-coder",
+        "mistral",
+        "*",
+      ],
+      "name": "Local Ollama",
+      "priority": 22,
+      "tier": "tier-2",
+      "type": "ollama",
+    },
+    {
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:8001",
+      "id": "local-vllm-sr",
+      "maxComplexityScore": 3,
+      "models": [
+        "meta-llama/Llama-3-8b-instruct",
+      ],
+      "name": "Local vLLM-sr",
+      "priority": 20,
+      "tier": "tier-2",
+      "type": "vllm-sr",
+    },
+    {
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:8080",
+      "id": "local-switchyard",
+      "maxComplexityScore": 3,
+      "models": [
+        "deepseek-ai/deepseek-coder-6.7b",
+      ],
+      "name": "Local Switchyard Node",
+      "priority": 18,
+      "tier": "tier-2",
+      "type": "switchyard",
+    },
+    {
+      "apiKey": "",
+      "capabilities": [
+        "vision",
+      ],
+      "costPer1kTokens": 0.001,
+      "endpoint": "https://api.billama.dev",
+      "id": "billama-cloud",
+      "maxComplexityScore": 4,
+      "models": [
+        "*",
+      ],
+      "name": "Billama Cloud (Recommended)",
+      "priority": 16,
+      "tier": "tier-3",
+      "type": "billama",
+    },
+    {
+      "apiKey": "",
+      "capabilities": [
+        "vision",
+      ],
+      "costPer1kTokens": 0.005,
+      "endpoint": "https://api.openai.com",
+      "id": "openai-direct",
+      "maxComplexityScore": 4,
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "*",
+      ],
+      "name": "OpenAI Direct",
+      "priority": 12,
+      "tier": "tier-3",
+      "type": "openai-compatible",
+    },
+    {
+      "capabilities": [
+        "vision",
+      ],
+      "costPer1kTokens": 0.003,
+      "endpoint": "http://localhost:8082/v1",
+      "id": "claude-code-agent",
+      "maxComplexityScore": 4,
+      "models": [
+        "claude-3-7-sonnet",
+        "*",
+      ],
+      "name": "Claude Code Agent",
+      "priority": 10,
+      "tier": "tier-4",
+      "type": "openai-compatible",
+    },
+  ],
+}
+`;
