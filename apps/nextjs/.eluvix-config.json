@@ -1,4 +1,5 @@
 {
+  "strategy": "cost-complexity",
   "fallbackStrategy": "priority",
   "egressPolicy": "local-only",
   "upstreams": [
@@ -13,7 +14,10 @@
         "Qwen3.5-4B-MTP-GGUF",
         "LMX-Omni-5.5B-Lite",
         "*"
-      ]
+      ],
+      "tier": "tier-1",
+      "costPer1kTokens": 0,
+      "maxComplexityScore": 3
     },
     {
       "id": "local-vllm",
@@ -25,7 +29,10 @@
         "meta-llama/Llama-3-8b",
         "meta-llama/Llama-3-70b",
         "mistralai/Mistral-7B-Instruct-v0.3"
-      ]
+      ],
+      "tier": "tier-1",
+      "costPer1kTokens": 0,
+      "maxComplexityScore": 3
     },
     {
       "id": "local-ollama",
@@ -39,7 +46,10 @@
         "qwen2.5-coder",
         "mistral",
         "*"
-      ]
+      ],
+      "tier": "tier-2",
+      "costPer1kTokens": 0,
+      "maxComplexityScore": 3
     },
     {
       "id": "local-vllm-sr",
@@ -48,10 +58,11 @@
       "endpoint": "http://localhost:8001",
       "priority": 20,
       "models": [
-        "meta-llama/Llama-3-8b-instruct",
-        "mistralai/Mistral-7B-v0.1",
-        "vllm-sr-semantic-guard"
-      ]
+        "meta-llama/Llama-3-8b-instruct"
+      ],
+      "tier": "tier-2",
+      "costPer1kTokens": 0,
+      "maxComplexityScore": 3
     },
     {
       "id": "local-switchyard",
@@ -60,9 +71,11 @@
       "endpoint": "http://localhost:8080",
       "priority": 18,
       "models": [
-        "deepseek-ai/deepseek-coder-6.7b",
-        "*"
-      ]
+        "deepseek-ai/deepseek-coder-6.7b"
+      ],
+      "tier": "tier-2",
+      "costPer1kTokens": 0,
+      "maxComplexityScore": 3
     },
     {
       "id": "billama-cloud",
@@ -73,7 +86,10 @@
       "priority": 16,
       "models": [
         "*"
-      ]
+      ],
+      "tier": "tier-3",
+      "costPer1kTokens": 0.001,
+      "maxComplexityScore": 4
     },
     {
       "id": "openai-direct",
@@ -86,7 +102,10 @@
         "gpt-4o",
         "gpt-4o-mini",
         "*"
-      ]
+      ],
+      "tier": "tier-3",
+      "costPer1kTokens": 0.005,
+      "maxComplexityScore": 4
     },
     {
       "id": "claude-code-agent",
@@ -97,7 +116,10 @@
       "models": [
         "claude-3-7-sonnet",
         "*"
-      ]
+      ],
+      "tier": "tier-4",
+      "costPer1kTokens": 0.003,
+      "maxComplexityScore": 4
     }
   ]
 }

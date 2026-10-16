@@ -1,3 +1,13 @@
+// ============================================================================
+// SIMULATOR — not a real vLLM Semantic Router service.
+//
+// This is a canned-response stand-in used for local development of the
+// Eluvix dashboard and orchestration flows. It mimics the shape of the
+// vLLM Semantic Router HTTP API with hardcoded/heuristic replies; no model is loaded
+// and no real inference or routing happens here. Do not benchmark,
+// demo, or draw conclusions about the real service from its responses.
+// See docker/README.md.
+// ============================================================================
 import http from 'http';
 
 const PORT = parseInt(process.env.PORT || '8001', 10);
