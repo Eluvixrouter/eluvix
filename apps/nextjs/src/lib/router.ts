@@ -1,4 +1,5 @@
 import { Eluvix, RouterConfig, getAppPaths } from '@eluvix/router-core';
+import { DEFAULT_CONFIG } from './default-config';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -35,132 +36,97 @@ function atomicWriteFile(filePath: string, content: string): void {
   }
 }
 
-const DEFAULT_CONFIG: RouterConfig = {
-  strategy: 'cost-complexity',
-  fallbackStrategy: 'priority',
-  egressPolicy: 'local-only',
-  upstreams: [
-    {
-      id: 'local-lemonade',
-      name: 'Lemonade Router',
-      type: 'lemonade',
-      endpoint: 'http://localhost:13305',
-      priority: 30,
-      models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', 'LMX-Omni-5.5B-Lite', '*'],
-      tier: 'tier-1',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 3
-    },
-    {
-      id: 'local-vllm',
-      name: 'Local vLLM',
-      type: 'vllm',
-      endpoint: 'http://localhost:8000',
-      priority: 10,
-      models: ['meta-llama/Llama-3-8b', 'meta-llama/Llama-3-70b', 'mistralai/Mistral-7B-Instruct-v0.3'],
-      tier: 'tier-1',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 3
-    },
-    {
-      id: 'local-ollama',
-      name: 'Local Ollama',
-      type: 'ollama',
-      endpoint: 'http://localhost:11434',
-      priority: 22,
-      models: ['llama3', 'llama3.1', 'qwen2.5-coder', 'mistral', '*'],
-      tier: 'tier-2',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 3
-    },
-    {
-      id: 'local-vllm-sr',
-      name: 'Local vLLM-sr',
-      type: 'vllm-sr',
-      endpoint: 'http://localhost:8001',
-      priority: 20,
-      models: ['meta-llama/Llama-3-8b-instruct'],
-      tier: 'tier-2',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 3
-    },
-    {
-      id: 'local-switchyard',
-      name: 'Local Switchyard Node',
-      type: 'switchyard',
-      endpoint: 'http://localhost:8080',
-      priority: 18,
-      models: ['deepseek-ai/deepseek-coder-6.7b'],
-      tier: 'tier-2',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 3
-    },
-    {
-      id: 'billama-cloud',
-      name: 'Billama Cloud (Recommended)',
-      type: 'billama',
-      endpoint: 'https://api.billama.dev',
-      apiKey: '',
-      priority: 16,
-      models: ['*'],
-      tier: 'tier-3',
-      costPer1kTokens: 0.001,
-      maxComplexityScore: 4
-    },
-    {
-      id: 'openai-direct',
-      name: 'OpenAI Direct',
-      type: 'openai-compatible',
-      endpoint: 'https://api.openai.com',
-      apiKey: '',
-      priority: 12,
-      models: ['gpt-4o', 'gpt-4o-mini', '*'],
-      tier: 'tier-3',
-      costPer1kTokens: 0.005,
-      maxComplexityScore: 4
-    },
-    {
-      id: 'claude-code-agent',
-      name: 'Claude Code Agent',
-      type: 'openai-compatible',
-      endpoint: 'http://localhost:8082/v1',
-      priority: 10,
-      models: ['claude-3-7-sonnet', '*'],
-      tier: 'tier-4',
-      costPer1kTokens: 0.003,
-      maxComplexityScore: 4
+export interface LoadedConfigSanitization {
+  config: RouterConfig;
+  warnings: string[];
+  /** True when any repair, drop, or migration changed the loaded value. */
+  changed: boolean;
+  /** True when the loaded value was a recognizable config object, so persisting repairs over the file is safe. */
+  recognizable: boolean;
+}
+
+/**
+ * Validate and migrate a config loaded from disk.
+ *
+ * saveConfig() rejects an invalid config outright, but the file on disk can
+ * still be hand-edited, written by an older build, or corrupted — and until
+ * now loadConfig() fed it to the router unchecked. This applies the same
+ * per-upstream rules as validateConfig() with load-appropriate semantics:
+ * repair what is safely repairable, drop what is not (with a warning for
+ * each change), and fall back to the shipped defaults only when nothing
+ * usable remains. A config that is already valid passes through untouched.
+ */
+export function sanitizeLoadedConfig(raw: unknown): LoadedConfigSanitization {
+  if (!raw || typeof raw !== 'object' || !Array.isArray((raw as any).upstreams)) {
+    return {
+      config: structuredClone(DEFAULT_CONFIG),
+      warnings: ['Saved config is not a recognizable router config; using the shipped defaults'],
+      changed: true,
+      recognizable: false
+    };
+  }
+
+  const warnings: string[] = [];
+  const source = raw as Record<string, any>;
+  const config: Record<string, any> = { ...source };
+
+  if (config.egressPolicy !== undefined && config.egressPolicy !== 'local-only' && config.egressPolicy !== 'allow-egress') {
+    warnings.push(`Dropping invalid "egressPolicy" value ${JSON.stringify(config.egressPolicy)} (expected "local-only" or "allow-egress"); the legacy default applies`);
+    delete config.egressPolicy;
+  }
+
+  const upstreams: any[] = [];
+  source.upstreams.forEach((upstream: any, index: number) => {
+    const problem = upstreamProblem(upstream);
+    if (problem) {
+      const label = upstream && typeof upstream === 'object' && typeof upstream.id === 'string' ? ` "${upstream.id}"` : ` at index ${index}`;
+      warnings.push(`Dropping invalid upstream${label}: ${problem}`);
+    } else {
+      upstreams.push(upstream);
     }
-  ]
-};
+  });
+
+  if (upstreams.length === 0) {
+    warnings.push('Saved config has no valid upstreams; using the shipped defaults');
+    return { config: structuredClone(DEFAULT_CONFIG), warnings, changed: true, recognizable: true };
+  }
+  config.upstreams = upstreams;
+
+  // Auto-migrate stale placeholder models (lemonade-general, lemonade-code)
+  const lemonadeUpstream = upstreams.find(u => u.type === 'lemonade' || u.id === 'local-lemonade');
+  if (lemonadeUpstream && Array.isArray(lemonadeUpstream.models)) {
+    if (lemonadeUpstream.models.includes('lemonade-general') || lemonadeUpstream.models.includes('lemonade-code')) {
+      lemonadeUpstream.models = ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', '*'];
+      warnings.push('Migrated stale placeholder models in Lemonade config to real models');
+    }
+  }
+
+  return { config: config as RouterConfig, warnings, changed: warnings.length > 0, recognizable: true };
+}
 
 function loadConfig(): RouterConfig {
   try {
     const configFile = getConfigPath();
     if (fs.existsSync(configFile)) {
       const data = fs.readFileSync(configFile, 'utf-8');
-      const loaded: RouterConfig = JSON.parse(data);
-
-      // Auto-migrate stale placeholder models (lemonade-general, lemonade-code)
-      let modified = false;
-      const lemonadeUpstream = loaded.upstreams?.find(u => u.type === 'lemonade' || u.id === 'local-lemonade');
-      if (lemonadeUpstream && Array.isArray(lemonadeUpstream.models)) {
-        if (lemonadeUpstream.models.includes('lemonade-general') || lemonadeUpstream.models.includes('lemonade-code')) {
-          console.log('[Eluvix] Migrating stale placeholder models in Lemonade config to real models...');
-          lemonadeUpstream.models = ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', '*'];
-          modified = true;
-        }
+      const parsed = JSON.parse(data);
+      const { config, warnings, changed, recognizable } = sanitizeLoadedConfig(parsed);
+      for (const warning of warnings) {
+        console.warn(`[Eluvix] Config on load: ${warning}`);
       }
-      if (modified) {
+      if (changed && recognizable) {
         try {
-          atomicWriteFile(configFile, JSON.stringify(loaded, null, 2));
+          atomicWriteFile(configFile, JSON.stringify(config, null, 2));
         } catch {}
       }
-      return loaded;
+      return config;
     }
   } catch (err) {
     console.warn('[Eluvix] Failed to read config file, using defaults:', err);
   }
-  return DEFAULT_CONFIG;
+  // Clone: the Eluvix constructor sorts config.upstreams in place, and the
+  // canonical DEFAULT_CONFIG must never be mutated by a live router.
+  return structuredClone(DEFAULT_CONFIG);
 }
 
 let activeConfig: RouterConfig = loadConfig();
@@ -209,26 +175,40 @@ export function validateConfig(config: any): void {
     throw new ConfigValidationError('Invalid configuration: "egressPolicy" must be "local-only" or "allow-egress"');
   }
   for (const upstream of config.upstreams) {
-    if (!upstream.id || typeof upstream.id !== 'string') {
-      throw new ConfigValidationError('Invalid upstream: "id" string is required');
-    }
-    if (!upstream.name || typeof upstream.name !== 'string') {
-      throw new ConfigValidationError(`Invalid upstream ${upstream.id}: "name" string is required`);
-    }
-    if (!upstream.type || typeof upstream.type !== 'string') {
-      throw new ConfigValidationError(`Invalid upstream ${upstream.id}: "type" string is required`);
-    }
-    if (!upstream.endpoint || typeof upstream.endpoint !== 'string') {
-      throw new ConfigValidationError(`Invalid upstream ${upstream.id}: "endpoint" string is required`);
-    }
-    if (!Array.isArray(upstream.models)) {
-      throw new ConfigValidationError(`Invalid upstream ${upstream.id}: "models" array is required`);
-    }
-    // Restrict cliPath on antigravity
-    if (upstream.antigravity?.cliPath && !isValidCliPath(upstream.antigravity.cliPath)) {
-      throw new ConfigValidationError(`Invalid upstream ${upstream.id}: unauthorized or unsafe cliPath "${upstream.antigravity.cliPath}"`);
+    const problem = upstreamProblem(upstream);
+    if (problem) {
+      const hasId = upstream && typeof upstream === 'object' && typeof upstream.id === 'string';
+      throw new ConfigValidationError(hasId ? `Invalid upstream ${upstream.id}: ${problem}` : `Invalid upstream: ${problem}`);
     }
   }
+}
+
+/**
+ * The reason one upstream entry is invalid, or null when it is valid.
+ * Shared by validateConfig() (save path) and sanitizeLoadedConfig()
+ * (load path) so the two can never drift into different rules.
+ */
+function upstreamProblem(upstream: any): string | null {
+  if (!upstream || typeof upstream !== 'object' || !upstream.id || typeof upstream.id !== 'string') {
+    return '"id" string is required';
+  }
+  if (!upstream.name || typeof upstream.name !== 'string') {
+    return '"name" string is required';
+  }
+  if (!upstream.type || typeof upstream.type !== 'string') {
+    return '"type" string is required';
+  }
+  if (!upstream.endpoint || typeof upstream.endpoint !== 'string') {
+    return '"endpoint" string is required';
+  }
+  if (!Array.isArray(upstream.models)) {
+    return '"models" array is required';
+  }
+  // Restrict cliPath on antigravity
+  if (upstream.antigravity?.cliPath && !isValidCliPath(upstream.antigravity.cliPath)) {
+    return `unauthorized or unsafe cliPath "${upstream.antigravity.cliPath}"`;
+  }
+  return null;
 }
 
 export function saveConfig(newConfig: RouterConfig): RouterConfig {

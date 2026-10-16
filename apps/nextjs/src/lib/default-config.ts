@@ -1,0 +1,109 @@
+import type { RouterConfig } from '@eluvix/router-core';
+
+/**
+ * The single source of truth for Eluvix's shipped default router config.
+ *
+ * Imported by the server router (lib/router.ts, as the fallback when no
+ * config file exists) and by the dashboard page (as its initial state
+ * before the saved config loads). The checked-in sample at
+ * apps/nextjs/.eluvix-config.json mirrors this object and is kept in sync
+ * by src/lib/__tests__/default-config.test.ts — edit the defaults here,
+ * never in the copies.
+ */
+export const DEFAULT_CONFIG: RouterConfig = {
+  strategy: 'cost-complexity',
+  fallbackStrategy: 'priority',
+  egressPolicy: 'local-only',
+  upstreams: [
+    {
+      id: 'local-lemonade',
+      name: 'Lemonade Router',
+      type: 'lemonade',
+      endpoint: 'http://localhost:13305',
+      priority: 30,
+      models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', 'LMX-Omni-5.5B-Lite', '*'],
+      tier: 'tier-1',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 3
+    },
+    {
+      id: 'local-vllm',
+      name: 'Local vLLM',
+      type: 'vllm',
+      endpoint: 'http://localhost:8000',
+      priority: 10,
+      models: ['meta-llama/Llama-3-8b', 'meta-llama/Llama-3-70b', 'mistralai/Mistral-7B-Instruct-v0.3'],
+      tier: 'tier-1',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 3
+    },
+    {
+      id: 'local-ollama',
+      name: 'Local Ollama',
+      type: 'ollama',
+      endpoint: 'http://localhost:11434',
+      priority: 22,
+      models: ['llama3', 'llama3.1', 'qwen2.5-coder', 'mistral', '*'],
+      tier: 'tier-2',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 3
+    },
+    {
+      id: 'local-vllm-sr',
+      name: 'Local vLLM-sr',
+      type: 'vllm-sr',
+      endpoint: 'http://localhost:8001',
+      priority: 20,
+      models: ['meta-llama/Llama-3-8b-instruct'],
+      tier: 'tier-2',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 3
+    },
+    {
+      id: 'local-switchyard',
+      name: 'Local Switchyard Node',
+      type: 'switchyard',
+      endpoint: 'http://localhost:8080',
+      priority: 18,
+      models: ['deepseek-ai/deepseek-coder-6.7b'],
+      tier: 'tier-2',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 3
+    },
+    {
+      id: 'billama-cloud',
+      name: 'Billama Cloud (Recommended)',
+      type: 'billama',
+      endpoint: 'https://api.billama.dev',
+      apiKey: '',
+      priority: 16,
+      models: ['*'],
+      tier: 'tier-3',
+      costPer1kTokens: 0.001,
+      maxComplexityScore: 4
+    },
+    {
+      id: 'openai-direct',
+      name: 'OpenAI Direct',
+      type: 'openai-compatible',
+      endpoint: 'https://api.openai.com',
+      apiKey: '',
+      priority: 12,
+      models: ['gpt-4o', 'gpt-4o-mini', '*'],
+      tier: 'tier-3',
+      costPer1kTokens: 0.005,
+      maxComplexityScore: 4
+    },
+    {
+      id: 'claude-code-agent',
+      name: 'Claude Code Agent',
+      type: 'openai-compatible',
+      endpoint: 'http://localhost:8082/v1',
+      priority: 10,
+      models: ['claude-3-7-sonnet', '*'],
+      tier: 'tier-4',
+      costPer1kTokens: 0.003,
+      maxComplexityScore: 4
+    }
+  ]
+};
