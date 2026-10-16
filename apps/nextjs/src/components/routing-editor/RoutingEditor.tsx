@@ -523,6 +523,10 @@ export default function RoutingEditor() {
   const [pendingApply, setPendingApply] = useState<any>(null);
   const [applyDiff, setApplyDiff] = useState<ConfigDiff | null>(null);
   const [applyDiffKnown, setApplyDiffKnown] = useState(true);
+  // Which authoritative write the diff confirmation gates: an editor Apply,
+  // or a LOCAL-tier deploy (deployLocal rewrites the same live config file).
+  const [confirmAction, setConfirmAction] = useState<'apply' | 'deploy' | null>(null);
+  const [pendingDeploy, setPendingDeploy] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<{key: string, path: string}[]>([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{success?: boolean, message?: string} | null>(null);
@@ -1086,16 +1090,11 @@ export default function RoutingEditor() {
     }
   }, [fetchOrchestratorStatus, showToast]);
 
-  const onApplyToRouter = useCallback(async () => {
-    const compiled = compileGraph(nodes as any, edges as any);
-    if (!compiled.rawRouterConfig) {
-      setCompiledConfigs(compiled);
-      setIsExportModalOpen(true);
-      return;
-    }
-    // Authoritative apply deletes every live upstream that is not on the
-    // canvas. Fetch the live config and show the user the exact diff —
-    // especially the removals — before anything is written.
+  // Fetch the live router config and stage the diff against a candidate
+  // config for the confirmation modal. Shared by Apply and LOCAL-tier
+  // deploy: both perform the same authoritative write of the live config,
+  // deleting every upstream that is not in the candidate.
+  const prepareConfigDiff = useCallback(async (nextConfig: any) => {
     let current: any = null;
     let known = true;
     try {
@@ -1109,12 +1108,28 @@ export default function RoutingEditor() {
       known = false;
     }
     setApplyDiffKnown(known);
-    setApplyDiff(diffRouterConfigs(current, compiled.rawRouterConfig));
+    setApplyDiff(diffRouterConfigs(current, nextConfig));
+  }, []);
+
+  const onApplyToRouter = useCallback(async () => {
+    const compiled = compileGraph(nodes as any, edges as any);
+    if (!compiled.rawRouterConfig) {
+      setCompiledConfigs(compiled);
+      setIsExportModalOpen(true);
+      return;
+    }
+    // Authoritative apply deletes every live upstream that is not on the
+    // canvas. Show the user the exact diff — especially the removals —
+    // before anything is written.
+    await prepareConfigDiff(compiled.rawRouterConfig);
+    setConfirmAction('apply');
     setPendingApply(compiled);
-  }, [nodes, edges]);
+  }, [nodes, edges, prepareConfigDiff]);
 
   const cancelApplyToRouter = useCallback(() => {
     setPendingApply(null);
+    setPendingDeploy(false);
+    setConfirmAction(null);
     setApplyDiff(null);
   }, []);
 
@@ -1122,6 +1137,7 @@ export default function RoutingEditor() {
     const compiled = pendingApply;
     if (!compiled?.rawRouterConfig) return;
     setPendingApply(null);
+    setConfirmAction(null);
     setApplyDiff(null);
     setCompiledConfigs(compiled);
     setIsExportModalOpen(true);
@@ -1154,7 +1170,7 @@ export default function RoutingEditor() {
     }
   }, [pendingApply, showToast, fetchOrchestratorStatus]);
 
-  const handleDeploy = async () => {
+  const executeDeploy = async () => {
     setIsDeploying(true);
     setDeployResult(null);
     setDeployLogs([`🚀 Deploying configuration to target: ${selectedTier.toUpperCase()}...`]);
@@ -1182,6 +1198,28 @@ export default function RoutingEditor() {
     } finally {
       setIsDeploying(false);
     }
+  };
+
+  // A LOCAL-tier deploy rewrites the live router config file authoritatively
+  // (deployLocal) and reloads the router — the same destructive write as
+  // Apply — so it goes through the same diff confirmation first. The other
+  // tiers provision containers/clusters and never touch the live config,
+  // so they deploy directly.
+  const handleDeploy = async () => {
+    if (selectedTier === 'local' && compiledConfigs?.rawRouterConfig) {
+      await prepareConfigDiff(compiledConfigs.rawRouterConfig);
+      setConfirmAction('deploy');
+      setPendingDeploy(true);
+      return;
+    }
+    await executeDeploy();
+  };
+
+  const confirmDeploy = async () => {
+    setPendingDeploy(false);
+    setConfirmAction(null);
+    setApplyDiff(null);
+    await executeDeploy();
   };
 
 
@@ -3296,12 +3334,14 @@ export default function RoutingEditor() {
           </div>
         )}
 
-        {applyDiff && pendingApply && (
-          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4">
+        {applyDiff && confirmAction && (pendingApply || pendingDeploy) && (
+          <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-[60] p-4">
             <div className="bg-gray-800 rounded-xl border border-gray-600 shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
               <div className="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-900">
                 <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <span>⚠️</span> Apply changes to the live router?
+                  <span>⚠️</span> {confirmAction === 'deploy'
+                    ? 'Deploy to LOCAL — this rewrites the live router config'
+                    : 'Apply changes to the live router?'}
                 </h3>
                 <button
                   onClick={cancelApplyToRouter}
@@ -3312,7 +3352,9 @@ export default function RoutingEditor() {
               </div>
               <div className="p-4 overflow-y-auto flex flex-col gap-4 text-sm">
                 <p className="text-gray-300">
-                  Applying is authoritative: the live router configuration becomes exactly what is on this canvas.
+                  {confirmAction === 'deploy'
+                    ? 'Deploying to the LOCAL tier writes this configuration to the live router config file and reloads the router — the same authoritative write as Apply. The live configuration becomes exactly what is in this deployment.'
+                    : 'Applying is authoritative: the live router configuration becomes exactly what is on this canvas.'}
                   {applyDiff.removed.length > 0 && (
                     <span className="text-red-300 font-semibold"> {applyDiff.removed.length} upstream(s) will be removed.</span>
                   )}
@@ -3377,10 +3419,10 @@ export default function RoutingEditor() {
                   Cancel
                 </button>
                 <button
-                  onClick={confirmApplyToRouter}
+                  onClick={confirmAction === 'deploy' ? confirmDeploy : confirmApplyToRouter}
                   className={`px-4 py-2 text-sm text-white rounded font-medium transition ${applyDiff.removed.length > 0 ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
                 >
-                  Apply to live router
+                  {confirmAction === 'deploy' ? 'Deploy to local' : 'Apply to live router'}
                 </button>
               </div>
             </div>
