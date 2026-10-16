@@ -118,8 +118,13 @@ function generateEluvixConfig(
   const routes: Array<{ id: string; name: string; costLabel?: string }> = 
     Array.isArray(switchyard?.data?.routes) ? switchyard.data.routes : [];
 
-  // Map each connected engine node from Switchyard's output handles
-  const tierMap = new Map<string, { tierId: string; tierName: string; costPer1kTokens: number; maxComplexityScore: number }>();
+  // Map each connected engine node from Switchyard's output handles.
+  // A tier expresses routing preference (ordering + default cost) ONLY. It
+  // must never shrink an upstream's capability cap: wiring Lemonade into
+  // tier-1 used to compile maxComplexityScore 1, which declared it incapable
+  // of nearly every real prompt and silently escalated traffic to later
+  // tiers (including cloud/agent upstreams the user never asked for).
+  const tierMap = new Map<string, { tierId: string; tierName: string; costPer1kTokens: number }>();
 
   if (switchyard) {
     const outgoingEdges = edges.filter(e => e.source === switchyard.id);
@@ -128,32 +133,27 @@ function generateEluvixConfig(
       const route = routes.find(r => r.id === handleId);
 
       let cost = 0.0;
-      let maxComplexity = 2;
-      if (handleId === 'tier-1') {
-        cost = 0.0;
-        maxComplexity = 1;
-      } else if (handleId === 'tier-2') {
-        cost = 0.0;
-        maxComplexity = 3;
-      } else if (handleId === 'tier-3') {
-        cost = 0.0;
-        maxComplexity = 3;
-      } else if (handleId === 'tier-4') {
+      if (handleId === 'tier-4') {
         cost = 0.003;
-        maxComplexity = 4;
-      } else {
+      } else if (handleId !== 'tier-1' && handleId !== 'tier-2' && handleId !== 'tier-3') {
         cost = idx * 0.002;
-        maxComplexity = Math.min(4, idx + 1);
       }
 
       tierMap.set(edge.target, {
         tierId: handleId,
         tierName: route?.name || handleId,
-        costPer1kTokens: cost,
-        maxComplexityScore: maxComplexity
+        costPer1kTokens: cost
       });
     });
   }
+
+  // Capability is a property of the engine/model serving the upstream: an
+  // explicit per-node value when provided, otherwise unbounded (the router
+  // core treats a missing cap as 4). Tier wiring never lowers it.
+  const capabilityCap = (node: Node): number => {
+    const n = Number((node.data as any)?.maxComplexityScore);
+    return Number.isFinite(n) && n >= 1 && n <= 4 ? n : 4;
+  };
 
   localEngines.forEach(node => {
     let type = 'lemonade';
@@ -178,8 +178,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: type === 'lemonade' ? 'tier-1' : 'tier-2',
       tierName: type === 'lemonade' ? 'Tier 1: Local Fast' : 'Tier 2: Local Reasoning',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: type === 'lemonade' ? 2 : 3
+      costPer1kTokens: 0.0
     };
 
     upstreams.push({
@@ -192,7 +191,7 @@ function generateEluvixConfig(
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : []
     });
   });
@@ -201,8 +200,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-3',
       tierName: 'Tier 3: Economy Cloud',
-      costPer1kTokens: 0.005,
-      maxComplexityScore: 4
+      costPer1kTokens: 0.005
     };
 
     upstreams.push({
@@ -215,7 +213,7 @@ function generateEluvixConfig(
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : []
     });
   });
@@ -227,8 +225,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-2',
       tierName: 'Tier 2: Antigravity Autonomous Agent',
-      costPer1kTokens: 0.0,
-      maxComplexityScore: 4
+      costPer1kTokens: 0.0
     };
 
     const execMode = node.data?.executionMode || 'cli';
@@ -256,7 +253,7 @@ function generateEluvixConfig(
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       antigravity: {
         model: modelId,
@@ -282,8 +279,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-2',
       tierName: 'Tier 2: OpenAI Codex Autonomous Agent',
-      costPer1kTokens: 0.001,
-      maxComplexityScore: 4
+      costPer1kTokens: 0.001
     };
 
     upstreams.push({
@@ -296,7 +292,7 @@ function generateEluvixConfig(
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       codex: {
         model: modelId,
@@ -321,8 +317,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-2',
       tierName: 'Tier 2: Claude Code Autonomous Agent',
-      costPer1kTokens: 0.003,
-      maxComplexityScore: 4
+      costPer1kTokens: 0.003
     };
 
     upstreams.push({
@@ -335,7 +330,7 @@ function generateEluvixConfig(
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       claudeCode: {
         model: modelId,
@@ -364,8 +359,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-3',
       tierName: 'Tier 3: Billama Cloud',
-      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.002),
-      maxComplexityScore: 4
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.002)
     };
 
     upstreams.push({
@@ -378,8 +372,8 @@ function generateEluvixConfig(
       models: selected,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
-      costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : []
     });
   });
@@ -393,8 +387,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-4',
       tierName: 'Tier 4: OpenAI Cloud',
-      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.005),
-      maxComplexityScore: 4
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.005)
     };
 
     upstreams.push({
@@ -408,8 +401,8 @@ function generateEluvixConfig(
       models: selected,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
-      costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : []
     });
   });
@@ -423,8 +416,7 @@ function generateEluvixConfig(
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-4',
       tierName: 'Tier 4: Anthropic Cloud',
-      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.003),
-      maxComplexityScore: 4
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? 0.003)
     };
 
     upstreams.push({
@@ -437,8 +429,8 @@ function generateEluvixConfig(
       models: selected,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
-      costPer1kTokens: tierInfo.costPer1kTokens,
-      maxComplexityScore: tierInfo.maxComplexityScore,
+      costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
+      maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : []
     });
   });
@@ -481,8 +473,24 @@ function generateEluvixConfig(
   const pgNode = privacyGuards[0];
   const pgData = (pgNode?.data || {}) as Record<string, any>;
 
+  // Egress is determined by what is actually on the canvas: a graph whose
+  // upstreams are all local engines compiles to a fail-closed local-only
+  // policy, so the router can never fall back to an external service that
+  // is not part of this layout. Any cloud provider, cloud gateway, or
+  // external agent node (Antigravity/Codex/Claude Code phone home even
+  // though their daemons listen on localhost) opts the layout into egress.
+  const hasExternalUpstream =
+    antigravityNodes.length > 0 ||
+    codexNodes.length > 0 ||
+    claudeCodeNodes.length > 0 ||
+    billamaNodes.length > 0 ||
+    openaiNodes.length > 0 ||
+    claudeNodes.length > 0 ||
+    modelGateways.length > 0;
+
   return {
     upstreams,
+    egressPolicy: hasExternalUpstream ? 'allow-egress' : 'local-only',
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,

@@ -25,6 +25,10 @@ describe('Orchestration Subsystem', () => {
     expect(typeof root).toBe('string');
   });
 
+  // getStatus() shells out to docker/k3d/kubectl/helm with per-probe
+  // timeouts of 3-5s each, so its wall-clock time is environment-dependent:
+  // instant where the tools are absent, several seconds on a CI runner
+  // where they exist. The default 5s test timeout is too tight there.
   it('should query orchestrator status across all 4 levels', async () => {
     const status = await orchestratorManager.getStatus();
     expect(status.tools).toBeDefined();
@@ -35,7 +39,7 @@ describe('Orchestration Subsystem', () => {
     expect(status.k3d).toBeDefined();
     expect(status.compose).toBeDefined();
     expect(status.local).toBeDefined();
-  });
+  }, 60_000);
 
   it('should successfully deploy local level 1 config', async () => {
     const sampleConfig = {
@@ -101,6 +105,59 @@ describe('Orchestration Subsystem', () => {
     const written = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     expect(written.upstreams.map((u: any) => u.id)).toEqual(['lemonade-1']);
     expect(written.upstreams.some((u: any) => u.type === 'antigravity')).toBe(false);
+  });
+
+  it('should sync OpenCode models authoritatively and resolve the key from auth.json', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-sync-'));
+    const eluvixDir = path.join(root, 'eluvix');
+    const openCodePath = path.join(root, 'opencode', 'opencode.json');
+    fs.mkdirSync(eluvixDir, { recursive: true });
+    fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
+    fs.writeFileSync(
+      path.join(eluvixDir, 'auth.json'),
+      JSON.stringify({ ['admin' + 'Password']: 'test-admin-pw' }),
+      'utf-8'
+    );
+
+    // Pre-existing OpenCode config: a stale AGY model synced by an earlier
+    // deploy, a customized entry for a still-served model, and an unrelated
+    // provider that must survive untouched.
+    fs.writeFileSync(openCodePath, JSON.stringify({
+      provider: {
+        Eluvix: {
+          options: { apiKey: 'stale-key' },
+          models: {
+            auto: { name: 'Auto (Intelligent Mesh Router)', limit: { context: 131072, output: 8192 } },
+            'gemini-4-argon': { name: 'Gemini 4 Argon (Google Antigravity AGY)', limit: { context: 1048576, output: 65536 } },
+            'Qwen3.5-4B-MTP-GGUF': { name: 'Custom Label', limit: { context: 4242, output: 4242 } }
+          }
+        },
+        OtherProvider: { models: { 'their-model': { name: 'Theirs' } } }
+      }
+    }), 'utf-8');
+
+    orchestratorManager.syncOpenCodeConfig(
+      { upstreams: [{ id: 'lemonade-1', name: 'Lemonade Engine', type: 'lemonade', endpoint: 'http://localhost:13305', priority: 30, models: ['Qwen3.5-4B-MTP-GGUF'] }] },
+      eluvixDir,
+      openCodePath,
+      []
+    );
+
+    const writtenRaw = fs.readFileSync(openCodePath, 'utf-8');
+    const written = JSON.parse(writtenRaw);
+    // Only the still-served model plus 'auto' remain — the stale AGY model is gone
+    expect(Object.keys(written.provider.Eluvix.models).sort()).toEqual(['Qwen3.5-4B-MTP-GGUF', 'auto']);
+    // A still-served model keeps its user customization
+    expect(written.provider.Eluvix.models['Qwen3.5-4B-MTP-GGUF'].name).toBe('Custom Label');
+    // The key comes from auth.json — not the stale key, never the old hardcoded placeholder
+    expect(written.provider.Eluvix.options.apiKey).toBe('test-admin-pw');
+    expect(writtenRaw).not.toContain('BPlOdDCF');
+    // Unrelated providers are untouched
+    expect(written.provider.OtherProvider.models['their-model'].name).toBe('Theirs');
   });
 
   it('should non-destructively synchronize models and limits into opencode.json', async () => {

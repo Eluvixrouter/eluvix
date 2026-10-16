@@ -1,5 +1,6 @@
 {
   "fallbackStrategy": "priority",
+  "egressPolicy": "local-only",
   "upstreams": [
     {
       "id": "local-lemonade",

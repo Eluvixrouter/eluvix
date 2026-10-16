@@ -38,6 +38,7 @@ function atomicWriteFile(filePath: string, content: string): void {
 const DEFAULT_CONFIG: RouterConfig = {
   strategy: 'cost-complexity',
   fallbackStrategy: 'priority',
+  egressPolicy: 'local-only',
   upstreams: [
     {
       id: 'local-lemonade',
@@ -203,6 +204,9 @@ export function validateConfig(config: any): void {
   }
   if (!Array.isArray(config.upstreams)) {
     throw new ConfigValidationError('Invalid configuration: "upstreams" must be an array');
+  }
+  if (config.egressPolicy !== undefined && config.egressPolicy !== 'local-only' && config.egressPolicy !== 'allow-egress') {
+    throw new ConfigValidationError('Invalid configuration: "egressPolicy" must be "local-only" or "allow-egress"');
   }
   for (const upstream of config.upstreams) {
     if (!upstream.id || typeof upstream.id !== 'string') {
