@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { Eluvix, RouterConfig } from '../index.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { Eluvix, RouterConfig, UpstreamConfig, isLocalUpstream } from '../index.js';
 import { applyPrivacyGuard, validateChatPrompt } from '../guard.js';
 
 // Mock DB interactions
@@ -638,6 +638,126 @@ describe('Switchyard Core Routing Logic', () => {
       expect(receivedMessagesCount).toBe(5);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('Egress policy (local-only)', () => {
+  const completionBody = JSON.stringify({
+    id: 'chatcmpl-egress',
+    object: 'chat.completion',
+    created: 0,
+    model: 'shared-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+  });
+
+  function stubFetch() {
+    const calls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any) => {
+      calls.push(String(url));
+      return new Response(completionBody, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as any;
+    return { calls, restore: () => { globalThis.fetch = originalFetch; } };
+  }
+
+  // A moderate prompt (complexity score >= 2): the local upstream's cap of 1
+  // makes it "incapable", so without an egress policy the capable-first sort
+  // sends the request to the cloud upstream even though the local one is up.
+  const moderatePrompt = 'Please analyze this carefully, step by step: ' + 'x'.repeat(1600);
+
+  const localUpstream: UpstreamConfig = {
+    id: 'local-lemonade',
+    name: 'Lemonade',
+    type: 'lemonade',
+    endpoint: 'http://localhost:13305',
+    priority: 25,
+    models: ['shared-model'],
+    costPer1kTokens: 0,
+    maxComplexityScore: 1
+  };
+  const cloudUpstream: UpstreamConfig = {
+    id: 'cloud-pricey',
+    name: 'Cloud',
+    type: 'openai-compatible',
+    endpoint: 'https://api.openai.com/v1',
+    priority: 30,
+    models: ['shared-model'],
+    costPer1kTokens: 0.005,
+    maxComplexityScore: 4
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies local vs external upstreams', () => {
+    const base: Pick<UpstreamConfig, 'name' | 'priority' | 'models'> = { name: 'x', priority: 1, models: ['m'] };
+    expect(isLocalUpstream({ ...base, id: 'a', type: 'lemonade', endpoint: 'http://localhost:13305' })).toBe(true);
+    expect(isLocalUpstream({ ...base, id: 'b', type: 'ollama', endpoint: 'http://192.168.1.50:11434' })).toBe(true);
+    expect(isLocalUpstream({ ...base, id: 'c', type: 'vllm', endpoint: 'http://10.0.0.8:8000' })).toBe(true);
+    expect(isLocalUpstream({ ...base, id: 'd', type: 'openai-compatible', endpoint: 'https://api.openai.com/v1' })).toBe(false);
+    expect(isLocalUpstream({ ...base, id: 'e', type: 'billama', endpoint: 'https://api.billama.dev' })).toBe(false);
+    // The AGY CLI runs locally but the prompt leaves the machine.
+    expect(isLocalUpstream({ ...base, id: 'f', type: 'antigravity', endpoint: 'cli://agy' })).toBe(false);
+    expect(isLocalUpstream({ ...base, id: 'g', type: 'openai-compatible', endpoint: 'cli://codex' })).toBe(false);
+  });
+
+  it('forces local routing under egressPolicy local-only even when the cloud upstream ranks first', async () => {
+    const { calls, restore } = stubFetch();
+    try {
+      const router = new Eluvix({
+        egressPolicy: 'local-only',
+        strategy: 'cost-complexity',
+        upstreams: [localUpstream, cloudUpstream]
+      });
+      const res = await router.routeChatCompletion({
+        model: 'shared-model',
+        messages: [{ role: 'user', content: moderatePrompt }]
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-eluvix-upstream')).toBe('local-lemonade');
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every(c => c.startsWith('http://localhost:13305'))).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('serves the same request from the cloud when no egress policy is set (contrast)', async () => {
+    const { restore } = stubFetch();
+    try {
+      const router = new Eluvix({
+        strategy: 'cost-complexity',
+        upstreams: [localUpstream, cloudUpstream]
+      });
+      const res = await router.routeChatCompletion({
+        model: 'shared-model',
+        messages: [{ role: 'user', content: moderatePrompt }]
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-eluvix-upstream')).toBe('cloud-pricey');
+    } finally {
+      restore();
+    }
+  });
+
+  it('fails closed under local-only when only external upstreams match', async () => {
+    const { calls, restore } = stubFetch();
+    try {
+      const router = new Eluvix({
+        egressPolicy: 'local-only',
+        strategy: 'cost-complexity',
+        upstreams: [cloudUpstream]
+      });
+      await expect(router.routeChatCompletion({
+        model: 'shared-model',
+        messages: [{ role: 'user', content: 'hello' }]
+      })).rejects.toThrow(/local-only/);
+      expect(calls).toEqual([]);
+    } finally {
+      restore();
     }
   });
 });

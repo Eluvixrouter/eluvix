@@ -141,3 +141,69 @@ describe('Eluvix Canvas Compiler', () => {
     expect(result.observabilitySetup).toContain('latencyAlertMs: 3500');
   });
 });
+
+describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
+  const switchyardNode: Node = {
+    id: 'sw-1',
+    type: 'switchyardNode',
+    position: { x: 0, y: 0 },
+    data: {
+      strategy: 'cost-complexity',
+      routes: [
+        { id: 'tier-1', name: 'Tier 1: Local Fast' },
+        { id: 'tier-3', name: 'Tier 3: Economy Cloud' },
+      ],
+    },
+  };
+
+  it('does not let tier-1 wiring cap a local engine capability, and compiles local-only egress', () => {
+    const nodes: Node[] = [
+      switchyardNode,
+      {
+        id: 'lemonade-1',
+        type: 'lemonadeNode',
+        position: { x: 0, y: 0 },
+        data: { label: 'Lemonade Engine', endpoint: 'http://localhost:13305', selectedModel: 'Qwen3.5-4B-MTP-GGUF' },
+      },
+    ];
+    const edges = [{ id: 'e1', source: 'sw-1', target: 'lemonade-1', sourceHandle: 'tier-1' } as any];
+    const result = compileGraph(nodes, edges);
+    const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-1');
+    expect(upstream.tier).toBe('tier-1');
+    expect(upstream.maxComplexityScore).toBe(4);
+    expect(result.rawRouterConfig.egressPolicy).toBe('local-only');
+  });
+
+  it('respects an explicit per-node capability cap over the engine default', () => {
+    const nodes: Node[] = [
+      {
+        id: 'lemonade-1',
+        type: 'lemonadeNode',
+        position: { x: 0, y: 0 },
+        data: { label: 'Small Lemonade', selectedModel: 'tiny-model', maxComplexityScore: 1 },
+      },
+    ];
+    const result = compileGraph(nodes, []);
+    const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-1');
+    expect(upstream.maxComplexityScore).toBe(1);
+  });
+
+  it('compiles allow-egress when a cloud node is on the canvas, with full capability and node cost', () => {
+    const nodes: Node[] = [
+      switchyardNode,
+      {
+        id: 'billama-1',
+        type: 'billamaNode',
+        position: { x: 0, y: 0 },
+        data: { label: 'Billama Cloud Provider', endpoint: 'https://api.billama.dev', selectedModel: 'llama-3.3-70b', costPer1kTokens: 0.007 },
+      },
+    ];
+    const edges = [{ id: 'e1', source: 'sw-1', target: 'billama-1', sourceHandle: 'tier-3' } as any];
+    const result = compileGraph(nodes, edges);
+    const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'billama-1');
+    expect(upstream.tier).toBe('tier-3');
+    expect(upstream.maxComplexityScore).toBe(4);
+    expect(upstream.costPer1kTokens).toBe(0.007);
+    expect(result.rawRouterConfig.egressPolicy).toBe('allow-egress');
+  });
+});

@@ -36,10 +36,18 @@ export interface ModelGatewayConfig {
   systemPromptPrepend?: string;
 }
 
+export type EgressPolicy = 'local-only' | 'allow-egress';
+
 export interface RouterConfig {
   upstreams: UpstreamConfig[];
   defaultModel?: string;
   strategy?: RoutingStrategy;
+  /**
+   * 'local-only' fails closed: routing only ever considers upstreams served
+   * from this machine / LAN, even as a fallback. Absent = 'allow-egress'
+   * (legacy behavior) so hand-written configs keep working.
+   */
+  egressPolicy?: EgressPolicy;
   fallbackStrategy?: 'round-robin' | 'priority';
   switchyard?: SwitchyardConfig;
   modelGateway?: ModelGatewayConfig;
@@ -111,6 +119,31 @@ export interface UpstreamConfig {
   latencyMs?: number;
   capabilities?: string[];
   antigravity?: AntigravityConfig;
+}
+
+/**
+ * Whether serving a prompt through this upstream keeps the prompt on the
+ * user's own machine / LAN. Antigravity and other cli:// agent wrappers are
+ * NOT local: the CLI is a front-end for an external service, so the prompt
+ * leaves the machine even though the process runs locally.
+ */
+export function isLocalUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  if (upstream.type === 'antigravity') return false;
+  const endpoint = upstream.endpoint || '';
+  if (endpoint.startsWith('cli://')) return false;
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host === '0.0.0.0') return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
+  return false;
 }
 
 export interface PromptComplexityAssessment {
@@ -615,12 +648,27 @@ export class Eluvix {
       }
     }
 
-    const matchingUpstreams = this.config.upstreams.filter(u => 
+    let matchingUpstreams = this.config.upstreams.filter(u => 
       this.matchesModel(u, effectiveRequest.model)
     );
 
     if (matchingUpstreams.length === 0) {
       throw new Error(`No upstream available for model: ${effectiveRequest.model}`);
+    }
+
+    // Egress policy enforcement: a local-only configuration must never send
+    // prompts to external services — not as the primary pick, and not as a
+    // fallback when the local engines are down. Fail closed instead.
+    if (this.config.egressPolicy === 'local-only') {
+      const localUpstreams = matchingUpstreams.filter(u => isLocalUpstream(u));
+      const excluded = matchingUpstreams.filter(u => !isLocalUpstream(u));
+      if (excluded.length > 0) {
+        console.warn(`[Switchyard Egress] egressPolicy=local-only excluded non-local upstreams: ${excluded.map(u => u.id).join(', ')}`);
+      }
+      if (localUpstreams.length === 0) {
+        throw new Error(`No local upstream available for model: ${effectiveRequest.model} (egressPolicy: local-only)`);
+      }
+      matchingUpstreams = localUpstreams;
     }
 
     const switchyardConfig = this.config.switchyard || {};

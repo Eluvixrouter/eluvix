@@ -19,10 +19,12 @@ interface RouterConfig {
   upstreams: UpstreamConfig[];
   defaultModel?: string;
   fallbackStrategy?: 'round-robin' | 'priority';
+  egressPolicy?: 'local-only' | 'allow-egress';
 }
 
 const DEFAULT_CONFIG: RouterConfig = {
   fallbackStrategy: 'priority',
+  egressPolicy: 'local-only',
   upstreams: [
     {
       id: 'local-vllm',

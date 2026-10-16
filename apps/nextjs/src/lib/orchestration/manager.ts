@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
-import { getCachedAntigravityModels, inferModelMetadata } from '@eluvix/router-core';
+import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata } from '@eluvix/router-core';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
 
@@ -262,8 +262,12 @@ export class OrchestrationManager {
   }
 
   /**
-   * Non-destructively synchronizes active Eluvix upstreams, models, context limits, and auth token
+   * Synchronizes active Eluvix upstreams, models, context limits, and auth token
    * into OpenCode's configuration file (~/.config/opencode/opencode.json).
+   * The Eluvix provider's model map is authoritative — it mirrors the current
+   * router config exactly, so models of removed upstreams disappear instead of
+   * lingering in OpenCode forever. Everything else in the file (other
+   * providers, user settings) is preserved.
    */
   public syncOpenCodeConfig(
     routerConfig: any,
@@ -285,8 +289,12 @@ export class OrchestrationManager {
       } catch {}
     }
 
-    // Resolve current Eluvix admin password / bearer token
-    let apiKey = existingOpenCode?.provider?.Eluvix?.options?.apiKey || 'BPlOdDCF';
+    // Resolve the current Eluvix admin password / bearer token from the real
+    // auth store — never a hardcoded placeholder. Order: the deployment's
+    // auth.json, then any key already configured in OpenCode, then the shared
+    // getOrCreateAuthConfig() the router itself uses (creates auth.json with
+    // a fresh random password when none exists yet).
+    let apiKey: string | undefined = existingOpenCode?.provider?.Eluvix?.options?.apiKey || undefined;
     const authFile = path.join(eluvixConfigDir, 'auth.json');
     if (fs.existsSync(authFile)) {
       try {
@@ -294,6 +302,11 @@ export class OrchestrationManager {
         if (authJson.adminPassword) {
           apiKey = authJson.adminPassword;
         }
+      } catch {}
+    }
+    if (!apiKey) {
+      try {
+        apiKey = getOrCreateAuthConfig().adminPassword;
       } catch {}
     }
 
@@ -306,18 +319,18 @@ export class OrchestrationManager {
       ...(existingEluvix.models || {})
     };
 
-    // Always ensure 'auto' mesh router entry exists
-    existingModels['auto'] = existingModels['auto'] || {
-      name: 'Auto (Intelligent Mesh Router)',
-      limit: { context: 131072, output: 8192 }
-    };
-
-    // Purge retired Gemini models (3.1, 3.6, 3.7, 2.5) if lingering from past sessions
-    for (const key of Object.keys(existingModels)) {
-      if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(key)) {
-        delete existingModels[key];
+    // The Eluvix provider's model map is authoritative: it is rebuilt from
+    // the current router config on every sync, so a model whose upstream was
+    // removed from the router disappears from OpenCode instead of lingering
+    // (previously only a hardcoded list of retired Gemini models was ever
+    // purged, so e.g. gemini-4-argon survived removal of the AGY upstream).
+    // Entries for models that are still served keep user customizations.
+    const syncedModels: Record<string, any> = {
+      auto: existingModels['auto'] || {
+        name: 'Auto (Intelligent Mesh Router)',
+        limit: { context: 131072, output: 8192 }
       }
-    }
+    };
 
     const upstreams = Array.isArray(routerConfig?.upstreams) ? routerConfig.upstreams : [];
     const agyCatalog = getCachedAntigravityModels();
@@ -334,11 +347,15 @@ export class OrchestrationManager {
 
       for (const modelId of upstreamModels) {
         if (!modelId || modelId === '*' || modelId === 'auto') continue;
-        if (existingModels[modelId]) continue;
+        if (syncedModels[modelId]) continue;
+        if (existingModels[modelId]) {
+          syncedModels[modelId] = existingModels[modelId];
+          continue;
+        }
 
         const agyMatch = agyCatalog.find(a => a.baseId.toLowerCase() === modelId.toLowerCase());
         if (agyMatch) {
-          existingModels[modelId] = {
+          syncedModels[modelId] = {
             name: `${agyMatch.displayName} (Google Antigravity AGY)`,
             limit: {
               context: agyMatch.contextLimit,
@@ -347,7 +364,7 @@ export class OrchestrationManager {
           };
         } else {
           const meta = inferModelMetadata(modelId);
-          existingModels[modelId] = {
+          syncedModels[modelId] = {
             name: `${modelId} (${upstream.name || upstream.type || 'Eluvix'})`,
             limit: {
               context: meta.contextLimit,
@@ -364,15 +381,15 @@ export class OrchestrationManager {
       npm: existingEluvix.npm || '@ai-sdk/openai-compatible',
       options: {
         ...(existingEluvix.options || {}),
-        apiKey,
+        ...(apiKey ? { apiKey } : {}),
         baseURL: existingEluvix?.options?.baseURL || 'http://127.0.0.1:3080/api/v1'
       },
-      models: existingModels
+      models: syncedModels
     };
 
     fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
     fs.writeFileSync(openCodePath, JSON.stringify(existingOpenCode, null, 2), { encoding: 'utf-8', mode: 0o600 });
-    logs.push(`✓ Synchronized ${Object.keys(existingModels).length} models to ${openCodePath}`);
+    logs.push(`✓ Synchronized ${Object.keys(syncedModels).length} models to ${openCodePath}`);
   }
 
   /**
