@@ -9,6 +9,11 @@ import type { RouterConfig } from '@eluvix/router-core';
  * apps/nextjs/.eluvix-config.json mirrors this object and is kept in sync
  * by src/lib/__tests__/default-config.test.ts — edit the defaults here,
  * never in the copies.
+ *
+ * Vision capability is declared explicitly on the upstreams that can
+ * serve image requests (Lemonade via its Omni model, Billama, OpenAI,
+ * and the Claude agent) so image prompts route under the local-only
+ * egress policy instead of dead-ending.
  */
 export const DEFAULT_CONFIG: RouterConfig = {
   strategy: 'cost-complexity',
@@ -22,6 +27,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
       endpoint: 'http://localhost:13305',
       priority: 30,
       models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', 'LMX-Omni-5.5B-Lite', '*'],
+      capabilities: ['vision'],
       tier: 'tier-1',
       costPer1kTokens: 0.0,
       maxComplexityScore: 3
@@ -78,6 +84,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
       apiKey: '',
       priority: 16,
       models: ['*'],
+      capabilities: ['vision'],
       tier: 'tier-3',
       costPer1kTokens: 0.001,
       maxComplexityScore: 4
@@ -90,6 +97,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
       apiKey: '',
       priority: 12,
       models: ['gpt-4o', 'gpt-4o-mini', '*'],
+      capabilities: ['vision'],
       tier: 'tier-3',
       costPer1kTokens: 0.005,
       maxComplexityScore: 4
@@ -101,6 +109,7 @@ export const DEFAULT_CONFIG: RouterConfig = {
       endpoint: 'http://localhost:8082/v1',
       priority: 10,
       models: ['claude-3-7-sonnet', '*'],
+      capabilities: ['vision'],
       tier: 'tier-4',
       costPer1kTokens: 0.003,
       maxComplexityScore: 4

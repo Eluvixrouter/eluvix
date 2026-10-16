@@ -15,6 +15,9 @@
         "LMX-Omni-5.5B-Lite",
         "*"
       ],
+      "capabilities": [
+        "vision"
+      ],
       "tier": "tier-1",
       "costPer1kTokens": 0,
       "maxComplexityScore": 3
@@ -87,6 +90,9 @@
       "models": [
         "*"
       ],
+      "capabilities": [
+        "vision"
+      ],
       "tier": "tier-3",
       "costPer1kTokens": 0.001,
       "maxComplexityScore": 4
@@ -103,6 +109,9 @@
         "gpt-4o-mini",
         "*"
       ],
+      "capabilities": [
+        "vision"
+      ],
       "tier": "tier-3",
       "costPer1kTokens": 0.005,
       "maxComplexityScore": 4
@@ -116,6 +125,9 @@
       "models": [
         "claude-3-7-sonnet",
         "*"
+      ],
+      "capabilities": [
+        "vision"
       ],
       "tier": "tier-4",
       "costPer1kTokens": 0.003,
