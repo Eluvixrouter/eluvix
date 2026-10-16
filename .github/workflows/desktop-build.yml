@@ -90,7 +90,14 @@ jobs:
 
       - name: Package Desktop app (Windows)
         if: runner.os == 'Windows'
-        run: pnpm --filter @eluvix/desktop run dist:win
+        # Not via `pnpm run dist:win`: pnpm exports npm_execpath pointing at
+        # its pnpm.mjs, and @electron/rebuild (spawned by electron-builder to
+        # rebuild better-sqlite3) tries to execute that .mjs as a native
+        # binary, which Windows rejects ("%1 is not a valid Win32
+        # application"). Invoke electron-builder directly instead; the
+        # desktop build step above has already produced dist/.
+        working-directory: apps/desktop
+        run: .\node_modules\.bin\electron-builder.cmd --win
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

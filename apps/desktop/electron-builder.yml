@@ -19,6 +19,8 @@ linux:
     - target: deb
       arch:
         - x64
+  # Required by the .deb (fpm) target; package.json's author has no email.
+  maintainer: Joshua Edward McLaughlin Cox <josh@webhosting.coop>
   category: Development
   synopsis: Local LLM token router and proxy with Billama integration
   description: Connect your developer harnesses (OpenCode, VSCode) to local models or upstream providers seamlessly.
