@@ -1092,25 +1092,11 @@ export default function RoutingEditor() {
 
     if (!compiled.rawRouterConfig) return;
     try {
-      // Non-destructive apply: preserve existing registered upstreams not on canvas
-      let payloadToSave = compiled.rawRouterConfig;
-      try {
-        const currentRes = await fetch('/api/v1/config');
-        if (currentRes.ok) {
-          const currentConfig = await currentRes.json();
-          if (currentConfig && Array.isArray(currentConfig.upstreams) && Array.isArray(payloadToSave.upstreams)) {
-            const canvasIds = new Set(payloadToSave.upstreams.map((u: any) => u.id));
-            const preserved = currentConfig.upstreams.filter((u: any) => !canvasIds.has(u.id));
-            payloadToSave = {
-              ...currentConfig,
-              ...payloadToSave,
-              upstreams: [...payloadToSave.upstreams, ...preserved]
-            };
-          }
-        }
-      } catch (mergeErr) {
-        console.warn('Could not merge with existing router config:', mergeErr);
-      }
+      // Authoritative apply: the canvas is the source of truth for the live
+      // router configuration. Upstreams that are not on the canvas are
+      // removed, so deleting a node in the editor actually deletes it from
+      // the router instead of silently preserving it.
+      const payloadToSave = compiled.rawRouterConfig;
 
       const res = await fetch('/api/v1/config', {
         method: 'POST',

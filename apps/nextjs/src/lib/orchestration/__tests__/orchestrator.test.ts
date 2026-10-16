@@ -57,6 +57,52 @@ describe('Orchestration Subsystem', () => {
     expect(res.logs.some(l => l.includes('Synchronized') && l.includes('opencode.json'))).toBe(true);
   });
 
+  it('should deploy local config authoritatively without preserving upstreams absent from the deployment', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const os = await import('node:os');
+
+    // deployLocal writes to the shared test config dir under NODE_ENV=test
+    const configDir = path.join(os.tmpdir(), 'eluvix-test-config');
+    fs.mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'config.json');
+
+    // Seed a stale config that still carries an Antigravity upstream, as a
+    // pre-fix non-destructive apply would have left behind
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        upstreams: [
+          { id: 'local-lemonade', name: 'Lemonade Router', type: 'lemonade', endpoint: 'http://localhost:13305', priority: 30, models: ['*'] },
+          { id: 'antigravity-agent', name: 'Google Antigravity Agent (AGY)', type: 'antigravity', endpoint: 'cli://agy', priority: 28, models: ['gemini-4-argon', '*'] }
+        ],
+        strategy: 'cost-complexity'
+      }),
+      'utf-8'
+    );
+
+    const lemonadeOnlyConfig = {
+      upstreams: [
+        { id: 'lemonade-1', name: 'Lemonade Engine', type: 'lemonade', endpoint: 'http://localhost:13305', priority: 30, models: ['Qwen3.5-4B-MTP-GGUF'] }
+      ],
+      strategy: 'cost-complexity'
+    };
+
+    const res = await orchestratorManager.deploy({
+      tier: 'local',
+      compiledConfigs: {
+        eluvixJson: JSON.stringify(lemonadeOnlyConfig),
+        rawRouterConfig: lemonadeOnlyConfig
+      }
+    });
+
+    expect(res.success).toBe(true);
+
+    const written = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    expect(written.upstreams.map((u: any) => u.id)).toEqual(['lemonade-1']);
+    expect(written.upstreams.some((u: any) => u.type === 'antigravity')).toBe(false);
+  });
+
   it('should non-destructively synchronize models and limits into opencode.json', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');

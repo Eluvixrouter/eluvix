@@ -217,24 +217,11 @@ export class OrchestrationManager {
     const targetFile = path.join(configDir, 'config.json');
     const configData = req.compiledConfigs.rawRouterConfig || JSON.parse(req.compiledConfigs.eluvixJson || '{}');
 
-    // Non-destructive merge: preserve existing registered upstreams not in this deployment
-    let mergedConfig = configData;
-    if (fs.existsSync(targetFile)) {
-      try {
-        const existing = JSON.parse(fs.readFileSync(targetFile, 'utf-8'));
-        if (Array.isArray(existing.upstreams) && Array.isArray(configData.upstreams)) {
-          const newIds = new Set(configData.upstreams.map((u: any) => u.id));
-          const preserved = existing.upstreams.filter((u: any) => !newIds.has(u.id));
-          mergedConfig = {
-            ...existing,
-            ...configData,
-            upstreams: [...configData.upstreams, ...preserved]
-          };
-        }
-      } catch (mergeErr) {
-        console.warn('Could not merge existing local config, proceeding with new:', mergeErr);
-      }
-    }
+    // Authoritative deployment: the compiled graph is the source of truth
+    // for the active router configuration. Upstreams that are not in this
+    // deployment are removed from config.json instead of being silently
+    // preserved from the previous configuration.
+    const mergedConfig = configData;
 
     fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
     logs.push(`✓ Written active router config to ${targetFile}`);
