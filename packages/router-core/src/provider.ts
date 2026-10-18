@@ -264,9 +264,13 @@ export class EluvixProviderAgent extends EventEmitter {
     this.emit('config-updated', this.config);
   }
 
+  public async detectHardware(): Promise<GpuInfo> {
+    return await detectGpuHardware();
+  }
+
   public async getStatus(): Promise<ProviderStatusInfo> {
     if (!this.gpuInfo) {
-      this.gpuInfo = await detectGpuHardware();
+      this.gpuInfo = await this.detectHardware();
     }
     const stored = getProviderSettings();
 
@@ -301,7 +305,7 @@ export class EluvixProviderAgent extends EventEmitter {
       console.log('[Eluvix Provider] 🚀 Initializing GPU Provider Agent...');
 
       // 1. Detect hardware
-      this.gpuInfo = await detectGpuHardware();
+      this.gpuInfo = await this.detectHardware();
       console.log(`[Eluvix Provider] 🎮 Hardware: ${this.gpuInfo.count}x ${this.gpuInfo.model} (${this.gpuInfo.vramTotalGb}GB VRAM)`);
 
       // 2. Discover local models
@@ -316,6 +320,10 @@ export class EluvixProviderAgent extends EventEmitter {
       saveProviderSettings({ enabled: 1 });
 
       // 4. Start heartbeat loop
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = null;
+      }
       this.heartbeatTimer = setInterval(() => {
         this.sendHeartbeat().catch((err) => {
           this.lastErrorMessage = err.message;
@@ -324,6 +332,7 @@ export class EluvixProviderAgent extends EventEmitter {
       }, this.config.heartbeatIntervalMs);
 
       this.emit('started');
+      this.emit('status-changed', { status: 'ONLINE', isRunning: true, isPaused: false });
     } catch (err: any) {
       this.lastErrorMessage = err.message;
       this.isRunning = false;
@@ -347,6 +356,7 @@ export class EluvixProviderAgent extends EventEmitter {
     saveProviderSettings({ enabled: 0 });
     console.log('[Eluvix Provider] 🛑 GPU Provider Agent stopped.');
     this.emit('stopped');
+    this.emit('status-changed', { status: 'OFFLINE', isRunning: false, isPaused: false });
   }
 
   /**
@@ -388,6 +398,7 @@ export class EluvixProviderAgent extends EventEmitter {
 
     this.isPaused = true;
     this.emit('preempted', { holdDurationMs });
+    this.emit('status-changed', { status: 'STANDBY', reason: 'consumer_active' });
 
     if (this.consumerPreemptionTimer) {
       clearTimeout(this.consumerPreemptionTimer);
@@ -395,7 +406,9 @@ export class EluvixProviderAgent extends EventEmitter {
 
     this.consumerPreemptionTimer = setTimeout(() => {
       this.isPaused = false;
+      this.consumerPreemptionTimer = null;
       this.emit('resumed');
+      this.emit('status-changed', { status: 'ONLINE', isRunning: true, isPaused: false });
     }, holdDurationMs);
   }
 
@@ -462,12 +475,21 @@ export class EluvixProviderAgent extends EventEmitter {
     if (!this.nodeId || !this.isRunning) return;
 
     // Refresh dynamic metrics
-    this.gpuInfo = await detectGpuHardware();
+    this.gpuInfo = await this.detectHardware();
 
     // Check thermal threshold
     if (this.gpuInfo.temperatureC && this.gpuInfo.temperatureC > this.config.maxGpuTempC) {
-      console.warn(`[Eluvix Provider] ⚠️ GPU temperature (${this.gpuInfo.temperatureC}°C) exceeds max limit (${this.config.maxGpuTempC}°C). Pausing jobs.`);
-      this.isPaused = true;
+      if (!this.isPaused) {
+        console.warn(`[Eluvix Provider] ⚠️ GPU temperature (${this.gpuInfo.temperatureC}°C) exceeds max limit (${this.config.maxGpuTempC}°C). Pausing jobs.`);
+        this.isPaused = true;
+        this.emit('preempted', { reason: 'thermal_throttle' });
+        this.emit('status-changed', { status: 'STANDBY', reason: 'thermal_throttle', temperatureC: this.gpuInfo.temperatureC });
+      }
+    } else if (this.isPaused && !this.consumerPreemptionTimer && (!this.gpuInfo.temperatureC || this.gpuInfo.temperatureC <= this.config.maxGpuTempC)) {
+      console.info(`[Eluvix Provider] ✅ GPU temperature (${this.gpuInfo.temperatureC}°C) returned to safe levels. Resuming jobs.`);
+      this.isPaused = false;
+      this.emit('resumed');
+      this.emit('status-changed', { status: 'ONLINE', temperatureC: this.gpuInfo.temperatureC });
     }
 
     const heartbeatUrl = `${this.config.serverUrl.replace(/\/+$/, '')}/api/nodes/heartbeat`;

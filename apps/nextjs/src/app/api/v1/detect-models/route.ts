@@ -2,11 +2,35 @@ import { NextResponse } from 'next/server';
 import { detectUpstreamModelDetails, UpstreamConfig } from '@eluvix/router-core';
 import { getRouter, getConfig, saveConfig } from '@/lib/router';
 
+import dns from 'node:dns/promises';
+
 export const dynamic = 'force-dynamic';
 
 function isMetadataHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '').trim();
-  return host === '169.254.169.254' || host.startsWith('169.254.') || host === 'metadata.google.internal';
+  let host = hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
+  if (host.startsWith('::ffff:')) {
+    const mapped = host.slice(7);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const high = parseInt(hexMatch[1], 16);
+      const low = parseInt(hexMatch[2], 16);
+      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+    } else {
+      host = mapped;
+    }
+  }
+  return host === '169.254.169.254' || host.startsWith('169.254.') || host === 'metadata.google.internal' || host === 'metadata' || host === 'instance-data';
+}
+
+async function isMetadataEndpoint(hostname: string): Promise<boolean> {
+  if (isMetadataHost(hostname)) return true;
+  try {
+    const records = await dns.lookup(hostname, { all: true });
+    for (const rec of records) {
+      if (isMetadataHost(rec.address)) return true;
+    }
+  } catch {}
+  return false;
 }
 
 export async function POST(req: Request) {
@@ -51,7 +75,7 @@ export async function POST(req: Request) {
             { status: 400 }
           );
         }
-        if (isMetadataHost(u.hostname)) {
+        if (await isMetadataEndpoint(u.hostname)) {
           return NextResponse.json(
             { success: false, error: 'Access to cloud metadata addresses is blocked' },
             { status: 403 }

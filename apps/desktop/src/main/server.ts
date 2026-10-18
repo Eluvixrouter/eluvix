@@ -109,6 +109,12 @@ export class DesktopRouterServer extends EventEmitter {
     this.providerAgent.on('status-changed', (status) => {
       this.emit('provider-status-changed', status);
     });
+    this.providerAgent.on('preempted', (info) => {
+      this.emit('provider-status-changed', { status: 'STANDBY', ...info });
+    });
+    this.providerAgent.on('resumed', () => {
+      this.emit('provider-status-changed', { status: 'ONLINE' });
+    });
     this.providerAgent.on('job-completed', (job) => {
       this.emit('provider-job-completed', job);
     });
@@ -210,14 +216,33 @@ export class DesktopRouterServer extends EventEmitter {
     return `${protocol}://127.0.0.1:${this.port}`;
   }
 
-  private setCorsHeaders(res: ServerResponse) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
+  private setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
+    const origin = req.headers.origin;
+    if (origin && origin !== 'null') {
+      try {
+        const u = new URL(origin);
+        const host = u.hostname.replace(/^\[|\]$/g, '');
+        if (
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === '::1' ||
+          host.endsWith('.local') ||
+          u.protocol === 'app:' ||
+          u.protocol === 'vscode-webview:' ||
+          u.protocol === 'file:'
+        ) {
+          res.setHeader('Access-Control-Allow-Origin', origin);
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
+          res.setHeader('Vary', 'Origin');
+          return;
+        }
+      } catch {}
+    }
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse) {
-    this.setCorsHeaders(res);
+    this.setCorsHeaders(req, res);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -397,19 +422,23 @@ export class DesktopRouterServer extends EventEmitter {
 
         const upstreamResponse = await this.router.routeChatCompletion(chatReq);
         const durationMs = Date.now() - startTime;
+        const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || chosenUpstreamName;
 
         const logEntry: RequestLog = {
           id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           timestamp: new Date().toLocaleTimeString(),
           model: chatReq.model,
-          upstream: chosenUpstreamName,
+          upstream: actualUpstream,
           status: upstreamResponse.status,
           durationMs,
           streaming: Boolean(chatReq.stream)
         };
         this.emit('request-logged', logEntry);
 
-        if (chatReq.stream && upstreamResponse.body) {
+        const contentType = upstreamResponse.headers.get('content-type') || '';
+        const isSse = contentType.includes('text/event-stream');
+
+        if (chatReq.stream && upstreamResponse.body && isSse) {
           res.writeHead(upstreamResponse.status, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
@@ -426,7 +455,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
 
-        const data = await upstreamResponse.json();
+        const data = await upstreamResponse.json().catch(() => ({}));
         res.writeHead(upstreamResponse.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
         return;

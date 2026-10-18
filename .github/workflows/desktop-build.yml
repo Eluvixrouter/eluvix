@@ -9,6 +9,8 @@ on:
     paths:
       - 'apps/desktop/**'
       - 'packages/**'
+      - 'package.json'
+      - 'VERSION'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - '.github/workflows/desktop-build.yml'
@@ -18,6 +20,8 @@ on:
     paths:
       - 'apps/desktop/**'
       - 'packages/**'
+      - 'package.json'
+      - 'VERSION'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - '.github/workflows/desktop-build.yml'

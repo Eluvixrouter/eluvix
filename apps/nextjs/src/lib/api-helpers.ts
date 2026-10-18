@@ -128,9 +128,17 @@ export function isBlockedHost(hostname: string): boolean {
   if (!hostname || typeof hostname !== 'string') return true;
   let host = hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
 
-  // Strip IPv4-mapped IPv6 prefix (e.g. ::ffff:127.0.0.1)
+  // Strip IPv4-mapped IPv6 prefix (e.g. ::ffff:127.0.0.1 or normalized ::ffff:7f00:1)
   if (host.startsWith('::ffff:')) {
-    host = host.slice(7);
+    const mapped = host.slice(7);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const high = parseInt(hexMatch[1], 16);
+      const low = parseInt(hexMatch[2], 16);
+      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+    } else {
+      host = mapped;
+    }
   }
 
   if (

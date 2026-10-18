@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 
-const PROTECTED_PAGES = ['/', '/editor', '/playground', '/observability', '/configurator'];
+const PROTECTED_PAGES = ['/', '/editor', '/playground', '/observability', '/configurator', '/provider'];
 
 function isLocalOrigin(origin: string): boolean {
   try {
@@ -131,6 +131,7 @@ export const config = {
     '/playground/:path*',
     '/observability/:path*',
     '/configurator/:path*',
+    '/provider/:path*',
     '/api/v1/:path*',
     '/api/secrets/:path*',
     '/api/orchestrator/:path*'

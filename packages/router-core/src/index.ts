@@ -82,7 +82,7 @@ import {
   parseAgyStreamJsonLine
 } from './antigravity-models.js';
 import { logRequest, getRequestLogs } from './db.js';
-import { validateChatPrompt, applyPrivacyGuard } from './guard.js';
+import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 
 /** One recorded stage of upstream selection, in execution order. */
 export interface RouteTraceStep {
@@ -177,11 +177,22 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (endpoint.startsWith('cli://')) return false;
   let host: string;
   try {
-    host = new URL(endpoint).hostname.toLowerCase();
+    host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
   } catch {
     return false;
   }
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host === '0.0.0.0') return true;
+  if (host.startsWith('::ffff:')) {
+    const mapped = host.slice(7);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const high = parseInt(hexMatch[1], 16);
+      const low = parseInt(hexMatch[2], 16);
+      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+    } else {
+      host = mapped;
+    }
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
   if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
@@ -546,9 +557,10 @@ export class Eluvix {
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
 
   constructor(config: RouterConfig) {
-    this.config = config;
-    // Default sort upstreams by priority
-    this.config.upstreams.sort((a, b) => b.priority - a.priority);
+    this.config = {
+      ...config,
+      upstreams: [...(config.upstreams || [])].sort((a, b) => b.priority - a.priority)
+    };
   }
 
   public getUpstreams(): UpstreamConfig[] {
@@ -621,7 +633,7 @@ export class Eluvix {
       }
 
       effectiveRequest = {
-        ...request,
+        ...effectiveRequest,
         messages: privacyResult.modifiedMessages
       };
     }
@@ -631,11 +643,58 @@ export class Eluvix {
       const guardResult = validateChatPrompt(effectiveRequest.messages, this.config.promptGuard);
       if (!guardResult.passed) {
         console.warn(`[Prompt Guard Rejected] ${guardResult.reason}`);
-        const action = this.config.promptGuard.enforcementAction || this.config.promptGuard.action || 'block';
+        const action = this.config.promptGuard.enforcementAction || (this.config.promptGuard as any).action || 'block';
         if (action === 'warn') {
           console.info(`[Prompt Guard Warning] Proceeding despite match: ${guardResult.matchedRule}`);
         } else if (action === 'strip') {
           console.info(`[Prompt Guard Stripping Threat] ${guardResult.matchedRule}`);
+          effectiveRequest = {
+            ...effectiveRequest,
+            messages: effectiveRequest.messages.map(m => {
+              if (typeof m.content === 'string') {
+                return { ...m, content: stripPromptThreats(m.content, this.config.promptGuard) };
+              } else if (Array.isArray(m.content)) {
+                return {
+                  ...m,
+                  content: m.content.map(p => p.type === 'text' ? { ...p, text: stripPromptThreats(p.text, this.config.promptGuard) } : p)
+                };
+              }
+              return m;
+            })
+          };
+        } else if (action === 'divert') {
+          console.info(`[Prompt Guard Diverting] Routing to safe quarantine response: ${guardResult.matchedRule}`);
+          return new Response(
+            JSON.stringify({
+              id: `chatcmpl-diverted-${Date.now()}`,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: effectiveRequest.model,
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    content: 'I cannot process this request as it violates prompt safety guidelines. The request has been diverted to quarantine.'
+                  },
+                  finish_reason: 'stop'
+                }
+              ],
+              usage: {
+                prompt_tokens: 0,
+                completion_tokens: 20,
+                total_tokens: 20
+              }
+            }),
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'x-eluvix-guard': 'diverted',
+                'x-eluvix-diverted-reason': guardResult.matchedRule || 'prompt_injection'
+              }
+            }
+          );
         } else {
           return new Response(
             JSON.stringify({

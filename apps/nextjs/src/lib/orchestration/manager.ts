@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
-import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata } from '@eluvix/router-core';
+import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
 
@@ -167,7 +167,11 @@ export class OrchestrationManager {
     }
 
     // 4. Check Local Host config
-    const localConfigPath = path.join(os.homedir(), '.config', 'eluvix', 'config.json');
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
+    const configDir = isTest
+      ? path.join(os.tmpdir(), 'eluvix-test-config')
+      : getAppPaths('eluvix').configDir;
+    const localConfigPath = path.join(configDir, 'config.json');
     const localStatus = {
       configExists: fs.existsSync(localConfigPath),
       configPath: localConfigPath,
@@ -211,7 +215,7 @@ export class OrchestrationManager {
     const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
     const configDir = isTest
       ? path.join(os.tmpdir(), 'eluvix-test-config')
-      : path.join(os.homedir(), '.config', 'eluvix');
+      : getAppPaths('eluvix').configDir;
     fs.mkdirSync(configDir, { recursive: true });
 
     const targetFile = path.join(configDir, 'config.json');
@@ -230,7 +234,7 @@ export class OrchestrationManager {
     try {
       const openCodeTarget = isTest
         ? path.join(configDir, 'opencode.json')
-        : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
+        : path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode', 'opencode.json');
       this.syncOpenCodeConfig(mergedConfig, configDir, openCodeTarget, logs);
     } catch (syncErr) {
       console.warn('Could not sync OpenCode config:', syncErr);
@@ -403,13 +407,13 @@ export class OrchestrationManager {
       throw new Error(`Orchestration script not found: ${scriptPath}`);
     }
 
-    const res = await executeSafeCommand('bash', [scriptPath, 'status'], { cwd: this.repoRoot });
+    const res = await executeSafeCommand('bash', [scriptPath, 'up'], { cwd: this.repoRoot });
     logs.push(res.stdout || res.stderr);
 
     return {
       success: res.success,
       tier: 'docker',
-      message: 'Docker containers inspected and updated.',
+      message: res.success ? 'Docker containers successfully launched and updated.' : 'Docker deployment encountered errors.',
       logs,
       durationMs: Date.now() - startTime
     };
@@ -491,16 +495,6 @@ export class OrchestrationManager {
 
     // 3. Ensure namespace exists
     logs.push('📦 Ensuring "eluvix" namespace exists...');
-    await executeSafeCommand('kubectl', [
-      'create',
-      'namespace',
-      'eluvix',
-      '--context',
-      'k3d-eluvix-local',
-      '--dry-run=client',
-      '-o',
-      'yaml'
-    ]);
     await executeSafeCommand('bash', [
       '-c',
       'kubectl create namespace eluvix --context k3d-eluvix-local --dry-run=client -o yaml | kubectl apply --context k3d-eluvix-local -f -'

@@ -227,7 +227,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (msg === 'All upstreams failed to process the request.') {
+    if (msg.startsWith('All upstreams failed to process the request.')) {
       return NextResponse.json(
         {
           error: {

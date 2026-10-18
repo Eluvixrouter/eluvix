@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { getAppPaths } from './paths.js';
 
 export type AgyEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -73,11 +74,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let memoryCache: { models: AgyModelEntry[]; timestamp: number } | null = null;
 
 function getCacheFilePath(): string {
-  const home = os.homedir();
   const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
   const configDir = isTest
     ? path.join(os.tmpdir(), 'eluvix-test-config')
-    : path.join(home, '.config', 'eluvix');
+    : getAppPaths('eluvix').configDir;
   return path.join(configDir, 'agy-models-cache.json');
 }
 

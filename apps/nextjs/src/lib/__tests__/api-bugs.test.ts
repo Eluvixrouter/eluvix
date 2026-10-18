@@ -17,7 +17,11 @@ describe('API Bug Fixes Regression Suite', () => {
   });
 
   afterEach(() => {
-    process.env.XDG_CONFIG_HOME = originalConfig;
+    if (originalConfig !== undefined) {
+      process.env.XDG_CONFIG_HOME = originalConfig;
+    } else {
+      delete process.env.XDG_CONFIG_HOME;
+    }
     try {
       if (testDir) fs.rmSync(testDir, { recursive: true, force: true });
     } catch {}

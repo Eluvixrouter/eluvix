@@ -215,6 +215,42 @@ export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshol
 }
 
 /**
+ * Strips detected prompt threats and banned phrases from content
+ */
+export function stripPromptThreats(content: string, configOrThreshold: number | PromptGuardConfig = 0.80): string {
+  if (!content || typeof content !== 'string') return content;
+  const threshold = typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80);
+  const config = typeof configOrThreshold === 'object' ? configOrThreshold : undefined;
+
+  let cleaned = content;
+
+  // 1. Strip custom banned phrases
+  if (config?.bannedPhrases && config.bannedPhrases.length > 0) {
+    for (const phrase of config.bannedPhrases) {
+      if (phrase.trim()) {
+        const esc = phrase.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        cleaned = cleaned.replace(new RegExp(esc, 'gi'), '');
+      }
+    }
+  }
+
+  // 2. Strip injection patterns with threat vector gating
+  for (const pattern of INJECTION_PATTERNS) {
+    if (config?.threatVectors) {
+      if (pattern.label === 'instruction_override' && config.threatVectors.instructionOverride === false) continue;
+      if (pattern.label === 'dan_jailbreak_persona' && config.threatVectors.danJailbreak === false) continue;
+      if (pattern.label === 'system_prompt_leakage' && config.threatVectors.systemPromptLeak === false) continue;
+      if (pattern.label === 'obfuscated_instruction_bypass' && config.threatVectors.obfuscation === false) continue;
+    }
+    if (pattern.weight >= threshold) {
+      cleaned = cleaned.replace(new RegExp(pattern.regex.source, 'gi'), '');
+    }
+  }
+
+  return cleaned.trim();
+}
+
+/**
  * Scans and optionally redacts/anonymizes PII from content
  */
 export function scanAndMaskPii(
