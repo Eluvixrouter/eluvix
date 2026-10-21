@@ -11,3 +11,4 @@ release/
 *.pem
 *.tmp*
 *.tsbuildinfo
+docker-compose.override.yml

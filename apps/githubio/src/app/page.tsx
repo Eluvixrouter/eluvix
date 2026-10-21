@@ -68,7 +68,7 @@ export default function Home() {
               <div className="absolute top-4 left-4 flex flex-wrap gap-2">
                 <Link href="/app" className="flex items-center gap-2 px-3 py-1 rounded-md bg-slate-950/90 backdrop-blur border border-sky-500/40 text-xs font-mono text-sky-400 hover:border-sky-300 transition">
                   <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-                  GATEWAY: 127.0.0.1:3000 (Open Demo ➔)
+                  GATEWAY: 127.0.0.1:3588 (Open Demo ➔)
                 </Link>
                 <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-md bg-slate-950/80 backdrop-blur border border-emerald-500/30 text-xs font-mono text-emerald-400">
                   <span>SILICON: RTX 4090 ($0/tok)</span>

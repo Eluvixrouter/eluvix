@@ -77,7 +77,7 @@ describe('Eluvix Provider Agent & Database Persistence', () => {
 
   it('instantiates EluvixProviderAgent with configuration and handles consumer preemption', async () => {
     const agent = new EluvixProviderAgent({
-      serverUrl: 'http://127.0.0.1:3000',
+      serverUrl: 'http://127.0.0.1:3588',
       engineUrl: 'http://127.0.0.1:11434',
       pauseOnUserActive: true
     });

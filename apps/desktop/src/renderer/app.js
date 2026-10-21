@@ -327,7 +327,7 @@
   const openEditorBtn = document.getElementById('openEditorBtn');
   if (openEditorBtn) {
     openEditorBtn.addEventListener('click', () => {
-      const url = 'http://localhost:3000/editor';
+      const url = 'http://localhost:3588/editor';
       if (api && api.openExternal) {
         api.openExternal(url);
       } else {

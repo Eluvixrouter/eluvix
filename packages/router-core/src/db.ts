@@ -85,6 +85,19 @@ function initSchema(db: SqliteDb) {
       status TEXT NOT NULL,
       error_message TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS memory_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      session_id TEXT,
+      uri TEXT,
+      level TEXT DEFAULT 'L1',
+      content TEXT NOT NULL,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_items_user ON memory_items(user_id, id DESC);
   `);
 }
 
@@ -330,3 +343,157 @@ export function getProviderJobLogs(limit = 50): any[] {
     return [];
   }
 }
+
+export interface MemoryDbItem {
+  id: number;
+  user_id: string;
+  session_id?: string | null;
+  uri?: string | null;
+  level: 'L0' | 'L1' | 'L2';
+  content: string;
+  metadata?: string | null;
+  created_at: string;
+  score?: number;
+}
+
+export function addMemoryItem(item: {
+  userId?: string;
+  sessionId?: string;
+  uri?: string;
+  level?: 'L0' | 'L1' | 'L2';
+  content: string;
+  metadata?: Record<string, any>;
+}): MemoryDbItem | null {
+  try {
+    const db = getDb();
+    const userId = item.userId || 'default';
+    const level = item.level || 'L1';
+    const uri = item.uri || `viking://user/${userId}/memories/${Date.now()}`;
+    const metaStr = item.metadata ? JSON.stringify(item.metadata) : null;
+
+    const stmt = db.prepare(`
+      INSERT INTO memory_items (user_id, session_id, uri, level, content, metadata)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const info = stmt.run(userId, item.sessionId || null, uri, level, item.content, metaStr);
+    const insertedId = Number(info?.lastInsertRowid || 0);
+    if (insertedId > 0) {
+      return db.prepare('SELECT * FROM memory_items WHERE id = ?').get(insertedId) as MemoryDbItem;
+    }
+    return {
+      id: insertedId,
+      user_id: userId,
+      session_id: item.sessionId || null,
+      uri,
+      level,
+      content: item.content,
+      metadata: metaStr,
+      created_at: new Date().toISOString()
+    };
+  } catch (err: any) {
+    console.error('Failed to add memory item:', err.message);
+    return null;
+  }
+}
+
+const STOP_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+  'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'it', 'this', 'that',
+  'what', 'which', 'who', 'whom', 'how', 'when', 'where', 'why', 'do', 'does', 'did',
+  'can', 'could', 'will', 'would', 'should', 'my', 'your', 'me', 'you', 'i', 'we'
+]);
+
+function tokenizeForSearch(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9_\-\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2 && !STOP_WORDS.has(t));
+}
+
+export function searchMemoryItems(
+  query: string,
+  userId = 'default',
+  limit = 8
+): MemoryDbItem[] {
+  try {
+    const db = getDb();
+    const candidates = db
+      .prepare('SELECT * FROM memory_items WHERE user_id = ? ORDER BY id DESC LIMIT 250')
+      .all(userId) as MemoryDbItem[];
+
+    if (candidates.length === 0) return [];
+
+    const queryTokens = tokenizeForSearch(query);
+    if (queryTokens.length === 0) {
+      return candidates.slice(0, limit).map(c => ({ ...c, score: 0.5 }));
+    }
+
+    // Score each candidate by token overlap + phrase match + slight recency bonus
+    const scored = candidates.map((item, idx) => {
+      const contentLower = item.content.toLowerCase();
+      const docTokens = new Set(tokenizeForSearch(item.content));
+      let matches = 0;
+      for (const qt of queryTokens) {
+        if (docTokens.has(qt) || contentLower.includes(qt)) {
+          matches += 1;
+        }
+      }
+      if (matches === 0) {
+        return { item, score: 0 };
+      }
+      const coverage = matches / queryTokens.length;
+      const recencyBonus = Math.max(0, 0.15 * (1 - idx / candidates.length));
+      const score = Number(Math.min(1, coverage * 0.85 + recencyBonus).toFixed(3));
+      return { item: { ...item, score }, score };
+    });
+
+    return scored
+      .filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.item);
+  } catch (err: any) {
+    console.error('Failed to search memory items:', err.message);
+    return [];
+  }
+}
+
+export function listMemoryItems(userId = 'default', limit = 50): MemoryDbItem[] {
+  try {
+    const db = getDb();
+    return db
+      .prepare('SELECT * FROM memory_items WHERE user_id = ? ORDER BY id DESC LIMIT ?')
+      .all(userId, limit) as MemoryDbItem[];
+  } catch (err: any) {
+    console.error('Failed to list memory items:', err.message);
+    return [];
+  }
+}
+
+export function deleteMemoryItem(id: number, userId?: string): boolean {
+  try {
+    const db = getDb();
+    if (userId) {
+      const res = db.prepare('DELETE FROM memory_items WHERE id = ? AND user_id = ?').run(id, userId);
+      return Number(res?.changes || 0) > 0;
+    }
+    const res = db.prepare('DELETE FROM memory_items WHERE id = ?').run(id);
+    return Number(res?.changes || 0) > 0;
+  } catch (err: any) {
+    console.error('Failed to delete memory item:', err.message);
+    return false;
+  }
+}
+
+export function clearUserMemories(userId = 'default'): number {
+  try {
+    const db = getDb();
+    const res = db.prepare('DELETE FROM memory_items WHERE user_id = ?').run(userId);
+    return Number(res?.changes || 0);
+  } catch (err: any) {
+    console.error('Failed to clear user memories:', err.message);
+    return 0;
+  }
+}
+

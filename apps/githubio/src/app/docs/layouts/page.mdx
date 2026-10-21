@@ -100,15 +100,15 @@ In addition to the visual canvas, layouts can be managed programmatically via `/
 
 ```bash
 # List all saved layouts and current active slug
-curl -H "Authorization: Bearer <ADMIN_PASSWORD>" https://127.0.0.1:3000/api/v1/layouts
+curl -H "Authorization: Bearer <ADMIN_PASSWORD>" https://127.0.0.1:3588/api/v1/layouts
 
 # Activate a specific layout
-curl -X POST https://127.0.0.1:3000/api/v1/layouts/active \
+curl -X POST https://127.0.0.1:3588/api/v1/layouts/active \
   -H "Authorization: Bearer <ADMIN_PASSWORD>" \
   -H "Content-Type: application/json" \
   -d '{"slug": "local-coding-agy"}'
 
 # Restore official example templates
-curl -X POST https://127.0.0.1:3000/api/v1/layouts/restore-examples \
+curl -X POST https://127.0.0.1:3588/api/v1/layouts/restore-examples \
   -H "Authorization: Bearer <ADMIN_PASSWORD>"
 ```

@@ -1,9 +1,35 @@
 import { NextResponse } from 'next/server';
+import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  // Verify named elx_ API key if used
+  let keyUserId: string | undefined;
+  let keyOrigin: RequestScope['origin'] | undefined;
+  const authHeader = req.headers.get('authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token.startsWith('elx_')) {
+      const resolved = resolveBearerToken(token);
+      if (!resolved.valid) {
+        return NextResponse.json(
+          {
+            error: {
+              message: 'Incorrect API key provided.',
+              type: 'invalid_request_error',
+              code: 'invalid_api_key'
+            }
+          },
+          { status: 401 }
+        );
+      }
+      keyUserId = resolved.userId;
+      keyOrigin = resolved.origin;
+    }
+  }
+
   let body: any;
   try {
     body = await req.json();
@@ -58,9 +84,28 @@ export async function POST(req: Request) {
     }
 
     const router = getRouter();
-    
+    const headerOrigin = req.headers.get('x-eluvix-origin');
+    const origin: RequestScope['origin'] =
+      keyOrigin ||
+      (headerOrigin === 'harness' || headerOrigin === 'playground' ? headerOrigin : 'client');
+    const scope: Partial<RequestScope> = {
+      userId:
+        keyUserId ||
+        req.headers.get('x-eluvix-user') ||
+        (typeof body.user === 'string' && body.user.trim() ? body.user.trim() : 'default'),
+      sessionId:
+        req.headers.get('x-eluvix-session') ||
+        (typeof body.metadata?.sessionId === 'string' ? body.metadata.sessionId : undefined),
+      origin
+    };
+    const hops = Math.max(0, parseInt(req.headers.get('x-eluvix-hops') || '0', 10) || 0);
+
     // Use the core routing logic
-    const response = await router.routeChatCompletion(body, { signal: req.signal });
+    const response = await router.routeChatCompletion(body, {
+      signal: req.signal,
+      scope,
+      hops
+    });
 
     const contentType = response.headers.get('content-type') || '';
     const upstreamHeader = response.headers.get('x-eluvix-upstream') || '';
@@ -68,6 +113,10 @@ export async function POST(req: Request) {
     const tokensHeader = response.headers.get('x-eluvix-tokens') || '';
     const modelHeader = response.headers.get('x-eluvix-model') || '';
     const effortHeader = response.headers.get('x-eluvix-effort') || '';
+    const memoryHeader = response.headers.get('x-eluvix-memory') || '';
+    const memoryTokensHeader = response.headers.get('x-eluvix-memory-tokens') || '';
+    const harnessHeader = response.headers.get('x-eluvix-harness') || '';
+    const sessionHeader = response.headers.get('x-eluvix-session') || '';
 
     const traceHeaders: Record<string, string> = {};
     if (upstreamHeader) traceHeaders['x-eluvix-upstream'] = upstreamHeader;
@@ -75,6 +124,10 @@ export async function POST(req: Request) {
     if (tokensHeader) traceHeaders['x-eluvix-tokens'] = tokensHeader;
     if (modelHeader) traceHeaders['x-eluvix-model'] = modelHeader;
     if (effortHeader) traceHeaders['x-eluvix-effort'] = effortHeader;
+    if (memoryHeader) traceHeaders['x-eluvix-memory'] = memoryHeader;
+    if (memoryTokensHeader) traceHeaders['x-eluvix-memory-tokens'] = memoryTokensHeader;
+    if (harnessHeader) traceHeaders['x-eluvix-harness'] = harnessHeader;
+    if (sessionHeader) traceHeaders['x-eluvix-session'] = sessionHeader;
 
     // If upstream or guard returned an error status, return JSON error with exact status
     if (!response.ok) {

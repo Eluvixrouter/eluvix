@@ -65,7 +65,7 @@ export default function AppMockupPage() {
         <div className="flex items-center gap-3 text-xs">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 font-mono text-slate-300">
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span>PROXY: 127.0.0.1:3000</span>
+            <span>PROXY: 127.0.0.1:3588</span>
           </div>
           <Link
             href="/docs/getting-started"

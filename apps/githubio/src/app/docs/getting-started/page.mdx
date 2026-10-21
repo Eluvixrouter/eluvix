@@ -45,8 +45,8 @@ Available environment variables:
 | `ADMIN_PASSWORD` | Master password for console login and API authentication | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_SECRET` | Secret key used to encrypt session JWT tokens | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_URL` | Canonical URL for NextAuth callbacks | Auto-detected from host and port |
-| `PORT` | HTTPS port for the Next.js server | `3000` |
-| `HTTP_PORT` | HTTP port that auto-redirects to HTTPS | `3080` |
+| `PORT` | HTTPS port for the Next.js server | `3588` |
+| `HTTP_PORT` | HTTP port that auto-redirects to HTTPS | `3580` |
 | `HOSTNAME` | Listening network interface | `127.0.0.1` |
 
 ### 3. Launch Development Server
@@ -60,10 +60,10 @@ During startup:
 - If `mkcert` is installed, a trusted local TLS certificate is issued for `localhost`, `127.0.0.1`, and `eluvix.local`.
 - If credentials do not yet exist, a fresh admin password is generated and printed in your terminal.
 - Two HTTP servers are initialized:
-  - **HTTPS Server**: `https://127.0.0.1:3000` (Main Dashboard & API)
-  - **HTTP Upgrade Server**: `http://127.0.0.1:3080` (Automatically redirects incoming browser traffic to HTTPS)
+  - **HTTPS Server**: `https://127.0.0.1:3588` (Main Dashboard & API)
+  - **HTTP Upgrade Server**: `http://127.0.0.1:3580` (Automatically redirects incoming browser traffic to HTTPS)
 
-Open your browser to `https://127.0.0.1:3000` (or `http://127.0.0.1:3080`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
+Open your browser to `https://127.0.0.1:3588` (or `http://127.0.0.1:3580`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
 
 ---
 

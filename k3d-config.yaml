@@ -7,7 +7,7 @@ servers: 1
 agents: 1
 image: docker.io/rancher/k3s:v1.31.5-k3s1
 ports:
-  - port: 3000:3000
+  - port: 3588:3588
     nodeFilters:
       - loadbalancer
   - port: 8080:8080

@@ -21,7 +21,12 @@ export async function POST(req: Request) {
     
     // Route in-process via Eluvix core router
     const router = getRouter();
-    const res = await router.routeChatCompletion(forwardBody);
+    const res = await router.routeChatCompletion(forwardBody, {
+      scope: {
+        sessionId: typeof session_id === 'string' ? session_id : undefined,
+        origin: 'playground'
+      }
+    });
 
     let data: any;
     try {
@@ -35,6 +40,9 @@ export async function POST(req: Request) {
     const upstream = res.headers.get('x-eluvix-upstream') || 'unknown';
     const complexity = res.headers.get('x-eluvix-complexity') || '0';
     const tokens = res.headers.get('x-eluvix-tokens') || '0';
+    const memory = res.headers.get('x-eluvix-memory') || undefined;
+    const memoryTokens = res.headers.get('x-eluvix-memory-tokens') || undefined;
+    const harness = res.headers.get('x-eluvix-harness') || undefined;
 
     if (!res.ok) {
       return NextResponse.json({
@@ -45,6 +53,9 @@ export async function POST(req: Request) {
           upstream,
           complexity,
           tokens,
+          memory,
+          memoryTokens,
+          harness,
           status: res.status
         }
       }, { status: res.status });
@@ -67,6 +78,9 @@ export async function POST(req: Request) {
         upstream,
         complexity,
         tokens,
+        memory,
+        memoryTokens,
+        harness,
         status: res.status
       }
     });

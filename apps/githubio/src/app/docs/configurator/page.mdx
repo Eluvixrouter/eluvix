@@ -22,7 +22,7 @@ The **Client Configurator** (`/configurator`) is an interactive tool built direc
 
 Eluvix supports two network interfaces for tool integrations:
 
-### 1. HTTPS (`https://127.0.0.1:3000/api/v1`) — Recommended
+### 1. HTTPS (`https://127.0.0.1:3588/api/v1`) — Recommended
 - Encrypted local TLS using `mkcert`.
 - Ideal for browser-based extensions, secure web clients, and tools where TLS is mandatory.
 - For Node.js-based tools (like OpenCode or VS Code extensions), export the trusted local root CA:
@@ -30,10 +30,10 @@ Eluvix supports two network interfaces for tool integrations:
   export NODE_EXTRA_CA_CERTS="$HOME/.local/share/mkcert/rootCA.pem"
   ```
 
-### 2. HTTP (`http://127.0.0.1:3080/api/v1`) — Loopback
+### 2. HTTP (`http://127.0.0.1:3580/api/v1`) — Loopback
 - Plain loopback HTTP listener that directly serves all `/api/` endpoints without SSL/TLS overhead or certificate trust requirements.
 - Ideal for CLI tools, Python scripts, or terminal agents that do not load local root CA certificates.
-- Browser HTML navigation to port 3080 is automatically upgraded to HTTPS, while `/api/*` endpoints are processed directly over HTTP.
+- Browser HTML navigation to port 3580 is automatically upgraded to HTTPS, while `/api/*` endpoints are processed directly over HTTP.
 
 ---
 

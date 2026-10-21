@@ -9,7 +9,7 @@ export function MockupConfigurator() {
   const [protocol, setProtocol] = useState<'http' | 'https'>('http');
   const [copied, setCopied] = useState(false);
 
-  const baseUrl = protocol === 'http' ? 'http://127.0.0.1:3000/v1' : 'https://127.0.0.1:3443/v1';
+  const baseUrl = protocol === 'http' ? 'http://127.0.0.1:3580/v1' : 'https://127.0.0.1:3588/v1';
 
   const CONFIG_SNIPPETS: Record<ClientTab, { title: string; filename: string; code: string }> = {
     cursor: {
@@ -131,7 +131,7 @@ ELUVIX_FALLBACK_STRATEGY=priority`,
                   : 'bg-slate-800 text-slate-400 hover:text-white'
               }`}
             >
-              HTTP (3000)
+              HTTP (3580)
             </button>
             <button
               type="button"
@@ -142,7 +142,7 @@ ELUVIX_FALLBACK_STRATEGY=priority`,
                   : 'bg-slate-800 text-slate-400 hover:text-white'
               }`}
             >
-              HTTPS (3443)
+              HTTPS (3588)
             </button>
           </div>
         </div>

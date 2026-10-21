@@ -61,7 +61,7 @@ export function MockupDashboard() {
         <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/70">
           <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider">Gateway Port</div>
           <div className="text-xl font-black text-white mt-1 flex items-center gap-2">
-            <span>127.0.0.1:3000</span>
+            <span>127.0.0.1:3588</span>
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
           </div>
           <div className="text-[11px] text-emerald-400 mt-1">OpenAI API Compatible • Online</div>

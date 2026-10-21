@@ -106,7 +106,7 @@ export default function ConfiguratorPage() {
   };
 
   const currentBaseUrl = useMemo(() => {
-    if (!data) return 'https://127.0.0.1:3000/api/v1';
+    if (!data) return 'https://127.0.0.1:3588/api/v1';
     return protocol === 'https' ? data.server.httpsBaseUrl : data.server.httpBaseUrl;
   }, [data, protocol]);
 
@@ -425,7 +425,7 @@ print(response.choices[0].message.content)
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <span>🔒</span> HTTPS (:3000)
+                <span>🔒</span> HTTPS (:3588)
               </button>
               <button
                 onClick={() => setProtocol('http')}
@@ -435,7 +435,7 @@ print(response.choices[0].message.content)
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
-                <span>⚡</span> HTTP (:3080 Loopback)
+                <span>⚡</span> HTTP (:3580 Loopback)
               </button>
             </div>
           </div>

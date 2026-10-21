@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Eluvix Docker Detection & Orchestration Script
-# Detects Docker CLI & daemon, and manages the Eluvix service stack:
+# Detects Docker CLI & daemon, GPU acceleration (NVIDIA CUDA / AMD ROCm / CPU),
+# and manages the Eluvix service stack:
 # switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway
 #
 
@@ -11,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ACTION="${1:-up}"
+ARG2="${2:-}"
 
 check_docker() {
   if ! command -v docker &>/dev/null; then
@@ -27,6 +29,118 @@ check_docker() {
   fi
 
   return 0
+}
+
+detect_and_configure_gpu() {
+  local silent="${1:-false}"
+  cd "${ROOT_DIR}"
+
+  local gpu_vendor="cpu"
+  local gfx_version="11.0.0"
+  local model="CPU Fallback"
+
+  # 1. Test NVIDIA GPU
+  # Must satisfy: nvidia-smi executable exists and executes successfully (exit 0)
+  # AND docker daemon has NVIDIA container support
+  if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
+    if docker info 2>/dev/null | grep -qi nvidia || docker run --rm --gpus all alpine true 2>/dev/null; then
+      gpu_vendor="nvidia"
+      model="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 | tr -d '\r' || echo 'NVIDIA GPU')"
+    elif [ "$silent" != "true" ]; then
+      echo "⚠️ NVIDIA GPU hardware found, but Docker does not have NVIDIA Container Toolkit enabled. Falling back to AMD/CPU."
+    fi
+  fi
+
+  # 2. Test AMD ROCm GPU (if NVIDIA was not selected)
+  if [ "$gpu_vendor" = "cpu" ]; then
+    local has_amd=false
+    if [ -e /dev/kfd ] && [ -d /dev/dri ]; then
+      has_amd=true
+    elif [ -d /sys/module/amdgpu ]; then
+      has_amd=true
+    elif command -v rocminfo &>/dev/null && rocminfo 2>/dev/null | grep -qi amd; then
+      has_amd=true
+    elif [ -x /opt/rocm/bin/rocminfo ] && /opt/rocm/bin/rocminfo 2>/dev/null | grep -qi amd; then
+      has_amd=true
+    fi
+
+    if [ "$has_amd" = true ]; then
+      gpu_vendor="amd"
+      local gfx_target=""
+      if command -v rocminfo &>/dev/null; then
+        gfx_target="$(rocminfo 2>/dev/null | grep -o 'gfx[0-9]*' | head -n1 || true)"
+      elif [ -x /opt/rocm/bin/rocminfo ]; then
+        gfx_target="$(/opt/rocm/bin/rocminfo 2>/dev/null | grep -o 'gfx[0-9]*' | head -n1 || true)"
+      fi
+
+      case "$gfx_target" in
+        gfx11*) gfx_version="11.0.0" ;;
+        gfx103*) gfx_version="10.3.0" ;;
+        gfx101*) gfx_version="10.1.0" ;;
+        gfx9*) gfx_version="9.0.0" ;;
+        *) gfx_version="11.0.0" ;;
+      esac
+
+      # Extract marketing name or lspci description
+      if [ -x /opt/rocm/bin/rocminfo ]; then
+        model="$(/opt/rocm/bin/rocminfo 2>/dev/null | grep 'Marketing Name:' | grep -iE 'Graphics|Instinct|Radeon' | tail -n1 | sed 's/.*Marketing Name:[[:space:]]*//' | awk '{$1=$1};1' || true)"
+      elif command -v rocminfo &>/dev/null; then
+        model="$(rocminfo 2>/dev/null | grep 'Marketing Name:' | grep -iE 'Graphics|Instinct|Radeon' | tail -n1 | sed 's/.*Marketing Name:[[:space:]]*//' | awk '{$1=$1};1' || true)"
+      fi
+
+      if [ -z "$model" ]; then
+        model="$(lspci 2>/dev/null | grep -iE 'vga|3d|display' | grep -i amd | head -n1 | sed 's/.*: //' | awk '{$1=$1};1' || true)"
+      fi
+
+      if [ -z "$model" ]; then
+        model="AMD Radeon / Instinct (ROCm)"
+      fi
+    fi
+  fi
+
+  # Apply Docker Compose Override configuration
+  if [ "$gpu_vendor" = "nvidia" ]; then
+    cat <<EOF > docker-compose.override.yml
+# Eluvix Hardware Override - NVIDIA CUDA Acceleration
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+EOF
+    if [ "$silent" != "true" ]; then
+      echo "✅ NVIDIA GPU detected ($model). Configured NVIDIA CUDA container acceleration."
+    fi
+  elif [ "$gpu_vendor" = "amd" ]; then
+    cat <<EOF > docker-compose.override.yml
+# Eluvix Hardware Override - AMD ROCm Acceleration
+services:
+  ollama:
+    image: ollama/ollama:rocm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      - OLLAMA_IGPU_ENABLE=1
+      - HSA_OVERRIDE_GFX_VERSION=${gfx_version}
+EOF
+    if [ "$silent" != "true" ]; then
+      echo "✅ AMD GPU detected ($model, gfx target: ${gfx_version}). Configured AMD ROCm container acceleration."
+    fi
+  else
+    rm -f docker-compose.override.yml
+    if [ "$silent" != "true" ]; then
+      echo "ℹ️ No dedicated NVIDIA or AMD ROCm GPU configured. Using CPU-only inference."
+    fi
+  fi
+
+  if [ "$silent" = "true" ]; then
+    echo "{\"vendor\":\"${gpu_vendor}\",\"model\":\"${model}\",\"gfxVersion\":\"${gfx_version}\"}"
+  fi
 }
 
 get_status() {
@@ -76,32 +190,8 @@ spin_up() {
   echo "✅ Docker detected! ($(docker --version))"
   cd "${ROOT_DIR}"
 
-  echo "🔍 [Eluvix] Checking for GPU acceleration..."
-  if command -v nvidia-smi &>/dev/null; then
-    echo "✅ NVIDIA GPU detected! Configuring hardware acceleration for vLLM and Ollama."
-    cat <<EOF > docker-compose.override.yml
-services:
-  vllm:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-  ollama:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-EOF
-  else
-    echo "⚠️ No NVIDIA GPU detected. Proceeding with CPU-only inference."
-    rm -f docker-compose.override.yml
-  fi
+  echo "🔍 [Eluvix] Detecting hardware acceleration (NVIDIA CUDA / AMD ROCm / CPU)..."
+  detect_and_configure_gpu "false" > /dev/null
 
   echo "🚀 [Eluvix] Spinning up containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway)..."
   docker compose up -d --build
@@ -111,8 +201,8 @@ EOF
   sleep 3
   if curl -s http://localhost:11434/api/tags | grep -q '\[\]' || ! curl -s http://localhost:11434/api/tags | grep -q 'smollm'; then
     echo "🚀 Pulling default model 'smollm:135m' into Ollama..."
-    curl -s -X POST http://localhost:11434/api/pull -d '{"name": "smollm:135m"}' > /dev/null
-    echo "✅ Model pulled."
+    curl -s -X POST http://localhost:11434/api/pull -d '{"name": "smollm:135m"}' > /dev/null || true
+    echo "✅ Model check complete."
   else
     echo "✅ Models already present in Ollama."
   fi
@@ -136,6 +226,13 @@ spin_down() {
 }
 
 case "${ACTION}" in
+  detect)
+    if [ "${ARG2}" = "--json" ]; then
+      detect_and_configure_gpu "true"
+    else
+      detect_and_configure_gpu "false"
+    fi
+    ;;
   status)
     get_status
     ;;
@@ -150,7 +247,7 @@ case "${ACTION}" in
     spin_up
     ;;
   *)
-    echo "Usage: $0 {status|up|down|restart}"
+    echo "Usage: $0 {detect|status|up|down|restart} [--json]"
     exit 1
     ;;
 esac

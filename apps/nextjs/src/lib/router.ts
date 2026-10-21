@@ -75,6 +75,19 @@ export function sanitizeLoadedConfig(raw: unknown): LoadedConfigSanitization {
     delete config.egressPolicy;
   }
 
+  if (config.memory !== undefined) {
+    if (!config.memory || typeof config.memory !== 'object') {
+      warnings.push('Dropping invalid "memory" config (expected an object)');
+      delete config.memory;
+    } else if (
+      config.memory.provider !== undefined &&
+      !['builtin', 'openviking', 'mem0'].includes(config.memory.provider)
+    ) {
+      warnings.push(`Repairing invalid memory.provider ${JSON.stringify(config.memory.provider)} to "builtin"`);
+      config.memory = { ...config.memory, provider: 'builtin' };
+    }
+  }
+
   const upstreams: any[] = [];
   source.upstreams.forEach((upstream: any, index: number) => {
     const problem = upstreamProblem(upstream);
@@ -174,6 +187,23 @@ export function validateConfig(config: any): void {
   if (config.egressPolicy !== undefined && config.egressPolicy !== 'local-only' && config.egressPolicy !== 'allow-egress') {
     throw new ConfigValidationError('Invalid configuration: "egressPolicy" must be "local-only" or "allow-egress"');
   }
+  if (config.memory !== undefined) {
+    if (!config.memory || typeof config.memory !== 'object') {
+      throw new ConfigValidationError('Invalid configuration: "memory" must be an object');
+    }
+    if (
+      config.memory.provider !== undefined &&
+      !['builtin', 'openviking', 'mem0'].includes(config.memory.provider)
+    ) {
+      throw new ConfigValidationError('Invalid configuration: "memory.provider" must be "builtin", "openviking", or "mem0"');
+    }
+    if (
+      config.memory.cloudMode !== undefined &&
+      !['filter', 'strip'].includes(config.memory.cloudMode)
+    ) {
+      throw new ConfigValidationError('Invalid configuration: "memory.cloudMode" must be "filter" or "strip"');
+    }
+  }
   for (const upstream of config.upstreams) {
     const problem = upstreamProblem(upstream);
     if (problem) {
@@ -207,6 +237,15 @@ function upstreamProblem(upstream: any): string | null {
   // Restrict cliPath on antigravity
   if (upstream.antigravity?.cliPath && !isValidCliPath(upstream.antigravity.cliPath)) {
     return `unauthorized or unsafe cliPath "${upstream.antigravity.cliPath}"`;
+  }
+  // Validate harness configuration when type === 'harness'
+  if (upstream.type === 'harness' && upstream.harness) {
+    if (
+      upstream.harness.kind &&
+      !['hermes', 'trueforge', 'opencode', 'acp'].includes(upstream.harness.kind)
+    ) {
+      return `invalid harness.kind "${upstream.harness.kind}"`;
+    }
   }
   return null;
 }

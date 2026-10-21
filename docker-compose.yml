@@ -95,10 +95,39 @@ services:
       timeout: 3s
       retries: 3
 
+  openviking:
+    image: ghcr.io/volcengine/openviking:latest
+    container_name: eluvix-openviking
+    profiles: ["memory"]
+    ports:
+      - "127.0.0.1:${OPENVIKING_PORT:-1933}:1933"
+    volumes:
+      - openviking_data:/data
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+
+  trueforge:
+    image: ghcr.io/truefoundry/trueforge:latest
+    container_name: eluvix-trueforge
+    profiles: ["harness"]
+    ports:
+      - "127.0.0.1:${TRUEFORGE_PORT:-8790}:8790"
+    volumes:
+      - trueforge_data:/root/.trueforge
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+
 volumes:
   ollama_data:
+    driver: local
+  openviking_data:
+    driver: local
+  trueforge_data:
     driver: local
 
 networks:
   eluvix-net:
     driver: bridge
+

@@ -52,8 +52,8 @@ export async function POST(req: Request) {
     const envHost = process.env.ELUVIX_HOST;
     const rawHost = process.env.HOSTNAME || '';
     const hostname = envHost || (!rawHost || /^[0-9a-f]{12,}$/i.test(rawHost) || rawHost === '0.0.0.0' ? '127.0.0.1' : rawHost);
-    const httpsPort = parseInt(process.env.PORT || '3000', 10);
-    const httpPort = parseInt(process.env.HTTP_PORT || '3080', 10);
+    const httpsPort = parseInt(process.env.PORT || '3588', 10);
+    const httpPort = parseInt(process.env.HTTP_PORT || '3580', 10);
     const baseURL = protocol === 'http'
       ? `http://${hostname}:${httpPort}/api/v1`
       : `https://${hostname}:${httpsPort}/api/v1`;
@@ -159,7 +159,10 @@ export async function POST(req: Request) {
 
       // Filter out previous Eluvix models
       continueConfig.models = continueConfig.models.filter((m: any) => {
-        const isEluvixBase = m.apiBase && (m.apiBase.includes(':3000') || m.apiBase.includes(':3080'));
+        const isEluvixBase = m.apiBase && (
+          m.apiBase.includes(':3588') || m.apiBase.includes(':3580') ||
+          m.apiBase.includes(':3000') || m.apiBase.includes(':3080')
+        );
         const isEluvixTitle = m.title && m.title.toLowerCase().includes('eluvix');
         return !(isEluvixBase || isEluvixTitle);
       });

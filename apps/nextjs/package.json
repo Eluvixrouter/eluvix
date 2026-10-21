@@ -5,7 +5,7 @@
   "scripts": {
     "predev": "pnpm --filter @eluvix/router-core build",
     "dev": "node server.mjs",
-    "dev:next": "next dev",
+    "dev:next": "next dev -p 3588",
     "build": "next build",
     "start": "NODE_ENV=production node server.mjs",
     "test": "vitest run",

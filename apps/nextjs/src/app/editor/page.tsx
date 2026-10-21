@@ -5,7 +5,7 @@ import RoutingEditor from '@/components/routing-editor/RoutingEditor';
 import Link from 'next/link';
 
 export default function RoutingEditorPage() {
-  const [baseUrl, setBaseUrl] = useState('http://localhost:3000');
+  const [baseUrl, setBaseUrl] = useState('http://localhost:3588');
   const [layoutsDir, setLayoutsDir] = useState('~/.config/eluvix/layouts');
 
   useEffect(() => {

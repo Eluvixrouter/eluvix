@@ -63,7 +63,7 @@ cp .env.example .env
 pnpm install
 pnpm dev
 ```
-Navigate to `http://localhost:3000` to access the visual routing editor, trace playground, and analytics.
+Navigate to `http://localhost:3588` to access the visual routing editor, trace playground, and analytics.
 
 ### 2. Cloud Production Deployment
 Eluvix is optimized for Docker.

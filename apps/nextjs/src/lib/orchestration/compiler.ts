@@ -24,6 +24,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const antigravityNodes = nodes.filter(n => n.type === 'antigravityNode');
   const codexNodes = nodes.filter(n => n.type === 'codexNode');
   const claudeCodeNodes = nodes.filter(n => n.type === 'claudeCodeNode');
+  const harnessNodes = nodes.filter(n => n.type === 'harnessNode');
+  const memoryNodes = nodes.filter(n => n.type === 'memoryNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -80,7 +82,9 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     claudeCodeNodes,
     billamaNodes,
     openaiNodes,
-    claudeNodes
+    claudeNodes,
+    harnessNodes,
+    memoryNodes
   );
 
   return {
@@ -110,7 +114,9 @@ function generateEluvixConfig(
   claudeCodeNodes: Node[] = [],
   billamaNodes: Node[] = [],
   openaiNodes: Node[] = [],
-  claudeNodes: Node[] = []
+  claudeNodes: Node[] = [],
+  harnessNodes: Node[] = [],
+  memoryNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -435,6 +441,43 @@ function generateEluvixConfig(
     });
   });
 
+  harnessNodes.forEach(node => {
+    const kind = String(node.data?.kind || 'trueforge');
+    const defaultEndpoint =
+      kind === 'trueforge'
+        ? 'http://localhost:8790'
+        : kind === 'opencode'
+        ? 'http://localhost:4096'
+        : kind === 'acp'
+        ? 'acp://goose'
+        : 'http://localhost:8642/v1';
+    const tierInfo = tierMap.get(node.id) || {
+      tierId: 'tier-3',
+      tierName: `Tier 3: Agent Harness (${kind})`,
+      costPer1kTokens: 0.0
+    };
+
+    upstreams.push({
+      id: String(node.id),
+      name: String(node.data?.label || `Agent Harness (${kind})`),
+      type: 'harness',
+      endpoint: String(node.data?.endpoint || defaultEndpoint),
+      priority: Number(node.data?.priority ?? 30),
+      models: [`harness/${kind}`, '*'],
+      tier: tierInfo.tierId,
+      tierName: tierInfo.tierName,
+      costPer1kTokens: tierInfo.costPer1kTokens,
+      maxComplexityScore: capabilityCap(node),
+      harness: {
+        kind,
+        agentId: String(node.data?.agentId || 'default'),
+        approvals: String(node.data?.approvals || 'auto-approve-readonly'),
+        sessionMode: String(node.data?.sessionMode || 'per-eluvix-session'),
+        providerIsLocal: node.data?.providerIsLocal !== false
+      }
+    });
+  });
+
   const swData = (switchyard?.data || {}) as Record<string, any>;
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
@@ -473,6 +516,23 @@ function generateEluvixConfig(
   const pgNode = privacyGuards[0];
   const pgData = (pgNode?.data || {}) as Record<string, any>;
 
+  const memNode = memoryNodes[0];
+  const memData = (memNode?.data || {}) as Record<string, any>;
+  const memoryConfig = memNode
+    ? {
+        enabled: true,
+        provider: String(memData.provider || 'builtin'),
+        endpoint: memData.endpoint ? String(memData.endpoint) : undefined,
+        recallBudgetTokens: Number(memData.recallBudgetTokens ?? 600),
+        writeBack: memData.writeBack !== false,
+        allowCloudEgress: Boolean(memData.allowCloudEgress),
+        cloudMode: memData.cloudMode === 'strip' ? 'strip' : 'filter',
+        openviking: memData.readingLevel
+          ? { readingLevel: memData.readingLevel as 'L0' | 'L1' | 'L2' }
+          : undefined
+      }
+    : undefined;
+
   // Egress is determined by what is actually on the canvas: a graph whose
   // upstreams are all local engines compiles to a fail-closed local-only
   // policy, so the router can never fall back to an external service that
@@ -486,7 +546,8 @@ function generateEluvixConfig(
     billamaNodes.length > 0 ||
     openaiNodes.length > 0 ||
     claudeNodes.length > 0 ||
-    modelGateways.length > 0;
+    modelGateways.length > 0 ||
+    harnessNodes.some(n => (n.data as any)?.providerIsLocal === false);
 
   return {
     upstreams,
@@ -495,6 +556,7 @@ function generateEluvixConfig(
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
     modelGateway: modelGatewayConfig,
+    ...(memoryConfig ? { memory: memoryConfig } : {}),
     promptGuard: {
       enabled: semanticGuards.length > 0,
       threshold: sgNode ? Number(sgData.threshold ?? 0.85) : 0.85,

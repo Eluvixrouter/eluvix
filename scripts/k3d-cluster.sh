@@ -105,7 +105,7 @@ cluster_up() {
     echo "ℹ️ Cluster '${CLUSTER_NAME}' already exists. Ensuring nodes are active..."
     k3d cluster start "${CLUSTER_NAME}" || true
   else
-    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with load balancer ports (3000, 8080, 11434)..."
+    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with load balancer ports (3588, 8080, 11434)..."
     k3d cluster create --config "${K3D_CONFIG}"
   fi
 
@@ -123,7 +123,7 @@ cluster_up() {
 
   echo "✨ k3d Cluster and Eluvix Helm release successfully provisioned!"
   echo "--------------------------------------------------------"
-  echo "  - Web Dashboard:       http://localhost:3000"
+  echo "  - Web Dashboard:       http://localhost:3588"
   echo "  - Switchyard Gateway:  http://localhost:8080/v1"
   echo "  - Ollama Engine:       http://localhost:11434"
   echo "  - Kubernetes Context:  k3d-${CLUSTER_NAME}"

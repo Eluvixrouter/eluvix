@@ -37,6 +37,8 @@ import ClaudeCodeNode from './nodes/ClaudeCodeNode';
 import BillamaNode from './nodes/BillamaNode';
 import OpenAiNode from './nodes/OpenAiNode';
 import ClaudeNode from './nodes/ClaudeNode';
+import MemoryNode from './nodes/MemoryNode';
+import HarnessNode from './nodes/HarnessNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
@@ -44,6 +46,25 @@ import LayoutBrowserModal from './LayoutBrowserModal';
 import { LayoutMetadata } from '@/lib/layouts/types';
 
 const DEFAULT_NODE_DATA: Record<string, any> = {
+  memoryNode: {
+    label: 'Context & Memory Engine',
+    provider: 'builtin',
+    endpoint: 'http://localhost:1933',
+    recallBudgetTokens: 600,
+    readingLevel: 'L1',
+    writeBack: true,
+    allowCloudEgress: false,
+    cloudMode: 'filter'
+  },
+  harnessNode: {
+    label: 'Agent Harness Runtime',
+    kind: 'trueforge',
+    endpoint: 'http://localhost:8790',
+    agentId: 'default',
+    approvals: 'auto-approve-readonly',
+    sessionMode: 'per-eluvix-session',
+    priority: 30
+  },
   lemonadeNode: {
     label: 'Lemonade Engine',
     endpoint: 'http://localhost:13305',
@@ -140,7 +161,7 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
   mcpToolNode: {
     label: 'MCP Tool',
     toolName: 'read_resource',
-    mcpEndpoint: 'http://localhost:3000/sse',
+    mcpEndpoint: 'http://localhost:3588/sse',
     executionMode: 'auto',
     timeoutMs: 15000
   },
@@ -458,6 +479,8 @@ const nodeTypes = {
   billamaNode: BillamaNode,
   openaiNode: OpenAiNode,
   claudeNode: ClaudeNode,
+  memoryNode: MemoryNode,
+  harnessNode: HarnessNode,
 };
 
 let id = 0;
@@ -2874,7 +2897,7 @@ export default function RoutingEditor() {
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs focus:border-amber-500 outline-none"
                           value={(node.data.mcpEndpoint as string) || ''}
                           onChange={(e) => updateData('mcpEndpoint', e.target.value)}
-                          placeholder="http://localhost:3000/sse"
+                          placeholder="http://localhost:3588/sse"
                         />
                       </div>
 

@@ -91,3 +91,115 @@ export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
     isNew
   };
 }
+
+export interface NamedApiKey {
+  id: string;
+  key: string;
+  label: string;
+  origin: 'client' | 'harness' | 'playground';
+  userId: string;
+  memoryProfile?: string;
+  createdAt: string;
+}
+
+function getKeysFilePath(appName = 'eluvix'): string {
+  const { configDir } = getAppPaths(appName);
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+  return path.join(configDir, 'keys.json');
+}
+
+export function listNamedApiKeys(appName = 'eluvix'): NamedApiKey[] {
+  const keysFile = getKeysFilePath(appName);
+  if (!fs.existsSync(keysFile)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function createNamedApiKey(
+  input: {
+    label?: string;
+    name?: string;
+    origin?: 'client' | 'harness' | 'playground';
+    userId?: string;
+    memoryProfile?: string;
+  },
+  appName = 'eluvix'
+): NamedApiKey {
+  const keysFile = getKeysFilePath(appName);
+  const keys = listNamedApiKeys(appName);
+  const rawLabel = (input.label || input.name || 'API Key').trim() || 'API Key';
+  const newKey: NamedApiKey = {
+    id: `key_${crypto.randomBytes(6).toString('hex')}`,
+    key: `elx_${generateRandomLetters(32)}`,
+    label: rawLabel,
+    origin: input.origin || 'client',
+    userId: input.userId?.trim() || 'default',
+    memoryProfile: input.memoryProfile,
+    createdAt: new Date().toISOString()
+  };
+  keys.push(newKey);
+  fs.writeFileSync(keysFile, JSON.stringify(keys, null, 2), { encoding: 'utf8', mode: 0o600 });
+  return newKey;
+}
+
+export function revokeNamedApiKey(id: string, appName = 'eluvix'): boolean {
+  const keysFile = getKeysFilePath(appName);
+  const keys = listNamedApiKeys(appName);
+  const next = keys.filter(k => k.id !== id);
+  if (next.length === keys.length) return false;
+  fs.writeFileSync(keysFile, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+  return true;
+}
+
+export function resolveBearerToken(
+  token: string,
+  adminPasswordOrAppName?: string,
+  appName = 'eluvix'
+): {
+  valid: boolean;
+  isAdmin?: boolean;
+  userId: string;
+  origin: 'client' | 'harness' | 'playground';
+  keyLabel?: string;
+} {
+  if (!token) {
+    return { valid: false, userId: 'default', origin: 'client' };
+  }
+  const { adminPassword: storedAdminPassword } = getOrCreateAuthConfig(appName);
+  const candidateAdmins = [storedAdminPassword];
+  if (adminPasswordOrAppName && adminPasswordOrAppName !== appName) {
+    candidateAdmins.push(adminPasswordOrAppName);
+  }
+  const a = Buffer.from(token);
+  for (const cand of candidateAdmins) {
+    if (!cand) continue;
+    const b = Buffer.from(cand);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+      return { valid: true, isAdmin: true, userId: 'default', origin: 'client', keyLabel: 'admin' };
+    }
+  }
+
+  const keys = listNamedApiKeys(appName);
+  for (const entry of keys) {
+    const kb = Buffer.from(entry.key);
+    if (a.length === kb.length && crypto.timingSafeEqual(a, kb)) {
+      return {
+        valid: true,
+        isAdmin: false,
+        userId: entry.userId || 'default',
+        origin: entry.origin || 'client',
+        keyLabel: entry.label
+      };
+    }
+  }
+
+  return { valid: false, userId: 'default', origin: 'client' };
+}
+
+

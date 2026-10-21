@@ -74,6 +74,13 @@ export async function middleware(req: NextRequest) {
       if (isExpected || isLegacy) {
         return NextResponse.next();
       }
+      // Named API keys (elx_<32 letters>) are verified against keys.json inside Node route handlers
+      if (
+        /^elx_[A-Za-z]{24,64}$/.test(token) &&
+        (pathname.startsWith('/api/v1/chat/completions') || pathname.startsWith('/api/v1/memory'))
+      ) {
+        return NextResponse.next();
+      }
       return NextResponse.json(
         {
           error: {

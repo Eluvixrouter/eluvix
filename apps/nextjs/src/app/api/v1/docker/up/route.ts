@@ -23,16 +23,37 @@ function getProjectRoot(): string {
 export async function POST() {
   try {
     const rootDir = getProjectRoot();
-    console.log(`[Docker Up] Executing docker compose up -d in ${rootDir}`);
+    console.log(`[Docker Up] Executing hardware detection & docker compose up in ${rootDir}`);
+
+    // Pre-flight: detect GPU acceleration (NVIDIA CUDA / AMD ROCm / CPU)
+    const detectScript = path.join(rootDir, 'scripts', 'docker-detect-and-spinup.sh');
+    let hardwareInfo: Record<string, unknown> | null = null;
+    if (fs.existsSync(detectScript)) {
+      try {
+        const { stdout: detectOut } = await execAsync(`bash "${detectScript}" detect --json`, {
+          cwd: rootDir,
+          timeout: 15000
+        });
+        try {
+          hardwareInfo = JSON.parse(detectOut.trim());
+          console.log('[Docker Up] Hardware acceleration configured:', hardwareInfo);
+        } catch {
+          // non-json output
+        }
+      } catch (detectErr) {
+        console.warn('[Docker Up] Hardware detection non-fatal warning:', detectErr);
+      }
+    }
 
     const { stdout, stderr } = await execAsync('docker compose up -d --build', {
       cwd: rootDir,
-      timeout: 120000 // 2 minutes
+      timeout: 180000 // 3 minutes
     });
 
     return NextResponse.json({
       success: true,
       message: 'Containers spin-up initiated successfully.',
+      hardware: hardwareInfo,
       stdout: stdout.trim(),
       stderr: stderr.trim()
     });

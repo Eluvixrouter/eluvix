@@ -43,9 +43,9 @@ function resolveHost() {
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.BIND_HOST || resolveHost();
-const httpsPort = parseInt(process.env.PORT || '3000', 10);
-// HTTP redirect port (default 3080, or customizable via HTTP_PORT)
-const httpPort = parseInt(process.env.HTTP_PORT || '3080', 10);
+const httpsPort = parseInt(process.env.PORT || '3588', 10);
+// HTTP redirect port (default 3580, or customizable via HTTP_PORT)
+const httpPort = parseInt(process.env.HTTP_PORT || '3580', 10);
 
 if (!process.env.NEXTAUTH_URL) {
   process.env.NEXTAUTH_URL = `https://${hostname}:${httpsPort}`;

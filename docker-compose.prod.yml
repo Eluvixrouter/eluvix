@@ -6,10 +6,10 @@ services:
       context: .
       dockerfile: apps/nextjs/Dockerfile
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3588:3588"
     environment:
       - NODE_ENV=production
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3588}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     volumes:

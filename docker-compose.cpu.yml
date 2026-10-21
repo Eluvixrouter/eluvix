@@ -1,0 +1,3 @@
+# Eluvix Hardware Override - CPU Only (Base Compose Passthrough)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+services: {}

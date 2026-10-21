@@ -8,8 +8,8 @@ Eluvix provides a unified, production-grade REST API. In addition to being a dro
 
 Eluvix supports two listening protocols for API consumers:
 
-- **HTTPS (Recommended)**: `https://127.0.0.1:3000/api/v1` (Encrypted local TLS via `mkcert`)
-- **HTTP (Loopback)**: `http://127.0.0.1:3080/api/v1` (Direct unencrypted loopback for CLI tools and scripts)
+- **HTTPS (Recommended)**: `https://127.0.0.1:3588/api/v1` (Encrypted local TLS via `mkcert`)
+- **HTTP (Loopback)**: `http://127.0.0.1:3580/api/v1` (Direct unencrypted loopback for CLI tools and scripts)
 
 ### Authentication
 Requests to protected endpoints require an HTTP Authorization header containing your master `ADMIN_PASSWORD` (auto-generated in `~/.config/eluvix/auth.json` on first launch):
@@ -49,7 +49,7 @@ Authorization: Bearer <ADMIN_PASSWORD>
 
 #### Request Example (cURL)
 ```bash
-curl -k -X POST https://127.0.0.1:3000/api/v1/chat/completions \
+curl -k -X POST https://127.0.0.1:3588/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(jq -r .adminPassword ~/.config/eluvix/auth.json)" \
   -d '{
@@ -125,7 +125,7 @@ Executes operational maintenance tasks:
 Exports conversations recorded in `chat_history` as an OpenAI-formatted JSONL file ready for direct ingestion into model fine-tuning frameworks (Axolotl, Unsloth, LLaMA-Factory).
 
 ```bash
-curl -k https://127.0.0.1:3000/api/v1/export \
+curl -k https://127.0.0.1:3588/api/v1/export \
   -H "Authorization: Bearer <ADMIN_PASSWORD>" \
   -o dataset.jsonl
 ```

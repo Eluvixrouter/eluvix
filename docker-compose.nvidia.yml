@@ -1,12 +1,6 @@
+# Eluvix Hardware Override - NVIDIA CUDA Acceleration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
 services:
-  vllm:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
   ollama:
     deploy:
       resources:

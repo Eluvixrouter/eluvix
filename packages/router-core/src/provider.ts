@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import os from 'node:os';
 import EventEmitter from 'node:events';
+import fs from 'node:fs';
 import {
   getProviderSettings,
   saveProviderSettings,
@@ -89,7 +90,117 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
     // nvidia-smi not available
   }
 
-  // 2. Try AMD via rocm-smi
+  // 2. Try AMD via ROCm (rocminfo, rocm-smi) or Linux DRM sysfs
+  if (platform === 'linux') {
+    try {
+      let model = '';
+      const rocminfoCandidates = ['rocminfo', '/opt/rocm/bin/rocminfo'];
+      for (const rPath of rocminfoCandidates) {
+        try {
+          const out = execSync(rPath, { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'ignore'] });
+          const m = out.match(/Marketing Name:\s+([^\n]+)/g);
+          if (m && m.length > 0) {
+            const graphicsEntry = m.find((s) => /Graphics|Radeon|Instinct/i.test(s));
+            const selected = graphicsEntry || m[0];
+            model = selected.replace(/Marketing Name:\s*/i, '').trim();
+            break;
+          }
+        } catch {
+          // continue
+        }
+      }
+
+      if (!model) {
+        try {
+          const lspci = execSync('lspci', { encoding: 'utf8', timeout: 2000, stdio: ['pipe', 'pipe', 'ignore'] });
+          const match = lspci.match(/(?:VGA|3D|Display)[^:]*:\s*(?:Advanced Micro Devices, Inc\.\s*)?\[AMD\/ATI\]\s*([^(\n]+)/i);
+          if (match) {
+            model = 'AMD ' + match[1].trim();
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      let totalBytes = 0;
+      let usedBytes = 0;
+      let tempC = 45;
+      let utilPercent = 0;
+      let foundAmdCard = false;
+
+      if (fs.existsSync('/sys/class/drm')) {
+        const cards = fs.readdirSync('/sys/class/drm').filter((c) => /^card\d+$/.test(c));
+        for (const card of cards) {
+          const driverPath = `/sys/class/drm/${card}/device/driver`;
+          try {
+            if (fs.existsSync(driverPath) && fs.readlinkSync(driverPath).includes('amdgpu')) {
+              foundAmdCard = true;
+              const devDir = `/sys/class/drm/${card}/device`;
+
+              const vramTot = fs.existsSync(`${devDir}/mem_info_vram_total`)
+                ? parseInt(fs.readFileSync(`${devDir}/mem_info_vram_total`, 'utf8').trim(), 10)
+                : 0;
+              const vramUsed = fs.existsSync(`${devDir}/mem_info_vram_used`)
+                ? parseInt(fs.readFileSync(`${devDir}/mem_info_vram_used`, 'utf8').trim(), 10)
+                : 0;
+              const gttTot = fs.existsSync(`${devDir}/mem_info_gtt_total`)
+                ? parseInt(fs.readFileSync(`${devDir}/mem_info_gtt_total`, 'utf8').trim(), 10)
+                : 0;
+              const gttUsed = fs.existsSync(`${devDir}/mem_info_gtt_used`)
+                ? parseInt(fs.readFileSync(`${devDir}/mem_info_gtt_used`, 'utf8').trim(), 10)
+                : 0;
+
+              // For APU / iGPU, GTT represents the available shared host memory accessible to ROCm
+              const memTotal = Math.max(vramTot, gttTot);
+              const memUsed = vramTot > gttTot ? vramUsed : gttUsed;
+              if (memTotal > totalBytes) {
+                totalBytes = memTotal;
+                usedBytes = memUsed;
+              }
+
+              if (fs.existsSync(`${devDir}/gpu_busy_percent`)) {
+                utilPercent = parseInt(fs.readFileSync(`${devDir}/gpu_busy_percent`, 'utf8').trim(), 10) || 0;
+              }
+
+              const hwmonDir = `${devDir}/hwmon`;
+              if (fs.existsSync(hwmonDir)) {
+                const hwmons = fs.readdirSync(hwmonDir);
+                for (const h of hwmons) {
+                  const tempFile = `${hwmonDir}/${h}/temp1_input`;
+                  if (fs.existsSync(tempFile)) {
+                    tempC = Math.round(parseInt(fs.readFileSync(tempFile, 'utf8').trim(), 10) / 1000) || 45;
+                    break;
+                  }
+                }
+              }
+              break;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      if (foundAmdCard || model || fs.existsSync('/sys/module/amdgpu')) {
+        const vramTotalGb = totalBytes > 0 ? Number((totalBytes / (1024 * 1024 * 1024)).toFixed(1)) : 16.0;
+        const vramFreeGb = totalBytes > 0 ? Math.max(0, Number(((totalBytes - usedBytes) / (1024 * 1024 * 1024)).toFixed(1))) : 12.0;
+
+        return {
+          vendor: 'AMD',
+          model: model || 'AMD Radeon / Instinct Accelerator',
+          count: 1,
+          vramTotalGb,
+          vramFreeGb,
+          temperatureC: tempC,
+          utilPercent,
+        };
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2b. Fallback rocm-smi
   try {
     const stdout = execSync('rocm-smi --showproductname --showmeminfo vram --csv', {
       encoding: 'utf8',
@@ -132,17 +243,19 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
     }
   }
 
-  // 4. Default Host Hardware Profile (e.g. CPU or generic host accelerator)
+  // 4. Default Host Hardware Profile (CPU fallback)
   const totalMem = os.totalmem();
-  const vramSim = Number((totalMem / (1024 * 1024 * 1024 * 2)).toFixed(1));
+  const freeMem = os.freemem();
+  const cpus = os.cpus();
+  const cpuModel = cpus.length > 0 ? cpus[0].model.trim() : 'Host CPU';
 
   return {
-    vendor: 'NVIDIA',
-    model: 'NVIDIA GeForce RTX 4090 (Detected)',
-    count: 1,
-    vramTotalGb: 24.0,
-    vramFreeGb: 18.2,
-    temperatureC: 48,
+    vendor: 'CPU',
+    model: `${cpuModel} (${cpus.length} vCPUs)`,
+    count: cpus.length,
+    vramTotalGb: Number((totalMem / (1024 * 1024 * 1024)).toFixed(1)),
+    vramFreeGb: Number((freeMem / (1024 * 1024 * 1024)).toFixed(1)),
+    temperatureC: 45,
     utilPercent: 0,
   };
 }
@@ -422,11 +535,11 @@ export class EluvixProviderAgent extends EventEmitter {
       nodeToken: this.config.nodeToken,
       hostname: os.hostname(),
       publicIp: this.config.publicIp || undefined,
-      gpuModel: this.gpuInfo?.model || 'NVIDIA GeForce RTX 4090',
-      gpuVendor: this.gpuInfo?.vendor || 'NVIDIA',
+      gpuModel: this.gpuInfo?.model || 'Host Inference Accelerator',
+      gpuVendor: this.gpuInfo?.vendor || 'CPU',
       gpuCount: this.gpuInfo?.count || 1,
-      vramTotalGb: this.gpuInfo?.vramTotalGb || 24.0,
-      vramFreeGb: this.gpuInfo?.vramFreeGb || 18.0,
+      vramTotalGb: this.gpuInfo?.vramTotalGb || 16.0,
+      vramFreeGb: this.gpuInfo?.vramFreeGb || 12.0,
       region: 'us-east',
       models: this.installedModels.map((m) => ({
         modelName: m.name,

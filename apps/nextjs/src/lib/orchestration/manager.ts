@@ -386,7 +386,7 @@ export class OrchestrationManager {
       options: {
         ...(existingEluvix.options || {}),
         ...(apiKey ? { apiKey } : {}),
-        baseURL: existingEluvix?.options?.baseURL || 'http://127.0.0.1:3080/api/v1'
+        baseURL: existingEluvix?.options?.baseURL || 'http://127.0.0.1:3580/api/v1'
       },
       models: syncedModels
     };

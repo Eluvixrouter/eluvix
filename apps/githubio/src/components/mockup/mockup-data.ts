@@ -138,7 +138,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '14.2ms',
     sovereigntyScore: '98%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'POST /v1/chat/completions', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'POST /v1/chat/completions', x: 50, y: 150 },
       { id: 'sec', name: 'Privacy Guard', type: 'security', label: 'In-Flight Redactor', status: 'active', details: 'Regex + Presidio + SHA256', x: 250, y: 150 },
       { id: 'cls', name: 'Complexity Filter', type: 'classifier', label: 'DeBERTa-v3 Intent', status: 'active', details: 'Tokens <= 4k -> Local', x: 450, y: 150 },
       { id: 'ollama', name: 'Local Ollama', type: 'local', label: 'Llama 3.1 8B ($0)', status: 'active', details: 'Primary execution (18ms)', x: 670, y: 80 },
@@ -162,7 +162,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '11.8ms',
     sovereigntyScore: '100%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Airgapped loopback only', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Airgapped loopback only', x: 50, y: 150 },
       { id: 'sec', name: 'Sovereign Enclave', type: 'security', label: 'Zero-Egress Firewall', status: 'active', details: 'Block WAN egress / DNS leak prevention', x: 260, y: 150 },
       { id: 'sw', name: 'Switchyard LAN', type: 'switchyard', label: 'Local Mesh Dispatcher', status: 'active', details: 'Local subnet routing', x: 470, y: 150 },
       { id: 'vllm', name: 'vLLM Server', type: 'local', label: 'Llama 3 70B Quantized', status: 'active', details: 'NVLink Dual 4090 ($0)', x: 680, y: 100 },
@@ -184,7 +184,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '16.5ms',
     sovereigntyScore: '96%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Budget check in-flight', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Budget check in-flight', x: 50, y: 150 },
       { id: 'bgt', name: 'Budget Guard', type: 'security', label: 'Ceiling: $0.005/req', status: 'active', details: 'Reject expensive cloud triggers', x: 260, y: 150 },
       { id: 'cls', name: 'Token Quantizer', type: 'classifier', label: 'Size & Complexity Matcher', status: 'active', details: 'Match prompt to minimal viable weights', x: 470, y: 150 },
       { id: 'ollama', name: 'Local Ollama', type: 'local', label: 'Qwen 2.5 Coder 7B', status: 'active', details: '$0.00 / 1k tokens', x: 680, y: 100 },
@@ -206,7 +206,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '8.4ms',
     sovereigntyScore: '99%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Speculative pipeline', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Speculative pipeline', x: 50, y: 150 },
       { id: 'vllmsr', name: 'vLLM-sr', type: 'local', label: 'Speculative Draft Model', status: 'active', details: 'Llama-3-1B Draft + 8B Verifier (9ms)', x: 280, y: 150 },
       { id: 'out', name: 'Stream Multiplexer', type: 'telemetry', label: 'Chunk Streamer', status: 'active', details: '0.4ms TTFT chunk dispatch', x: 520, y: 150 },
       { id: 'cache', name: 'Semantic KV Cache', type: 'switchyard', label: 'Prompt Prefix Cache', status: 'active', details: '94% hit rate on frequent templates', x: 520, y: 250 },
@@ -226,7 +226,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '15.1ms',
     sovereigntyScore: '99.9%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Encrypted mTLS input', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Encrypted mTLS input', x: 50, y: 150 },
       { id: 'pii', name: 'Regex Sanitizer', type: 'security', label: 'SSN / CC / Keys / Email', status: 'active', details: '100+ high-entropy patterns', x: 250, y: 90 },
       { id: 'presidio', name: 'NER Classifier', type: 'security', label: 'Contextual Named Entity Filter', status: 'active', details: 'Medical & Legal entity obfuscator', x: 250, y: 210 },
       { id: 'vault', name: 'Local Hash Vault', type: 'security', label: 'Deterministic SHA-256 Map', status: 'active', details: 'Un-masks tokens upon local return', x: 470, y: 150 },
@@ -249,7 +249,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '28.0ms',
     sovereigntyScore: '94%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Payload inspector', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Payload inspector', x: 50, y: 150 },
       { id: 'mime', name: 'Payload Classifier', type: 'classifier', label: 'Image vs Text Detector', status: 'active', details: 'Inspects image_url parts', x: 260, y: 150 },
       { id: 'txt', name: 'Text Stream', type: 'local', label: 'Ollama Qwen 2.5 (18ms)', status: 'active', details: '$0 text reasoning', x: 500, y: 90 },
       { id: 'vis', name: 'Vision Engine', type: 'local', label: 'Local LLaVA / Qwen-VL', status: 'active', details: 'Local visual understanding ($0)', x: 500, y: 210 },
@@ -271,7 +271,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '15.8ms',
     sovereigntyScore: '97%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Circuit breaker enabled', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Circuit breaker enabled', x: 50, y: 150 },
       { id: 'hb', name: 'Health Probe', type: 'switchyard', label: 'Active Ping (every 2s)', status: 'active', details: 'Tracks node error states', x: 260, y: 150 },
       { id: 'p1', name: 'Primary: Ollama Node 1', type: 'local', label: 'RTX 4090 ($0)', status: 'active', details: 'Primary target (18ms)', x: 500, y: 80 },
       { id: 'p2', name: 'Secondary: vLLM Node 2', type: 'local', label: 'RTX 3090 ($0)', status: 'standby', details: 'Instant standby fallback', x: 500, y: 160 },
@@ -293,7 +293,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '19.4ms',
     sovereigntyScore: '99%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'VRAM budget monitor', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'VRAM budget monitor', x: 50, y: 150 },
       { id: 'vram', name: 'VRAM Governor', type: 'classifier', label: 'Checks available VRAM', status: 'active', details: 'Ensures zero system freeze', x: 270, y: 150 },
       { id: 'q4', name: 'Lemonade / GGUF Q4_K_M', type: 'local', label: 'Llama 3.2 3B (2.1GB VRAM)', status: 'active', details: 'Runs on any modern Mac or PC ($0)', x: 520, y: 100 },
       { id: 'awq', name: 'vLLM AWQ 4-Bit', type: 'local', label: 'Qwen 7B (5.2GB VRAM)', status: 'active', details: 'High throughput quantization ($0)', x: 520, y: 200 },
@@ -313,7 +313,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '14.0ms',
     sovereigntyScore: '96%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Dual worker-client proxy', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Dual worker-client proxy', x: 50, y: 150 },
       { id: 'pri', name: 'Priority Arbiter', type: 'switchyard', label: 'User Preemption Engine', status: 'active', details: 'Pauses worker jobs instantly when user types', x: 270, y: 150 },
       { id: 'user', name: 'Local User Job', type: 'local', label: 'Local GPU (User Query)', status: 'active', details: 'Instant priority response ($0)', x: 530, y: 90 },
       { id: 'billama', name: 'Billama Worker Daemon', type: 'cloud', label: 'Community Job Receiver', status: 'active', details: 'Earns $0.00025 / 1k tokens while idle', x: 530, y: 210 },
@@ -333,7 +333,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '11.2ms',
     sovereigntyScore: '98%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'OpenAI endpoint emulation', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'OpenAI endpoint emulation', x: 50, y: 150 },
       { id: 'intent', name: 'Code Router', type: 'classifier', label: 'Completion vs Refactor', status: 'active', details: 'Detects FIM (Fill-in-the-Middle)', x: 260, y: 150 },
       { id: 'fim', name: 'Fast Tab-Autocomplete', type: 'local', label: 'vLLM Qwen 2.5 Coder 7B', status: 'active', details: 'Sub-20ms autocomplete ($0)', x: 520, y: 80 },
       { id: 'chat', name: 'Local Code Chat', type: 'local', label: 'DeepSeek Coder 6.7B', status: 'active', details: 'Fast terminal explanation ($0)', x: 520, y: 160 },
@@ -355,7 +355,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '17.3ms',
     sovereigntyScore: '97%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'Corporate SSO / RBAC', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'Corporate SSO / RBAC', x: 50, y: 150 },
       { id: 'audit', name: 'Audit Logger', type: 'telemetry', label: 'SQLite Cryptographic Log', status: 'active', details: 'Audit trail for SOC2 / ISO27001', x: 260, y: 150 },
       { id: 'tag', name: 'Tag Classifier', type: 'classifier', label: 'Confidential vs Public', status: 'active', details: 'Classification taxonomy tags', x: 470, y: 150 },
       { id: 'onprem', name: 'On-Premises vLLM Cluster', type: 'local', label: 'Internal GPU Cluster', status: 'active', details: 'Zero data leaves enterprise ($0)', x: 690, y: 90 },
@@ -377,7 +377,7 @@ export const TOPOLOGY_PRESETS: TopologyPreset[] = [
     latencyAvg: '13.5ms',
     sovereigntyScore: '100%',
     nodes: [
-      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3000', status: 'active', details: 'RAM-only volatile buffers', x: 50, y: 150 },
+      { id: 'gw', name: 'Gateway', type: 'gateway', label: '127.0.0.1:3588', status: 'active', details: 'RAM-only volatile buffers', x: 50, y: 150 },
       { id: 'shred', name: 'Memory Scrubber', type: 'security', label: 'Immediate Memory Zeroing', status: 'active', details: 'Zeros buffers post-inference', x: 280, y: 150 },
       { id: 'ephem', name: 'Local GPU Session', type: 'local', label: 'Ollama Stateless Mode', status: 'active', details: 'No history stored on disk ($0)', x: 530, y: 150 },
     ],

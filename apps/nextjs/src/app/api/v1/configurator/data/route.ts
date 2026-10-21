@@ -31,8 +31,8 @@ export async function GET() {
   try {
     const auth = getOrCreateAuthConfig();
     const hostname = resolveHostname();
-    const httpsPort = parseInt(process.env.PORT || '3000', 10);
-    const httpPort = parseInt(process.env.HTTP_PORT || '3080', 10);
+    const httpsPort = parseInt(process.env.PORT || '3588', 10);
+    const httpPort = parseInt(process.env.HTTP_PORT || '3580', 10);
     const httpsBaseUrl = `https://${hostname}:${httpsPort}/api/v1`;
     const httpBaseUrl = `http://${hostname}:${httpPort}/api/v1`;
 

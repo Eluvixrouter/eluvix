@@ -61,6 +61,7 @@ export interface RouterConfig {
   modelGateway?: ModelGatewayConfig;
   promptGuard?: PromptGuardConfig & { action?: 'block' | 'strip' | 'divert' | 'warn' };
   privacyGuard?: PrivacyGuardConfig;
+  memory?: MemoryConfig;
 }
 
 export * from './paths.js';
@@ -68,7 +69,10 @@ export * from './db.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
+export * from './context/index.js';
+export * from './harness/index.js';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -83,10 +87,29 @@ import {
 } from './antigravity-models.js';
 import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
+import {
+  type ContextProvider,
+  type MemoryConfig,
+  type RequestScope,
+  createContextProvider,
+  formatMemorySystemBlock,
+  injectMemoryIntoMessages,
+  stripMemoryFromMessages,
+  teeSseStreamForMemory
+} from './context/index.js';
+import { type HarnessConfig, forwardHarnessRequest } from './harness/index.js';
 
 /** One recorded stage of upstream selection, in execution order. */
 export interface RouteTraceStep {
-  stage: 'model-match' | 'egress-policy' | 'vision-filter' | 'tools-filter' | 'ranking';
+  stage:
+    | 'model-match'
+    | 'loop-guard'
+    | 'egress-policy'
+    | 'memory'
+    | 'memory-egress'
+    | 'vision-filter'
+    | 'tools-filter'
+    | 'ranking';
   detail: string;
   /** Upstream ids surviving this stage, when the stage filters. */
   kept?: string[];
@@ -128,7 +151,8 @@ export type UpstreamType =
   | 'switchyard'
   | 'ollama'
   | 'lemonade'
-  | 'antigravity';
+  | 'antigravity'
+  | 'harness';
 
 export interface AntigravityConfig {
   model?: string;
@@ -162,6 +186,7 @@ export interface UpstreamConfig {
   latencyMs?: number;
   capabilities?: string[];
   antigravity?: AntigravityConfig;
+  harness?: HarnessConfig;
 }
 
 /**
@@ -169,12 +194,20 @@ export interface UpstreamConfig {
  * user's own machine / LAN. Antigravity and other cli:// agent wrappers are
  * NOT local: the CLI is a front-end for an external service, so the prompt
  * leaves the machine even though the process runs locally.
+ * For 'harness' upstreams, locality depends on `harness.providerIsLocal`
+ * (or whether its endpoint is on localhost/LAN when not explicitly false).
  */
 export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
   if (upstream.type === 'antigravity') return false;
+  if (upstream.type === 'harness') {
+    if (upstream.harness?.providerIsLocal === false) return false;
+    if (upstream.harness?.providerIsLocal === true) return true;
+    if (upstream.harness?.kind === 'acp') return true;
+  }
   const endpoint = upstream.endpoint || '';
   if (endpoint.startsWith('cli://')) return false;
+  if (endpoint.startsWith('acp://')) return upstream.harness?.providerIsLocal !== false;
   let host: string;
   try {
     host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
@@ -354,6 +387,9 @@ export type MessageContentPart =
 export interface ChatMessage {
   role: string;
   content: string | MessageContentPart[];
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 export interface ChatRequest {
@@ -363,6 +399,8 @@ export interface ChatRequest {
   stream?: boolean;
   tools?: any[];
   tool_choice?: any;
+  user?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface DiscoveredModel {
@@ -394,6 +432,24 @@ export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeo
       contextLength: m.contextLimit
     }));
     return { models, details };
+  }
+
+  if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
+    const kind = upstream.harness?.kind || (upstream.endpoint.startsWith('acp://') ? 'acp' : 'trueforge');
+    if (kind === 'acp' || kind === 'trueforge') {
+      const configured = Array.isArray(upstream.models) && upstream.models.length > 0
+        ? upstream.models
+        : [kind, '*'];
+      const details: DiscoveredModel[] = configured
+        .filter(m => m !== '*')
+        .map(id => ({
+          id,
+          name: id,
+          recipe: `harness:${kind}`,
+          ownedBy: kind
+        }));
+      return { models: configured, details };
+    }
   }
 
   const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
@@ -555,16 +611,24 @@ export class Eluvix {
   private roundRobinIndex: number = 0;
   private responseCache: Map<string, { response: any; timestamp: number }> = new Map();
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
+  private contextProvider: ContextProvider | null = null;
 
   constructor(config: RouterConfig) {
     this.config = {
       ...config,
       upstreams: [...(config.upstreams || [])].sort((a, b) => b.priority - a.priority)
     };
+    if (this.config.memory?.enabled) {
+      this.contextProvider = createContextProvider(this.config.memory);
+    }
   }
 
   public getUpstreams(): UpstreamConfig[] {
     return this.config.upstreams;
+  }
+
+  public getContextProvider(): ContextProvider | null {
+    return this.contextProvider;
   }
 
   public async detectModels(upstreamId: string, timeoutMs = 5000): Promise<string[]> {
@@ -597,7 +661,30 @@ export class Eluvix {
     return results;
   }
 
-  public async routeChatCompletion(request: ChatRequest, options?: { signal?: AbortSignal }): Promise<Response> {
+  public async routeChatCompletion(
+    request: ChatRequest,
+    options?: {
+      signal?: AbortSignal;
+      scope?: Partial<RequestScope>;
+      hops?: number;
+    }
+  ): Promise<Response> {
+    const hops = options?.hops ?? 0;
+    if (hops >= 2) {
+      throw new Error('Routing loop detected: maximum x-eluvix-hops (2) exceeded.');
+    }
+
+    const scope: RequestScope = {
+      userId: options?.scope?.userId || request.user || 'default',
+      sessionId:
+        options?.scope?.sessionId ||
+        (typeof request.metadata?.sessionId === 'string' ? request.metadata.sessionId : undefined),
+      agentId:
+        options?.scope?.agentId ||
+        (typeof request.metadata?.agentId === 'string' ? request.metadata.agentId : undefined),
+      origin: options?.scope?.origin || 'client'
+    };
+
     let effectiveRequest: ChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
@@ -714,6 +801,94 @@ export class Eluvix {
       }
     }
 
+    // 0b2. Context / Memory Recall (Pre-Routing Context Injection)
+    let memoryTainted = false;
+    let memoryStatus = 'disabled';
+    let memoryTokens = 0;
+    let memoryDigest = '';
+    let lastUserQuery = '';
+
+    if (effectiveRequest.messages && effectiveRequest.messages.length > 0) {
+      for (let i = effectiveRequest.messages.length - 1; i >= 0; i--) {
+        const msg = effectiveRequest.messages[i];
+        if (msg.role === 'user') {
+          if (typeof msg.content === 'string') {
+            lastUserQuery = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            lastUserQuery = msg.content
+              .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+              .map(p => p.text)
+              .join('\n');
+          }
+          if (lastUserQuery) break;
+        }
+      }
+    }
+
+    if (
+      this.contextProvider &&
+      this.config.memory?.enabled &&
+      lastUserQuery.trim().length > 0 &&
+      effectiveRequest.messages
+    ) {
+      try {
+        const budgetTokens = this.config.memory.recallBudgetTokens ?? 600;
+        const recallResult = await this.contextProvider.recall(
+          lastUserQuery,
+          scope,
+          budgetTokens,
+          options?.signal
+        );
+
+        let usableBlocks = recallResult.blocks;
+        if (usableBlocks.length > 0 && this.config.privacyGuard?.enabled) {
+          const scrubbed: typeof usableBlocks = [];
+          for (const b of usableBlocks) {
+            const check = applyPrivacyGuard([{ role: 'system', content: b.text }], {
+              enabled: true,
+              action: this.config.privacyGuard.action || 'anonymize',
+              detectPii: this.config.privacyGuard.detectPii,
+              customPatterns: this.config.privacyGuard.customPatterns,
+              redactionStyle: this.config.privacyGuard.redactionStyle,
+              whitelist: this.config.privacyGuard.whitelist,
+              auditLogging: false
+            });
+            if (check.passed && check.modifiedMessages[0]) {
+              scrubbed.push({
+                ...b,
+                text:
+                  typeof check.modifiedMessages[0].content === 'string'
+                    ? check.modifiedMessages[0].content
+                    : b.text
+              });
+            }
+          }
+          usableBlocks = scrubbed;
+        }
+
+        if (usableBlocks.length > 0) {
+          const memoryBlock = formatMemorySystemBlock(usableBlocks, recallResult.provider);
+          if (memoryBlock) {
+            effectiveRequest = {
+              ...effectiveRequest,
+              messages: injectMemoryIntoMessages(effectiveRequest.messages, memoryBlock)
+            };
+            memoryTainted = true;
+            memoryTokens = Math.ceil(
+              usableBlocks.reduce((acc, b) => acc + b.text.length, 0) / 4
+            );
+            memoryStatus = `${recallResult.provider}:hit(${usableBlocks.length})`;
+            memoryDigest = crypto.createHash('sha256').update(memoryBlock).digest('hex').slice(0, 12);
+          }
+        } else {
+          memoryStatus = `${recallResult.provider}:miss`;
+        }
+      } catch (err) {
+        console.warn('[ContextProvider] Memory recall error (failing open):', err);
+        memoryStatus = `${this.contextProvider.id}:error`;
+      }
+    }
+
     // 0c. Rate Limiting Check
     const rateLimit = this.config.modelGateway?.rateLimits?.maxRpm;
     if (rateLimit && rateLimit > 0) {
@@ -741,20 +916,31 @@ export class Eluvix {
       this.requestCounts.set(windowKey, { count: current.count + 1, resetTime: current.resetTime });
     }
 
-    // 0d. Semantic / Response Cache Check
+    // 0d. Semantic / Response Cache Check (scoped by userId + memoryDigest when memory or user scope is active)
     const cacheConfig = this.config.modelGateway?.caching;
     let cacheKey = '';
     if (cacheConfig?.enabled && effectiveRequest.messages) {
-      cacheKey = `${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
+      const hasUserOrMemoryScope =
+        Boolean(this.config.memory?.enabled) ||
+        Boolean(options?.scope?.userId) ||
+        Boolean(request.user);
+      cacheKey = hasUserOrMemoryScope
+        ? `${scope.userId}:${memoryDigest || 'nomem'}:${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`
+        : `${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
       const cached = this.responseCache.get(cacheKey);
       const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
       if (cached && (Date.now() - cached.timestamp < ttlMs)) {
+        const hitHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Eluvix-Cache': 'HIT'
+        };
+        if (this.config.memory?.enabled) {
+          hitHeaders['x-eluvix-memory'] = memoryStatus;
+          hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
+        }
         return new Response(JSON.stringify(cached.response), {
           status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Eluvix-Cache': 'HIT'
-          }
+          headers: hitHeaders
         });
       }
     }
@@ -775,7 +961,12 @@ export class Eluvix {
       }
     }
 
-    const selection = this.selectTargetUpstreams(effectiveRequest);
+    const selection = this.selectTargetUpstreams(effectiveRequest, {
+      scope,
+      hops,
+      memoryTainted,
+      memoryTokens
+    });
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
@@ -788,7 +979,13 @@ export class Eluvix {
       const spilloverThreshold = switchyardConfig.spilloverThresholdMs ?? 30000;
 
       for (const upstream of targetUpstreams) {
-        if (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic' || upstream.type === 'antigravity') continue; // don't punish cloud or agent reasoning endpoints
+        if (
+          upstream.type === 'openai-compatible' ||
+          upstream.type === 'billama' ||
+          upstream.type === 'anthropic' ||
+          upstream.type === 'antigravity' ||
+          upstream.type === 'harness'
+        ) continue; // don't punish cloud or agent reasoning endpoints
         const upstreamLogs = recentLogs.filter(l => l.upstream_id === upstream.id);
         if (upstreamLogs.length >= 3) {
           const avg = upstreamLogs.slice(0, 5).reduce((acc, log) => acc + (log.duration_ms || 0), 0) / Math.min(5, upstreamLogs.length);
@@ -822,6 +1019,12 @@ export class Eluvix {
     let attemptsMade = 0;
     let budgetExhausted = false;
 
+    const canRemember =
+      Boolean(this.contextProvider) &&
+      Boolean(this.config.memory?.enabled) &&
+      this.config.memory?.writeBack !== false &&
+      lastUserQuery.trim().length > 0;
+
     // Attempt the highest priority upstream first with retry and budget guardrails
     for (const upstream of targetUpstreams) {
       if (attemptsMade > 0 && Date.now() - routeStartTime >= failoverBudgetMs) {
@@ -838,6 +1041,23 @@ export class Eluvix {
         }
       }
 
+      // If memory-tainted and cloudMode === 'strip' and this upstream is non-local, strip <eluvix-memory> before sending
+      let requestForUpstream = effectiveRequest;
+      let strippedMemoryForCloud = false;
+      if (
+        memoryTainted &&
+        !this.config.memory?.allowCloudEgress &&
+        this.config.memory?.cloudMode === 'strip' &&
+        !isLocalUpstream(upstream) &&
+        effectiveRequest.messages
+      ) {
+        requestForUpstream = {
+          ...effectiveRequest,
+          messages: stripMemoryFromMessages(effectiveRequest.messages)
+        };
+        strippedMemoryForCloud = true;
+      }
+
       for (let attempt = 1; attempt <= retryCount; attempt++) {
         if (attempt > 1 && Date.now() - routeStartTime >= failoverBudgetMs) {
           budgetExhausted = true;
@@ -847,7 +1067,15 @@ export class Eluvix {
         const startTime = Date.now();
         try {
           console.log(`Attempting to route to upstream: ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
-          const response = await this.forwardRequest(upstream, effectiveRequest, upstreamTimeout, options?.signal, complexity.score);
+          const response = await this.forwardRequest(
+            upstream,
+            requestForUpstream,
+            upstreamTimeout,
+            options?.signal,
+            complexity.score,
+            scope,
+            hops
+          );
           const duration_ms = Date.now() - startTime;
           
           if (response.ok) {
@@ -857,6 +1085,7 @@ export class Eluvix {
             const effortHeader = response.headers.get('x-eluvix-effort');
             
             let responseBody: any = response.body;
+            let assistantOutputText = '';
             if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
               try {
                 const rawData = await response.text();
@@ -867,11 +1096,47 @@ export class Eluvix {
                 if (parsed.usage?.prompt_tokens != null) {
                   promptTokens = parsed.usage.prompt_tokens;
                 }
+                if (typeof parsed.choices?.[0]?.message?.content === 'string') {
+                  assistantOutputText = parsed.choices[0].message.content;
+                }
                 if (cacheConfig?.enabled && cacheKey) {
                   this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
                 }
                 responseBody = new Blob([rawData]).stream();
               } catch {}
+            } else if (
+              effectiveRequest.stream &&
+              responseBody &&
+              canRemember &&
+              typeof (responseBody as any).getReader === 'function'
+            ) {
+              const providerRef = this.contextProvider!;
+              responseBody = teeSseStreamForMemory(
+                responseBody as ReadableStream<Uint8Array>,
+                (fullAssistantText) => {
+                  void providerRef
+                    .remember(
+                      {
+                        user: { role: 'user', content: lastUserQuery },
+                        assistant: fullAssistantText
+                      },
+                      scope
+                    )
+                    .catch(() => {});
+                }
+              );
+            }
+
+            if (!effectiveRequest.stream && canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
+              void this.contextProvider
+                .remember(
+                  {
+                    user: { role: 'user', content: lastUserQuery },
+                    assistant: assistantOutputText
+                  },
+                  scope
+                )
+                .catch(() => {});
             }
 
             // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
@@ -897,6 +1162,13 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             if (effortHeader) {
               newResponse.headers.set('x-eluvix-effort', effortHeader);
+            }
+            if (this.config.memory?.enabled) {
+              newResponse.headers.set(
+                'x-eluvix-memory',
+                strippedMemoryForCloud ? `${memoryStatus};stripped-for-cloud` : memoryStatus
+              );
+              newResponse.headers.set('x-eluvix-memory-tokens', String(strippedMemoryForCloud ? 0 : memoryTokens));
             }
             
             return newResponse;
@@ -924,13 +1196,27 @@ export class Eluvix {
    * Useful for dashboards, debugging "why did my prompt go there?", and
    * previewing a configuration before applying it.
    */
-  public explainRoute(request: ChatRequest): RouteExplanation {
+  public explainRoute(
+    request: ChatRequest,
+    options?: {
+      scope?: Partial<RequestScope>;
+      hops?: number;
+      memoryTainted?: boolean;
+      memoryTokens?: number;
+    }
+  ): RouteExplanation {
     const effectiveRequest: ChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
     try {
-      const selection = this.selectTargetUpstreams(effectiveRequest, { silent: true });
+      const selection = this.selectTargetUpstreams(effectiveRequest, {
+        silent: true,
+        scope: options?.scope,
+        hops: options?.hops,
+        memoryTainted: options?.memoryTainted,
+        memoryTokens: options?.memoryTokens
+      });
       return {
         model: effectiveRequest.model,
         strategy: selection.strategy,
@@ -961,14 +1247,20 @@ export class Eluvix {
   }
 
   /**
-   * The deterministic core of routing: model matching, egress enforcement,
-   * complexity estimation, context truncation, vision/tools filtering, and
-   * strategy ranking. Shared by routeChatCompletion (which then applies
-   * runtime adjustments — latency spillover, cost ceiling — and executes)
-   * and explainRoute (which reports this selection without executing).
-   * Selection failures throw an Error carrying a `routeSteps` trace.
+   * The deterministic core of routing: model matching, loop guard, egress
+   * enforcement, memory-egress enforcement, complexity estimation, context
+   * truncation, vision/tools filtering, and strategy ranking.
    */
-  private selectTargetUpstreams(effectiveRequest: ChatRequest, options?: { silent?: boolean }): {
+  private selectTargetUpstreams(
+    effectiveRequest: ChatRequest,
+    options?: {
+      silent?: boolean;
+      scope?: Partial<RequestScope>;
+      hops?: number;
+      memoryTainted?: boolean;
+      memoryTokens?: number;
+    }
+  ): {
     effectiveRequest: ChatRequest;
     complexity: PromptComplexityAssessment;
     strategy: RoutingStrategy;
@@ -995,6 +1287,27 @@ export class Eluvix {
       fail(`No upstream available for model: ${effectiveRequest.model}`);
     }
 
+    // Loop Guard: requests originating from an agent harness (or with hops > 0)
+    // must never route back into another harness upstream, preventing recursive loops.
+    const hops = options?.hops ?? 0;
+    const isHarnessOrigin = options?.scope?.origin === 'harness' || hops > 0;
+    if (isHarnessOrigin) {
+      const nonHarness = matchingUpstreams.filter(u => u.type !== 'harness' && !u.endpoint.startsWith('acp://'));
+      const removedHarness = matchingUpstreams.filter(u => u.type === 'harness' || u.endpoint.startsWith('acp://'));
+      if (removedHarness.length > 0) {
+        steps.push({
+          stage: 'loop-guard',
+          detail: `origin=${options?.scope?.origin || 'client'} (hops=${hops}): excluded agent harness upstreams to prevent recursive routing loops`,
+          kept: nonHarness.map(u => u.id),
+          removed: removedHarness.map(u => u.id)
+        });
+      }
+      if (nonHarness.length === 0) {
+        fail(`No non-harness upstream available for model: ${effectiveRequest.model} (loop-guard excluded harness upstreams)`);
+      }
+      matchingUpstreams = nonHarness;
+    }
+
     // Egress policy enforcement: a local-only configuration must never send
     // prompts to external services — not as the primary pick, and not as a
     // fallback when the local engines are down. Fail closed instead.
@@ -1016,16 +1329,49 @@ export class Eluvix {
       matchingUpstreams = localUpstreams;
     }
 
+    // Memory-Taint Egress Guard: when recalled personal/workspace memories are injected,
+    // prevent silent exfiltration to cloud upstreams unless allowCloudEgress=true.
+    if (options?.memoryTainted && !this.config.memory?.allowCloudEgress) {
+      const cloudMode = this.config.memory?.cloudMode || 'filter';
+      if (cloudMode === 'strip') {
+        steps.push({
+          stage: 'memory-egress',
+          detail: 'memory-tainted request with cloudMode=strip: <eluvix-memory> block will be stripped before forwarding to non-local upstreams',
+          kept: matchingUpstreams.map(u => u.id),
+          removed: []
+        });
+      } else {
+        const localOnly = matchingUpstreams.filter(u => isLocalUpstream(u));
+        const removedCloud = matchingUpstreams.filter(u => !isLocalUpstream(u));
+        steps.push({
+          stage: 'memory-egress',
+          detail: 'memory-tainted request with allowCloudEgress=false (cloudMode=filter): only local upstreams may receive recalled memories',
+          kept: localOnly.map(u => u.id),
+          removed: removedCloud.map(u => u.id)
+        });
+        if (localOnly.length === 0) {
+          fail(`No local upstream available to serve memory-tainted request for model: ${effectiveRequest.model} (memory.allowCloudEgress=false)`);
+        }
+        matchingUpstreams = localOnly;
+      }
+    }
+
     const switchyardConfig = this.config.switchyard || {};
     const strategy: RoutingStrategy = switchyardConfig.strategy || this.config.strategy || 'cost-complexity';
     const hasTools = Array.isArray(effectiveRequest.tools) && effectiveRequest.tools.length > 0;
     const toolsCount = hasTools ? effectiveRequest.tools!.length : 0;
-    const complexity = estimatePromptComplexity(effectiveRequest.messages || [], {
+    // Evaluate complexity on the user prompt WITHOUT the injected <eluvix-memory> block
+    // so recalled memories do not artificially escalate simple prompts to expensive frontier models.
+    const messagesWithoutMemory = stripMemoryFromMessages(effectiveRequest.messages || []);
+    const complexity = estimatePromptComplexity(messagesWithoutMemory, {
       ...switchyardConfig.complexityThresholds,
       codeEscalation: switchyardConfig.codeEscalation,
       hasTools,
       toolsCount
     });
+    if (options?.memoryTokens && options.memoryTokens > 0) {
+      complexity.tokenEstimate += options.memoryTokens;
+    }
     if (!options?.silent) console.log(
       `[Switchyard Balancer] Routing Strategy: ${strategy} | Prompt Complexity: Score ${complexity.score} (${complexity.label}, tokens ~${complexity.tokenEstimate}, features: [${complexity.features.join(', ')}])`
     );
@@ -1036,6 +1382,7 @@ export class Eluvix {
       u =>
         (u.maxComplexityScore ?? 2) >= 4 ||
         u.type === 'antigravity' ||
+        u.type === 'harness' ||
         u.type === 'openai-compatible' ||
         u.type === 'anthropic' ||
         u.type === 'billama'
@@ -1052,13 +1399,13 @@ export class Eluvix {
             ...msgs.slice(-2)
           ]
         };
-        const newComplexity = estimatePromptComplexity(effectiveRequest.messages, {
+        const newComplexity = estimatePromptComplexity(stripMemoryFromMessages(effectiveRequest.messages), {
           ...switchyardConfig.complexityThresholds,
           codeEscalation: switchyardConfig.codeEscalation,
           hasTools,
           toolsCount
         });
-        complexity.tokenEstimate = newComplexity.tokenEstimate;
+        complexity.tokenEstimate = newComplexity.tokenEstimate + (options?.memoryTokens || 0);
       }
     }
 
@@ -1083,6 +1430,7 @@ export class Eluvix {
         u.capabilities?.includes('tool-calling') ||
         u.capabilities?.includes('tools') ||
         u.type === 'antigravity' ||
+        u.type === 'harness' ||
         u.type === 'openai-compatible' ||
         u.type === 'anthropic' ||
         (Array.isArray(u.models) && u.models.some(m => /qwen|coder|tool|gemini|claude|gpt-4|gpt-oss/i.test(m)))
@@ -1103,6 +1451,9 @@ export class Eluvix {
       if ((u.type === 'antigravity' || u.endpoint?.startsWith('cli://')) && isAntigravitySupportedModel(model, u.models)) {
         return 1;
       }
+      if (u.type === 'harness' && u.harness?.kind && model === `harness/${u.harness.kind}`) {
+        return 1;
+      }
       return 0;
     };
 
@@ -1117,9 +1468,9 @@ export class Eluvix {
           }
         }
 
-        // Evaluate capability score (local engines default to 2-3, cloud gateways default to 4)
-        const capA = a.maxComplexityScore ?? (a.type === 'openai-compatible' || a.type === 'billama' || a.type === 'antigravity' ? 4 : 2);
-        const capB = b.maxComplexityScore ?? (b.type === 'openai-compatible' || b.type === 'billama' || b.type === 'antigravity' ? 4 : 2);
+        // Evaluate capability score (local engines default to 2-3, cloud/harness gateways default to 4)
+        const capA = a.maxComplexityScore ?? (a.type === 'openai-compatible' || a.type === 'billama' || a.type === 'antigravity' || a.type === 'harness' ? 4 : 2);
+        const capB = b.maxComplexityScore ?? (b.type === 'openai-compatible' || b.type === 'billama' || b.type === 'antigravity' || b.type === 'harness' ? 4 : 2);
 
         const capableA = capA >= complexity.score ? 1 : 0;
         const capableB = capB >= complexity.score ? 1 : 0;
@@ -1207,13 +1558,16 @@ export class Eluvix {
     if (!upstream || !Array.isArray(upstream.models)) return false;
     if (requestedModel === 'auto') return upstream.models.length > 0;
     if (upstream.models.includes(requestedModel)) return true;
+    if (upstream.type === 'harness' && upstream.harness?.kind && requestedModel === `harness/${upstream.harness.kind}`) {
+      return true;
+    }
     if (upstream.type === 'antigravity' || upstream.endpoint?.startsWith('cli://')) {
       return isAntigravitySupportedModel(requestedModel, upstream.models);
     }
     if (upstream.models.includes('*')) {
-      // Local inference engines shouldn't greedily capture explicit cloud/agent models
+      // Local inference engines shouldn't greedily capture explicit cloud/agent/harness models
       if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'switchyard'].includes(upstream.type)) {
-        if (/^(gemini-|claude-|gpt-oss-120b)/i.test(requestedModel)) return false;
+        if (/^(gemini-|claude-|gpt-oss-120b|harness\/)/i.test(requestedModel)) return false;
       }
       return true;
     }
@@ -1225,7 +1579,9 @@ export class Eluvix {
     request: ChatRequest,
     timeoutMs = 60000,
     clientSignal?: AbortSignal,
-    complexityScore: 1 | 2 | 3 | 4 = 1
+    complexityScore: 1 | 2 | 3 | 4 = 1,
+    scope?: RequestScope,
+    hops = 0
   ): Promise<Response> {
     // Translate 'auto' to a concrete model that this upstream supports
     let effectiveModel = request.model;
@@ -1247,6 +1603,10 @@ export class Eluvix {
       ...request,
       model: effectiveModel
     };
+
+    if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
+      return forwardHarnessRequest(upstream, effectiveRequest, timeoutMs, clientSignal, scope, hops);
+    }
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
       return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs);

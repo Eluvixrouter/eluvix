@@ -34,7 +34,7 @@ export default function Home() {
   const [detectingMap, setDetectingMap] = useState<Record<string, boolean>>({});
   const [detectResults, setDetectResults] = useState<Record<string, { count: number; message: string; isError?: boolean }>>({});
   const [isDetectingAll, setIsDetectingAll] = useState(false);
-  const [baseUrl, setBaseUrl] = useState('http://localhost:3000');
+  const [baseUrl, setBaseUrl] = useState('http://localhost:3588');
 
   // Docker status & orchestration state
   const [dockerStatus, setDockerStatus] = useState<DockerStatusResponse | null>(null);

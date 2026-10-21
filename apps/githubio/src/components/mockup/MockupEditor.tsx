@@ -106,7 +106,7 @@ export function MockupEditor() {
       id: newId,
       type,
       position: { x: Math.round(-pan.x / zoom + 350), y: Math.round(-pan.y / zoom + 200) },
-      data: { label, endpoint: 'http://localhost:3000', priority: 20 },
+      data: { label, endpoint: 'http://localhost:3588', priority: 20 },
     };
     setNodes((prev) => [...prev, newNode]);
     setSelectedNodeId(newId);
@@ -178,7 +178,7 @@ export function MockupEditor() {
 
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/60 border border-emerald-600/40 text-[10px] text-emerald-400 font-mono font-semibold">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Proxy Active: :3000/api/v1</span>
+            <span>Proxy Active: :3588/api/v1</span>
           </div>
         </div>
       </header>
@@ -791,7 +791,7 @@ export function MockupEditor() {
                         <span>Client Input</span>
                       </div>
                       <div className="text-[9px] font-mono text-sky-400 mt-1">
-                        127.0.0.1:3000/v1
+                        127.0.0.1:3588/v1
                       </div>
                     </div>
                   )}

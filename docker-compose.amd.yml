@@ -1,0 +1,11 @@
+# Eluvix Hardware Override - AMD ROCm Acceleration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d
+services:
+  ollama:
+    image: ollama/ollama:rocm
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      - OLLAMA_IGPU_ENABLE=1
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
