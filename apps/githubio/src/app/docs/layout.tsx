@@ -55,6 +55,18 @@ export default function DocsLayout({
                 </Link>
               </li>
               <li>
+                <Link href="/docs/harnesses" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Agent Harnesses &amp; Runtimes</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">New</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/memory" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Memory &amp; Context Engine</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 border border-purple-500/30">New</span>
+                </Link>
+              </li>
+              <li>
                 <Link href="/docs/security" className="text-slate-400 hover:text-sky-400 transition-colors">
                   Security &amp; Privacy Guards
                 </Link>

@@ -4,19 +4,55 @@ Eluvix provides a unified, production-grade REST API. In addition to being a dro
 
 ---
 
-## Base URL & Authentication
+## Base URL & Same-Port TLS Auto-Upgrade
 
-Eluvix supports two listening protocols for API consumers:
+Eluvix features **same-port dual-protocol demuxing on port 3588**:
 
-- **HTTPS (Recommended)**: `https://127.0.0.1:3588/api/v1` (Encrypted local TLS via `mkcert`)
-- **HTTP (Loopback)**: `http://127.0.0.1:3580/api/v1` (Direct unencrypted loopback for CLI tools and scripts)
+- **HTTPS (Canonical)**: `https://127.0.0.1:3588/api/v1` (Encrypted TLS via local `mkcert` certificate)
+- **HTTP Auto-Upgrade (Same Port)**: `http://127.0.0.1:3588/api/v1` (Plaintext HTTP connections to port 3588 are automatically sniffed at the TCP byte layer and redirected with an immediate `HTTP/1.1 308 Permanent Redirect` to HTTPS on the exact same port)
+- **HTTP Fallback Port**: `http://127.0.0.1:3580/api/v1` (Secondary loopback port that also upgrades browser/client traffic)
 
-### Authentication
-Requests to protected endpoints require an HTTP Authorization header containing your master `ADMIN_PASSWORD` (auto-generated in `~/.config/eluvix/auth.json` on first launch):
+### Authentication: Master Password & Named API Keys
 
-```http
-Authorization: Bearer <ADMIN_PASSWORD>
-```
+Eluvix supports two authentication mechanisms:
+
+1. **Master Admin Password**:
+   Pass your master admin password (from `~/.config/eluvix/auth.json`) in the standard HTTP `Authorization` header:
+   ```http
+   Authorization: Bearer <ADMIN_PASSWORD>
+   ```
+
+2. **Named API Keys (`keys.json`)**:
+   Eluvix supports user- and role-scoped Named API Keys stored in `~/.config/eluvix/keys.json`. Each key is tagged with a `userId`, an `origin` (`client`, `harness`, or `playground`), rate limits, and model access whitelists:
+   ```json
+   {
+     "keys": [
+       {
+         "id": "key_dev_alice",
+         "key": "elx_live_a1b2c3d4e5f6g7h8",
+         "name": "Alice Dev Key",
+         "userId": "alice",
+         "origin": "client",
+         "rateLimit": 120,
+         "createdAt": "2026-10-21T00:00:00.000Z"
+       },
+       {
+         "id": "key_harness_trueforge",
+         "key": "elx_live_harness_trueforge_01",
+         "name": "TrueForge Agent Runner",
+         "userId": "agent_system",
+         "origin": "harness",
+         "rateLimit": 600,
+         "createdAt": "2026-10-21T00:00:00.000Z"
+       }
+     ]
+   }
+   ```
+   Provide the key in the request header:
+   ```http
+   Authorization: Bearer elx_live_a1b2c3d4e5f6g7h8
+   ```
+   When a Named API Key is used, its `userId` automatically scopes the **Memory & Context Engine** (`viking://user/{userId}/memories`), and its `origin` activates the **Loop Guard** if tagged as `origin: "harness"`.
 
 ---
 
@@ -29,8 +65,13 @@ Executes an intelligent chat completion through the Switchyard pipeline. Support
 #### Headers
 ```http
 Content-Type: application/json
-Authorization: Bearer <ADMIN_PASSWORD>
+Authorization: Bearer <ADMIN_PASSWORD_OR_NAMED_KEY>
 ```
+
+#### Optional Context & Session Headers
+- `X-Eluvix-User`: Override user identifier for memory recall (if not using a named key).
+- `X-Eluvix-Session`: Session identifier for multi-turn conversational memory tracking.
+- `X-Eluvix-Hops`: Current hop count when chained through agent harnesses (used by Loop Guard).
 
 #### Request Parameters
 
@@ -46,6 +87,10 @@ Authorization: Bearer <ADMIN_PASSWORD>
 - `X-Eluvix-Selected-Upstream`: The upstream ID and backend that executed the request (e.g. `ollama-local`, `antigravity-cli`, `openai-cloud`).
 - `X-Eluvix-Complexity-Tier`: The complexity grade assigned by Switchyard (`simple`, `moderate`, `heavy`, `frontier`).
 - `X-Eluvix-Cache`: Returns `HIT` if served from the semantic response cache, or `MISS` if executed upstream.
+- `X-Eluvix-Memory`: Active context memory provider (e.g. `openviking`, `mem0`, `sqlite`, or `none`).
+- `X-Eluvix-Memory-Tokens`: Number of memory context tokens prepended to the prompt.
+- `X-Eluvix-Harness`: Agent harness identifier if routed to an agent engine (`trueforge`, `opencode`, `acp`, `hermes`).
+- `X-Eluvix-Hops`: Incremented hop count returned to the caller.
 
 #### Request Example (cURL)
 ```bash
@@ -232,14 +277,62 @@ Discovers available API keys and credential paths stored in OpenBao or HashiCorp
 
 ---
 
+## 13. Memory Management API
+
+### `GET /api/v1/memory`
+Retrieves semantically relevant memories or search results for a user:
+
+#### Query Parameters
+- `userId` *(required)*: User identifier (e.g. `alice`, `dev_1`).
+- `query` *(required)*: Natural language search string or prompt.
+- `limit` *(optional)*: Maximum number of memory items to return (default: `5`).
+
+---
+
+### `POST /api/v1/memory`
+Creates, commits, or clears memories in the active memory backend:
+
+#### Add Memory Record (`action: "add"`)
+```json
+{
+  "action": "add",
+  "userId": "alice",
+  "text": "Prefers TypeScript strict mode with no implicit any in all repositories.",
+  "category": "preferences"
+}
+```
+
+#### Commit Session Transcript (`action: "commit"`)
+```json
+{
+  "action": "commit",
+  "userId": "alice",
+  "sessionId": "sess_frontend_123",
+  "messages": [
+    { "role": "user", "content": "Let's always use pnpm instead of npm." },
+    { "role": "assistant", "content": "Understood, I will default to pnpm for package management commands." }
+  ]
+}
+```
+
+#### Clear User Memories (`action: "clear"`)
+```json
+{
+  "action": "clear",
+  "userId": "alice"
+}
+```
+
+---
+
 ## HTTP Status Codes & Error Handling
 
 | Status Code | Description | Typical Cause |
 | :--- | :--- | :--- |
-| `200 OK` | Request succeeded. | Successful completion or query. |
-| `400 Bad Request` | Request rejected by Semantic Guard or invalid parameters. | Prompt injection attempt or malformed payload. |
-| `401 Unauthorized` | Authentication failed. | Missing or invalid `ADMIN_PASSWORD` Bearer token. |
+| `200 OK` | Request succeeded. | Successful completion, query, or operation. |
+| `400 Bad Request` | Request rejected by Semantic Guard or invalid parameters. | Prompt injection attempt, malformed JSON, or missing required fields. |
+| `401 Unauthorized` | Authentication failed. | Missing or invalid master password or named API key Bearer token. |
 | `402 Payment Required` | Financial budget cap exceeded. | Request estimated cost exceeds `maxCostPerRequest`. |
-| `429 Too Many Requests` | Rate limit exceeded. | Request exceeds configured sliding-window RPM limit. |
+| `429 Too Many Requests` | Rate limit or Agent Loop detected. | Sliding-window RPM exceeded, or `x-eluvix-hops` exceeded max threshold (Agent loop detected). |
 | `502 Bad Gateway` | Upstream failure. | All candidate engines in the routing queue failed or returned errors. |
 | `504 Gateway Timeout` | Execution timeout. | Upstream engine exceeded `timeoutMs` (default 15,000ms). |

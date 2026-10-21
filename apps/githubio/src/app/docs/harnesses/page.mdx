@@ -1,0 +1,172 @@
+# Agent Harnesses & Runtimes
+
+Eluvix is engineered to bridge traditional reactive LLM routing with autonomous, multi-turn **Agent Harnesses**. While standard routers simply process stateless prompt-completion cycles, an Agent Harness manages stateful execution loops, tool call dispatching, permission validation, and sub-agent orchestration.
+
+---
+
+## What is an Agent Harness?
+
+In modern AI agent architectures, an **Agent Harness** (or agent runtime) wraps an underlying model with:
+1. **Execution Loop**: Continually alternates between model reasoning and tool execution until a task is finalized.
+2. **Tool Sandboxing & Execution**: Spawns isolated processes (bash, python, git, web browsers) or communicates with MCP servers.
+3. **Approval Interception**: Holds execution when an agent attempts destructive or sensitive actions (e.g., file writes, shell execution, external network calls).
+4. **State Persistence**: Maintains conversation history, working memory, and intermediate tool outputs across turns.
+
+Eluvix acts as both an **intelligent LLM upstream provider** to external harnesses and a **direct proxy orchestrator** that can route incoming user tasks directly into autonomous agent engines.
+
+---
+
+## Supported Harness Backends
+
+Eluvix natively integrates four primary harness paradigms:
+
+| Harness | Protocol | Default Port / Transport | Best Suited For |
+| :--- | :--- | :--- | :--- |
+| **TrueForge** | REST + SSE | `http://127.0.0.1:8790` | Headless enterprise agent workflows, CI/CD, sandboxed tool approvals |
+| **opencode** | REST | `http://127.0.0.1:4096` | Autonomous repository coding, refactoring, patch generation |
+| **ACP (Agent Client Protocol)** | stdio JSON-RPC 2.0 | Process Stdio | IDE integration, Zed/VSCode editor protocols, desktop agents |
+| **Hermes** | OpenAI-Compatible | `http://127.0.0.1:8080` | Generalized agent proxying, function calling loops |
+
+---
+
+## 1. TrueForge Deep Dive
+
+[TrueForge](https://github.com/truefoundry/trueforge) is a modular, high-performance agent runtime designed by TrueFoundry for multi-step agent execution with granular tool approvals.
+
+### Architecture & Turn-Based Execution
+
+TrueForge operates using a **Session and Turn** model:
+1. **Session Initialization**: A session is created with a designated agent configuration, environment variables, and tool registry.
+2. **Turn Execution**: The client posts a user prompt to initiate a turn. TrueForge streams the agent's thoughts, proposed tool calls, and execution steps over Server-Sent Events (SSE).
+3. **Tool Approval Loop**: When a tool requires approval, the turn suspends until an approval or rejection event is dispatched.
+
+```text
+Client / Router ──► POST /api/v1/sessions ──► Session ID
+       │
+       ▼
+POST /api/v1/sessions/{id}/turns (Prompt)
+       │
+       ▼ (SSE Stream: turn.start, step.start, tool.call)
+[ Tool Call Triggered ]
+       │
+       ├──► Auto-Approve Readonly? ──► Execute tool & stream result
+       │
+       └──► Write / Exec Tool? ─────► Suspend & wait for approval
+                                              │
+       POST /api/v1/sessions/{id}/turns/{turnId}/events ◄───┘
+       {"type": "tool_approved", "call_id": "call_123"}
+                                              │
+                                              ▼
+                                   Resume execution loop
+```
+
+### Headless Tool Approval Policies
+
+When running TrueForge in headless or automated environments (e.g. CI/CD or backend gateways), Eluvix enforces configurable approval policies:
+
+- **`auto-approve-readonly` (Default)**: Automatically permits safe inspection operations (e.g., `read_file`, `grep_search`, `list_directory`, `git_status`) without user friction, while pausing or alerting on write/delete/execute tools.
+- **`auto-deny`**: Immediately denies any tool action requiring approval, ensuring unattended safety in zero-trust environments.
+- **`surface`**: Suspends the turn and surfaces the permission request over SSE to the client or dashboard for interactive operator approval.
+
+### Docker Deployment
+
+To launch TrueForge alongside Eluvix using Docker Compose:
+
+```bash
+docker compose --profile harness up -d
+```
+
+TrueForge binds to port `8790` and is immediately discoverable by Eluvix.
+
+---
+
+## 2. opencode Integration
+
+[opencode](https://github.com/sst/opencode) is an autonomous software development agent engine. Eluvix communicates with opencode in server mode:
+
+- **Session Initialization**: `POST /session` binds an active local repository or workspace.
+- **Message Execution**: `POST /session/{id}/message` streams file modifications, syntax tree analyses, and bash command outputs back through Eluvix's unified gateway.
+
+---
+
+## 3. Agent Client Protocol (ACP)
+
+The **Agent Client Protocol (ACP)** is a JSON-RPC 2.0 standardized protocol designed for bidirectional agent-to-editor communication:
+
+### Protocol Handshake & Flow
+
+1. **Initialization (`initialize`)**:
+   ```json
+   {
+     "jsonrpc": "2.0",
+     "id": 1,
+     "method": "initialize",
+     "params": {
+       "protocolVersion": "1.0",
+       "clientInfo": { "name": "eluvix-router", "version": "1.0.4" }
+     }
+   }
+   ```
+2. **Session Creation (`session/new`)**: Binds working directory and capabilities.
+3. **Turn Execution (`session/prompt`)**: Streams response deltas and tool invocation blocks.
+4. **Permission Negotiation (`session/request_permission`)**: Interactive permission requests for disk and network operations.
+
+Eluvix provides built-in stdio process spawning and stream demuxing for any ACP-compliant agent binary.
+
+---
+
+## 4. Loop Prevention & Hop Guard (`x-eluvix-hops`)
+
+One of the most dangerous failure modes in multi-agent and harness systems is the **Infinite Agent Loop**:
+- Agent *A* uses Eluvix as its LLM backend.
+- Agent *A* invokes a tool that queries Agent *B*.
+- Agent *B* queries Eluvix, which inadvertently routes back to Agent *A*.
+- The loop cascades recursively, burning millions of tokens and exhausting compute in seconds.
+
+### The Eluvix Loop Guard
+
+Eluvix introduces a mandatory **Loop Guard** pipeline stage:
+
+```text
+Incoming Request ──► Check Origin & Headers
+                           │
+                           ├── Origin: "client" ──► Hop Count = 0 (Allow)
+                           │
+                           └── Origin: "harness" ─► Inspect `x-eluvix-hops`
+                                                         │
+                                    ┌────────────────────┴────────────────────┐
+                                    ▼                                         ▼
+                             Hops < Threshold                          Hops >= Threshold
+                            Increment: Hops + 1                     REJECT: HTTP 429 Loop Detected
+                             Forward to Router                       "Agent recursion limit exceeded"
+```
+
+1. **Named Key Origin**: API keys in `keys.json` can be assigned `origin: "harness"`.
+2. **Hop Counter**: Requests originating from or passing through a harness increment the `x-eluvix-hops` HTTP header.
+3. **Threshold Rejection**: If `x-eluvix-hops` reaches or exceeds the configured limit (default: `2`), Eluvix rejects the call with an HTTP `429` status code and an explicit diagnostic payload:
+   ```json
+   {
+     "error": {
+       "message": "Potential agent routing loop detected: hop count (2) exceeds maximum allowed threshold (2).",
+       "type": "loop_detected_error",
+       "code": "agent_recursion_limit_exceeded"
+     }
+   }
+   ```
+
+---
+
+## 5. Visual Editor Configuration (`HarnessNode`)
+
+In the Eluvix Visual Routing Editor (`/editor`), you can add and wire a **Harness Node**:
+
+1. Open `/editor`.
+2. Drag **Agent Harness** from the left node palette onto the canvas.
+3. Select the runtime:
+   - `trueforge` (Port 8790)
+   - `opencode` (Port 4096)
+   - `acp` (Stdio JSON-RPC)
+   - `hermes` (Port 8080)
+4. Configure the **Tool Approval Policy** (`auto-approve-readonly`, `auto-deny`, `surface`).
+5. Set the **Max Hops Limit** (`1` to `5`).
+6. Connect the harness node to an upstream model or intent port. When compiled, the router automatically applies loop guarding and turn orchestration.

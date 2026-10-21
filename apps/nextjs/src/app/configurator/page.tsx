@@ -380,6 +380,12 @@ print(response.choices[0].message.content)
 
           <div className="flex flex-wrap items-center gap-2.5">
             <Link
+              href="/docs"
+              className="bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs px-3.5 py-2 rounded-lg border border-slate-700 transition flex items-center gap-1.5"
+            >
+              <span>📖</span> Docs
+            </Link>
+            <Link
               href="/observability"
               className="bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs px-3.5 py-2 rounded-lg shadow-lg shadow-purple-600/20 transition flex items-center gap-1.5"
             >

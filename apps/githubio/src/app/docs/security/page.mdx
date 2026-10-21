@@ -24,7 +24,7 @@ Authorization: Bearer <ADMIN_PASSWORD>
 
 ---
 
-## Automated Local TLS & HTTPS
+## Automated Local TLS & Same-Port Auto-Upgrade
 
 Eluvix provisions real HTTPS certificates locally to eliminate cleartext credential leakage on LANs and development machines:
 1. `server.mjs` checks for `mkcert` on the system path during boot.
@@ -33,7 +33,10 @@ Eluvix provisions real HTTPS certificates locally to eliminate cleartext credent
    - `127.0.0.1`
    - `::1`
    - `eluvix.local`
-3. It binds an HTTPS listener on port `3588` (or `PORT`) and an HTTP redirect listener on port `3580` (or `HTTP_PORT`), seamlessly upgrading browser connections to HTTPS.
+3. **Same-Port Dual-Protocol Demuxing (Port 3588)**:
+   The primary listener on port `3588` sniffs incoming TCP packets at byte 0. If a client transmits a TLS handshake byte (`0x16`), the connection proceeds through encrypted HTTPS. If a plaintext HTTP method byte is received (`G`, `P`, `H`, `D`), the server immediately responds with an `HTTP/1.1 308 Permanent Redirect` to `https://<host>:3588`, seamlessly upgrading browser and curl traffic on the exact same port.
+4. **Secondary HTTP Port (3580)**:
+   An optional secondary redirect port is maintained for legacy scripts expecting standard HTTP-to-HTTPS redirect semantics.
 
 ---
 
@@ -91,3 +94,25 @@ When a prompt triggers the sensitivity threshold (0.50–0.99):
 
 ### Custom Banned Phrases
 Blacklist specific keywords or company-confidential project names from ever reaching upstream models.
+
+---
+
+## Memory Egress Guard (Context Firewall)
+
+When using the **Memory & Context Engine** (OpenViking, Mem0, or SQLite), personal preferences, past transcripts, and internal project notes are injected into prompts.
+
+To prevent sensitive sovereign data from leaking to third-party cloud providers:
+- **`cloudMode: "filter"` (Default)**: Deep-inspects injected memory context for credentials, access tokens, and sensitive entities before transmitting payloads to external cloud models (OpenAI, Anthropic).
+- **`cloudMode: "strip"`**: Completely removes the `<recalled_context>` block when a request is dispatched to external cloud upstreams. Long-term memory recall is reserved strictly for local, on-premises models (Ollama, vLLM).
+
+---
+
+## Agent Loop Guard & Hop Limiter
+
+Autonomous agent networks (TrueForge, opencode, ACP, Hermes) can generate accidental recursive routing loops that burn millions of tokens in minutes.
+
+The **Loop Guard** pipeline stage enforces:
+1. **Origin Verification**: API requests originating from agent harnesses are identified by `origin: "harness"` in `keys.json` or by incoming headers.
+2. **Hop Counting**: Each proxy hop through Eluvix increments the `x-eluvix-hops` tracking counter.
+3. **Threshold Enforcement**: When `x-eluvix-hops` reaches or exceeds the configured limit (default: `2`), the request is rejected immediately with an HTTP `429 Too Many Requests` error and an `agent_recursion_limit_exceeded` code.
+

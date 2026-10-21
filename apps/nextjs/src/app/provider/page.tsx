@@ -190,6 +190,12 @@ export default function ProviderPage() {
               >
                 ← Consumer Router
               </Link>
+              <Link
+                href="/docs"
+                className="text-xs font-semibold text-sky-400 hover:text-sky-300 bg-slate-900 border border-sky-500/30 px-3 py-1.5 rounded-lg transition flex items-center gap-1"
+              >
+                <span>📖</span> Docs
+              </Link>
               <div className="h-4 w-px bg-slate-800" />
               <h1 className="text-2xl font-black text-amber-400 flex items-center gap-2">
                 <span>⚡</span> Sell GPU Time with Billama

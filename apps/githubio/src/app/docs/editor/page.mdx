@@ -99,6 +99,14 @@ The Routing Editor organizes nodes into functional categories:
   - Autonomous persona definitions with system instructions and temperature controls.
   - Primary capability specialization: General, Coding, Research, Orchestration.
   - Persistent multi-turn memory toggle.
+- **Agent Harness (`harnessNode`)**:
+  - Integrates autonomous runtime engines: `trueforge`, `opencode`, `acp`, `hermes`.
+  - Headless tool approval policies: `auto-approve-readonly` (permits reads, halts on writes), `auto-deny`, `surface` (interactive SSE approval prompt).
+  - Configurable loop limit (`maxHops`: 1–5) and loop-guard stage compilation.
+- **Memory Engine (`memoryNode`)**:
+  - Context and long-term memory providers: `openviking`, `mem0`, `sqlite`.
+  - Configurable max memory token budget (100–2,000 tokens) prepended in `<recalled_context>`.
+  - Privacy Egress Firewall: `cloudMode: "filter"` or `cloudMode: "strip"` to safeguard private memory from third-party cloud leakage.
 - **Local Engine Nodes (`lemonadeNode`, `vllmNode`, `ollamaNode`)**:
   - Local GPU/NPU-accelerated runtimes.
   - Priority scoring, max parallel concurrency, and context window limits.

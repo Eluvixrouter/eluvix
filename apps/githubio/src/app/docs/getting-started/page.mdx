@@ -45,8 +45,8 @@ Available environment variables:
 | `ADMIN_PASSWORD` | Master password for console login and API authentication | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_SECRET` | Secret key used to encrypt session JWT tokens | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_URL` | Canonical URL for NextAuth callbacks | Auto-detected from host and port |
-| `PORT` | HTTPS port for the Next.js server | `3588` |
-| `HTTP_PORT` | HTTP port that auto-redirects to HTTPS | `3580` |
+| `PORT` | HTTPS port for the Next.js server (with same-port HTTP auto-upgrade) | `3588` |
+| `HTTP_PORT` | Optional secondary HTTP redirect port | `3580` |
 | `HOSTNAME` | Listening network interface | `127.0.0.1` |
 
 ### 3. Launch Development Server
@@ -59,40 +59,61 @@ During startup:
 - `@eluvix/router-core` is compiled.
 - If `mkcert` is installed, a trusted local TLS certificate is issued for `localhost`, `127.0.0.1`, and `eluvix.local`.
 - If credentials do not yet exist, a fresh admin password is generated and printed in your terminal.
-- Two HTTP servers are initialized:
-  - **HTTPS Server**: `https://127.0.0.1:3588` (Main Dashboard & API)
-  - **HTTP Upgrade Server**: `http://127.0.0.1:3580` (Automatically redirects incoming browser traffic to HTTPS)
+- **Same-Port Dual-Protocol Demuxing on Port 3588**:
+  - The server binds port `3588`.
+  - Encrypted clients connect via `https://127.0.0.1:3588`.
+  - Plaintext HTTP requests to `http://127.0.0.1:3588` are automatically intercepted and upgraded via `HTTP/1.1 308 Permanent Redirect` on the exact same port!
+  - An optional secondary redirect server also runs on `http://127.0.0.1:3580`.
 
-Open your browser to `https://127.0.0.1:3588` (or `http://127.0.0.1:3580`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
+Open your browser to `https://127.0.0.1:3588` (or simply `http://127.0.0.1:3588`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
 
 ---
 
 ## Production Deployment (Docker)
 
-Eluvix provides production-ready Docker Compose configurations for containerized deployments:
+Eluvix provides modular Docker Compose configurations tailored for specific hardware:
+
+### Hardware-Accelerated Deployments
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+# NVIDIA CUDA (vLLM with GPU passthrough)
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
+
+# AMD ROCm (ROCm 6.2 with /dev/kfd and /dev/dri passthrough)
+docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d --build
+
+# CPU Only (Ollama + CPU inference)
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
 ```
 
-This starts:
-- The Next.js dashboard and API in optimized `standalone` output mode.
-- Persistent SQLite storage mapped to `./data`.
-- Background health checks and automated restart policies.
+### Agent Harnesses & Memory Engine Profiles
+
+Eluvix includes optional Docker Compose profiles for dedicated agent backends:
+
+```bash
+# Spin up with OpenViking Hierarchical Memory Engine (:1933)
+docker compose --profile memory up -d
+
+# Spin up with TrueForge Agent Runtime (:8790)
+docker compose --profile harness up -d
+
+# Launch entire sovereign agent stack (Router + OpenViking + TrueForge + vLLM)
+docker compose --profile memory --profile harness up -d
+```
 
 ---
 
 ## Hardware Auto-Detection & Helper Scripts
 
 ### 1. Hardware Detection & Docker Spinup
-To detect your local GPU hardware and spin up the matching Docker Compose profiles:
+To automatically detect your GPU vendor (NVIDIA CUDA, AMD ROCm, Apple Silicon, or CPU) and boot the optimal compose stack:
 
 ```bash
 chmod +x scripts/docker-detect-and-spinup.sh
 ./scripts/docker-detect-and-spinup.sh
 ```
 
-This utility detects NVIDIA CUDA, AMD ROCm, Apple Silicon, or CPU, measures available VRAM, and boots the optimal container stack.
+This utility detects whether NVIDIA Container Toolkit or AMD ROCm (`/dev/kfd`) is accessible, determines your GPU architecture (e.g. `gfx1100`, `gfx1030`), measures available VRAM, and boots the matching container configuration.
 
 ### 2. Antigravity Agent CLI Bootstrapper (`install.sh`)
 Eluvix includes an automated Unix bootstrapper script to install the **Google Antigravity CLI** (`agy`):

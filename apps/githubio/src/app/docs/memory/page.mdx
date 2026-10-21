@@ -1,0 +1,235 @@
+# Memory & Context Engine
+
+LLMs are inherently stateless. While standard applications rely on naive prompt stuffing or simple sliding window buffers, modern agent workflows require long-term episodic retention, semantic recall, and user-isolated context stores.
+
+Eluvix includes a unified **Memory & Context Engine** capable of interfacing with dedicated agent memory databases ([OpenViking](https://github.com/volcengine/OpenViking), [Mem0](https://github.com/mem0ai/mem0)) and a zero-dependency embedded SQLite provider.
+
+---
+
+## The Two-Phase Memory Lifecycle
+
+Eluvix orchestrates memory through a two-phase lifecycle:
+
+```text
+1. Pre-Routing Memory Injection
+User Prompt ──► Memory Engine ──► Semantic Recall (Top K items)
+                                           │
+                                           ▼
+                                 Format <recalled_context> block
+                                           │
+                                           ▼
+                                Prepend to System Message
+                                           │
+                                           ▼
+                                Forward to Router Pipeline
+
+2. Post-Routing Session Commit
+Upstream Model Output ──► Execution Finalized
+                                │
+                                ▼
+                       Summarize Key Facts
+                                │
+                                ▼
+                  Commit to Memory DB (L0/L1/L2)
+```
+
+1. **Pre-Routing Recall**: When a request enters Eluvix with a valid user identifier (`x-eluvix-user` or mapped from a Named API Key), Eluvix queries the configured memory provider for context semantically relevant to the incoming prompt.
+2. **Context Formatting**: Relevant memories are injected into the system prompt wrapped in `<recalled_context>` XML tags, bounded by a strict token limit (default: 500 tokens).
+3. **Post-Routing Commit**: Upon turn completion, the conversation turn can be summarized and persisted back to the memory store via `/api/v1/memory` or automated session hooks.
+
+---
+
+## Supported Context Providers
+
+| Provider | Type | Transport / Port | Storage Paradigm |
+| :--- | :--- | :--- | :--- |
+| **OpenViking** | External Service | REST `http://127.0.0.1:1933` | L0/L1/L2 Hierarchical context database by Volcengine |
+| **Mem0** | External Service | REST `http://127.0.0.1:8888` | Entity and graph-based episodic memory store |
+| **Built-in SQLite** | Embedded Engine | Direct SQLite (`~/.config/eluvix/memory.db`) | Local zero-dependency keyword & phrase matching |
+
+---
+
+## 1. OpenViking Deep Dive
+
+[OpenViking](https://github.com/volcengine/OpenViking) is an open-source, high-efficiency context database developed by Volcengine (ByteDance) specifically for AI agents and LLMs.
+
+### Hierarchical Context Representation (L0 / L1 / L2)
+
+Unlike flat vector stores that return raw chunks of equal weight, OpenViking structures memory hierarchically:
+
+- **Level 0 (L0) - Abstract & Pointer**: Ultra-compact semantic summaries and entity references (10–30 tokens). Allows agents to quickly scan hundreds of memories with minimal token consumption.
+- **Level 1 (L1) - Structural Overview**: High-level outline, categorical relations, and timestamped summaries (50–150 tokens).
+- **Level 2 (L2) - Full Detail**: Exact textual content, quotes, code snippets, and raw document chunks.
+
+### URI Namespace Structure
+
+OpenViking addresses memories and knowledge bases via semantic URIs:
+- `viking://user/{userId}/memories`: User-specific personal memories, coding habits, preferences.
+- `viking://workspace/{repoId}/context`: Repository architectures, design decisions, dependency notes.
+- `viking://session/{sessionId}/transcript`: Full multi-turn execution transcripts.
+
+### REST API Integration
+
+Eluvix communicates with OpenViking using its standard REST endpoints:
+- **Search & Recall**:
+  ```http
+  POST /api/v1/search/find
+  Content-Type: application/json
+
+  {
+    "target_uri": "viking://user/alice/memories",
+    "query": "Preferred styling library for React",
+    "limit": 5,
+    "score_threshold": 0.72
+  }
+  ```
+- **Session Memory Commit**:
+  ```http
+  POST /api/v1/sessions/sess_987/commit
+  Content-Type: application/json
+
+  {
+    "target_uri": "viking://user/alice/memories",
+    "messages": [ ... ]
+  }
+  ```
+
+### Docker Deployment
+
+To spin up OpenViking alongside Eluvix:
+
+```bash
+docker compose --profile memory up -d
+```
+
+OpenViking starts on port `1933` with persistent volume storage mounted in `./data/openviking`.
+
+---
+
+## 2. Mem0 Integration
+
+Eluvix supports [Mem0](https://github.com/mem0ai/mem0) for multi-agent memory management:
+
+- **Endpoint**: Configured in routing settings (default `http://127.0.0.1:8888`).
+- **User Scoping**: Injects `user_id` on all recall and write operations.
+- **Search**: Executes `POST /v1/memories/search` with cosine similarity ranking.
+
+---
+
+## 3. Built-in Embedded SQLite Memory
+
+For environments without Docker or where running external sidecars is impractical, Eluvix includes a **zero-dependency embedded SQLite memory engine**:
+
+- **Database Location**: `~/.config/eluvix/memory.db`.
+- **Schema**: Stores memory records with `userId`, `text`, `metadata`, `category`, and timestamps.
+- **Matching Algorithm**: Uses a hybrid token-overlap, phrase matching, and recency scoring algorithm.
+- **Air-Gapped & Instant**: Requires zero external services, perfect for local desktop installs and offline development.
+
+---
+
+## 4. Memory Egress Guard (Privacy Firewall)
+
+Injecting user memories into prompts introduces a critical security concern: **accidental memory leakage to public cloud models**.
+
+For instance, if User Alice's memory contains private internal hostnames, proprietary code snippets, or personal information, routing that enriched prompt to a third-party cloud provider (such as OpenAI or Anthropic) could violate data privacy policies.
+
+### Cloud Egress Modes
+
+The Eluvix Memory Egress Guard enforces strict egress policies based on the selected upstream:
+
+```text
+[ Recalled Context Injected ]
+             │
+             ▼
+[ Target Upstream Selected ]
+             │
+   ┌─────────┴─────────┐
+   ▼                   ▼
+Local Model       Cloud Model (OpenAI / Anthropic)
+ (Ollama/vLLM)         │
+   │                   ▼
+Retain Full      Inspect `cloudMode` Policy:
+  Context              │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+      cloudMode: "filter"   cloudMode: "strip"
+      Redact PII & High-    Completely remove
+      Sensitivity Blocks    <recalled_context>
+```
+
+- **`cloudMode: "filter"` (Default)**: Inspects the recalled memory blocks for high-sensitivity classifications (e.g. credentials, tokens, PII) and masks or removes those blocks before dispatching the payload to cloud upstreams.
+- **`cloudMode: "strip"`**: Completely removes the `<recalled_context>` block when routing to cloud endpoints. This guarantees that user memories are strictly confined to sovereign, on-premises local hardware (vLLM, Ollama, Lemonade).
+
+---
+
+## 5. Per-User Scoped Caching
+
+When memory injection is active, the standard prompt hash is insufficient for caching because two users asking the exact same question will have different recalled context.
+
+Eluvix prevents cross-user cache collisions:
+- The semantic cache key automatically includes the authenticated `userId`.
+- Memories recalled for User A will never pollute or trigger cache hits for User B.
+
+---
+
+## 6. Programmatic Memory API (`/api/v1/memory`)
+
+Eluvix provides a REST endpoint for managing memories directly:
+
+### 1. Search User Memories
+```bash
+curl -k "https://127.0.0.1:3588/api/v1/memory?userId=user_dev&query=PostgreSQL%20pooling&limit=5" \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>"
+```
+
+### 2. Manually Add a Memory
+```bash
+curl -k -X POST https://127.0.0.1:3588/api/v1/memory \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -d '{
+    "action": "add",
+    "userId": "user_dev",
+    "text": "Always use pgx pool with max 20 connections for backend services.",
+    "category": "preferences"
+  }'
+```
+
+### 3. Commit a Session Transcript
+```bash
+curl -k -X POST https://127.0.0.1:3588/api/v1/memory \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -d '{
+    "action": "commit",
+    "userId": "user_dev",
+    "sessionId": "sess_workspace_123",
+    "messages": [
+      { "role": "user", "content": "I prefer using Tailwind CSS for UI components." },
+      { "role": "assistant", "content": "Got it, I will use Tailwind CSS in future code suggestions." }
+    ]
+  }'
+```
+
+### 4. Clear User Memory
+```bash
+curl -k -X POST https://127.0.0.1:3588/api/v1/memory \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -d '{
+    "action": "clear",
+    "userId": "user_dev"
+  }'
+```
+
+---
+
+## 7. Visual Editor Configuration (`MemoryNode`)
+
+In the Visual Routing Editor (`/editor`):
+
+1. Drag a **Memory Engine** node from the palette onto the canvas.
+2. Choose your context backend: `openviking`, `mem0`, or `sqlite`.
+3. Set the **Max Memory Tokens** slider (default: `500` tokens).
+4. Configure the **Cloud Egress Mode**: `filter` or `strip`.
+5. Connect the Memory Engine node upstream of your task router or model gateways. Injected context indicators (`x-eluvix-memory`, `x-eluvix-memory-tokens`) will automatically be reported in chat completion response headers.

@@ -344,6 +344,12 @@ export default function Home() {
               {copiedSnippet ? '✓ Copied Env!' : '📋 Copy OpenAI Harness Env'}
             </button>
             <Link
+              href="/docs"
+              className="bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold text-xs px-3.5 py-2 rounded-lg border border-sky-500/30 transition flex items-center gap-1.5"
+            >
+              <span>📖</span> Docs ➔
+            </Link>
+            <Link
               href="/observability"
               className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow-lg shadow-purple-600/20 transition flex items-center gap-1.5"
             >

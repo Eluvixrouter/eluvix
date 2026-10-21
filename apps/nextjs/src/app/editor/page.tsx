@@ -75,6 +75,12 @@ export default function RoutingEditorPage() {
             <span>⚙️</span> Configurator
           </Link>
           <Link
+            href="/docs"
+            className="bg-slate-800/80 hover:bg-slate-700 text-sky-300 hover:text-white border border-slate-700 font-semibold text-xs px-3 py-1.5 rounded-lg transition flex items-center gap-1.5"
+          >
+            <span>📖</span> Docs
+          </Link>
+          <Link
             href="/"
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs px-3 py-1.5 rounded-lg transition border border-slate-700 flex items-center gap-1"
           >

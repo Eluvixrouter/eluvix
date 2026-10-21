@@ -250,6 +250,12 @@ export default function ObservabilityPage() {
             <div className="h-4 w-px bg-slate-800 hidden md:block" />
 
             <Link
+              href="/docs"
+              className="bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1"
+            >
+              <span>📖</span> Docs
+            </Link>
+            <Link
               href="/configurator"
               className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition flex items-center gap-1"
             >

@@ -9,8 +9,10 @@ Eluvix is built to orchestrate and harness local hardware, providing deep integr
 Eluvix connects out-of-the-box with:
 
 1. **Ollama**: Seamless discovery of models served on `http://127.0.0.1:11434`.
-2. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000`.
+2. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000` (NVIDIA CUDA or AMD ROCm).
 3. **Lemonade**: Local hardware and private enclave inference runtimes.
+4. **OpenViking**: Hierarchical context and memory engine on `http://127.0.0.1:1933`.
+5. **TrueForge**: Autonomous agent harness runtime on `http://127.0.0.1:8790`.
 
 ---
 
@@ -18,20 +20,47 @@ Eluvix connects out-of-the-box with:
 
 Eluvix includes a discovery API at `/api/v1/detect-models`:
 
-- It actively probes standard local ports (11434 for Ollama, 8000 for vLLM).
+- It actively probes standard local ports (11434 for Ollama, 8000 for vLLM, 1933 for OpenViking, 8790 for TrueForge).
 - It queries the engine's model list and tags each model with inferred capabilities (`vision`, `code`, `chat`).
 - Discovered models appear automatically as available options in the Visual Routing Editor.
 
 ---
 
-## Containerized Docker Orchestration
+## Containerized Docker Orchestration & Hardware Profiles
 
-Eluvix provides built-in Docker management APIs, allowing you to monitor and control backend inference containers directly from the web interface:
+Eluvix provides modular Docker Compose overlays to support both NVIDIA CUDA and AMD ROCm GPUs:
 
-- **Check Status**: `GET /api/v1/docker/status` returns whether engine containers (e.g. `agent-router`, `vllm`) are running, stopped, or unhealthy.
-- **Start Services**: `POST /api/v1/docker/up` spins up required services using `docker compose`.
-- **Stop Services**: `POST /api/v1/docker/down` gracefully halts containers to free up GPU VRAM.
-- **Inspect Logs**: `GET /api/v1/docker/logs` streams recent stdout/stderr output from the target container.
+### Hardware Overlays
+
+- **NVIDIA CUDA (`docker-compose.nvidia.yml`)**:
+  Enables the NVIDIA Container Toolkit runtime with `capabilities: [gpu]` for vLLM.
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
+  ```
+
+- **AMD ROCm (`docker-compose.amd.yml`)**:
+  Enables AMD ROCm 6.2 with direct device passthrough (`/dev/kfd` and `/dev/dri`), mapping your host GFX architecture (e.g. `gfx1100` for Radeon 7900 XTX / 780M, `gfx1030` for 6000-series).
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d
+  ```
+
+- **CPU Only (`docker-compose.cpu.yml`)**:
+  Fall-back configuration for standard CPU execution.
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+  ```
+
+### Optional Agent Ecosystem Profiles
+
+- **Memory Profile (`--profile memory`)**:
+  Spins up the [OpenViking](https://github.com/volcengine/OpenViking) context database container on port `1933`.
+- **Harness Profile (`--profile harness`)**:
+  Spins up the [TrueForge](https://github.com/truefoundry/trueforge) agent harness runtime container on port `8790`.
+
+Example:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.amd.yml --profile memory --profile harness up -d
+```
 
 ---
 
@@ -45,6 +74,6 @@ chmod +x scripts/docker-detect-and-spinup.sh
 ```
 
 This utility:
-1. Detects available GPU hardware (NVIDIA CUDA via `nvidia-smi`, Apple Silicon, or CPU fallback).
-2. Calculates available VRAM to recommend optimal quantization levels (Q4, Q8, FP16).
-3. Configures and starts the appropriate Docker Compose profiles for your hardware.
+1. Detects available GPU hardware: checks `nvidia-smi` and NVIDIA Docker runtime, or inspects `/dev/kfd` and `/sys/module/amdgpu` for AMD ROCm, or falls back to CPU.
+2. Identifies GPU architecture (e.g. `gfx1100`, `gfx1030`) and measures available VRAM.
+3. Automatically selects and applies the optimal Docker Compose overlay files.
