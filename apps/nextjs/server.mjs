@@ -1,5 +1,6 @@
 import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createHttpServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { parse, fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -71,15 +72,15 @@ async function startServer() {
   const certs = getOrCreateLocalCert(['localhost', '127.0.0.1', '::1', 'eluvix.local']);
 
   if (certs) {
-    let currentHttpsPort = httpsPort;
+    let currentPort = httpsPort;
 
-    // Primary HTTPS server for Next.js
+    // 1. Primary HTTPS server for Next.js
     const httpsServer = createHttpsServer(
       { key: certs.key, cert: certs.cert },
       (req, res) => {
         // Redirect localhost to 127.0.0.1 to avoid NextAuth host mismatch issues
         if (req.headers.host && req.headers.host.startsWith('localhost:')) {
-          const redirectUrl = `https://${hostname}:${currentHttpsPort}${req.url}`;
+          const redirectUrl = `https://${hostname}:${currentPort}${req.url}`;
           res.writeHead(301, {
             Location: redirectUrl,
             'Content-Type': 'text/html'
@@ -102,57 +103,109 @@ async function startServer() {
     httpsServer.requestTimeout = 600000; // 10 mins for heavy LLM generations
     httpsServer.headersTimeout = 65000;
 
-    httpsServer.on('error', (err) => {
+    httpsServer.on('clientError', (err, socket) => {
+      if (socket && socket.writable) {
+        try {
+          socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+        } catch {}
+      }
+    });
+
+    // 2. HTTP Server for Auto-Upgrade / Redirects
+    // Serves /api directly for plain HTTP clients, while upgrading browser navigation to HTTPS via 308 Permanent Redirect
+    const httpServer = createHttpServer((req, res) => {
+      const parsedUrl = parse(req.url, true);
+      if (parsedUrl.pathname && parsedUrl.pathname.startsWith('/api/')) {
+        handle(req, res, parsedUrl);
+        return;
+      }
+
+      const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
+      const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname)
+        ? (rawHost === 'localhost' ? hostname : rawHost)
+        : hostname;
+      const redirectUrl = `https://${safeHost}:${currentPort}${req.url}`;
+      res.writeHead(308, {
+        Location: redirectUrl,
+        'Content-Type': 'text/html; charset=utf-8',
+        Connection: 'close'
+      });
+      res.end(`Redirecting to <a href="${redirectUrl}">HTTPS</a>...\n`);
+    });
+
+    httpServer.requestTimeout = 600000;
+    httpServer.headersTimeout = 65000;
+
+    httpServer.on('upgrade', (req, socket) => {
+      const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
+      const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname)
+        ? (rawHost === 'localhost' ? hostname : rawHost)
+        : hostname;
+      const redirectUrl = `wss://${safeHost}:${currentPort}${req.url}`;
+      socket.write(`HTTP/1.1 308 Permanent Redirect\r\nLocation: ${redirectUrl}\r\nConnection: close\r\n\r\n`);
+      socket.destroy();
+    });
+
+    // 3. Dual-Protocol Demuxing Gateway on port 3588
+    // Sniffs the first byte: 0x16 is TLS ClientHello -> httpsServer; otherwise plain HTTP -> httpServer
+    const gateServer = createNetServer((socket) => {
+      socket.on('error', () => {
+        try { socket.destroy(); } catch {}
+      });
+      socket.setTimeout(10000, () => {
+        try { socket.destroy(); } catch {}
+      });
+      socket.once('readable', () => {
+        socket.setTimeout(0);
+        const firstByte = socket.read(1);
+        if (!firstByte) {
+          try { socket.destroy(); } catch {}
+          return;
+        }
+        socket.unshift(firstByte);
+        if (firstByte[0] === 0x16) {
+          httpsServer.emit('connection', socket);
+        } else {
+          httpServer.emit('connection', socket);
+        }
+      });
+    });
+
+    gateServer.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        const nextPort = currentHttpsPort + 1;
-        console.warn(`HTTPS Port ${currentHttpsPort} is in use, trying ${nextPort}...`);
-        currentHttpsPort = nextPort;
-        httpsServer.listen(currentHttpsPort, hostname);
+        const nextPort = currentPort + 1;
+        console.warn(`Port ${currentPort} is in use, trying ${nextPort}...`);
+        currentPort = nextPort;
+        gateServer.listen(currentPort, hostname);
       } else {
         console.error(err);
       }
     });
 
-    httpsServer.listen(currentHttpsPort, hostname, () => {
-      // Ensure NextAuth knows the correct URL if the port changed
-      process.env.NEXTAUTH_URL = `https://${hostname}:${currentHttpsPort}`;
+    gateServer.listen(currentPort, hostname, () => {
+      process.env.NEXTAUTH_URL = `https://${hostname}:${currentPort}`;
 
       console.log(`\n  ▲ Next.js 14.2.35`);
-      console.log(`  - Local:        https://${hostname}:${currentHttpsPort}`);
+      console.log(`  - Local:        https://${hostname}:${currentPort}`);
+      console.log(`  - Auto-Upgrade: http://${hostname}:${currentPort} ➔ https://${hostname}:${currentPort} (Same-Port Dual Protocol)`);
       console.log(`  - TLS:          Enabled (mkcert)`);
       console.log(`  - Admin Pass:   ${auth.adminPassword}`);
       console.log(`  - Config Path:  ${auth.authFile}`);
 
-      // Start HTTP Server (serves /api directly for local clients, auto-redirects browser HTML to HTTPS)
-      const httpServer = createHttpServer((req, res) => {
-        const parsedUrl = parse(req.url, true);
-        if (parsedUrl.pathname && parsedUrl.pathname.startsWith('/api/')) {
-          handle(req, res, parsedUrl);
-          return;
-        }
-
-        const rawHost = (req.headers.host || '').split(':')[0].toLowerCase();
-        const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname) ? rawHost : hostname;
-        const redirectUrl = `https://${safeHost}:${currentHttpsPort}${req.url}`;
-        res.writeHead(301, {
-          Location: redirectUrl,
-          'Content-Type': 'text/html'
+      // Optional extra redirect port for HTTP_PORT (default 3580)
+      if (httpPort && httpPort !== currentPort) {
+        httpServer.on('error', (err) => {
+          if (err.code !== 'EADDRINUSE') {
+            console.warn('[HTTP Redirect Server]', err.message);
+          }
         });
-        res.end(`Redirecting to <a href="${redirectUrl}">HTTPS</a>...\n`);
-      });
 
-      httpServer.requestTimeout = 600000; // 10 mins for heavy LLM generations
-      httpServer.headersTimeout = 65000;
-
-      httpServer.on('error', (err) => {
-        if (err.code !== 'EADDRINUSE') {
-          console.warn('[HTTP Redirect Server]', err.message);
-        }
-      });
-
-      httpServer.listen(httpPort, hostname, () => {
-        console.log(`  - Auto-Upgrade: http://${hostname}:${httpPort} ➔ https://${hostname}:${currentHttpsPort}\n`);
-      });
+        httpServer.listen(httpPort, hostname, () => {
+          console.log(`  - Extra HTTP:   http://${hostname}:${httpPort} ➔ https://${hostname}:${currentPort}\n`);
+        });
+      } else {
+        console.log('');
+      }
     });
   } else {
     // Plain HTTP mode if mkcert is not available
