@@ -20,10 +20,26 @@ function getProjectRoot(): string {
   return current;
 }
 
-export async function POST() {
+import { isValidContainerName } from '@/lib/api-helpers';
+
+export async function POST(req: Request) {
   try {
     const rootDir = getProjectRoot();
     console.log(`[Docker Up] Executing hardware detection & docker compose up in ${rootDir}`);
+
+    // Parse optional specific services requested in body
+    let requestedServices: string[] = [];
+    try {
+      const body = await req.json();
+      if (body && Array.isArray(body.services)) {
+        requestedServices = body.services
+          .filter((s: unknown): s is string => typeof s === 'string' && isValidContainerName(s));
+      } else if (body && typeof body.service === 'string' && isValidContainerName(body.service)) {
+        requestedServices = [body.service];
+      }
+    } catch {
+      // Body empty or not JSON
+    }
 
     // Pre-flight: detect GPU acceleration (NVIDIA CUDA / AMD ROCm / CPU)
     const detectScript = path.join(rootDir, 'scripts', 'docker-detect-and-spinup.sh');
@@ -45,14 +61,20 @@ export async function POST() {
       }
     }
 
-    const { stdout, stderr } = await execAsync('docker compose up -d --build', {
+    const serviceArgs = requestedServices.length > 0 ? requestedServices.join(' ') : '';
+    const composeCmd = serviceArgs ? `docker compose up -d --build ${serviceArgs}` : 'docker compose up -d --build';
+
+    const { stdout, stderr } = await execAsync(composeCmd, {
       cwd: rootDir,
       timeout: 180000 // 3 minutes
     });
 
     return NextResponse.json({
       success: true,
-      message: 'Containers spin-up initiated successfully.',
+      message: requestedServices.length > 0
+        ? `Containers (${requestedServices.join(', ')}) spin-up initiated.`
+        : 'All containers spin-up initiated successfully.',
+      services: requestedServices.length > 0 ? requestedServices : 'all',
       hardware: hardwareInfo,
       stdout: stdout.trim(),
       stderr: stderr.trim()

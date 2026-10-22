@@ -277,7 +277,7 @@ export default function Home() {
 
   const handleDockerUp = async () => {
     setDockerLoading(true);
-    setDockerActionMessage('🚀 Launching containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway)...');
+    setDockerActionMessage('🚀 Launching containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway, openviking, trueforge)...');
     try {
       const res = await fetch('/api/v1/docker/up', { method: 'POST' });
       const data = await res.json();
@@ -486,7 +486,7 @@ export default function Home() {
                   )}
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
-                  Automated containerized stack: Switchyard, vLLM-sr, Ollama, vLLM, Agent Router, and Agent Gateway.
+                  Automated containerized stack: Switchyard, vLLM-sr, Ollama, vLLM, Agent Router, Agent Gateway, OpenViking, and TrueForge.
                 </p>
               </div>
             </div>
@@ -526,9 +526,9 @@ export default function Home() {
             </div>
           )}
 
-          {/* Grid of the 6 services */}
+          {/* Grid of the 8 services */}
           {dockerStatus?.services && dockerStatus.services.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
               {dockerStatus.services.map((srv) => (
                 <div
                   key={srv.name}

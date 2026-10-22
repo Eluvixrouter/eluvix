@@ -96,9 +96,10 @@ services:
       retries: 3
 
   openviking:
-    image: ghcr.io/volcengine/openviking:latest
+    build:
+      context: ./docker/openviking
+      dockerfile: Dockerfile
     container_name: eluvix-openviking
-    profiles: ["memory"]
     ports:
       - "127.0.0.1:${OPENVIKING_PORT:-1933}:1933"
     volumes:
@@ -106,11 +107,17 @@ services:
     restart: unless-stopped
     networks:
       - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:1933/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
   trueforge:
-    image: ghcr.io/truefoundry/trueforge:latest
+    build:
+      context: ./docker/trueforge
+      dockerfile: Dockerfile
     container_name: eluvix-trueforge
-    profiles: ["harness"]
     ports:
       - "127.0.0.1:${TRUEFORGE_PORT:-8790}:8790"
     volumes:
@@ -118,6 +125,11 @@ services:
     restart: unless-stopped
     networks:
       - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8790/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   ollama_data:

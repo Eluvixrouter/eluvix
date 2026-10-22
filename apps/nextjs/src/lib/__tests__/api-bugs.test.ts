@@ -112,6 +112,8 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(normalizeProbeUrl('http://localhost:13305', 'lemonade')).toBe('http://localhost:13305/v1/models');
       expect(normalizeProbeUrl('http://localhost:8080', 'switchyard')).toBe('http://localhost:8080/v1/models');
       expect(normalizeProbeUrl('http://localhost:8080/', 'switchyard')).toBe('http://localhost:8080/v1/models');
+      expect(normalizeProbeUrl('http://localhost:1933', 'openviking')).toBe('http://localhost:1933/v1/models');
+      expect(normalizeProbeUrl('http://localhost:8790', 'trueforge')).toBe('http://localhost:8790/v1/models');
     });
   });
 
@@ -123,6 +125,8 @@ describe('API Bug Fixes Regression Suite', () => {
       expect(isValidContainerName('vllm')).toBe(true);
       expect(isValidContainerName('agent-router')).toBe(true);
       expect(isValidContainerName('agentgateway')).toBe(true);
+      expect(isValidContainerName('openviking')).toBe(true);
+      expect(isValidContainerName('trueforge')).toBe(true);
       expect(isValidContainerName('lemonade')).toBe(true);
       expect(isValidContainerName('router')).toBe(true);
     });

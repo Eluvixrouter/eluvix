@@ -65,7 +65,9 @@ export async function GET() {
       { name: 'ollama', container: 'eluvix-ollama', port: 11434 },
       { name: 'vllm', container: 'eluvix-vllm', port: 8000 },
       { name: 'agent-router', container: 'eluvix-agent-router', port: 8002 },
-      { name: 'agentgateway', container: 'eluvix-agentgateway', port: 8003 }
+      { name: 'agentgateway', container: 'eluvix-agentgateway', port: 8003 },
+      { name: 'openviking', container: 'eluvix-openviking', port: 1933 },
+      { name: 'trueforge', container: 'eluvix-trueforge', port: 8790 }
     ];
 
     let runningContainers: string[] = [];
@@ -106,8 +108,8 @@ export async function GET() {
       allRunning,
       services,
       message: allRunning
-        ? 'All 6 containers are actively running.'
-        : `${services.filter(s => s.running).length}/6 containers currently active.`
+        ? `All ${services.length} containers are actively running.`
+        : `${services.filter(s => s.running).length}/${services.length} containers currently active.`
     });
   } catch (error) {
     const err = error as Error;

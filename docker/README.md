@@ -17,6 +17,8 @@ real services behave — in particular:
 | `vllm/`        | vLLM                  | 8000         | Chat completions are canned strings.                         |
 | `agent-router/`| Agent router          | 8002         | Canned responses only.                                       |
 | `agentgateway/`| Agentgateway          | 8003         | Canned responses only.                                       |
+| `openviking/`  | OpenViking Memory     | 1933         | Hierarchical L0/L1/L2 memory recall and session commit.      |
+| `trueforge/`   | TrueForge Harness     | 8790         | Turn-based SSE agent loop and tool approval events.          |
 
 (Ollama in `docker-compose.yml` is the exception: it uses the real
 `ollama/ollama` image.)

@@ -246,7 +246,7 @@ export function normalizeProbeUrl(endpoint: string, type: string): string {
   if (type === 'ollama') {
     return `${baseWithoutV1}/api/tags`;
   }
-  if (type === 'lemonade' || type === 'openai-compatible' || type === 'vllm' || type === 'vllm-sr' || type === 'switchyard') {
+  if (type === 'lemonade' || type === 'openai-compatible' || type === 'vllm' || type === 'vllm-sr' || type === 'switchyard' || type === 'openviking' || type === 'trueforge') {
     return `${baseWithoutV1}/v1/models`;
   }
   return trimmed;
@@ -259,6 +259,8 @@ export const ALLOWED_DOCKER_SERVICES = new Set([
   'vllm',
   'agent-router',
   'agentgateway',
+  'openviking',
+  'trueforge',
   'lemonade',
   'router'
 ]);

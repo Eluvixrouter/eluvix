@@ -152,8 +152,8 @@ get_status() {
   local version
   version="$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || echo 'unknown')"
 
-  local services=("switchyard" "vllm-sr" "ollama" "vllm" "agent-router" "agentgateway")
-  local ports=("8080" "8001" "11434" "8000" "8002" "8003")
+  local services=("switchyard" "vllm-sr" "ollama" "vllm" "agent-router" "agentgateway" "openviking" "trueforge")
+  local ports=("8080" "8001" "11434" "8000" "8002" "8003" "1933" "8790")
   local json_services="["
 
   cd "${ROOT_DIR}"
@@ -193,7 +193,7 @@ spin_up() {
   echo "🔍 [Eluvix] Detecting hardware acceleration (NVIDIA CUDA / AMD ROCm / CPU)..."
   detect_and_configure_gpu "false" > /dev/null
 
-  echo "🚀 [Eluvix] Spinning up containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway)..."
+  echo "🚀 [Eluvix] Spinning up containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway, openviking, trueforge)..."
   docker compose up -d --build
 
   echo "📦 [Eluvix] Checking Ollama models..."
@@ -215,6 +215,8 @@ spin_up() {
   echo "  - vLLM Inference Engine:  http://localhost:8000"
   echo "  - Agent Router:           http://localhost:8002"
   echo "  - Agent Gateway (MCP):    http://localhost:8003"
+  echo "  - OpenViking Context DB:  http://localhost:1933"
+  echo "  - TrueForge Agent Harness:http://localhost:8790"
   echo "--------------------------------------------------------"
 }
 

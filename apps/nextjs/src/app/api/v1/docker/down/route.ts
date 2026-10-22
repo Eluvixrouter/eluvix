@@ -20,19 +20,43 @@ function getProjectRoot(): string {
   return current;
 }
 
-export async function POST() {
+import { isValidContainerName } from '@/lib/api-helpers';
+
+export async function POST(req: Request) {
   try {
     const rootDir = getProjectRoot();
-    console.log(`[Docker Down] Executing docker compose down in ${rootDir}`);
 
-    const { stdout, stderr } = await execAsync('docker compose down', {
+    // Parse optional specific services requested in body
+    let requestedServices: string[] = [];
+    try {
+      const body = await req.json();
+      if (body && Array.isArray(body.services)) {
+        requestedServices = body.services
+          .filter((s: unknown): s is string => typeof s === 'string' && isValidContainerName(s));
+      } else if (body && typeof body.service === 'string' && isValidContainerName(body.service)) {
+        requestedServices = [body.service];
+      }
+    } catch {
+      // Body empty or not JSON
+    }
+
+    const cmd = requestedServices.length > 0
+      ? `docker compose stop ${requestedServices.join(' ')}`
+      : 'docker compose down';
+
+    console.log(`[Docker Down] Executing "${cmd}" in ${rootDir}`);
+
+    const { stdout, stderr } = await execAsync(cmd, {
       cwd: rootDir,
       timeout: 60000
     });
 
     return NextResponse.json({
       success: true,
-      message: 'Containers stopped successfully.',
+      message: requestedServices.length > 0
+        ? `Containers (${requestedServices.join(', ')}) stopped successfully.`
+        : 'Containers stopped successfully.',
+      services: requestedServices.length > 0 ? requestedServices : 'all',
       stdout: stdout.trim(),
       stderr: stderr.trim()
     });
