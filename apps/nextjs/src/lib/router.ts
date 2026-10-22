@@ -238,12 +238,14 @@ function upstreamProblem(upstream: any): string | null {
   if (upstream.antigravity?.cliPath && !isValidCliPath(upstream.antigravity.cliPath)) {
     return `unauthorized or unsafe cliPath "${upstream.antigravity.cliPath}"`;
   }
-  // Validate harness configuration when type === 'harness'
-  if (upstream.type === 'harness' && upstream.harness) {
-    if (
-      upstream.harness.kind &&
-      !['hermes', 'trueforge', 'opencode', 'acp'].includes(upstream.harness.kind)
-    ) {
+  // Validate harness configuration when type === 'harness'. A missing
+  // harness block — or a block without `kind` — is valid: router-core
+  // infers the kind from the endpoint scheme at dispatch time
+  // (resolveHarnessKind: acp:// → 'acp', otherwise 'trueforge'). In
+  // particular, a harness upstream with an acp:// endpoint and no harness
+  // block validates as ACP and must not be silently treated as TrueForge.
+  if (upstream.type === 'harness' && upstream.harness?.kind) {
+    if (!['hermes', 'trueforge', 'opencode', 'acp'].includes(upstream.harness.kind)) {
       return `invalid harness.kind "${upstream.harness.kind}"`;
     }
   }

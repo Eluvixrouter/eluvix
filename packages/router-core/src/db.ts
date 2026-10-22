@@ -426,7 +426,11 @@ export function searchMemoryItems(
 
     const queryTokens = tokenizeForSearch(query);
     if (queryTokens.length === 0) {
-      return candidates.slice(0, limit).map(c => ({ ...c, score: 0.5 }));
+      // A query with no searchable tokens (e.g. stop-word-only small talk
+      // like "how are you") has no relevance signal. Returning the most
+      // recent items scored 0.5 would inject unrelated memories into the
+      // prompt and memory-taint the request, so return nothing.
+      return [];
     }
 
     // Score each candidate by token overlap + phrase match + slight recency bonus

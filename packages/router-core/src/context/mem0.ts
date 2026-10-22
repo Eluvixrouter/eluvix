@@ -1,31 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
 
-function isLocalEndpointUrl(endpoint: string): boolean {
-  try {
-    const u = new URL(endpoint);
-    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host === '::1' ||
-      host === '0.0.0.0' ||
-      host === 'mem0' ||
-      host === 'host.docker.internal' ||
-      host.endsWith('.local') ||
-      host.endsWith('.internal')
-    ) {
-      return true;
-    }
-    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
   if (Array.isArray(msg.content)) {
@@ -47,10 +22,6 @@ export class Mem0ContextProvider implements ContextProvider {
     this.endpoint = (config.endpoint || 'http://127.0.0.1:8888').trim().replace(/\/+$/, '');
     this.apiKey = config.apiKey || process.env.MEM0_API_KEY;
     this.timeoutMs = config.recallTimeoutMs ?? 1500;
-  }
-
-  public isLocal(): boolean {
-    return isLocalEndpointUrl(this.endpoint);
   }
 
   private buildHeaders(): Record<string, string> {

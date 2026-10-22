@@ -55,7 +55,6 @@ export interface MemoryConfig {
 
 export interface ContextProvider {
   id: string;
-  isLocal(): boolean;
   health(): Promise<boolean>;
   recall(
     query: string,

@@ -132,4 +132,39 @@ describe('loadConfig applies sanitization to the on-disk config', () => {
     expect(persisted.egressPolicy).toBeUndefined();
     expect(persisted.upstreams.map((u: any) => u.id)).toEqual(['local-lemonade']);
   });
+
+  it('keeps a harness upstream with an acp:// endpoint and no harness block (kind is inferred as ACP)', () => {
+    const acpNoBlock = {
+      id: 'acp-agent',
+      name: 'ACP Agent',
+      type: 'harness',
+      endpoint: 'acp://goose',
+      priority: 40,
+      models: ['harness/acp']
+    };
+    const { config, warnings, changed } = sanitizeLoadedConfig({
+      upstreams: [structuredClone(GOOD_UPSTREAM), acpNoBlock]
+    });
+    expect(changed).toBe(false);
+    expect(warnings).toEqual([]);
+    expect(config.upstreams.map((u: any) => u.id)).toEqual(['local-lemonade', 'acp-agent']);
+  });
+
+  it('still drops a harness upstream whose harness.kind is invalid', () => {
+    const badKind = {
+      id: 'bad-harness',
+      name: 'Bad Harness',
+      type: 'harness',
+      endpoint: 'http://127.0.0.1:8790',
+      priority: 40,
+      models: ['*'],
+      harness: { kind: 'carrier-pigeon' }
+    };
+    const { config, warnings, changed } = sanitizeLoadedConfig({
+      upstreams: [structuredClone(GOOD_UPSTREAM), badKind]
+    });
+    expect(changed).toBe(true);
+    expect(config.upstreams.map((u: any) => u.id)).toEqual(['local-lemonade']);
+    expect(warnings.some(w => w.includes('invalid harness.kind'))).toBe(true);
+  });
 });

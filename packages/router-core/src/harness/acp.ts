@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { RequestScope } from '../context/types.js';
-import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
+import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { buildHarnessPrompt } from './prompt.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
 const ALLOWED_ACP_BINARIES = new Set([
@@ -12,18 +13,10 @@ const ALLOWED_ACP_BINARIES = new Set([
   'agy'
 ]);
 
-function extractPromptFromMessages(messages: ChatMessage[]): string {
-  const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
-  if (!lastUser) return '';
-  if (typeof lastUser.content === 'string') return lastUser.content;
-  if (Array.isArray(lastUser.content)) {
-    return lastUser.content
-      .filter(p => p.type === 'text')
-      .map(p => (p as { type: 'text'; text: string }).text)
-      .join('\n');
-  }
-  return '';
-}
+/** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
+const ACP_KILL_GRACE_MS = 2000;
+/** Only the tail of the child's stderr is retained for diagnostics. */
+const ACP_STDERR_TAIL_BYTES = 8192;
 
 function isReadonlyTool(title: string): boolean {
   return /^(read|get|list|search|find|fetch|query|view|inspect|cat|ls|grep)/i.test(title || '');
@@ -54,9 +47,21 @@ export async function forwardAcpHarness(
     throw new Error(`ACP execution denied: '${baseBin}' is not an authorized ACP agent binary.`);
   }
 
+  // The ACP session/prompt channel carries text only: forwarding a
+  // tool-bearing request would silently drop the tools. Fail the attempt
+  // instead so router failover can pick an upstream that supports them.
+  if (Array.isArray(request.tools) && request.tools.length > 0) {
+    throw new Error(
+      'ACP harness does not support client tool calling; refusing to silently drop request tools'
+    );
+  }
+
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
-  const promptText = extractPromptFromMessages(request.messages || []);
+  // ACP sessions are spawned per request, so the full conversation —
+  // system context (incl. the injected <eluvix-memory> block) plus the
+  // history transcript — is folded into the prompt.
+  const promptText = buildHarnessPrompt(request.messages || [], { includeHistory: true });
   const cwd = harnessCfg.cwd || process.cwd();
   const servedModel = `acp/${baseBin}`;
   const completionId = `chatcmpl-acp-${Date.now()}`;
@@ -77,12 +82,26 @@ export async function forwardAcpHarness(
       let fullText = '';
       let lineBuf = '';
       let settled = false;
+      let childExited = false;
+      let stderrTail = '';
+      let killTimer: NodeJS.Timeout | null = null;
       let sessionId = 'acp-session-1';
 
       const cleanup = () => {
         clearTimeout(timer);
+        if (childExited) return;
         try {
-          if (!child.killed) child.kill('SIGTERM');
+          if (!child.killed) {
+            child.kill('SIGTERM');
+            // Escalate if the agent ignores SIGTERM, otherwise a wedged
+            // child outlives the request that spawned it.
+            killTimer = setTimeout(() => {
+              try {
+                if (!childExited) child.kill('SIGKILL');
+              } catch {}
+            }, ACP_KILL_GRACE_MS);
+            killTimer.unref?.();
+          }
         } catch {}
       };
 
@@ -117,18 +136,43 @@ export async function forwardAcpHarness(
       }
 
       const sendRpc = (msg: Record<string, any>) => {
-        if (child.stdin.writable) {
-          child.stdin.write(JSON.stringify(msg) + '\n');
+        try {
+          if (child.stdin.writable) {
+            child.stdin.write(JSON.stringify(msg) + '\n');
+          }
+        } catch {
+          // Agent died mid-write; the close/error handlers settle the turn.
         }
       };
 
+      // Writing to a dead agent's stdin raises EPIPE asynchronously; without
+      // a listener that becomes an unhandled error that crashes the router.
+      child.stdin.on('error', () => {});
+      // stderr is piped, so it MUST be drained: an agent that logs more than
+      // the OS pipe buffer (~64KB) blocks mid-turn and the request times
+      // out. Consume it, retaining only a bounded rolling tail.
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-ACP_STDERR_TAIL_BYTES);
+      });
+      child.stderr.on('error', () => {});
+
       child.on('error', err => finishErr(err));
       child.on('close', code => {
+        childExited = true;
+        if (killTimer) {
+          clearTimeout(killTimer);
+          killTimer = null;
+        }
         if (!settled) {
           if (fullText.length > 0 || code === 0) {
             finishOk();
           } else {
-            finishErr(new Error(`ACP process '${baseBin}' exited with code ${code}`));
+            const tail = stderrTail.trim();
+            finishErr(
+              new Error(
+                `ACP process '${baseBin}' exited with code ${code}${tail ? `: ${tail.slice(-500)}` : ''}`
+              )
+            );
           }
         }
       });
