@@ -98,7 +98,7 @@ export async function GET() {
         let isCode = false;
 
         const lower = m.toLowerCase();
-        if (lower.includes('70b') || lower.includes('sonnet') || lower.includes('opus') || lower.includes('120b') || lower.includes('gpt-4') || lower.includes('gemini') || lower.includes('frontier')) {
+        if (lower.includes('70b') || lower.includes('sonnet') || lower.includes('opus') || lower.includes('120b') || lower.includes('gpt-4') || lower.includes('gemini') || lower.includes('frontier') || lower.includes('trueforge') || lower.includes('harness/')) {
           isFrontier = true;
           contextLimit = 131072;
         }
@@ -115,7 +115,7 @@ export async function GET() {
           contextLimit = 131072;
           outputLimit = 8192;
         }
-        if (lower.includes('coder') || lower.includes('claude-code') || lower.includes('agy') || lower.includes('codex') || lower.includes('instruct')) {
+        if (lower.includes('coder') || lower.includes('claude-code') || lower.includes('agy') || lower.includes('codex') || lower.includes('instruct') || lower.includes('trueforge') || lower.includes('harness/')) {
           isCode = true;
         }
         if (lower.includes('qwen') || lower.includes('llama3.2') || lower.includes('gpt-oss')) {

@@ -47,8 +47,8 @@ import { LayoutMetadata } from '@/lib/layouts/types';
 
 const DEFAULT_NODE_DATA: Record<string, any> = {
   memoryNode: {
-    label: 'Context & Memory Engine',
-    provider: 'builtin',
+    label: 'OpenViking Context & Memory',
+    provider: 'openviking',
     endpoint: 'http://localhost:1933',
     recallBudgetTokens: 600,
     readingLevel: 'L1',
@@ -57,7 +57,7 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     cloudMode: 'filter'
   },
   harnessNode: {
-    label: 'Agent Harness Runtime',
+    label: 'TrueForge Agent Harness',
     kind: 'trueforge',
     endpoint: 'http://localhost:8790',
     agentId: 'default',
@@ -568,6 +568,8 @@ export default function RoutingEditor() {
       case 'vllmNode': setSelectedLogContainer('vllm'); break;
       case 'taskRouterNode': setSelectedLogContainer('agent-router'); break;
       case 'agentGatewayNode': setSelectedLogContainer('agentgateway'); break;
+      case 'memoryNode': setSelectedLogContainer('openviking'); break;
+      case 'harnessNode': setSelectedLogContainer('trueforge'); break;
       default: break;
     }
   }, []);
@@ -974,18 +976,20 @@ export default function RoutingEditor() {
 
       // Define valid target types for each source type
       const rules: Record<string, string[]> = {
-        inputNode: ['privacyGuardNode', 'semanticGuardNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        privacyGuardNode: ['semanticGuardNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        semanticGuardNode: ['privacyGuardNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        taskRouterNode: ['agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        inputNode: ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        privacyGuardNode: ['semanticGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        semanticGuardNode: ['privacyGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        memoryNode: ['privacyGuardNode', 'semanticGuardNode', 'taskRouterNode', 'switchyardNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'observabilityNode'],
+        taskRouterNode: ['memoryNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
         agentNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        antigravityNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'codexNode', 'claudeCodeNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        codexNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'claudeCodeNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        claudeCodeNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'codexNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        agentGatewayNode: ['switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        antigravityNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        codexNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        claudeCodeNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'codexNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        harnessNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        agentGatewayNode: ['switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
         mcpToolNode: ['agentGatewayNode'],
         modelGatewayNode: ['switchyardNode', 'observabilityNode'],
-        switchyardNode: ['modelGatewayNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'billamaNode', 'openaiNode', 'claudeNode', 'observabilityNode'],
+        switchyardNode: ['modelGatewayNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode', 'observabilityNode'],
         lemonadeNode: ['switchyardNode', 'observabilityNode'],
         vllmNode: ['switchyardNode', 'observabilityNode'],
         ollamaNode: ['switchyardNode', 'observabilityNode'],
@@ -1317,6 +1321,23 @@ export default function RoutingEditor() {
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-amber-400 font-mono">+ Add</span>
             </div>
+
+            {/* OpenViking Context & Memory */}
+            <div
+              className="p-2.5 mb-2 border border-fuchsia-500/80 bg-fuchsia-950/20 rounded-lg cursor-grab hover:bg-fuchsia-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'memoryNode')}
+              onClick={() => addNode('memoryNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🧠</span>
+                <div>
+                  <div className="font-semibold text-xs text-fuchsia-300 group-hover:text-fuchsia-200">OpenViking Memory</div>
+                  <div className="text-[10px] text-slate-400 font-mono">:1933 • L0/L1/L2 Context</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-fuchsia-400 font-mono">+ Add</span>
+            </div>
           </div>
 
           {/* Local LLM Engines */}
@@ -1441,7 +1462,24 @@ export default function RoutingEditor() {
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs uppercase tracking-wider text-cyan-400 font-semibold">Autonomous Agents</h3>
-              <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono">CLI / AGENT</span>
+              <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono">CLI / HARNESS</span>
+            </div>
+
+            {/* TrueForge Agent Harness */}
+            <div
+              className="p-2.5 mb-2 border border-amber-500/80 bg-amber-950/20 rounded cursor-grab hover:bg-amber-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'harnessNode')}
+              onClick={() => addNode('harnessNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">⚒️</span>
+                <div>
+                  <div className="font-semibold text-xs text-amber-300 group-hover:text-amber-200">TrueForge Harness</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8790 • Turn SSE Runtime</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-amber-400">+ Add</span>
             </div>
 
             {/* Antigravity Node */}
@@ -1828,6 +1866,8 @@ export default function RoutingEditor() {
                  if (n.type === 'modelGatewayNode') return '#10b981';
                  if (n.type === 'observabilityNode') return '#6366f1';
                  if (n.type === 'agentNode') return '#a855f7';
+                 if (n.type === 'memoryNode') return '#d946ef';
+                 if (n.type === 'harnessNode') return '#f59e0b';
                  return '#94a3b8';
                }}
                maskColor="rgba(2, 6, 23, 0.75)"
@@ -3337,6 +3377,119 @@ export default function RoutingEditor() {
                         <p>
                           Routing rules, timeouts, retries, spillover, and complexity thresholds are applied dynamically by the L7 proxy. Host-level hardware options (GPU allocation, host listening port) are set at container launch.
                         </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'memoryNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-fuchsia-300 mb-1">Memory Provider</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.provider || 'openviking')}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            updateData('provider', next);
+                            if (next === 'openviking') updateData('endpoint', 'http://localhost:1933');
+                            else if (next === 'mem0') updateData('endpoint', 'http://localhost:8888');
+                          }}
+                        >
+                          <option value="openviking">OpenViking (:1933)</option>
+                          <option value="builtin">Built-in SQLite FTS5</option>
+                          <option value="mem0">Mem0 (:8888)</option>
+                        </select>
+                      </div>
+                      {String(node.data.provider || 'openviking') !== 'builtin' && (
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1">Memory Server Endpoint</label>
+                          <input
+                            type="text"
+                            className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                            value={String(node.data.endpoint || 'http://localhost:1933')}
+                            onChange={(e) => updateData('endpoint', e.target.value)}
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">OpenViking Reading Level</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.readingLevel || 'L1')}
+                          onChange={(e) => updateData('readingLevel', e.target.value)}
+                        >
+                          <option value="L0">L0 (Abstract ~100 tokens)</option>
+                          <option value="L1">L1 (Overview ~500 tokens)</option>
+                          <option value="L2">L2 (Full Detail)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Recall Token Budget</label>
+                        <input
+                          type="number"
+                          min={100}
+                          max={8000}
+                          step={100}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.recallBudgetTokens ?? 600)}
+                          onChange={(e) => updateData('recallBudgetTokens', parseInt(e.target.value, 10) || 600)}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'harnessNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-amber-300 mb-1">Harness Runtime</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.kind || 'trueforge')}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            updateData('kind', next);
+                            if (next === 'trueforge') updateData('endpoint', 'http://localhost:8790');
+                            else if (next === 'opencode') updateData('endpoint', 'http://localhost:4096');
+                            else if (next === 'acp') updateData('endpoint', 'acp://goose');
+                            else updateData('endpoint', 'http://localhost:8642/v1');
+                          }}
+                        >
+                          <option value="trueforge">TrueForge (:8790)</option>
+                          <option value="opencode">OpenCode Server (:4096)</option>
+                          <option value="acp">ACP Agent (stdio)</option>
+                          <option value="hermes">Hermes Agent (:8642)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Harness Endpoint</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.endpoint || 'http://localhost:8790')}
+                          onChange={(e) => updateData('endpoint', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Agent Profile ID</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.agentId || 'default')}
+                          onChange={(e) => updateData('agentId', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Tool Approval Policy</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.approvals || 'auto-approve-readonly')}
+                          onChange={(e) => updateData('approvals', e.target.value)}
+                        >
+                          <option value="auto-approve-readonly">Auto-Approve Read-Only</option>
+                          <option value="read-only">Read-Only Tools</option>
+                          <option value="surface">Surface to Client</option>
+                          <option value="auto-deny">Auto-Deny Mutating</option>
+                        </select>
                       </div>
                     </div>
                   )}

@@ -4,6 +4,18 @@ exports[`DEFAULT_CONFIG single source of truth > matches the pinned snapshot (an
 {
   "egressPolicy": "local-only",
   "fallbackStrategy": "priority",
+  "memory": {
+    "allowCloudEgress": false,
+    "cloudMode": "filter",
+    "enabled": false,
+    "endpoint": "http://localhost:1933",
+    "openviking": {
+      "readingLevel": "L1",
+    },
+    "provider": "openviking",
+    "recallBudgetTokens": 600,
+    "writeBack": true,
+  },
   "strategy": "cost-complexity",
   "upstreams": [
     {
@@ -82,6 +94,29 @@ exports[`DEFAULT_CONFIG single source of truth > matches the pinned snapshot (an
       "priority": 18,
       "tier": "tier-2",
       "type": "switchyard",
+    },
+    {
+      "costPer1kTokens": 0,
+      "endpoint": "http://localhost:8790",
+      "harness": {
+        "agentId": "default",
+        "approvals": "auto-approve-readonly",
+        "kind": "trueforge",
+        "providerIsLocal": true,
+        "sessionMode": "per-eluvix-session",
+      },
+      "id": "local-trueforge",
+      "maxComplexityScore": 4,
+      "models": [
+        "harness/trueforge",
+        "trueforge/default",
+        "trueforge/coder",
+        "trueforge/researcher",
+      ],
+      "name": "TrueForge Agent Harness",
+      "priority": 17,
+      "tier": "tier-3",
+      "type": "harness",
     },
     {
       "apiKey": "",

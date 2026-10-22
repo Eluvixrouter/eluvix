@@ -77,7 +77,24 @@ export default function Home() {
 
   const handleUpdateType = (index: number, newType: UpstreamConfig['type']) => {
     const updated = [...config.upstreams];
-    updated[index] = { ...updated[index], type: newType };
+    const current = updated[index];
+    updated[index] = {
+      ...current,
+      type: newType,
+      ...(newType === 'harness'
+        ? {
+            endpoint: current.endpoint === 'http://localhost:11434' ? 'http://localhost:8790' : current.endpoint,
+            models: current.models.length === 1 && current.models[0] === '*' ? ['harness/trueforge', 'trueforge/default'] : current.models,
+            harness: current.harness || {
+              kind: 'trueforge',
+              agentId: 'default',
+              approvals: 'auto-approve-readonly',
+              sessionMode: 'per-eluvix-session',
+              providerIsLocal: true
+            }
+          }
+        : {})
+    };
     setConfig({ ...config, upstreams: updated });
   };
 
@@ -607,6 +624,134 @@ export default function Home() {
               </div>
             </div>
 
+            {/* OpenViking & Context Memory Engine Card */}
+            <div className="border border-fuchsia-500/40 rounded-xl p-6 bg-gradient-to-br from-fuchsia-950/50 via-slate-900 to-slate-900 shadow-xl">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-bold text-fuchsia-200 flex items-center gap-2">
+                  <span>🧠</span> OpenViking &amp; Context Memory
+                </h2>
+                <label className="flex items-center gap-1.5 text-xs text-fuchsia-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(config.memory?.enabled)}
+                    onChange={(e) =>
+                      setConfig({
+                        ...config,
+                        memory: {
+                          enabled: e.target.checked,
+                          provider: config.memory?.provider || 'openviking',
+                          endpoint: config.memory?.endpoint || 'http://localhost:1933',
+                          recallBudgetTokens: config.memory?.recallBudgetTokens ?? 600,
+                          writeBack: config.memory?.writeBack !== false,
+                          allowCloudEgress: Boolean(config.memory?.allowCloudEgress),
+                          cloudMode: config.memory?.cloudMode || 'filter',
+                          openviking: config.memory?.openviking || { readingLevel: 'L1' }
+                        }
+                      })
+                    }
+                    className="rounded border-fuchsia-500 bg-slate-950 text-fuchsia-500"
+                  />
+                  <span className="font-semibold">{config.memory?.enabled ? 'Active' : 'Disabled'}</span>
+                </label>
+              </div>
+              <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                Pre-routing context recall &amp; post-routing session commit across all models and harnesses.
+              </p>
+
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-fuchsia-300 uppercase tracking-wider block mb-1">
+                      Provider
+                    </label>
+                    <select
+                      value={config.memory?.provider || 'openviking'}
+                      onChange={(e) => {
+                        const nextProvider = e.target.value as 'builtin' | 'openviking' | 'mem0';
+                        const defaultEndpoint =
+                          nextProvider === 'openviking'
+                            ? 'http://localhost:1933'
+                            : nextProvider === 'mem0'
+                            ? 'http://localhost:8888'
+                            : '';
+                        setConfig({
+                          ...config,
+                          memory: {
+                            ...config.memory,
+                            enabled: config.memory?.enabled ?? true,
+                            provider: nextProvider,
+                            endpoint: defaultEndpoint
+                          }
+                        });
+                      }}
+                      className="w-full px-2.5 py-1.5 bg-slate-950 border border-fuchsia-500/40 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-fuchsia-400"
+                    >
+                      <option value="openviking">OpenViking (:1933)</option>
+                      <option value="builtin">Built-in SQLite FTS5</option>
+                      <option value="mem0">Mem0 (:8888)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-fuchsia-300 uppercase tracking-wider block mb-1">
+                      Reading Level
+                    </label>
+                    <select
+                      value={config.memory?.openviking?.readingLevel || 'L1'}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          memory: {
+                            ...config.memory,
+                            provider: config.memory?.provider || 'openviking',
+                            openviking: {
+                              ...config.memory?.openviking,
+                              readingLevel: e.target.value as 'L0' | 'L1' | 'L2'
+                            }
+                          }
+                        })
+                      }
+                      className="w-full px-2.5 py-1.5 bg-slate-950 border border-fuchsia-500/40 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-fuchsia-400"
+                    >
+                      <option value="L0">L0 (Abstract ~100t)</option>
+                      <option value="L1">L1 (Overview ~500t)</option>
+                      <option value="L2">L2 (Full Detail)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {(config.memory?.provider || 'openviking') !== 'builtin' && (
+                  <div>
+                    <label className="text-[10px] font-semibold text-fuchsia-300 uppercase tracking-wider block mb-1">
+                      Memory Server Endpoint
+                    </label>
+                    <input
+                      type="text"
+                      value={config.memory?.endpoint || 'http://localhost:1933'}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          memory: {
+                            ...config.memory,
+                            provider: config.memory?.provider || 'openviking',
+                            endpoint: e.target.value
+                          }
+                        })
+                      }
+                      placeholder="http://localhost:1933"
+                      className="w-full px-3 py-1.5 bg-slate-950 border border-fuchsia-500/40 rounded-lg text-xs font-mono text-fuchsia-200 focus:outline-none focus:border-fuchsia-400"
+                    />
+                  </div>
+                )}
+
+                <button
+                  onClick={handleSaveConfig}
+                  className="mt-1 bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-semibold text-xs py-2 px-4 rounded-lg transition"
+                >
+                  Save Memory Settings
+                </button>
+              </div>
+            </div>
+
             {/* Quickstart info */}
             <div className="border border-slate-800 rounded-xl p-6 bg-slate-900/60">
               <h3 className="text-sm font-semibold text-slate-200 mb-2">OpenCode &amp; Cursor Setup</h3>
@@ -627,7 +772,7 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                 <div>
                   <h2 className="text-xl font-bold text-slate-100">Local &amp; Custom Upstreams</h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Configure local nodes (vLLM, vLLM-sr, Ollama, Lemonade, Switchyard) or upstream providers. Edit any endpoint URL below.
+                    Configure local nodes (vLLM, vLLM-sr, Ollama, Lemonade, Switchyard, TrueForge) or upstream providers. Edit any endpoint URL below.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -673,7 +818,9 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                           <option value="ollama">Ollama</option>
                           <option value="lemonade">Lemonade</option>
                           <option value="switchyard">Switchyard</option>
+                          <option value="harness">TrueForge / Agent Harness</option>
                           <option value="openai-compatible">OpenAI-compatible</option>
+                          <option value="anthropic">Anthropic</option>
                           <option value="billama">Billama</option>
                           <option value="antigravity">Antigravity (AGY)</option>
                         </select>
@@ -717,6 +864,85 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                         />
                       </div>
                     </div>
+
+                    {upstream.type === 'harness' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-2.5 rounded-lg bg-amber-950/20 border border-amber-500/30">
+                        <div>
+                          <label className="text-[10px] font-semibold text-amber-300 uppercase tracking-wider block mb-1">
+                            Harness Runtime
+                          </label>
+                          <select
+                            value={upstream.harness?.kind || 'trueforge'}
+                            onChange={(e) => {
+                              const nextKind = e.target.value as 'trueforge' | 'opencode' | 'acp' | 'hermes';
+                              const updated = [...config.upstreams];
+                              updated[index] = {
+                                ...upstream,
+                                harness: {
+                                  ...upstream.harness,
+                                  kind: nextKind
+                                }
+                              };
+                              setConfig({ ...config, upstreams: updated });
+                            }}
+                            className="w-full bg-slate-900 border border-amber-500/40 rounded px-2 py-1 text-xs text-amber-200 focus:outline-none"
+                          >
+                            <option value="trueforge">TrueForge (:8790)</option>
+                            <option value="opencode">OpenCode (:4096)</option>
+                            <option value="acp">ACP Agent (stdio)</option>
+                            <option value="hermes">Hermes (:8642)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold text-amber-300 uppercase tracking-wider block mb-1">
+                            Agent Profile ID
+                          </label>
+                          <input
+                            type="text"
+                            value={upstream.harness?.agentId || 'default'}
+                            onChange={(e) => {
+                              const updated = [...config.upstreams];
+                              updated[index] = {
+                                ...upstream,
+                                harness: {
+                                  kind: upstream.harness?.kind || 'trueforge',
+                                  ...upstream.harness,
+                                  agentId: e.target.value
+                                }
+                              };
+                              setConfig({ ...config, upstreams: updated });
+                            }}
+                            className="w-full bg-slate-900 border border-amber-500/40 rounded px-2 py-1 text-xs font-mono text-amber-200 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-semibold text-amber-300 uppercase tracking-wider block mb-1">
+                            Tool Approvals
+                          </label>
+                          <select
+                            value={upstream.harness?.approvals || 'auto-approve-readonly'}
+                            onChange={(e) => {
+                              const updated = [...config.upstreams];
+                              updated[index] = {
+                                ...upstream,
+                                harness: {
+                                  kind: upstream.harness?.kind || 'trueforge',
+                                  ...upstream.harness,
+                                  approvals: e.target.value as 'auto-approve-readonly' | 'read-only' | 'surface' | 'auto-deny'
+                                }
+                              };
+                              setConfig({ ...config, upstreams: updated });
+                            }}
+                            className="w-full bg-slate-900 border border-amber-500/40 rounded px-2 py-1 text-xs text-amber-200 focus:outline-none"
+                          >
+                            <option value="auto-approve-readonly">Auto-Approve Read-Only</option>
+                            <option value="read-only">Read-Only Tools</option>
+                            <option value="surface">Surface to Client</option>
+                            <option value="auto-deny">Auto-Deny Mutating</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
 
                     {/* MODELS INPUT & DETECTION */}
                     <div className="flex flex-col gap-1.5">

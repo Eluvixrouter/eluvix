@@ -436,10 +436,32 @@ export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeo
 
   if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
     const kind = upstream.harness?.kind || (upstream.endpoint.startsWith('acp://') ? 'acp' : 'trueforge');
+    if (kind === 'trueforge' && /^https?:\/\//i.test(upstream.endpoint)) {
+      const base = upstream.endpoint.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(`${base}/v1/models`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+          const data = await res.json();
+          const parsed = parseModelDetails(data);
+          if (parsed.models.length > 0) {
+            return parsed;
+          }
+        }
+      } catch {
+        // Fall through to static harness models when container is offline
+      }
+    }
     if (kind === 'acp' || kind === 'trueforge') {
       const configured = Array.isArray(upstream.models) && upstream.models.length > 0
         ? upstream.models
-        : [kind, '*'];
+        : [`harness/${kind}`, `${kind}/default`];
       const details: DiscoveredModel[] = configured
         .filter(m => m !== '*')
         .map(id => ({

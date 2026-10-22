@@ -19,6 +19,18 @@ export const DEFAULT_CONFIG: RouterConfig = {
   strategy: 'cost-complexity',
   fallbackStrategy: 'priority',
   egressPolicy: 'local-only',
+  memory: {
+    enabled: false,
+    provider: 'openviking',
+    endpoint: 'http://localhost:1933',
+    recallBudgetTokens: 600,
+    writeBack: true,
+    allowCloudEgress: false,
+    cloudMode: 'filter',
+    openviking: {
+      readingLevel: 'L1'
+    }
+  },
   upstreams: [
     {
       id: 'local-lemonade',
@@ -75,6 +87,24 @@ export const DEFAULT_CONFIG: RouterConfig = {
       tier: 'tier-2',
       costPer1kTokens: 0.0,
       maxComplexityScore: 3
+    },
+    {
+      id: 'local-trueforge',
+      name: 'TrueForge Agent Harness',
+      type: 'harness',
+      endpoint: 'http://localhost:8790',
+      priority: 17,
+      models: ['harness/trueforge', 'trueforge/default', 'trueforge/coder', 'trueforge/researcher'],
+      tier: 'tier-3',
+      costPer1kTokens: 0.0,
+      maxComplexityScore: 4,
+      harness: {
+        kind: 'trueforge',
+        agentId: 'default',
+        approvals: 'auto-approve-readonly',
+        sessionMode: 'per-eluvix-session',
+        providerIsLocal: true
+      }
     },
     {
       id: 'billama-cloud',

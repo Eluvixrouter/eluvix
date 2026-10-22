@@ -780,5 +780,96 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+
+  // 13. OpenViking Memory + TrueForge Agentic Mesh
+  {
+    id: 'openviking-trueforge-agentic',
+    name: 'OpenViking Memory + TrueForge Agentic Mesh',
+    description: 'Hierarchical L0/L1/L2 context recall via OpenViking (:1933) feeding Switchyard across local Lemonade/Ollama engines and the TrueForge turn-based SSE agent harness (:8790).',
+    category: 'agent',
+    tags: ['openviking', 'trueforge', 'memory', 'harness', 'agent', 'local'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.85 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 50, y: 220 }, data: { label: 'Agent / IDE Input' } },
+      {
+        id: 'privacy-guard-1',
+        type: 'privacyGuardNode',
+        position: { x: 280, y: 180 },
+        data: {
+          action: 'anonymize',
+          detectPii: { apiKey: true, ssn: true, creditCard: true, email: true, phone: true }
+        }
+      },
+      {
+        id: 'openviking-memory-1',
+        type: 'memoryNode',
+        position: { x: 580, y: 160 },
+        data: {
+          label: 'OpenViking Context & Memory',
+          provider: 'openviking',
+          endpoint: 'http://localhost:1933',
+          recallBudgetTokens: 600,
+          readingLevel: 'L1',
+          writeBack: true,
+          allowCloudEgress: false,
+          cloudMode: 'filter'
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 900, y: 180 },
+        data: { strategy: 'cost-complexity', failover: 'enabled', codeEscalation: true }
+      },
+      {
+        id: 'lemonade-1',
+        type: 'lemonadeNode',
+        position: { x: 1260, y: 40 },
+        data: { label: 'Lemonade Engine', endpoint: 'http://localhost:13305', priority: 30, selectedModel: '*' }
+      },
+      {
+        id: 'ollama-1',
+        type: 'ollamaNode',
+        position: { x: 1260, y: 200 },
+        data: { label: 'Ollama Engine', endpoint: 'http://localhost:11434', priority: 22, selectedModel: '*' }
+      },
+      {
+        id: 'trueforge-harness-1',
+        type: 'harnessNode',
+        position: { x: 1260, y: 360 },
+        data: {
+          label: 'TrueForge Agent Harness',
+          kind: 'trueforge',
+          endpoint: 'http://localhost:8790',
+          agentId: 'default',
+          approvals: 'auto-approve-readonly',
+          sessionMode: 'per-eluvix-session',
+          priority: 17,
+          providerIsLocal: true
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1660, y: 200 },
+        data: { projectName: 'eluvix-agentic-mesh', captureInputs: true }
+      }
+    ],
+    edges: [
+      { id: 'e-in-priv', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-priv-mem', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'openviking-memory-1', animated: true, style: { stroke: '#d946ef' } },
+      { id: 'e-mem-sw', source: 'openviking-memory-1', sourceHandle: 'out', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-oll', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'ollama-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e-sw-tf', source: 'switchyard-1', sourceHandle: 'tier-3', target: 'trueforge-harness-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-oll-obs', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-tf-obs', source: 'trueforge-harness-1', sourceHandle: 'out', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
+    ]
   }
 ];
