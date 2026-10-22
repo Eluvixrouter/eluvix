@@ -105,7 +105,7 @@ cluster_up() {
     echo "ℹ️ Cluster '${CLUSTER_NAME}' already exists. Ensuring nodes are active..."
     k3d cluster start "${CLUSTER_NAME}" || true
   else
-    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with load balancer ports (3588, 8080, 11434)..."
+    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with mapped host ports (3588, 8080, 11434, 8002, 8003)..."
     k3d cluster create --config "${K3D_CONFIG}"
   fi
 
@@ -114,6 +114,25 @@ cluster_up() {
 
   echo "📦 Ensuring namespace '${NAMESPACE}' exists..."
   kubectl create namespace "${NAMESPACE}" --context "k3d-${CLUSTER_NAME}" --dry-run=client -o yaml | kubectl apply --context "k3d-${CLUSTER_NAME}" -f -
+
+  # The chart references local-only images (eluvix-nextjs, eluvix-switchyard,
+  # eluvix-agent-router, eluvix-agentgateway) that exist in no registry.
+  # Build them from the repo and import them into the cluster, or the pods
+  # sit in ImagePullBackOff forever. `set -e` makes any build/import failure
+  # abort loudly instead of reporting a hollow success.
+  echo "🔨 Building Eluvix application images..."
+  docker build -t eluvix-nextjs:latest -f apps/nextjs/Dockerfile .
+  docker build -t eluvix-switchyard:latest docker/switchyard
+  docker build -t eluvix-agent-router:latest docker/agent-router
+  docker build -t eluvix-agentgateway:latest docker/agentgateway
+
+  echo "📥 Importing Eluvix images into cluster '${CLUSTER_NAME}'..."
+  k3d image import \
+    eluvix-nextjs:latest \
+    eluvix-switchyard:latest \
+    eluvix-agent-router:latest \
+    eluvix-agentgateway:latest \
+    --cluster "${CLUSTER_NAME}"
 
   echo "🚀 Deploying Eluvix Helm Chart..."
   helm upgrade --install eluvix "${ROOT_DIR}/helm/eluvix" \
@@ -131,9 +150,21 @@ cluster_up() {
 }
 
 cluster_down() {
+  if ! command -v k3d &>/dev/null; then
+    echo "⚠️ k3d is not installed; there is no cluster to delete."
+    return 0
+  fi
+  if ! k3d cluster list --no-headers 2>/dev/null | grep -q "^${CLUSTER_NAME}\b"; then
+    echo "ℹ️ Cluster '${CLUSTER_NAME}' does not exist; nothing to delete."
+    return 0
+  fi
   echo "🛑 [Eluvix k3d] Deleting cluster '${CLUSTER_NAME}'..."
-  k3d cluster delete "${CLUSTER_NAME}" || true
-  echo "✓ Cluster deleted."
+  if k3d cluster delete "${CLUSTER_NAME}"; then
+    echo "✓ Cluster deleted."
+  else
+    echo "❌ Failed to delete cluster '${CLUSTER_NAME}'."
+    return 1
+  fi
 }
 
 case "${ACTION}" in
@@ -152,9 +183,11 @@ case "${ACTION}" in
     ;;
   deploy)
     echo "🚀 Deploying/Upgrading Eluvix Helm release..."
+    check_prereqs
     helm upgrade --install eluvix "${ROOT_DIR}/helm/eluvix" \
       -f "${ROOT_DIR}/helm/eluvix/values-local.yaml" \
       --namespace "${NAMESPACE}" \
+      --create-namespace \
       --kube-context "k3d-${CLUSTER_NAME}"
     ;;
   *)

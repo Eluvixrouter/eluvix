@@ -5,8 +5,11 @@ global:
 switchyard:
   replicaCount: 1
   service:
-    type: ClusterIP
+    # NodePort so the k3d host-port mappings (k3d-config.yaml maps host
+    # ports onto the cluster nodes) land on a real listener.
+    type: NodePort
     port: 8080
+    nodePort: 8080
   resources:
     limits:
       cpu: 500m
@@ -18,8 +21,9 @@ switchyard:
 nextjs:
   replicaCount: 1
   service:
-    type: ClusterIP
+    type: NodePort
     port: 3588
+    nodePort: 3588
   resources:
     limits:
       cpu: 500m
@@ -35,8 +39,9 @@ nextjs:
 ollama:
   replicaCount: 1
   service:
-    type: ClusterIP
+    type: NodePort
     port: 11434
+    nodePort: 11434
   persistence:
     enabled: true
     storageClass: local-path
@@ -51,10 +56,15 @@ ollama:
   gpu:
     enabled: false
   initModels:
-    enabled: false
+    # The chart's default routing config points exclusively at smollm:135m,
+    # so the local k3d stack needs the init-models hook job too.
+    enabled: true
 
 agentRouter:
   replicaCount: 1
+  service:
+    type: NodePort
+    nodePort: 8002
   resources:
     limits:
       cpu: 250m
@@ -65,6 +75,9 @@ agentRouter:
 
 agentGateway:
   replicaCount: 1
+  service:
+    type: NodePort
+    nodePort: 8003
   resources:
     limits:
       cpu: 250m

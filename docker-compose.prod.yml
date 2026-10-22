@@ -20,14 +20,11 @@ services:
       - switchyard
 
   switchyard:
-    image: node:18-alpine
-    command: >
-      sh -c "corepack enable pnpm && pnpm install --frozen-lockfile && pnpm -r run build && cd apps/switchyard && node dist/index.js"
-    volumes:
-      - .:/app
-    working_dir: /app
+    build:
+      context: ./docker/switchyard
+      dockerfile: Dockerfile
     ports:
-      - "127.0.0.1:8002:8002"
+      - "127.0.0.1:8080:8080"
     environment:
       - NODE_ENV=production
     restart: unless-stopped

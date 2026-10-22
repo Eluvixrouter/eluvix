@@ -1,0 +1,50 @@
+{{- if and .Values.ollama.enabled .Values.ollama.initModels.enabled .Values.ollama.initModels.models }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "eluvix.fullname" . }}-ollama-init-models
+  labels:
+    {{- include "eluvix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-init
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800
+  template:
+    metadata:
+      labels:
+        {{- include "eluvix.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ollama-init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ollama-pull
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          env:
+            - name: OLLAMA_HOST
+              value: "http://{{ include "eluvix.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              echo "Waiting for Ollama at ${OLLAMA_HOST}..."
+              attempt=0
+              until ollama list >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge 60 ]; then
+                  echo "Ollama did not become ready in time." >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+              {{- range .Values.ollama.initModels.models }}
+              echo "Pulling model {{ . }}..."
+              ollama pull {{ . | quote }}
+              {{- end }}
+              echo "Initial Ollama models ready."
+{{- end }}
