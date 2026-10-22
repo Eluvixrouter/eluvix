@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
+import { resolveSessionUserId } from '@/lib/caller-identity';
+import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,6 +86,12 @@ export async function POST(req: Request) {
     }
 
     const router = getRouter();
+    // A proven identity (named key, or the browser session) outranks the
+    // self-asserted x-eluvix-user header / body user for memory scoping:
+    // a caller must not be able to read or write another user's memories
+    // by naming them. The header/body fallbacks remain for keyless,
+    // sessionless internal callers (e.g. harness-origin requests).
+    const sessionUserId = keyUserId ? null : await resolveSessionUserId(req);
     const headerOrigin = req.headers.get('x-eluvix-origin');
     const origin: RequestScope['origin'] =
       keyOrigin ||
@@ -91,6 +99,7 @@ export async function POST(req: Request) {
     const scope: Partial<RequestScope> = {
       userId:
         keyUserId ||
+        sessionUserId ||
         req.headers.get('x-eluvix-user') ||
         (typeof body.user === 'string' && body.user.trim() ? body.user.trim() : 'default'),
       sessionId:
@@ -264,8 +273,9 @@ export async function POST(req: Request) {
   } catch (error) {
     const err = error as Error;
     const msg = err.message || 'Internal server error';
+    const kind = classifyChatError(err);
 
-    if (msg.startsWith('No upstream available for model:')) {
+    if (kind === 'no-upstream') {
       const isVision = msg.includes('with vision capability');
       return NextResponse.json(
         {
@@ -280,7 +290,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (msg.startsWith('All upstreams failed to process the request.')) {
+    if (kind === 'all-upstreams-failed') {
       return NextResponse.json(
         {
           error: {
@@ -294,7 +304,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (err.name === 'AbortError' || msg.includes('Client aborted') || msg.includes('client_closed_request')) {
+    if (kind === 'client-aborted') {
       return NextResponse.json(
         {
           error: {
@@ -308,7 +318,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (err.name === 'TimeoutError' || msg.includes('timed out')) {
+    if (kind === 'timeout') {
       return NextResponse.json(
         {
           error: {

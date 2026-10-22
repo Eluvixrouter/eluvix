@@ -73,4 +73,82 @@ describe('diffRouterConfigs', () => {
     expect(diff.added.map(u => u.id)).toEqual(['local-lemonade', 'local-ollama']);
     expect(diff.removed).toEqual([]);
   });
+
+  describe('memory section (bug hunt finding 4)', () => {
+    const MEMORY_ON: RouterConfig['memory'] = {
+      enabled: true,
+      provider: 'builtin',
+      recallBudgetTokens: 600,
+      writeBack: true,
+      allowCloudEgress: false,
+      cloudMode: 'filter'
+    };
+
+    it('reports no memory change for identical memory sections', () => {
+      const config: RouterConfig = { upstreams: [LEMONADE], memory: structuredClone(MEMORY_ON) };
+      const diff = diffRouterConfigs(structuredClone(config), structuredClone(config));
+      expect(diff.memory).toBeUndefined();
+      expect(diff.isEmpty).toBe(true);
+    });
+
+    it('flags an allowCloudEgress flip that changes nothing else', () => {
+      const current: RouterConfig = { upstreams: [LEMONADE], memory: structuredClone(MEMORY_ON) };
+      const next: RouterConfig = {
+        upstreams: [LEMONADE],
+        memory: { ...structuredClone(MEMORY_ON), allowCloudEgress: true }
+      };
+      const diff = diffRouterConfigs(current, next);
+      expect(diff.isEmpty).toBe(false);
+      expect(diff.memory).toEqual({ kind: 'changed', fields: ['allowCloudEgress'] });
+    });
+
+    it('flags a memory section being added or removed wholesale', () => {
+      const bare: RouterConfig = { upstreams: [LEMONADE] };
+      const withMemory: RouterConfig = { upstreams: [LEMONADE], memory: structuredClone(MEMORY_ON) };
+
+      const added = diffRouterConfigs(bare, withMemory);
+      expect(added.memory?.kind).toBe('added');
+      expect(added.memory?.fields).toContain('allowCloudEgress');
+      expect(added.isEmpty).toBe(false);
+
+      const removed = diffRouterConfigs(withMemory, bare);
+      expect(removed.memory?.kind).toBe('removed');
+      expect(removed.memory?.fields).toContain('provider');
+      expect(removed.isEmpty).toBe(false);
+    });
+
+    it('names every differing memory field, including nested openviking settings', () => {
+      const current: RouterConfig = { upstreams: [LEMONADE], memory: structuredClone(MEMORY_ON) };
+      const next: RouterConfig = {
+        upstreams: [LEMONADE],
+        memory: {
+          ...structuredClone(MEMORY_ON),
+          endpoint: 'http://localhost:1933',
+          cloudMode: 'strip',
+          recallTimeoutMs: 2500,
+          openviking: { readingLevel: 'L2', scopePrefixes: ['viking://user/default'] }
+        }
+      };
+      const diff = diffRouterConfigs(current, next);
+      expect(diff.memory).toEqual({
+        kind: 'changed',
+        fields: ['endpoint', 'recallTimeoutMs', 'cloudMode', 'openviking']
+      });
+    });
+
+    it('reports an apiKey change by field name only, never by value', () => {
+      const current: RouterConfig = {
+        upstreams: [LEMONADE],
+        memory: { ...structuredClone(MEMORY_ON), apiKey: 'old-memory-secret' }
+      };
+      const next: RouterConfig = {
+        upstreams: [LEMONADE],
+        memory: { ...structuredClone(MEMORY_ON), apiKey: 'new-memory-secret' }
+      };
+      const diff = diffRouterConfigs(current, next);
+      expect(diff.memory).toEqual({ kind: 'changed', fields: ['apiKey'] });
+      expect(JSON.stringify(diff)).not.toContain('old-memory-secret');
+      expect(JSON.stringify(diff)).not.toContain('new-memory-secret');
+    });
+  });
 });

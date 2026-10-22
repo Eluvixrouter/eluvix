@@ -194,20 +194,29 @@ export interface UpstreamConfig {
  * user's own machine / LAN. Antigravity and other cli:// agent wrappers are
  * NOT local: the CLI is a front-end for an external service, so the prompt
  * leaves the machine even though the process runs locally.
- * For 'harness' upstreams, locality depends on `harness.providerIsLocal`
- * (or whether its endpoint is on localhost/LAN when not explicitly false).
+ * For 'harness' upstreams, an explicit `harness.providerIsLocal` decides.
+ * When the flag is absent, locality is derived from the endpoint with the
+ * same rule as every other wrapper: cli:// and acp:// endpoints spawn a
+ * local process that fronts an external service, so they are NOT local;
+ * http(s) endpoints are judged by host like any other upstream. (The flag
+ * used to default to local — including a blanket shortcut for ACP — which
+ * let the egress policy and the memory-egress guard treat remote or
+ * cloud-backed harnesses as on-machine.)
  */
 export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
   if (upstream.type === 'antigravity') return false;
-  if (upstream.type === 'harness') {
-    if (upstream.harness?.providerIsLocal === false) return false;
-    if (upstream.harness?.providerIsLocal === true) return true;
-    if (upstream.harness?.kind === 'acp') return true;
+  if (upstream.type === 'harness' && upstream.harness?.providerIsLocal !== undefined) {
+    return upstream.harness.providerIsLocal;
   }
   const endpoint = upstream.endpoint || '';
   if (endpoint.startsWith('cli://')) return false;
-  if (endpoint.startsWith('acp://')) return upstream.harness?.providerIsLocal !== false;
+  if (endpoint.startsWith('acp://')) {
+    // Process-wrapper endpoint (see above): a harness with no explicit
+    // providerIsLocal declaration is not local. Non-harness upstreams keep
+    // the legacy behavior.
+    return upstream.type === 'harness' ? false : upstream.harness?.providerIsLocal !== false;
+  }
   let host: string;
   try {
     host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();

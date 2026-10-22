@@ -1,8 +1,14 @@
-import type { RouterConfig, UpstreamConfig } from '@eluvix/router-core';
+import type { MemoryConfig, RouterConfig, UpstreamConfig } from '@eluvix/router-core';
 
 export interface UpstreamChange {
   id: string;
   name: string;
+  /** Names of the fields that differ (values are never included — apiKey safe). */
+  fields: string[];
+}
+
+export interface MemoryChange {
+  kind: 'added' | 'removed' | 'changed';
   /** Names of the fields that differ (values are never included — apiKey safe). */
   fields: string[];
 }
@@ -12,6 +18,7 @@ export interface ConfigDiff {
   removed: UpstreamConfig[];
   changed: UpstreamChange[];
   egressPolicy?: { from?: string; to?: string };
+  memory?: MemoryChange;
   isEmpty: boolean;
 }
 
@@ -30,6 +37,42 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
 
 function fieldDiffers(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+}
+
+const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
+  'enabled',
+  'provider',
+  'endpoint',
+  'apiKey',
+  'recallBudgetTokens',
+  'recallTimeoutMs',
+  'writeBack',
+  'autoCommitTurns',
+  'allowCloudEgress',
+  'cloudMode',
+  'openviking'
+];
+
+/**
+ * Diff the top-level memory section. It is a single settings block rather
+ * than a list, so it reports as added / removed / changed with the field
+ * NAMES that differ — including allowCloudEgress, whose flip changes
+ * whether recalled memories may leave the machine and must never be
+ * invisible in the apply confirmation (bug hunt finding 4).
+ */
+function diffMemory(
+  current: MemoryConfig | undefined,
+  next: MemoryConfig | undefined
+): MemoryChange | undefined {
+  if (!current && !next) return undefined;
+  if (!current && next) {
+    return { kind: 'added', fields: MEMORY_FIELDS.filter(f => next[f] !== undefined) };
+  }
+  if (current && !next) {
+    return { kind: 'removed', fields: MEMORY_FIELDS.filter(f => current[f] !== undefined) };
+  }
+  const fields = MEMORY_FIELDS.filter(f => fieldDiffers(current![f], next![f]));
+  return fields.length > 0 ? { kind: 'changed', fields } : undefined;
 }
 
 /**
@@ -69,11 +112,19 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       ? { from: current?.egressPolicy, to: next.egressPolicy }
       : undefined;
 
+  const memory = diffMemory(current?.memory, next.memory);
+
   return {
     added,
     removed,
     changed,
     egressPolicy,
-    isEmpty: added.length === 0 && removed.length === 0 && changed.length === 0 && !egressPolicy
+    memory,
+    isEmpty:
+      added.length === 0 &&
+      removed.length === 0 &&
+      changed.length === 0 &&
+      !egressPolicy &&
+      !memory
   };
 }
