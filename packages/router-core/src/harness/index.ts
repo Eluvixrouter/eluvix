@@ -8,6 +8,27 @@ import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { forwardAcpHarness } from './acp.js';
 import { forwardOpencodeHarness } from './opencode.js';
 import { forwardTrueForgeHarness } from './trueforge.js';
+import type { HarnessKind } from './types.js';
+
+/**
+ * Resolve the harness kind for an upstream. An explicit `harness.kind`
+ * always wins. When the harness block (or its kind) is absent — e.g. a
+ * hand-edited or API-written config — the kind is inferred from the
+ * endpoint scheme instead of blindly defaulting to TrueForge: `acp://`
+ * (and `cli://` agent wrappers) route to the ACP stdio forwarder, HTTP(S)
+ * endpoints route to the TrueForge REST forwarder. This matches the
+ * inference the router's model detection already applies.
+ */
+export function resolveHarnessKind(upstream: UpstreamConfig): HarnessKind {
+  if (upstream.harness?.kind) {
+    return upstream.harness.kind;
+  }
+  const endpoint = (upstream.endpoint || '').trim().toLowerCase();
+  if (endpoint.startsWith('acp://') || endpoint.startsWith('cli://')) {
+    return 'acp';
+  }
+  return 'trueforge';
+}
 
 export async function forwardHarnessRequest(
   upstream: UpstreamConfig,
@@ -17,7 +38,7 @@ export async function forwardHarnessRequest(
   scope?: RequestScope,
   hops = 0
 ): Promise<Response> {
-  const kind = upstream.harness?.kind || 'trueforge';
+  const kind = resolveHarnessKind(upstream);
   if (kind === 'trueforge') {
     return forwardTrueForgeHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
   }

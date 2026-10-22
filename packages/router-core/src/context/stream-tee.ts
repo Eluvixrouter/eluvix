@@ -3,6 +3,9 @@
  * untouched to the caller while accumulating `choices[].delta.content` chunks.
  * When the stream ends (or `[DONE]` is observed), `onComplete` is called
  * asynchronously (fire-and-forget) with the assembled assistant text.
+ * If the consumer cancels (client disconnect), `onComplete` is NOT called:
+ * the partial text is a truncated reply and must not be stored as a
+ * completed turn.
  */
 export function teeSseStreamForMemory(
   source: ReadableStream<Uint8Array>,
@@ -12,9 +15,10 @@ export function teeSseStreamForMemory(
   let lineBuffer = '';
   let accumulated = '';
   let fired = false;
+  let cancelled = false;
 
   const fireOnce = () => {
-    if (fired) return;
+    if (fired || cancelled) return;
     fired = true;
     const text = accumulated.trim();
     if (text.length > 0) {
@@ -78,7 +82,10 @@ export function teeSseStreamForMemory(
       }
     },
     cancel(reason) {
-      fireOnce();
+      // Client disconnected mid-stream: the accumulated text is a truncated
+      // reply, not a completed turn. Do NOT write it back to memory —
+      // otherwise the partial answer is later recalled as if complete.
+      cancelled = true;
       return reader.cancel(reason).catch(() => {});
     }
   });
