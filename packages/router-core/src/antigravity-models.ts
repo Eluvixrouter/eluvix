@@ -201,11 +201,20 @@ export function getCachedAntigravityModels(): AgyModelEntry[] {
     if (fs.existsSync(cacheFile)) {
       const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
       if (Array.isArray(raw.models) && raw.models.length > 0) {
-        memoryCache = {
-          models: raw.models,
-          timestamp: raw.timestamp || Date.now()
-        };
-        return raw.models;
+        // The disk cache is subject to the same TTL as the memory cache.
+        // Adopting raw.timestamp without an age check (the old behavior)
+        // served an arbitrarily old catalog — e.g. one written days ago
+        // on a previous run — as if it were current, and those models
+        // feed isAntigravitySupportedModel routing decisions.
+        const cachedAt = typeof raw.timestamp === 'number' ? raw.timestamp : 0;
+        if (Date.now() - cachedAt < CACHE_TTL_MS) {
+          memoryCache = {
+            models: raw.models,
+            timestamp: cachedAt
+          };
+          return raw.models;
+        }
+        // Stale disk cache: treat as a miss and fall through to defaults.
       }
     }
   } catch {}
