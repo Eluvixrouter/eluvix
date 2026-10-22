@@ -10,6 +10,9 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
   const [agentId, setAgentId] = useState(data?.agentId || 'default');
   const [approvals, setApprovals] = useState(data?.approvals || 'auto-approve-readonly');
   const [sessionMode, setSessionMode] = useState(data?.sessionMode || 'per-eluvix-session');
+  const [locality, setLocality] = useState(
+    data?.providerIsLocal === true ? 'local' : data?.providerIsLocal === false ? 'remote' : 'auto'
+  );
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -128,6 +131,28 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
               <option value="per-request">Stateless Per-Turn</option>
             </select>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-semibold text-gray-400 mb-1">Provider Locality</label>
+          <select
+            className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-indigo-500 rounded p-1.5 text-white text-[11px] outline-none"
+            value={locality}
+            onChange={(e) => {
+              const next = e.target.value;
+              setLocality(next);
+              syncData({
+                providerIsLocal: next === 'local' ? true : next === 'remote' ? false : undefined
+              });
+            }}
+          >
+            <option value="auto">Auto (derive from endpoint)</option>
+            <option value="local">Local (this machine / LAN)</option>
+            <option value="remote">Remote (cloud-backed)</option>
+          </select>
+          <p className="text-[10px] text-gray-500 mt-1">
+            Governs local-only egress and memory sharing. Auto treats ACP/CLI wrappers as remote.
+          </p>
         </div>
       </div>
 

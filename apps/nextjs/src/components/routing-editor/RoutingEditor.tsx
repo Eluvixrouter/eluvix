@@ -3586,6 +3586,26 @@ export default function RoutingEditor() {
                     Egress policy: {applyDiff.egressPolicy.from ?? '(legacy default)'} → {applyDiff.egressPolicy.to ?? '(legacy default)'}
                   </div>
                 )}
+                {applyDiff.memory && (
+                  <div>
+                    <h4 className="text-sky-300 font-semibold mb-1.5">
+                      🧠 Memory settings{' '}
+                      {applyDiff.memory.kind === 'added'
+                        ? 'will be added'
+                        : applyDiff.memory.kind === 'removed'
+                        ? 'will be removed'
+                        : 'will change'}
+                    </h4>
+                    <div className="bg-sky-950/40 border border-sky-800/50 rounded px-2.5 py-1.5 font-mono text-xs text-sky-200">
+                      Fields: {applyDiff.memory.fields.join(', ')}
+                      {applyDiff.memory.fields.includes('allowCloudEgress') && (
+                        <span className="text-amber-300">
+                          {' '}— includes allowCloudEgress: review whether recalled memories may leave this machine.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="p-4 border-t border-gray-700 bg-gray-900 flex justify-end gap-2">
                 <button

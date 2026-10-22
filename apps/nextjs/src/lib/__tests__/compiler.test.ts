@@ -206,4 +206,102 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
     expect(upstream.costPer1kTokens).toBe(0.007);
     expect(result.rawRouterConfig.egressPolicy).toBe('allow-egress');
   });
+
+  describe('harness locality and memory settings (bug hunt findings 1 & 26)', () => {
+    const lemonadeNode: Node = {
+      id: 'lemonade-1',
+      type: 'lemonadeNode',
+      position: { x: 0, y: 0 },
+      data: { label: 'Lemonade Engine', endpoint: 'http://localhost:13305', selectedModel: 'Qwen3.5-4B-MTP-GGUF' },
+    } as Node;
+
+    function harnessNode(data: Record<string, any>): Node {
+      return {
+        id: 'harness-1',
+        type: 'harnessNode',
+        position: { x: 0, y: 0 },
+        data: { label: 'Agent Harness', kind: 'trueforge', endpoint: 'http://localhost:8790', ...data },
+      } as Node;
+    }
+
+    it('does not default providerIsLocal: an undeclared harness omits the flag and opts the layout into egress', () => {
+      const result = compileGraph([lemonadeNode, harnessNode({})], []);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.type).toBe('harness');
+      expect(upstream.harness).not.toHaveProperty('providerIsLocal');
+      expect(result.rawRouterConfig.egressPolicy).toBe('allow-egress');
+    });
+
+    it('emits an explicit providerIsLocal declaration and keeps local-only for a declared-local harness', () => {
+      const result = compileGraph([lemonadeNode, harnessNode({ providerIsLocal: true })], []);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.harness.providerIsLocal).toBe(true);
+      expect(result.rawRouterConfig.egressPolicy).toBe('local-only');
+    });
+
+    it('emits providerIsLocal: false for a declared-remote harness and opts into egress', () => {
+      const result = compileGraph([lemonadeNode, harnessNode({ providerIsLocal: false })], []);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.harness.providerIsLocal).toBe(false);
+      expect(result.rawRouterConfig.egressPolicy).toBe('allow-egress');
+    });
+
+    it('emits harness command/args/cwd from node data when present', () => {
+      const result = compileGraph(
+        [harnessNode({ kind: 'acp', endpoint: 'acp://goose', command: 'goose', args: ['acp', '--stdio'], cwd: '/tmp/agent-home' })],
+        []
+      );
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.harness.command).toBe('goose');
+      expect(upstream.harness.args).toEqual(['acp', '--stdio']);
+      expect(upstream.harness.cwd).toBe('/tmp/agent-home');
+    });
+
+    it('emits memory apiKey, recallTimeoutMs, autoCommitTurns, and openviking scopePrefixes from node data', () => {
+      const nodes: Node[] = [
+        {
+          id: 'mem-1',
+          type: 'memoryNode',
+          position: { x: 0, y: 0 },
+          data: {
+            provider: 'openviking',
+            endpoint: 'http://localhost:1933',
+            apiKey: 'mem-secret-key',
+            recallTimeoutMs: 2500,
+            autoCommitTurns: 3,
+            readingLevel: 'L1',
+            scopePrefixes: ['viking://user/default', 'viking://shared'],
+          },
+        } as Node,
+      ];
+      const result = compileGraph(nodes, []);
+      const memory = result.rawRouterConfig.memory;
+      expect(memory).toBeDefined();
+      expect(memory.apiKey).toBe('mem-secret-key');
+      expect(memory.recallTimeoutMs).toBe(2500);
+      expect(memory.autoCommitTurns).toBe(3);
+      expect(memory.openviking).toEqual({
+        readingLevel: 'L1',
+        scopePrefixes: ['viking://user/default', 'viking://shared']
+      });
+    });
+
+    it('omits the new memory settings when the node does not carry them', () => {
+      const nodes: Node[] = [
+        {
+          id: 'mem-1',
+          type: 'memoryNode',
+          position: { x: 0, y: 0 },
+          data: { provider: 'builtin' },
+        } as Node,
+      ];
+      const result = compileGraph(nodes, []);
+      const memory = result.rawRouterConfig.memory;
+      expect(memory).toBeDefined();
+      expect(memory).not.toHaveProperty('apiKey');
+      expect(memory).not.toHaveProperty('recallTimeoutMs');
+      expect(memory).not.toHaveProperty('autoCommitTurns');
+      expect(memory.openviking).toBeUndefined();
+    });
+  });
 });

@@ -7,6 +7,7 @@ import {
   Eluvix,
   addMemoryItem,
   clearUserMemories,
+  deleteMemoryItem,
   listMemoryItems,
   createNamedApiKey,
   resolveBearerToken,
@@ -493,5 +494,29 @@ rl.on('line', (line) => {
     expect(revokeNamedApiKey(created.id)).toBe(true);
     const afterRevoke = resolveBearerToken(created.key, 'admin-secret');
     expect(afterRevoke.valid).toBe(false);
+  });
+
+  it('scopes deleteMemoryItem to the owning user when a userId is given (bug hunt finding 2)', () => {
+    const owner = `test-delete-owner-${Date.now()}`;
+    const other = `test-delete-other-${Date.now()}`;
+    const mine = addMemoryItem({
+      userId: owner,
+      level: 'L1',
+      content: 'Owner delete-scope probe'
+    });
+    expect(mine).not.toBeNull();
+    const item = mine!;
+    expect(item.id).toBeGreaterThan(0);
+
+    // Another user cannot delete the owner's item by id.
+    expect(deleteMemoryItem(item.id, other)).toBe(false);
+    expect(listMemoryItems(owner, 50).some(i => i.id === item.id)).toBe(true);
+
+    // The owner can.
+    expect(deleteMemoryItem(item.id, owner)).toBe(true);
+    expect(listMemoryItems(owner, 50).some(i => i.id === item.id)).toBe(false);
+
+    clearUserMemories(owner);
+    clearUserMemories(other);
   });
 });
