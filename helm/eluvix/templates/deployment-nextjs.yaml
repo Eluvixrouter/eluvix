@@ -22,6 +22,12 @@ spec:
         - name: nextjs
           image: "{{ .Values.nextjs.image.repository }}:{{ .Values.nextjs.image.tag }}"
           imagePullPolicy: {{ .Values.nextjs.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.nextjs.port }}

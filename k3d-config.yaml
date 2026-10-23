@@ -7,33 +7,44 @@ servers: 1
 agents: 1
 image: docker.io/rancher/k3s:v1.31.5-k3s1
 ports:
-  # App ports land on the cluster node where the chart's NodePort
-  # Services (helm/eluvix/values-local.yaml) listen.
-  - port: 3588:3588
+  # App ports land on the cluster nodes, where the chart's NodePort
+  # Services (helm/eluvix/values-local.yaml) listen. Mappings aimed at
+  # the loadbalancer only reach Traefik on 80/443 — the ClusterIP-era
+  # config sent 3588/8080/11434/8002/8003 nowhere.
+  # Every mapping is bound to 127.0.0.1 explicitly (audit M-26): this is
+  # a local dev stack, and Ollama (11434) has no auth of its own — an
+  # unbound mapping would expose it, the MCP gateway, and the dashboard
+  # to the whole LAN.
+  - port: 127.0.0.1:3588:3588
     nodeFilters:
       - server:0
-  - port: 8080:8080
+      - agent:0
+  - port: 127.0.0.1:8080:8080
     nodeFilters:
       - server:0
-  - port: 11434:11434
+      - agent:0
+  - port: 127.0.0.1:11434:11434
     nodeFilters:
       - server:0
-  - port: 8002:8002
+      - agent:0
+  - port: 127.0.0.1:8002:8002
     nodeFilters:
       - server:0
-  - port: 8003:8003
+      - agent:0
+  - port: 127.0.0.1:8003:8003
     nodeFilters:
       - server:0
-  - port: 80:80
+      - agent:0
+  - port: 127.0.0.1:80:80
     nodeFilters:
       - loadbalancer
-  - port: 443:443
+  - port: 127.0.0.1:443:443
     nodeFilters:
       - loadbalancer
 registries:
   create:
     name: k3d-eluvix-registry.localhost
-    host: "0.0.0.0"
+    host: "127.0.0.1"
     hostPort: "5001"
 options:
   k3d:

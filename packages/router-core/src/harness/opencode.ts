@@ -30,6 +30,7 @@ import {
   toArtCraftHarnessMcpServers,
   resolveArtCraftAutoApproveTools,
 } from '../artcraft-mcp.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 function resolveEffectiveHarnessMcpAndAutoApprove(
   upstream: UpstreamConfig,
@@ -450,7 +451,7 @@ export async function forwardOpencodeHarness(
     const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
 
     const createSession = async (): Promise<{ id: string } | { errorRes: Response }> => {
-      const sessionRes = await fetch(`${baseUrl}/session`, {
+      const sessionRes = await fetchWithSafeRedirects(`${baseUrl}/session`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -470,7 +471,7 @@ export async function forwardOpencodeHarness(
     };
 
     const sendMessage = (sessionId: string, prompt: string, switchyardTier: number) =>
-      fetch(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, {
+      fetchWithSafeRedirects(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, {
         method: 'POST',
         headers: {
           ...headers,

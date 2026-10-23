@@ -22,6 +22,11 @@ spec:
         - name: switchyard
           image: "{{ .Values.switchyard.image.repository }}:{{ .Values.switchyard.image.tag }}"
           imagePullPolicy: {{ .Values.switchyard.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.switchyard.port }}

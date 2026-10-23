@@ -170,6 +170,14 @@ export interface RouterConfig {
    * 'local-only' fails closed: routing only ever considers upstreams served
    * from this machine / LAN, even as a fallback. Absent = 'allow-egress'
    * (legacy behavior) so hand-written configs keep working.
+   *
+   * Scope note (audit M-7): the policy constrains UPSTREAM SELECTION
+   * only. Two configured channels sit outside it: an external memory
+   * provider (mem0/OpenViking — recall sends the user's last message to
+   * the configured endpoint on every request) and the provider agent
+   * (registration/heartbeat to its serverUrl). The router logs a loud
+   * startup warning naming any non-local exception channels rather than
+   * letting the policy's guarantee read as total.
    */
   egressPolicy?: EgressPolicy;
   confidentialPolicy?: ConfidentialPolicy;
@@ -308,6 +316,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 export * from './provider.js';
 export * from './antigravity-models.js';
+export * from './fetch-policy.js';
 import {
   discoverAntigravityModels,
   getCachedAntigravityModels,
@@ -320,6 +329,7 @@ import {
   tryResolveCliExecutable,
   ANTIGRAVITY_CLI_BINARIES
 } from './cli-exec.js';
+import { fetchWithSafeRedirects, assertEndpointNotMetadata } from './fetch-policy.js';
 import * as dbModule from './db.js';
 
 function logRequest(...args: Parameters<typeof dbModule.logRequest>) {
@@ -327,6 +337,9 @@ function logRequest(...args: Parameters<typeof dbModule.logRequest>) {
 }
 function getRequestLogs(...args: Parameters<typeof dbModule.getRequestLogs>) {
   return dbModule.getRequestLogs(...args);
+}
+function getProviderSettings(...args: Parameters<typeof dbModule.getProviderSettings>) {
+  return dbModule.getProviderSettings(...args);
 }
 function getRollingSpendUsd(...args: Parameters<typeof dbModule.getRollingSpendUsd>) {
   return dbModule.getRollingSpendUsd(...args);
@@ -611,6 +624,47 @@ import {
   executeAudioSpeechForward,
 } from './forwarders/embeddings-audio.js';
 
+/**
+ * Whether an endpoint URL's host is local (loopback, RFC1918, or a
+ * .local/.lan/.internal name) — the host half of isLocalUpstream
+ * (now in ./cost.js), shared with the egress-policy exception check,
+ * which judges bare channel URLs (memory provider, provider-agent
+ * server) rather than upstreams. Kept here because cost.js does not
+ * export it.
+ */
+/**
+ * Whether an endpoint URL's host is local (loopback, RFC1918, or a
+ * .local/.lan/.internal name) — the host half of isLocalUpstream,
+ * shared with the egress-policy exception check, which judges bare
+ * channel URLs (memory provider, provider-agent server) rather than
+ * upstreams.
+ */
+export function endpointHostIsLocal(endpoint: string): boolean {
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
+  } catch {
+    return false;
+  }
+  if (host.startsWith('::ffff:')) {
+    const mapped = host.slice(7);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const high = parseInt(hexMatch[1], 16);
+      const low = parseInt(hexMatch[2], 16);
+      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+    } else {
+      host = mapped;
+    }
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
+  return false;
+}
+
 function extractMessageText(content: string | MessageContentPart[] | undefined): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -767,6 +821,55 @@ export class Eluvix {
     this.otelExporter = new OtlpTraceExporter(this.config.observability);
     if (this.config.memory?.enabled) {
       this.contextProvider = createContextProvider(this.config.memory);
+    }
+    this.warnOnLocalOnlyEgressExceptions();
+  }
+
+  /**
+   * egressPolicy 'local-only' constrains upstream SELECTION only (see
+   * the enforcement in routeChatCompletion, and the scope note on
+   * RouterConfig.egressPolicy). Two configured channels sit outside
+   * that selection and would otherwise silently break the operator's
+   * expectation that nothing leaves the machine: external memory
+   * providers (recall POSTs the user's last message to the configured
+   * endpoint on every request) and the provider agent (registration /
+   * heartbeat POSTs hostname, GPU inventory, model catalog and node
+   * token to its server). Per audit decision D9 these are NOT
+   * hard-blocked; startup names them loudly instead.
+   */
+  private warnOnLocalOnlyEgressExceptions(): void {
+    if (this.config.egressPolicy !== 'local-only') return;
+    const exceptions: string[] = [];
+
+    const memory = this.config.memory;
+    if (memory?.enabled && memory.provider && memory.provider !== 'builtin' && memory.endpoint) {
+      if (!endpointHostIsLocal(memory.endpoint)) {
+        exceptions.push(
+          `memory provider "${memory.provider}" endpoint ${memory.endpoint} (recall sends the user's last message to it on every request)`
+        );
+      }
+    }
+
+    try {
+      const providerSettings = getProviderSettings();
+      if (providerSettings?.enabled) {
+        const serverUrl = providerSettings.server_url || 'https://api.billama.dev';
+        if (!endpointHostIsLocal(serverUrl)) {
+          exceptions.push(
+            `provider agent server ${serverUrl} (registration/heartbeat posts hostname, GPU inventory, model catalog and node token to it)`
+          );
+        }
+      }
+    } catch {
+      // Provider settings are optional; an unreadable settings store
+      // must never break router construction.
+    }
+
+    if (exceptions.length > 0) {
+      console.warn(
+        `[Switchyard Egress] WARNING: egressPolicy=local-only constrains upstream selection only — ` +
+          `it does NOT cover these configured channels, which will still leave this machine: ${exceptions.join('; ')}`
+      );
     }
   }
 
@@ -3194,6 +3297,9 @@ export class Eluvix {
     // Egress policy enforcement: a local-only configuration must never send
     // prompts to external services — not as the primary pick, and not as a
     // fallback when the local engines are down. Fail closed instead.
+    // Scope: this governs upstream selection only. The memory-provider
+    // recall channel and the provider-agent channel are separate paths
+    // the policy does not govern — see warnOnLocalOnlyEgressExceptions.
     if (this.config.egressPolicy === 'local-only') {
       const localUpstreams = matchingUpstreams.filter(u => isLocalUpstream(u));
       const excluded = matchingUpstreams.filter(u => !isLocalUpstream(u));
@@ -4357,7 +4463,7 @@ export class Eluvix {
     const fetchStartTime = Date.now();
 
     try {
-      const fetchFn = this.deps?.fetch || fetch;
+      const fetchFn = this.deps?.fetch || fetchWithSafeRedirects;
       const res = await fetchFn(url, {
         ...fetchOptions,
         signal: controller.signal
