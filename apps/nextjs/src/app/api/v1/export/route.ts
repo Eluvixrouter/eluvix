@@ -1,17 +1,28 @@
 import { NextResponse } from 'next/server';
 import { getDb } from '@eluvix/router-core';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
-export async function GET() {
+/**
+ * Fine-tuning export is scoped to the authenticated caller's own
+ * chat-history partition (audit L-2): one user's dataset never contains
+ * another user's sessions, even when session_ids collide.
+ */
+export async function GET(req: Request) {
   try {
+    const identity = await resolveCallerIdentity(req);
+    if (!identity.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
     const db = getDb();
-    
-    // Group messages by session_id
-    const messages = db.prepare('SELECT session_id, role, content FROM chat_history ORDER BY session_id, id ASC').all() as Array<{
+
+    // Group the caller's messages by session_id
+    const messages = db.prepare('SELECT session_id, role, content FROM chat_history WHERE user_id = ? ORDER BY session_id, id ASC').all(identity.userId) as Array<{
       session_id: string;
       role: string;
       content: string;
     }>;
-    
+
     const sessions = new Map<string, any[]>();
     for (const msg of messages) {
       if (!sessions.has(msg.session_id)) {
