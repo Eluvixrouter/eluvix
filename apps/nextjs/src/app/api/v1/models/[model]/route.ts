@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(
   req: Request,
-  { params }: { params: { model: string } }
+  { params }: { params: Promise<{ model: string }> }
 ) {
   const authHeader = req?.headers?.get('authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -27,7 +27,7 @@ export async function GET(
       }
     }
   }
-  const modelId = decodeURIComponent(params.model);
+  const modelId = decodeURIComponent((await params).model);
   const router = getRouter();
   const upstreams = router.getUpstreams();
   const agyCatalog = getCachedAntigravityModels();

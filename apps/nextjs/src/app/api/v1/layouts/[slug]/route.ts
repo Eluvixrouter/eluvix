@@ -18,9 +18,9 @@ function errorResponse(err: any, fallback: string) {
   return NextResponse.json({ error: err?.message || fallback }, { status: 500 });
 }
 
-export async function GET(_req: Request, { params }: { params: { slug: string } }) {
+export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
-    const slug = sanitizeSlug(params.slug);
+    const slug = sanitizeSlug((await params).slug);
     const layout = readLayout(slug);
     if (!layout) {
       return NextResponse.json({ error: `Layout "${slug}" not found` }, { status: 404 });
@@ -31,7 +31,7 @@ export async function GET(_req: Request, { params }: { params: { slug: string } 
   }
 }
 
-export async function PUT(req: Request, { params }: { params: { slug: string } }) {
+export async function PUT(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   let body: any;
   try {
     body = await req.json();
@@ -40,7 +40,7 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   }
 
   try {
-    const slug = sanitizeSlug(params.slug);
+    const slug = sanitizeSlug((await params).slug);
     const existing = readLayout(slug);
     if (!existing) {
       return NextResponse.json(
@@ -79,9 +79,9 @@ export async function PUT(req: Request, { params }: { params: { slug: string } }
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { slug: string } }) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
-    const slug = sanitizeSlug(params.slug);
+    const slug = sanitizeSlug((await params).slug);
     if (!deleteLayout(slug)) {
       return NextResponse.json({ error: `Layout "${slug}" not found` }, { status: 404 });
     }
