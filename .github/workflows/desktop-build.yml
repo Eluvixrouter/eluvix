@@ -39,7 +39,7 @@ on:
         default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -56,17 +56,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.24.0
 
       # Hunt-2 L10: Node version comes from .nvmrc, the repo's single
       # pinned source, instead of a hardcoded value.
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: '.nvmrc'
           cache: 'pnpm'
@@ -115,7 +115,7 @@ jobs:
         run: .\node_modules\.bin\electron-builder.cmd --win --publish never
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: eluvix-desktop-${{ matrix.os }}
           path: |
@@ -131,12 +131,15 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.create_release)
     runs-on: ubuntu-latest
+    # Only this job may write to the repo (publishing the release).
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: eluvix-desktop-*
           path: release-artifacts
@@ -191,8 +194,43 @@ jobs:
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
+      # Interim release signing (audit decision D12): when the
+      # MINISIGN_SECRET_KEY repo secret is configured, sign SHA256SUMS.txt
+      # with minisign so users can verify the checksums independently of
+      # this pipeline; the publish step below uploads the .sig alongside.
+      # Platform code signing (Apple Developer ID / Windows Authenticode)
+      # still lands later, when certificates exist.
+      #
+      # Operator setup (one time):
+      #   1. Generate a keypair with NO passphrase (CI cannot answer a
+      #      passphrase prompt):  minisign -G -W -s minisign.key
+      #   2. Add the full contents of minisign.key as the repo secret
+      #      MINISIGN_SECRET_KEY (Settings > Secrets and variables >
+      #      Actions), then delete the local copy or store it offline.
+      #   3. Publish the public key from minisign.pub on the release
+      #      page / project site so users can verify with:
+      #        minisign -Vm SHA256SUMS.txt -P <public key contents>
+      # Until the secret exists, this step logs a warning and skips —
+      # a release is never blocked on the optional secret.
+      - name: Sign checksums (minisign, if configured)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::warning::MINISIGN_SECRET_KEY secret is not configured — SHA256SUMS.txt will be published UNSIGNED. See the comment above this step for the one-time operator setup."
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          cd release-artifacts
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -x SHA256SUMS.txt.sig -m SHA256SUMS.txt
+          rm -f "$RUNNER_TEMP/minisign.key"
+          ls -l SHA256SUMS.txt.sig
+
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release_tag.outputs.tag }}
           name: Eluvix ${{ steps.release_tag.outputs.tag }}
@@ -203,6 +241,7 @@ jobs:
             release-artifacts/*.zip
             release-artifacts/*.exe
             release-artifacts/SHA256SUMS.txt
+            release-artifacts/SHA256SUMS.txt.sig
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
