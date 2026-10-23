@@ -2,16 +2,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { resolveCliExecutable, ACP_CLI_BINARIES } from '../cli-exec.js';
 import { buildHarnessPrompt } from './prompt.js';
 import type { HarnessApprovalPolicy } from './types.js';
-
-const ALLOWED_ACP_BINARIES = new Set([
-  'goose',
-  'opencode',
-  'openhands',
-  'claude-code-acp',
-  'agy'
-]);
 
 /** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
 const ACP_KILL_GRACE_MS = 2000;
@@ -40,12 +33,20 @@ export async function forwardAcpHarness(
     cmdArray = ['goose', 'acp'];
   }
   const rawBin = cmdArray[0].trim();
-  const baseBin = path.basename(rawBin);
   const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
 
-  if (!ALLOWED_ACP_BINARIES.has(baseBin) && !(isTestEnv && baseBin === 'node')) {
-    throw new Error(`ACP execution denied: '${baseBin}' is not an authorized ACP agent binary.`);
-  }
+  // Resolve through the central executable gate (audit M-1): the old
+  // basename-only check let a config value like `/tmp/dropped/goose` pass
+  // and execute. The resolver enforces the allowlist on the canonical
+  // path — the file must exist, be executable, and not live under a
+  // world-writable or config-controlled directory. The spawn below uses
+  // the RESOLVED path, never the raw config value. (Test env keeps its
+  // historical exception: `node`, used by the suite's fake ACP agents via
+  // process.execPath.)
+  const resolvedBin = resolveCliExecutable(rawBin, {
+    allowedBasenames: isTestEnv ? [...ACP_CLI_BINARIES, 'node'] : ACP_CLI_BINARIES
+  });
+  const baseBin = path.basename(resolvedBin);
 
   // The ACP session/prompt channel carries text only: forwarding a
   // tool-bearing request would silently drop the tools. Fail the attempt
@@ -69,7 +70,7 @@ export async function forwardAcpHarness(
 
   const runAcpSession = (onDelta: (text: string) => void): Promise<string> => {
     return new Promise((resolve, reject) => {
-      const child = spawn(rawBin, cmdArray.slice(1), {
+      const child = spawn(resolvedBin, cmdArray.slice(1), {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: {

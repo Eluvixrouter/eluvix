@@ -236,7 +236,9 @@ describe('Antigravity routing through a fake agy CLI (P2)', () => {
   let fakeAgyPath: string;
 
   beforeAll(() => {
-    fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-fake-agy-'));
+    // NOT os.tmpdir(): the CLI resolver denies executables under
+    // world-writable dirs (sec T1), so the fake stands in a package-local dir.
+    fakeDir = fs.mkdtempSync(path.join(process.cwd(), '.fake-agy-'));
     fakeAgyPath = path.join(fakeDir, 'agy');
     // A stand-in for the real agy binary: echoes the --model it was invoked
     // with back as stream-json agent_response deltas.
