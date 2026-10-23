@@ -4,16 +4,14 @@ import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { resolveCliExecutable, ACP_CLI_BINARIES } from '../cli-exec.js';
 import { buildHarnessPrompt } from './prompt.js';
+import { buildChildEnv } from './env.js';
+import { isToolAutoApproved } from './approval.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
 /** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
 const ACP_KILL_GRACE_MS = 2000;
 /** Only the tail of the child's stderr is retained for diagnostics. */
 const ACP_STDERR_TAIL_BYTES = 8192;
-
-function isReadonlyTool(title: string): boolean {
-  return /^(read|get|list|search|find|fetch|query|view|inspect|cat|ls|grep)/i.test(title || '');
-}
 
 export async function forwardAcpHarness(
   upstream: UpstreamConfig,
@@ -73,11 +71,12 @@ export async function forwardAcpHarness(
       const child = spawn(resolvedBin, cmdArray.slice(1), {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
+        // Spawn-boundary env scrub (audit H-1 / D3): the agent never
+        // inherits the router's own credentials — see harness/env.ts.
+        env: buildChildEnv({
           ELUVIX_ORIGIN: 'harness',
           ELUVIX_HOPS: String(hops + 1)
-        }
+        })
       });
 
       let fullText = '';
@@ -247,7 +246,20 @@ export async function forwardAcpHarness(
               onDelta(note);
             }
 
-            const shouldApprove = approvalPolicy === 'auto-approve-readonly' && isReadonlyTool(title);
+            // Auto-approval requires an exact allowlist match (audit
+            // M-4): a read-only-looking title is never sufficient — the
+            // title is supplied by the agent being approved.
+            const toolIdentifiers = [
+              msg.params?.toolCall?.name,
+              msg.params?.toolCall?.toolName,
+              msg.params?.toolCall?.title,
+              msg.params?.title
+            ].filter((v: any): v is string => typeof v === 'string' && v.length > 0);
+            const shouldApprove = isToolAutoApproved(
+              approvalPolicy,
+              toolIdentifiers,
+              harnessCfg.autoApproveTools
+            );
             const selectedOptionId = shouldApprove
               ? allowOpt?.optionId || 'allow'
               : rejectOpt?.optionId || 'reject';

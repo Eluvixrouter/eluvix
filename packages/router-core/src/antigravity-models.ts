@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { getAppPaths } from './paths.js';
 import { tryResolveCliExecutable, ANTIGRAVITY_CLI_BINARIES } from './cli-exec.js';
+import { buildChildEnv } from './harness/env.js';
 
 export type AgyEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -271,6 +272,9 @@ export async function discoverAntigravityModels(
     let child;
     try {
       child = spawn(resolvedCli, ['models'], {
+        // Spawn-boundary env scrub (audit H-1 / D3) — this probe previously
+        // passed no env option, i.e. full process.env inheritance.
+        env: buildChildEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       });
     } catch {

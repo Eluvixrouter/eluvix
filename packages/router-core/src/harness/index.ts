@@ -1,4 +1,6 @@
 export * from './types.js';
+export * from './env.js';
+export * from './approval.js';
 export * from './trueforge.js';
 export * from './opencode.js';
 export * from './acp.js';

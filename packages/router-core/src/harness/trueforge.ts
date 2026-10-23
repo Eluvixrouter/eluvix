@@ -2,6 +2,7 @@ import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
 import { isSessionGoneResponse } from './prompt.js';
+import { isToolAutoApproved } from './approval.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
 const sessionCache = new Map<string, string>();
@@ -19,10 +20,6 @@ function extractPromptFromMessages(messages: ChatMessage[]): string {
   return '';
 }
 
-function isReadonlyToolName(toolName: string): boolean {
-  return /^(read|get|list|search|find|fetch|query|view|inspect|cat|ls|grep)/i.test(toolName || '');
-}
-
 async function respondToApproval(
   baseUrl: string,
   headers: Record<string, string>,
@@ -30,11 +27,13 @@ async function respondToApproval(
   turnId: string,
   approvalId: string,
   toolName: string,
-  policy: HarnessApprovalPolicy
+  policy: HarnessApprovalPolicy,
+  autoApproveTools?: readonly string[]
 ): Promise<boolean> {
   if (policy === 'surface') return false;
-  const approved =
-    (policy === 'auto-approve-readonly' || policy === 'read-only') && isReadonlyToolName(toolName);
+  // Auto-approval requires an exact allowlist match (audit M-4): the
+  // server-supplied tool name looking read-only is never sufficient.
+  const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
   try {
     await fetch(
       `${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/events`,
@@ -274,7 +273,8 @@ export async function forwardTrueForgeHarness(
               turnId,
               approvalId,
               toolName,
-              approvalPolicy
+              approvalPolicy,
+              harnessCfg.autoApproveTools
             );
           }
         } else if (type === 'turn.completed' || type === 'turn_complete' || type === 'message.completed') {

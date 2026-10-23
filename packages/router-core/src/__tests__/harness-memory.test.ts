@@ -336,6 +336,9 @@ describe('Agent Harness Upstreams (TrueForge, opencode, ACP) & Loop Guard', () =
             harness: {
               kind: 'trueforge',
               approvalPolicy: 'read-only',
+              // M-4: auto-approval is by explicit allowlist only — a
+              // read-only-looking tool name ('Read') is no longer enough.
+              autoApproveTools: ['Read'],
               sessionMode: 'per-conversation'
             }
           }
