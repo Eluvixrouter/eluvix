@@ -418,6 +418,8 @@ export interface ChatRequest {
   stream?: boolean;
   tools?: any[];
   tool_choice?: any;
+  // Advisory only (forwarded to upstreams that understand it); NEVER
+  // used as the caller's identity — identity is options.scope.userId.
   user?: string;
   metadata?: Record<string, any>;
 }
@@ -672,6 +674,13 @@ function parseModelDetails(data: any): UpstreamDiscoveryResult {
  */
 export const MAX_RESPONSE_CACHE_ENTRIES = 500;
 
+/**
+ * Live router instances, for process-wide per-user cache invalidation
+ * (see invalidateUserCache). WeakRefs so short-lived instances — tests,
+ * preview routers — are not retained by the registry.
+ */
+const liveRouterInstances = new Set<WeakRef<Eluvix>>();
+
 /** JSON.stringify with recursively sorted object keys, for cache keys. */
 function stableStringify(value: any): string {
   if (value === null || typeof value !== 'object') {
@@ -702,7 +711,26 @@ export class Eluvix {
     this.responseCache.set(cacheKey, { response, timestamp: Date.now() });
   }
 
+  /**
+   * Drop every cached response in one user's identity partition and
+   * return how many entries were removed. Wired to memory deletion so
+   * answers derived from deleted memories stop being served immediately
+   * instead of at TTL expiry (audit M-10).
+   */
+  public invalidateUserCache(userId: string): number {
+    const prefix = `v2:${encodeURIComponent(userId)}:`;
+    let removed = 0;
+    for (const key of [...this.responseCache.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.responseCache.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   constructor(config: RouterConfig) {
+    liveRouterInstances.add(new WeakRef(this));
     this.config = {
       ...config,
       upstreams: [...(config.upstreams || [])].sort((a, b) => b.priority - a.priority)
@@ -764,7 +792,12 @@ export class Eluvix {
     }
 
     const scope: RequestScope = {
-      userId: options?.scope?.userId || request.user || 'default',
+      // Identity comes ONLY from the caller's proven scope (audit H-2):
+      // request.user is a client-supplied body field and must never
+      // select a cache/memory partition. Callers that authenticate pass
+      // scope.userId explicitly; unscoped calls land in the shared,
+      // visible 'default' partition.
+      userId: options?.scope?.userId || 'default',
       sessionId:
         options?.scope?.sessionId ||
         (typeof request.metadata?.sessionId === 'string' ? request.metadata.sessionId : undefined),
@@ -1041,51 +1074,12 @@ export class Eluvix {
       this.requestCounts.set(windowKey, { count: current.count + 1, resetTime: current.resetTime });
     }
 
-    // 0d. Semantic / Response Cache Check (scoped by userId + memoryDigest when memory or user scope is active)
+    // The response cache is consulted only after the routing context is
+    // known (step 0e2, after upstream selection): its key must capture
+    // the caller's identity partition and everything about the routing
+    // decision that shapes the response (audit H-2/H-3/M-9).
     const cacheConfig = this.config.modelGateway?.caching;
     let cacheKey = '';
-    if (cacheConfig?.enabled && effectiveRequest.messages) {
-      const hasUserOrMemoryScope =
-        Boolean(this.config.memory?.enabled) ||
-        Boolean(options?.scope?.userId) ||
-        Boolean(request.user);
-      // The key must capture everything that changes the response. Keying
-      // only on model + messages served a buffered non-streaming body to
-      // streaming requests (as application/json, not SSE) and a tool-less
-      // answer to requests that differed only by tools or sampling params.
-      const variantKey = stableStringify({
-        stream: effectiveRequest.stream === true,
-        tools: effectiveRequest.tools ?? null,
-        toolChoice: effectiveRequest.tool_choice ?? null,
-        temperature: effectiveRequest.temperature ?? null,
-        topP: (effectiveRequest as any).top_p ?? null,
-        maxTokens: (effectiveRequest as any).max_tokens ?? null
-      });
-      cacheKey = hasUserOrMemoryScope
-        ? `${scope.userId}:${memoryDigest || 'nomem'}:${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`
-        : `${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`;
-      const cached = this.responseCache.get(cacheKey);
-      const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
-      if (cached && Date.now() - cached.timestamp >= ttlMs) {
-        // Expired entries are deleted, not just ignored — otherwise they
-        // accumulate forever behind keys that are never asked for again.
-        this.responseCache.delete(cacheKey);
-      }
-      if (cached && (Date.now() - cached.timestamp < ttlMs)) {
-        const hitHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'X-Eluvix-Cache': 'HIT'
-        };
-        if (this.config.memory?.enabled) {
-          hitHeaders['x-eluvix-memory'] = memoryStatus;
-          hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
-        }
-        return new Response(JSON.stringify(cached.response), {
-          status: 200,
-          headers: hitHeaders
-        });
-      }
-    }
 
     // 0e. System Prompt Prepend (clone messages to avoid mutating caller's request object)
     if (this.config.modelGateway?.systemPromptPrepend && effectiveRequest.messages) {
@@ -1112,6 +1106,81 @@ export class Eluvix {
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
+
+    // 0e2. Semantic / Response Cache Check. The key ALWAYS carries the
+    // identity partition (scope.userId — proven identity only; unscoped
+    // calls share the 'default' partition: per decision D4 the cache is
+    // partitioned for them rather than disabled), the memory digest, and
+    // a digest of the routing context: the selected upstream id set, the
+    // system-prompt prepend, and the egress state — including, per
+    // candidate upstream, whether recalled memory would be stripped
+    // before forwarding to it. A body produced under one context (e.g.
+    // memory stripped for a cloud upstream) is therefore never replayed
+    // under another (e.g. memory intact for a local one), and a hit can
+    // never cross identity partitions.
+    if (cacheConfig?.enabled && effectiveRequest.messages) {
+      // The variant segment must capture everything else that changes
+      // the response. Keying only on model + messages served a buffered
+      // non-streaming body to streaming requests (as application/json,
+      // not SSE) and a tool-less answer to requests that differed only
+      // by tools or sampling params.
+      const variantKey = stableStringify({
+        stream: effectiveRequest.stream === true,
+        tools: effectiveRequest.tools ?? null,
+        toolChoice: effectiveRequest.tool_choice ?? null,
+        temperature: effectiveRequest.temperature ?? null,
+        topP: (effectiveRequest as any).top_p ?? null,
+        maxTokens: (effectiveRequest as any).max_tokens ?? null
+      });
+      const stripByUpstream = [...targetUpstreams]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map(u => ({
+          id: u.id,
+          strip:
+            memoryTainted &&
+            !this.config.memory?.allowCloudEgress &&
+            this.config.memory?.cloudMode === 'strip' &&
+            !isLocalUpstream(u)
+        }));
+      const routingDigest = crypto
+        .createHash('sha256')
+        .update(
+          stableStringify({
+            upstreams: [...targetUpstreams].map(u => u.id).sort(),
+            systemPromptPrepend: this.config.modelGateway?.systemPromptPrepend ?? null,
+            egressPolicy: this.config.egressPolicy ?? null,
+            memoryAllowCloudEgress: this.config.memory?.allowCloudEgress ?? null,
+            memoryCloudMode: this.config.memory?.cloudMode ?? null,
+            memoryTainted,
+            stripByUpstream
+          })
+        )
+        .digest('hex')
+        .slice(0, 16);
+      cacheKey = `v2:${encodeURIComponent(scope.userId)}:${memoryDigest || 'nomem'}:${routingDigest}:${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`;
+      const cached = this.responseCache.get(cacheKey);
+      const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
+      if (cached && Date.now() - cached.timestamp >= ttlMs) {
+        // Expired entries are deleted, not just ignored — otherwise they
+        // accumulate forever behind keys that are never asked for again.
+        this.responseCache.delete(cacheKey);
+      }
+      if (cached && Date.now() - cached.timestamp < ttlMs) {
+        const hitHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Eluvix-Cache': 'HIT'
+        };
+        if (this.config.memory?.enabled) {
+          hitHeaders['x-eluvix-memory'] = memoryStatus;
+          hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
+        }
+        return new Response(JSON.stringify(cached.response), {
+          status: 200,
+          headers: hitHeaders
+        });
+      }
+    }
+
     const switchyardConfig = this.config.switchyard || {};
 
     // Latency Spillover Filter
@@ -2547,6 +2616,26 @@ export function buildCliPrompt(messages: ChatMessage[], maxBytes = 100000): stri
   }
 
   return parts.join('\n\n');
+}
+
+/**
+ * Invalidate one user's cached responses on every live router instance
+ * in this process (audit M-10). Callers that delete or clear a user's
+ * memories (the Next.js memory routes) invoke this so answers derived
+ * from those memories stop being served immediately. Returns the total
+ * number of entries removed.
+ */
+export function invalidateUserCache(userId: string): number {
+  let removed = 0;
+  for (const ref of [...liveRouterInstances]) {
+    const router = ref.deref();
+    if (!router) {
+      liveRouterInstances.delete(ref);
+      continue;
+    }
+    removed += router.invalidateUserCache(userId);
+  }
+  return removed;
 }
 
 export { Eluvix as LibreRouter, Eluvix as NodeRouter };

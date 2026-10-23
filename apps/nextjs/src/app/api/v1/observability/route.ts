@@ -239,6 +239,9 @@ export async function POST() {
     const response = await router.routeChatCompletion({
       model: 'auto',
       messages: [{ role: 'user', content: 'Eluvix health ping' }],
+    }, {
+      // Internal admin health probe: explicitly the 'default' partition.
+      scope: { userId: 'default' }
     });
 
     const durationMs = Date.now() - startTime;

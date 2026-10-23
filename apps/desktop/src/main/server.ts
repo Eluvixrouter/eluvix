@@ -498,7 +498,11 @@ export class DesktopRouterServer extends EventEmitter {
           chosenUpstreamName = targetUpstreams[0].name;
         }
 
-        const upstreamResponse = await this.router.routeChatCompletion(chatReq);
+        // The desktop app is a single-user local app: its callers share
+        // the owner's 'default' identity partition, passed explicitly.
+        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
+          scope: { userId: 'default', origin: 'client' }
+        });
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || chosenUpstreamName;
 

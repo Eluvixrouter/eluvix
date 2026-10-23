@@ -3,6 +3,7 @@ import {
   addMemoryItem,
   clearUserMemories,
   deleteMemoryItem,
+  invalidateUserCache,
   listMemoryItems,
   searchMemoryItems
 } from '@eluvix/router-core';
@@ -133,6 +134,9 @@ export async function DELETE(req: Request) {
 
   if (clearAll) {
     const deletedCount = clearUserMemories(userId);
+    // Answers derived from the cleared memories must stop being served
+    // from the response cache immediately (audit M-10).
+    invalidateUserCache(userId);
     return NextResponse.json({ success: true, deletedCount, userId });
   }
 
@@ -142,5 +146,8 @@ export async function DELETE(req: Request) {
 
   // Scoped delete: the item is removed only if it belongs to the caller.
   const deleted = deleteMemoryItem(parseInt(idParam, 10), userId);
+  if (deleted) {
+    invalidateUserCache(userId);
+  }
   return NextResponse.json({ success: deleted });
 }

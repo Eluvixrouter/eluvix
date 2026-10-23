@@ -86,22 +86,19 @@ export async function POST(req: Request) {
     }
 
     const router = getRouter();
-    // A proven identity (named key, or the browser session) outranks the
-    // self-asserted x-eluvix-user header / body user for memory scoping:
-    // a caller must not be able to read or write another user's memories
-    // by naming them. The header/body fallbacks remain for keyless,
-    // sessionless internal callers (e.g. harness-origin requests).
+    // Identity comes only from credentials the caller actually proved:
+    // a named elx_ key's bound userId, or the browser session (the
+    // admin's 'default' store). The x-eluvix-user header and body.user
+    // are self-asserted and are deliberately NOT consulted (audit H-2):
+    // keyless, sessionless callers that reach this route passed the
+    // middleware with the admin bearer, so they belong to 'default'.
     const sessionUserId = keyUserId ? null : await resolveSessionUserId(req);
     const headerOrigin = req.headers.get('x-eluvix-origin');
     const origin: RequestScope['origin'] =
       keyOrigin ||
       (headerOrigin === 'harness' || headerOrigin === 'playground' ? headerOrigin : 'client');
     const scope: Partial<RequestScope> = {
-      userId:
-        keyUserId ||
-        sessionUserId ||
-        req.headers.get('x-eluvix-user') ||
-        (typeof body.user === 'string' && body.user.trim() ? body.user.trim() : 'default'),
+      userId: keyUserId || sessionUserId || 'default',
       sessionId:
         req.headers.get('x-eluvix-session') ||
         (typeof body.metadata?.sessionId === 'string' ? body.metadata.sessionId : undefined),

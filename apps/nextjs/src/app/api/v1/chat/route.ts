@@ -23,6 +23,9 @@ export async function POST(req: Request) {
     const router = getRouter();
     const res = await router.routeChatCompletion(forwardBody, {
       scope: {
+        // The playground is the admin's own UI (middleware-gated), so
+        // its identity is explicitly the admin's 'default' partition.
+        userId: 'default',
         sessionId: typeof session_id === 'string' ? session_id : undefined,
         origin: 'playground'
       }
@@ -64,11 +67,11 @@ export async function POST(req: Request) {
     if (session_id && forwardBody.messages) {
       // Save user message (last one sent) only after successful validation & completion
       const userMsg = forwardBody.messages[forwardBody.messages.length - 1];
-      if (userMsg) saveChatMessage(session_id, userMsg.role, userMsg.content);
-      
+      if (userMsg) saveChatMessage(session_id, userMsg.role, userMsg.content, 'default');
+
       // Save assistant message
       const assistantMsg = data.choices?.[0]?.message;
-      if (assistantMsg) saveChatMessage(session_id, assistantMsg.role, assistantMsg.content);
+      if (assistantMsg) saveChatMessage(session_id, assistantMsg.role, assistantMsg.content, 'default');
     }
 
     return NextResponse.json({

@@ -43,6 +43,7 @@ function initSchema(db: SqliteDb) {
     CREATE TABLE IF NOT EXISTS chat_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
       role TEXT NOT NULL,
       content TEXT NOT NULL
@@ -99,6 +100,16 @@ function initSchema(db: SqliteDb) {
 
     CREATE INDEX IF NOT EXISTS idx_memory_items_user ON memory_items(user_id, id DESC);
   `);
+
+  // Migration for databases created before chat_history carried a user
+  // dimension: add user_id (existing rows take the column default,
+  // 'default' — the admin's partition, which is who wrote them) and index
+  // the (user_id, session_id) lookup the history queries now perform.
+  const chatCols = db.prepare('PRAGMA table_info(chat_history)').all() as Array<{ name: string }>;
+  if (!chatCols.some(c => c.name === 'user_id')) {
+    db.exec("ALTER TABLE chat_history ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_chat_history_user_session ON chat_history(user_id, session_id, id)');
 }
 
 export function getDb(): SqliteDb {
@@ -171,34 +182,34 @@ export function getRequestLogs(limit = 50): RequestLog[] {
   }
 }
 
-export function saveChatMessage(sessionId: string, role: string, content: any) {
+export function saveChatMessage(sessionId: string, role: string, content: any, userId: string = 'default') {
   try {
     const db = getDb();
     const textContent = typeof content === 'string' ? content : JSON.stringify(content);
     const stmt = db.prepare(`
-      INSERT INTO chat_history (session_id, role, content)
-      VALUES (?, ?, ?)
+      INSERT INTO chat_history (session_id, user_id, role, content)
+      VALUES (?, ?, ?, ?)
     `);
-    stmt.run(sessionId, role, textContent);
+    stmt.run(sessionId, userId, role, textContent);
   } catch (err: any) {
     console.error('Failed to log chat message:', err.message);
   }
 }
 
-export function getChatHistory(sessionId: string): any[] {
+export function getChatHistory(sessionId: string, userId: string = 'default'): any[] {
   try {
     const db = getDb();
-    return db.prepare('SELECT role, content, timestamp FROM chat_history WHERE session_id = ? ORDER BY id ASC').all(sessionId);
+    return db.prepare('SELECT role, content, timestamp FROM chat_history WHERE session_id = ? AND user_id = ? ORDER BY id ASC').all(sessionId, userId);
   } catch (err: any) {
     console.error('Failed to get chat history:', err.message);
     return [];
   }
 }
 
-export function getChatSessions(): any[] {
+export function getChatSessions(userId: string = 'default'): any[] {
   try {
     const db = getDb();
-    return db.prepare('SELECT session_id, MAX(timestamp) as last_updated, COUNT(id) as message_count FROM chat_history GROUP BY session_id ORDER BY last_updated DESC LIMIT 50').all();
+    return db.prepare('SELECT session_id, MAX(timestamp) as last_updated, COUNT(id) as message_count FROM chat_history WHERE user_id = ? GROUP BY session_id ORDER BY last_updated DESC LIMIT 50').all(userId);
   } catch (err: any) {
     console.error('Failed to get chat sessions:', err.message);
     return [];
@@ -475,14 +486,13 @@ export function listMemoryItems(userId = 'default', limit = 50): MemoryDbItem[] 
   }
 }
 
-export function deleteMemoryItem(id: number, userId?: string): boolean {
+export function deleteMemoryItem(id: number, userId: string): boolean {
   try {
     const db = getDb();
-    if (userId) {
-      const res = db.prepare('DELETE FROM memory_items WHERE id = ? AND user_id = ?').run(id, userId);
-      return Number(res?.changes || 0) > 0;
-    }
-    const res = db.prepare('DELETE FROM memory_items WHERE id = ?').run(id);
+    // userId is required (security audit S-8): an unscoped delete-by-id
+    // overload is an IDOR footgun for any future caller, so there is no
+    // way to express one.
+    const res = db.prepare('DELETE FROM memory_items WHERE id = ? AND user_id = ?').run(id, userId);
     return Number(res?.changes || 0) > 0;
   } catch (err: any) {
     console.error('Failed to delete memory item:', err.message);
