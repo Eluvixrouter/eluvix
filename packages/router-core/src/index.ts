@@ -637,12 +637,42 @@ function parseModelDetails(data: any): UpstreamDiscoveryResult {
   };
 }
 
+/**
+ * Upper bound on the in-memory response cache. Entries hold full response
+ * bodies, so without a cap the map grows for the life of the process.
+ * Oldest entries (Map insertion order) are evicted on insert.
+ */
+export const MAX_RESPONSE_CACHE_ENTRIES = 500;
+
+/** JSON.stringify with recursively sorted object keys, for cache keys. */
+function stableStringify(value: any): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
 export class Eluvix {
   private config: RouterConfig;
   private roundRobinIndex: number = 0;
   private responseCache: Map<string, { response: any; timestamp: number }> = new Map();
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
   private contextProvider: ContextProvider | null = null;
+
+  /** Insert into the response cache, evicting oldest entries past the cap. */
+  private setCachedResponse(cacheKey: string, response: any) {
+    this.responseCache.delete(cacheKey); // refresh recency on overwrite
+    while (this.responseCache.size >= MAX_RESPONSE_CACHE_ENTRIES) {
+      const oldest = this.responseCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.responseCache.delete(oldest);
+    }
+    this.responseCache.set(cacheKey, { response, timestamp: Date.now() });
+  }
 
   constructor(config: RouterConfig) {
     this.config = {
@@ -924,6 +954,13 @@ export class Eluvix {
     const rateLimit = this.config.modelGateway?.rateLimits?.maxRpm;
     if (rateLimit && rateLimit > 0) {
       const now = Date.now();
+      // Prune expired minute windows: one entry is added per minute and,
+      // without this, the map grows for the life of the process.
+      for (const [key, entry] of this.requestCounts) {
+        if (entry.resetTime <= now) {
+          this.requestCounts.delete(key);
+        }
+      }
       const windowKey = Math.floor(now / 60000).toString();
       const current = this.requestCounts.get(windowKey) || { count: 0, resetTime: (Math.floor(now / 60000) + 1) * 60000 };
       if (current.count >= rateLimit) {
@@ -955,11 +992,28 @@ export class Eluvix {
         Boolean(this.config.memory?.enabled) ||
         Boolean(options?.scope?.userId) ||
         Boolean(request.user);
+      // The key must capture everything that changes the response. Keying
+      // only on model + messages served a buffered non-streaming body to
+      // streaming requests (as application/json, not SSE) and a tool-less
+      // answer to requests that differed only by tools or sampling params.
+      const variantKey = stableStringify({
+        stream: effectiveRequest.stream === true,
+        tools: effectiveRequest.tools ?? null,
+        toolChoice: effectiveRequest.tool_choice ?? null,
+        temperature: effectiveRequest.temperature ?? null,
+        topP: (effectiveRequest as any).top_p ?? null,
+        maxTokens: (effectiveRequest as any).max_tokens ?? null
+      });
       cacheKey = hasUserOrMemoryScope
-        ? `${scope.userId}:${memoryDigest || 'nomem'}:${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`
-        : `${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
+        ? `${scope.userId}:${memoryDigest || 'nomem'}:${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`
+        : `${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`;
       const cached = this.responseCache.get(cacheKey);
       const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
+      if (cached && Date.now() - cached.timestamp >= ttlMs) {
+        // Expired entries are deleted, not just ignored — otherwise they
+        // accumulate forever behind keys that are never asked for again.
+        this.responseCache.delete(cacheKey);
+      }
       if (cached && (Date.now() - cached.timestamp < ttlMs)) {
         const hitHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
@@ -1131,7 +1185,7 @@ export class Eluvix {
                   assistantOutputText = parsed.choices[0].message.content;
                 }
                 if (cacheConfig?.enabled && cacheKey) {
-                  this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
+                  this.setCachedResponse(cacheKey, parsed);
                 }
                 responseBody = new Blob([rawData]).stream();
               } catch {}
@@ -1697,8 +1751,15 @@ export class Eluvix {
       });
 
       if (!res.ok) {
+        // Consume the error body under the still-armed deadline too, so a
+        // stalled error body cannot hang the attempt either.
+        const errorText = await res.text();
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        return res;
+        return new Response(errorText, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers
+        });
       }
 
       // If streaming, verify that the upstream can produce the first chunk before returning
@@ -1751,12 +1812,19 @@ export class Eluvix {
         });
       }
 
-      // Non-streaming response: clear timeout once headers and body are ready
+      // Non-streaming response: keep the attempt deadline armed while the
+      // body is consumed. Clearing it when headers arrive (the old
+      // behavior) left the caller's body read unbounded — an upstream
+      // that sent headers and then stalled hung the request forever,
+      // and the failover budget only gates NEW attempts. Aborting the
+      // controller rejects the pending read, failing this attempt so
+      // failover can proceed; the buffered body is returned instead.
+      const bodyText = await res.text();
       if (timeoutTimer) clearTimeout(timeoutTimer);
 
       const resHeaders = new Headers(res.headers);
       resHeaders.set('x-eluvix-model', effectiveModel);
-      return new Response(res.body, {
+      return new Response(bodyText, {
         status: res.status,
         statusText: res.statusText,
         headers: resHeaders
@@ -1846,6 +1914,7 @@ export class Eluvix {
         let resolvedInitial = false;
         let streamClosed = false;
         let emittedDelta = false;
+        let streamError: string | null = null;
         let killTimer: NodeJS.Timeout | null = null;
         const timeoutMs = processTimeoutMs;
         const completionId = `chatcmpl-agy-${Date.now()}`;
@@ -1977,6 +2046,11 @@ export class Eluvix {
               exactCompletionTokens = ev.usage.completion_tokens;
             }
             if (ev.status && ev.status.toUpperCase() === 'ERROR') {
+              // An ERROR result is a failed attempt, not a successful
+              // empty reply: record it so the close handler can surface
+              // a stream error (or a 502 if nothing was streamed yet)
+              // instead of a clean finish_reason 'stop' logged as 200.
+              streamError = ev.response?.trim() || 'agy CLI reported an ERROR result';
               return;
             }
             ensureStreamStarted();
@@ -2029,6 +2103,32 @@ export class Eluvix {
           if (lineBuffer.trim()) {
             processLine(lineBuffer);
             lineBuffer = '';
+          }
+
+          if (streamError) {
+            if (!resolvedInitial) {
+              resolvedInitial = true;
+              resolve(new Response(JSON.stringify({
+                error: {
+                  message: `agy CLI reported an error: ${streamError}`,
+                  type: 'antigravity_cli_error'
+                }
+              }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+            } else if (!streamClosed && streamControllerRef) {
+              streamClosed = true;
+              try {
+                streamControllerRef.error(new Error(`agy CLI reported an error: ${streamError}`));
+              } catch {}
+            }
+            logRequest({
+              model,
+              upstream_id: upstream.id,
+              status: 502,
+              duration_ms: Date.now() - startTime,
+              prompt_tokens: exactPromptTokens,
+              completion_tokens: exactCompletionTokens
+            });
+            return;
           }
 
           if (!resolvedInitial) {
@@ -2189,6 +2289,7 @@ export class Eluvix {
         // Parse stream-json NDJSON lines if present, with plain text fallback
         let deltaAccumulated = '';
         let finalResultText: string | undefined;
+        let resultError: string | null = null;
         let exactUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
         const plainLines: string[] = [];
 
@@ -2197,6 +2298,9 @@ export class Eluvix {
           if (ev.type === 'delta' && ev.textDelta) {
             deltaAccumulated += ev.textDelta;
           } else if (ev.type === 'result') {
+            if (ev.status && ev.status.toUpperCase() === 'ERROR') {
+              resultError = ev.response?.trim() || 'agy CLI reported an ERROR result';
+            }
             if (ev.response !== undefined) {
               finalResultText = ev.response.trim();
             }
@@ -2212,9 +2316,34 @@ export class Eluvix {
           }
         }
 
+        // A stream-json result with status ERROR is a failed attempt: its
+        // text is an error message, not an assistant reply. Returning it
+        // as a 200 (the old behavior) also blocked failover, since the
+        // attempt looked successful. Same for agy exiting 0 while
+        // producing no output at all — fail the attempt with a 502.
+        if (resultError) {
+          resolve(new Response(JSON.stringify({
+            error: {
+              message: `agy CLI reported an error: ${resultError}`,
+              type: 'antigravity_cli_error'
+            }
+          }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+          return;
+        }
+
         const responseContent =
           finalResultText ??
           (deltaAccumulated.trim() || plainLines.join('\n').trim() || cleanStderr);
+
+        if (!responseContent) {
+          resolve(new Response(JSON.stringify({
+            error: {
+              message: 'agy CLI exited with code 0 but produced no output',
+              type: 'antigravity_cli_error'
+            }
+          }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+          return;
+        }
 
         const usage = exactUsage || {
           prompt_tokens: Math.ceil(promptText.length / 4),
@@ -2314,6 +2443,33 @@ export function buildCliPrompt(messages: ChatMessage[], maxBytes = 100000): stri
     if (currentBytes + turnBytes <= remainingBudget) {
       includedTurns.unshift(turn);
       currentBytes += turnBytes;
+    } else if (i === conversationTurns.length - 1 && includedTurns.length === 0) {
+      // The newest turn ALONE exceeds the remaining budget. Dropping it
+      // (the old behavior) sent the CLI a prompt containing none of the
+      // user's message — only the history-omitted note below. Truncate
+      // the turn byte-safely instead and mark the truncation inline.
+      // (4 spare bytes cover a multibyte codepoint split by the cut
+      // decoding to U+FFFD.)
+      const prefix = `[${conversationTurns[i].role}]: `;
+      const truncNote = '\n[Eluvix Note: Latest message truncated to stay within argument limit]';
+      // When older turns exist they are omitted, which adds the
+      // history-omitted note (plus its separator) to the assembled
+      // prompt — reserve room for it so the total stays within budget.
+      const omitReserve = i > 0
+        ? Buffer.byteLength('[Eluvix Note: Prior conversation history omitted to stay within argument limit]', 'utf8') + 2
+        : 0;
+      const avail =
+        remainingBudget - 2 - Buffer.byteLength(prefix, 'utf8') - Buffer.byteLength(truncNote, 'utf8') - omitReserve - 4;
+      if (avail > 0) {
+        const textBuf = Buffer.from(conversationTurns[i].text, 'utf8');
+        const truncated = prefix + textBuf.subarray(0, avail).toString('utf8') + truncNote;
+        includedTurns.unshift(truncated);
+        currentBytes += Buffer.byteLength(truncated, 'utf8') + 2;
+        if (i > 0) omittedTurns = true;
+      } else {
+        omittedTurns = true;
+      }
+      break;
     } else {
       omittedTurns = true;
       break;
