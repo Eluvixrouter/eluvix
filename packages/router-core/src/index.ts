@@ -350,7 +350,7 @@ function recordBanditArmOutcome(params: Parameters<typeof dbModule.recordBanditA
     // Tolerate partial ../db.js mocks in unit tests
   }
 }
-import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
+import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats, scanResponseContent } from './guard.js';
 import {
   type ContextProvider,
   type KnowledgeBaseConfig,
@@ -820,6 +820,29 @@ export class Eluvix {
     return results;
   }
 
+  /**
+   * Response-side guard gate for memory write-back (audit H-8): completed
+   * assistant text is scanned with both guard pattern sets BEFORE it may
+   * enter long-term memory. This runs regardless of the configured guard
+   * modes — a poisoned or credential-laden reply must not be stored
+   * unscanned just because the request-side guards are disabled. Returns
+   * true when the text is clean enough to store. Detection types/rules
+   * only are logged; the content itself never is.
+   */
+  private assistantTextSafeForMemory(text: string): boolean {
+    const scan = scanResponseContent(text, {
+      promptGuard: { enabled: true, ...(this.config.promptGuard || {}) },
+      privacyGuard: this.config.privacyGuard
+    });
+    if (scan.detected) {
+      console.warn(
+        `[Response Guard] Memory write-back skipped: completed assistant reply matched guard rules (${scan.rules.join(', ')}).`
+      );
+      return false;
+    }
+    return true;
+  }
+
   public async routeChatCompletion(
     request: ChatRequest,
     options?: {
@@ -863,7 +886,8 @@ export class Eluvix {
         customPatterns: this.config.privacyGuard.customPatterns,
         redactionStyle: this.config.privacyGuard.redactionStyle,
         whitelist: this.config.privacyGuard.whitelist,
-        auditLogging: this.config.privacyGuard.auditLogging
+        auditLogging: this.config.privacyGuard.auditLogging,
+        allowDetectedPii: this.config.privacyGuard.allowDetectedPii
       });
 
       if (!privacyResult.passed) {
@@ -1059,7 +1083,8 @@ export class Eluvix {
               customPatterns: this.config.privacyGuard.customPatterns,
               redactionStyle: this.config.privacyGuard.redactionStyle,
               whitelist: this.config.privacyGuard.whitelist,
-              auditLogging: false
+              auditLogging: false,
+              allowDetectedPii: this.config.privacyGuard.allowDetectedPii
             });
             if (check.passed && check.modifiedMessages[0]) {
               scrubbed.push({
@@ -2358,6 +2383,7 @@ export class Eluvix {
             let responseBody: any = response.body;
             let assistantOutputText = '';
             let schemaValidationFailed = false;
+            let responseGuardRules: string[] | null = null;
 
             if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
               try {
@@ -2463,6 +2489,24 @@ export class Eluvix {
                   }
                 }
 
+                // Response-side guard (audit H-8, decision D8): scan the
+                // completed reply in WARN mode — log + marker header, the
+                // body is returned unmodified this release. Placed after
+                // schema validation / fence repair and the output guard so
+                // it scans the final text the client actually receives.
+                if (assistantOutputText && this.config.promptGuard?.enabled) {
+                  const respScan = scanResponseContent(assistantOutputText, {
+                    promptGuard: this.config.promptGuard,
+                    privacyGuard: this.config.privacyGuard
+                  });
+                  if (respScan.detected) {
+                    responseGuardRules = respScan.rules;
+                    console.warn(
+                      `[Response Guard Warning] Upstream response matched guard rules (${respScan.rules.join(', ')}); returning as-is (warn mode). Content is never logged.`
+                    );
+                  }
+                }
+
                 rawData = JSON.stringify(parsed);
                 if (!schemaValidationFailed && cacheConfig?.enabled && cacheKey) {
                   this.setCachedResponse(cacheKey, parsed, lastUserQuery);
@@ -2489,6 +2533,10 @@ export class Eluvix {
                 responseBody = teeSseStreamForMemory(
                   responseBody as ReadableStream<Uint8Array>,
                   (fullAssistantText) => {
+                    // H-8: the assembled reply is scanned before write-back
+                    // even though the streamed response itself cannot be
+                    // un-sent — a poisoned reply must not enter memory.
+                    if (!this.assistantTextSafeForMemory(fullAssistantText)) return;
                     void providerRef
                       .remember(
                         {
@@ -2509,7 +2557,13 @@ export class Eluvix {
 
             globalCircuitBreaker.recordSuccess(upstream.id);
 
-            if (!effectiveRequest.stream && canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
+            if (
+              !effectiveRequest.stream &&
+              canRemember &&
+              assistantOutputText.trim().length > 0 &&
+              this.contextProvider &&
+              this.assistantTextSafeForMemory(assistantOutputText)
+            ) {
               void this.contextProvider
                 .remember(
                   {
@@ -2580,7 +2634,12 @@ export class Eluvix {
               responseBody = teeSseStreamForMemory(
                 responseBody as ReadableStream<Uint8Array>,
                 (fullAssistantText) => {
-                  if (providerRef) {
+                  // H-8 (adapted to the two-tee structure on new main):
+                  // this is the tee that actually carries non-antigravity
+                  // streams — the assembled reply must be scanned before
+                  // write-back here too, not only in the antigravity/cli
+                  // remember-only tee above.
+                  if (providerRef && this.assistantTextSafeForMemory(fullAssistantText)) {
                     void providerRef
                       .remember(
                         {
@@ -2635,6 +2694,10 @@ export class Eluvix {
               headers: new Headers(response.headers)
             });
             newResponse.headers.set('x-eluvix-upstream', upstream.id);
+            if (responseGuardRules) {
+              newResponse.headers.set('x-eluvix-guard', 'response-warn');
+              newResponse.headers.set('x-eluvix-guard-rules', responseGuardRules.join(','));
+            }
             newResponse.headers.set('x-eluvix-model', servedModel);
             if (cacheReadTokens > 0) {
               newResponse.headers.set('x-eluvix-cache-read-tokens', String(cacheReadTokens));

@@ -100,6 +100,30 @@ export function sanitizeLoadedConfig(raw: unknown): LoadedConfigSanitization {
     }
   }
 
+  if (config.promptGuard !== undefined) {
+    if (!config.promptGuard || typeof config.promptGuard !== 'object') {
+      warnings.push('Dropping invalid "promptGuard" config (expected an object)');
+      delete config.promptGuard;
+    } else if (
+      config.promptGuard.mode !== undefined &&
+      config.promptGuard.mode !== 'heuristic'
+    ) {
+      // Audit M-11: the 'classifier'/'llm-guard' modes were declared for
+      // years but never implemented, and are now removed. A config on disk
+      // carrying one must not brick startup — coerce it to the heuristic
+      // guard with block enforcement and say so.
+      const removedMode = config.promptGuard.mode;
+      const repaired: Record<string, any> = { ...config.promptGuard, mode: 'heuristic' };
+      if (repaired.enforcementAction === undefined && repaired.action === undefined) {
+        repaired.enforcementAction = 'block';
+      }
+      config.promptGuard = repaired;
+      warnings.push(
+        `Coerced removed promptGuard.mode ${JSON.stringify(removedMode)} to "heuristic" (enforcementAction: ${JSON.stringify(repaired.enforcementAction)}); the 'classifier' and 'llm-guard' modes were never implemented and have been removed`
+      );
+    }
+  }
+
   const upstreams: any[] = [];
   source.upstreams.forEach((upstream: any, index: number) => {
     const problem = upstreamProblem(upstream);
@@ -214,6 +238,21 @@ export function validateConfig(config: any): void {
       !['filter', 'strip'].includes(config.memory.cloudMode)
     ) {
       throw new ConfigValidationError('Invalid configuration: "memory.cloudMode" must be "filter" or "strip"');
+    }
+  }
+  if (config.promptGuard !== undefined) {
+    if (!config.promptGuard || typeof config.promptGuard !== 'object') {
+      throw new ConfigValidationError('Invalid configuration: "promptGuard" must be an object');
+    }
+    if (
+      config.promptGuard.mode !== undefined &&
+      config.promptGuard.mode !== 'heuristic'
+    ) {
+      // Audit M-11: these modes were never implemented; accepting them on
+      // save would let an operator believe model-based screening is on.
+      throw new ConfigValidationError(
+        `Invalid configuration: "promptGuard.mode" ${JSON.stringify(config.promptGuard.mode)} is not supported — the 'classifier' and 'llm-guard' modes were removed (never implemented); use "heuristic" or omit the field`
+      );
     }
   }
   for (const upstream of config.upstreams) {
