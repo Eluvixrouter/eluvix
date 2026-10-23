@@ -487,6 +487,11 @@ function generateEluvixConfig(
         ...(Array.isArray(node.data?.args)
           ? { args: node.data.args.map((a: any) => String(a)) }
           : {}),
+        // M-4: explicit per-harness tool allowlist for auto-approval.
+        // Absent/empty means nothing is auto-approved by name.
+        ...(Array.isArray(node.data?.autoApproveTools)
+          ? { autoApproveTools: node.data.autoApproveTools.map((t: any) => String(t)) }
+          : {}),
         ...(node.data?.cwd ? { cwd: String(node.data.cwd) } : {})
       }
     });

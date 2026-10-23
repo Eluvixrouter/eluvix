@@ -104,7 +104,7 @@ import {
   stripMemoryFromMessages,
   teeSseStreamForMemory
 } from './context/index.js';
-import { type HarnessConfig, forwardHarnessRequest } from './harness/index.js';
+import { type HarnessConfig, buildChildEnv, forwardHarnessRequest } from './harness/index.js';
 
 /** One recorded stage of upstream selection, in execution order. */
 export interface RouteTraceStep {
@@ -953,6 +953,35 @@ export class Eluvix {
             }
           }
           usableBlocks = scrubbed;
+        }
+
+        // Recalled memory is stored, attacker-influenceable content
+        // (audit H-4): turns are auto-written from ordinary chat, so a
+        // planted instruction would otherwise be re-injected below with
+        // system-role privilege, after the pre-flight guard (step 0b)
+        // has already run. Scan every block with the prompt guard
+        // before injection and drop blocks that trip it. Note the
+        // residual limits, accepted for this tier: the guard is a
+        // heuristic regex scan (Tier 5 hardens it), and the surviving
+        // block is still injected in the system role for consumer
+        // compatibility — the mitigations are this scan plus the
+        // delimiter-escaped block format (context/index.ts, audit H-5).
+        if (usableBlocks.length > 0 && this.config.promptGuard?.enabled) {
+          const kept: typeof usableBlocks = [];
+          for (const b of usableBlocks) {
+            const scan = validateChatPrompt(
+              [{ role: 'user', content: b.text }],
+              this.config.promptGuard
+            );
+            if (scan.passed) {
+              kept.push(b);
+            } else {
+              console.warn(
+                `[Prompt Guard] Dropping recalled memory block from ${recallResult.provider}: ${scan.reason || 'heuristic match'} (${scan.matchedRule || 'unknown rule'})`
+              );
+            }
+          }
+          usableBlocks = kept;
         }
 
         if (usableBlocks.length > 0) {
@@ -1927,10 +1956,9 @@ export class Eluvix {
     args.push('--sandbox');
     args.push('--print', promptText);
 
-    const childEnv = {
-      ...process.env,
-      HOME: effectiveHome
-    };
+    // Spawn-boundary env scrub (audit H-1 / D3): the agy child never
+    // inherits the router's own credentials — see harness/env.ts.
+    const childEnv = buildChildEnv({ HOME: effectiveHome });
 
     // Real-time SSE Streaming Mode
     if (request.stream) {
