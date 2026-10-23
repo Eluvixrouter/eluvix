@@ -81,7 +81,7 @@ async function parseBody(req) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   applyCors(req, res);
 
   if (req.method === 'OPTIONS') {
@@ -261,6 +261,25 @@ const server = http.createServer(async (req, res) => {
   // 404 handler
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Endpoint not found', path: url.pathname }));
+}
+
+// A rejected parseBody (oversized payload, aborted client) must never become
+// an unhandled rejection — Node exits on those, killing the simulator.
+// Oversized requests have already destroyed their socket, so the error
+// response below is best-effort; the log line is the guaranteed outcome.
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch(err => {
+    console.error(`[OpenViking Simulator] Request error: ${err?.message || err}`);
+    try {
+      if (!res.headersSent && !res.writableEnded) {
+        const status = err?.message === 'Payload too large' ? 413 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err?.message || 'Internal error' }));
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    } catch {}
+  });
 });
 
 server.listen(PORT, '0.0.0.0', () => {

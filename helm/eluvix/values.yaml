@@ -43,7 +43,6 @@ nextjs:
     port: 3588
   env:
     NODE_ENV: production
-    SWITCHYARD_URL: http://eluvix-switchyard:8080
   persistence:
     enabled: true
     storageClass: local-path

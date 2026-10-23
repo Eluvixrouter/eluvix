@@ -402,7 +402,10 @@ export interface ChatMessage {
 }
 
 export interface ChatRequest {
-  model: string;
+  // Optional: the runtime falls back to config.defaultModel, then 'auto'
+  // (see routeChatCompletion/explainRoute). The repo's own tests rely on
+  // omitting it.
+  model?: string;
   messages: ChatMessage[];
   temperature?: number;
   stream?: boolean;
@@ -411,6 +414,15 @@ export interface ChatRequest {
   user?: string;
   metadata?: Record<string, any>;
 }
+
+/**
+ * A ChatRequest whose model has been resolved. The public entry points
+ * (routeChatCompletion, explainRoute) accept an optional model and default
+ * it immediately (`request.model || config.defaultModel || 'auto'`); all
+ * internal routing/forwarding code works with this type, so `model` is a
+ * string there — exactly what the runtime already guarantees.
+ */
+export type ResolvedChatRequest = ChatRequest & { model: string };
 
 export interface DiscoveredModel {
   id: string;
@@ -746,7 +758,7 @@ export class Eluvix {
       origin: options?.scope?.origin || 'client'
     };
 
-    let effectiveRequest: ChatRequest = {
+    let effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
@@ -1290,7 +1302,7 @@ export class Eluvix {
       memoryTokens?: number;
     }
   ): RouteExplanation {
-    const effectiveRequest: ChatRequest = {
+    const effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
@@ -1337,7 +1349,7 @@ export class Eluvix {
    * truncation, vision/tools filtering, and strategy ranking.
    */
   private selectTargetUpstreams(
-    effectiveRequest: ChatRequest,
+    effectiveRequest: ResolvedChatRequest,
     options?: {
       silent?: boolean;
       scope?: Partial<RequestScope>;
@@ -1346,7 +1358,7 @@ export class Eluvix {
       memoryTokens?: number;
     }
   ): {
-    effectiveRequest: ChatRequest;
+    effectiveRequest: ResolvedChatRequest;
     complexity: PromptComplexityAssessment;
     strategy: RoutingStrategy;
     targetUpstreams: UpstreamConfig[];
@@ -1661,7 +1673,7 @@ export class Eluvix {
 
   private async forwardRequest(
     upstream: UpstreamConfig,
-    request: ChatRequest,
+    request: ResolvedChatRequest,
     timeoutMs = 60000,
     clientSignal?: AbortSignal,
     complexityScore: 1 | 2 | 3 | 4 = 1,
@@ -1684,7 +1696,7 @@ export class Eluvix {
         effectiveModel = upstream.antigravity?.model || 'gemini-4-argon';
       }
     }
-    const effectiveRequest: ChatRequest = {
+    const effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: effectiveModel
     };
@@ -1837,7 +1849,7 @@ export class Eluvix {
 
   private async forwardAntigravityCli(
     upstream: UpstreamConfig,
-    request: ChatRequest,
+    request: ResolvedChatRequest,
     complexityScore: 1 | 2 | 3 | 4 = 1,
     clientSignal?: AbortSignal,
     upstreamTimeoutMs = 60000

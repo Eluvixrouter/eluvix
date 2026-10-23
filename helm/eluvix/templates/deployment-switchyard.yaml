@@ -29,12 +29,6 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.switchyard.port }}"
-            - name: CONFIG_PATH
-              value: "/etc/eluvix/eluvix.json"
-          volumeMounts:
-            - name: config-volume
-              mountPath: /etc/eluvix
-              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -49,8 +43,4 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.switchyard.resources | nindent 12 }}
-      volumes:
-        - name: config-volume
-          configMap:
-            name: {{ include "eluvix.fullname" . }}-routing-config
 {{- end }}

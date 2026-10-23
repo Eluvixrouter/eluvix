@@ -40,6 +40,9 @@ jobs:
     - name: Run Unit Tests (Next.js Dashboard)
       run: pnpm --filter nextjs test
 
+    - name: Typecheck Next.js Dashboard
+      run: pnpm --filter nextjs exec tsc --noEmit
+
     - name: Build Next.js Dashboard
       run: pnpm --filter nextjs build
       env:

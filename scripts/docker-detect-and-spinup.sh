@@ -196,15 +196,35 @@ spin_up() {
   echo "🚀 [Eluvix] Spinning up containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway, openviking, trueforge)..."
   docker compose up -d --build
 
+  echo "📦 [Eluvix] Waiting for Ollama to become ready..."
+  # Poll the Ollama API until it actually answers (bounded: 30 x 2s = 60s).
+  # A fixed sleep + `curl || true` reported success with Ollama down and no
+  # model pulled; success lines below print only after the checks pass.
+  local ollama_ready=false
+  local attempt
+  for attempt in $(seq 1 30); do
+    if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+      ollama_ready=true
+      break
+    fi
+    sleep 2
+  done
+  if [ "$ollama_ready" != "true" ]; then
+    echo "❌ Ollama did not become ready at http://localhost:11434 within 60s."
+    echo "   Inspect 'docker compose logs ollama', fix the cause, and re-run."
+    exit 1
+  fi
+
   echo "📦 [Eluvix] Checking Ollama models..."
-  # Wait briefly for Ollama to become responsive
-  sleep 3
-  if curl -s http://localhost:11434/api/tags | grep -q '\[\]' || ! curl -s http://localhost:11434/api/tags | grep -q 'smollm'; then
-    echo "🚀 Pulling default model 'smollm:135m' into Ollama..."
-    curl -s -X POST http://localhost:11434/api/pull -d '{"name": "smollm:135m"}' > /dev/null || true
-    echo "✅ Model check complete."
-  else
+  if curl -s http://localhost:11434/api/tags | grep -q 'smollm'; then
     echo "✅ Models already present in Ollama."
+  else
+    echo "🚀 Pulling default model 'smollm:135m' into Ollama..."
+    if ! curl -sf -X POST http://localhost:11434/api/pull -d '{"name": "smollm:135m"}' > /dev/null; then
+      echo "❌ Failed to pull model 'smollm:135m' from Ollama."
+      exit 1
+    fi
+    echo "✅ Model check complete."
   fi
 
   echo "✨ Container stack successfully launched!"

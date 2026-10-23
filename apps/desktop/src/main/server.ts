@@ -174,21 +174,28 @@ export class DesktopRouterServer extends EventEmitter {
         this.server = http.createServer((req, res) => this.handleRequest(req, res));
       }
 
+      // start()'s promise resolves only from this callback, so EVERY listen
+      // attempt — including EADDRINUSE retries — must carry it. A bare
+      // retry listen() binds the new port but leaves the promise pending
+      // forever: no window is created and no error is surfaced.
+      const onListening = () => {
+        const protocol = this.isHttps ? 'https' : 'http';
+        console.log(`[Eluvix Desktop] Server listening on ${protocol}://127.0.0.1:${this.port} (TLS: ${this.isHttps ? 'Enabled via mkcert' : 'Disabled'})`);
+        resolve(this.port);
+      };
+
       this.server.on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
           console.warn(`Port ${this.port} is in use, trying next port ${this.port + 1}...`);
           this.port += 1;
-          this.server?.listen(this.port, '127.0.0.1');
+          this.server?.removeListener('listening', onListening);
+          this.server?.listen(this.port, '127.0.0.1', onListening);
         } else {
           reject(err);
         }
       });
 
-      this.server.listen(this.port, '127.0.0.1', () => {
-        const protocol = this.isHttps ? 'https' : 'http';
-        console.log(`[Eluvix Desktop] Server listening on ${protocol}://127.0.0.1:${this.port} (TLS: ${this.isHttps ? 'Enabled via mkcert' : 'Disabled'})`);
-        resolve(this.port);
-      });
+      this.server.listen(this.port, '127.0.0.1', onListening);
     });
   }
 
@@ -413,8 +420,11 @@ export class DesktopRouterServer extends EventEmitter {
         const chatReq: ChatRequest = JSON.parse(bodyStr);
 
         let chosenUpstreamName = 'unknown';
+        // chatReq.model is optional (the router defaults it); an absent
+        // model can only match wildcard upstreams in this label pre-filter,
+        // exactly as before.
         const targetUpstreams = this.config.upstreams.filter(u =>
-          u.models.includes(chatReq.model) || u.models.includes('*')
+          (chatReq.model !== undefined && u.models.includes(chatReq.model)) || u.models.includes('*')
         );
         if (targetUpstreams.length > 0) {
           chosenUpstreamName = targetUpstreams[0].name;
@@ -427,7 +437,7 @@ export class DesktopRouterServer extends EventEmitter {
         const logEntry: RequestLog = {
           id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           timestamp: new Date().toLocaleTimeString(),
-          model: chatReq.model,
+          model: chatReq.model || 'auto',
           upstream: actualUpstream,
           status: upstreamResponse.status,
           durationMs,
