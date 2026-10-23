@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getAppPaths } from './paths.js';
+import { tryResolveCliExecutable, ANTIGRAVITY_CLI_BINARIES } from './cli-exec.js';
 
 export type AgyEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -237,6 +238,21 @@ export async function discoverAntigravityModels(
     };
   }
 
+  // This function spawns the CLI, so the path is gated here too (audit
+  // M-2) — callers that hand in a raw config value get the catalog
+  // fallback instead of an arbitrary spawn.
+  const resolvedCli = tryResolveCliExecutable(cliPath, {
+    allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+  });
+  if (!resolvedCli) {
+    const fallback = getCachedAntigravityModels();
+    return {
+      models: fallback,
+      cachedAt: new Date(memoryCache?.timestamp || Date.now()).toISOString(),
+      source: memoryCache ? ('cache' as const) : ('default' as const)
+    };
+  }
+
   return new Promise((resolve) => {
     let stdout = '';
     let resolved = false;
@@ -254,7 +270,7 @@ export async function discoverAntigravityModels(
 
     let child;
     try {
-      child = spawn(cliPath, ['models'], {
+      child = spawn(resolvedCli, ['models'], {
         stdio: ['ignore', 'pipe', 'pipe']
       });
     } catch {

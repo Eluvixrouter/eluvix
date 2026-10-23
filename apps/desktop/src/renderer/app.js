@@ -18,6 +18,13 @@
 
   let currentConfig = null;
   let serverEndpoint = 'https://127.0.0.1:3001/v1';
+  let desktopToken = null;
+
+  // Desktop API auth (audit C-1): the main process hands us the per-install
+  // token over IPC; every direct fetch to the local server must carry it.
+  function desktopAuthHeaders() {
+    return desktopToken ? { 'x-eluvix-desktop-token': desktopToken } : {};
+  }
 
   async function init() {
     try {
@@ -30,7 +37,14 @@
       if (status.status === 'running') {
         serverEndpoint = status.endpoint;
         statusText.textContent = `● Active: ${status.endpoint}`;
-        snippetBlock.textContent = `export OPENAI_BASE_URL="${status.endpoint}"\nexport OPENAI_API_KEY="sk-eluvix-local"`;
+        const keyLine = status.tokenFile
+          ? `export OPENAI_API_KEY="$(cat "${status.tokenFile}")"`
+          : 'export OPENAI_API_KEY="" # server token file unavailable';
+        snippetBlock.textContent = `export OPENAI_BASE_URL="${status.endpoint}"
+${keyLine}`;
+        if (api.getDesktopToken) {
+          desktopToken = await api.getDesktopToken();
+        }
       } else {
         statusText.textContent = 'Server Stopped';
       }
@@ -172,7 +186,7 @@
               })
             : await (await fetch(`${serverEndpoint.replace(/\/v1$/, '')}/api/detect-models`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders() },
                 body: JSON.stringify({
                   id: upstream.id,
                   name: upstream.name,
@@ -244,12 +258,12 @@
 
     entry.innerHTML = `
       <div class="log-top-row">
-        <span>POST /v1/chat/completions (${log.model})</span>
+        <span>POST /v1/chat/completions (${escapeHtml(String(log.model ?? ''))})</span>
         <span>${log.status} ${log.status === 200 ? '✓' : '✗'}</span>
       </div>
       <div class="log-bottom-row">
-        <span>Route: ${log.upstream} ${log.streaming ? '[Stream]' : ''}</span>
-        <span>${log.durationMs}ms @ ${log.timestamp}</span>
+        <span>Route: ${escapeHtml(String(log.upstream ?? ''))} ${log.streaming ? '[Stream]' : ''}</span>
+        <span>${log.durationMs}ms @ ${escapeHtml(String(log.timestamp ?? ''))}</span>
       </div>
     `;
 
@@ -286,7 +300,7 @@
           ? await api.detectModels({ all: true })
           : await (await fetch(`${serverEndpoint.replace(/\/v1$/, '')}/api/detect-models`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders() },
               body: JSON.stringify({ all: true })
             })).json();
 
@@ -375,7 +389,7 @@
     try {
       const response = await fetch(`${serverEndpoint}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders() },
         body: JSON.stringify({
           model: 'meta-llama/Llama-3-8b',
           messages: [{ role: 'user', content: 'Ping from Eluvix Desktop' }],

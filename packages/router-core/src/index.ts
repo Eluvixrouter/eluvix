@@ -69,6 +69,8 @@ export * from './db.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
+export * from './cli-exec.js';
+export * from './local-request-guard.js';
 export * from './context/index.js';
 export * from './harness/index.js';
 import { spawn } from 'node:child_process';
@@ -85,6 +87,11 @@ import {
   prepareCleanAgyHome,
   parseAgyStreamJsonLine
 } from './antigravity-models.js';
+import {
+  resolveCliExecutable,
+  tryResolveCliExecutable,
+  ANTIGRAVITY_CLI_BINARIES
+} from './cli-exec.js';
 import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 import {
@@ -441,8 +448,17 @@ export interface UpstreamDiscoveryResult {
 
 export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeoutMs = 5000): Promise<UpstreamDiscoveryResult> {
   if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-    const cliPath = upstream.antigravity?.cliPath || 'agy';
-    const discovered = await discoverAntigravityModels(cliPath);
+    // Model discovery spawns the CLI (via discoverAntigravityModels), so
+    // the config-supplied path goes through the same executable gate as
+    // forwarding — previously this path spawned it with no check at all
+    // (audit M-2). An unresolvable/denied path degrades to the cached /
+    // default catalog, exactly like a failed probe did before.
+    const cliPath = tryResolveCliExecutable(upstream.antigravity?.cliPath || 'agy', {
+      allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+    });
+    const discovered = cliPath
+      ? await discoverAntigravityModels(cliPath)
+      : { models: getCachedAntigravityModels(), cachedAt: new Date().toISOString(), source: 'default' as const };
     const models = [...discovered.models.map(m => m.baseId), '*'];
     const details: DiscoveredModel[] = discovered.models.map(m => ({
       id: m.baseId,
@@ -1855,12 +1871,15 @@ export class Eluvix {
     upstreamTimeoutMs = 60000
   ): Promise<Response> {
     const startTime = Date.now();
-    const rawCli = (upstream.antigravity?.cliPath || 'agy').trim();
-    const baseCli = path.basename(rawCli);
-    if (!['agy', 'antigravity'].includes(baseCli)) {
-      throw new Error(`Execution denied: '${baseCli}' is not an authorized Antigravity CLI binary.`);
-    }
-    const cliPath = rawCli;
+    // The config-supplied cliPath is resolved through the central gate:
+    // basename allowlist + canonical-path checks (exists, executable, not
+    // under a world-writable or config-controlled dir). The basename-only
+    // check that stood here before let `/any/dir/agy` execute (audit M-2,
+    // and the router-core half of C-1). Spawn sites below use the RESOLVED
+    // path, never the raw config value.
+    const cliPath = resolveCliExecutable(upstream.antigravity?.cliPath || 'agy', {
+      allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+    });
 
     const isAgyModel = isAntigravitySupportedModel(request.model, upstream.models);
     const requestedModel = isAgyModel ? request.model : (upstream.antigravity?.model || 'gemini-4-argon');

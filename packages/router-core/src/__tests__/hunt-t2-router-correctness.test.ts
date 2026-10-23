@@ -192,7 +192,9 @@ describe('Antigravity CLI failures fail the attempt (finding 11)', () => {
   }
 
   beforeAll(() => {
-    fakeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-t2-agy-'));
+    // NOT os.tmpdir(): the CLI resolver denies executables under
+    // world-writable dirs (sec T1), so the fakes stand in a package-local dir.
+    fakeDir = fs.mkdtempSync(path.join(process.cwd(), '.fake-agy-t2-'));
     // Exits 0 while reporting an ERROR result whose text is an error
     // message, not a reply.
     agyPaths.error = writeFakeAgy('error', [
