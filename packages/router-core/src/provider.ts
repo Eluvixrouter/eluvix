@@ -7,6 +7,7 @@ import {
   saveProviderSettings,
   logProviderJob,
   getProviderJobLogs,
+  validateProviderServerUrl,
   ProviderDbSettings
 } from './db.js';
 
@@ -25,6 +26,10 @@ export interface LocalEngineModelInfo {
   sizeBytes?: number;
   vramUsageMb?: number;
 }
+
+// validateProviderServerUrl lives in db.ts (so saveProviderSettings can
+// enforce it without a circular import) and is re-exported for consumers.
+export { validateProviderServerUrl } from './db.js';
 
 export interface ProviderAgentConfig {
   serverUrl: string;
@@ -684,6 +689,12 @@ export class EluvixProviderAgent extends EventEmitter {
   }
 
   public updateConfig(updates: Partial<ProviderAgentConfig>) {
+    if (updates.serverUrl !== undefined) {
+      const urlError = validateProviderServerUrl(updates.serverUrl);
+      if (urlError) {
+        throw new Error(urlError);
+      }
+    }
     this.config = { ...this.config, ...updates };
     saveProviderSettings({
       server_url: this.config.serverUrl,
@@ -745,8 +756,30 @@ export class EluvixProviderAgent extends EventEmitter {
   public async start(): Promise<void> {
     if (this.isRunning) return;
 
+    // No configured node token ⇒ the agent stays disabled (audit H-10
+    // follow-on: the old code substituted the published constant
+    // 'local-eluvix-token' at heartbeat time, so a token-less node shared
+    // a publicly known credential with every other token-less node). This
+    // is a graceful skip, not an error: nothing was attempted, so the
+    // status honestly reads OFFLINE with a clear log explanation.
+    if (!this.config.nodeToken) {
+      console.warn(
+        '[Eluvix Provider] Provider agent disabled: no node token configured. ' +
+          'Set a node token (issued by the marketplace) in Provider settings to enable the agent; ' +
+          'registration and heartbeats are skipped until then.'
+      );
+      this.emit('status-changed', { status: 'OFFLINE', isRunning: false, isPaused: false, reason: 'no_node_token' });
+      return;
+    }
+
     try {
       this.lastErrorMessage = null;
+
+      const urlError = validateProviderServerUrl(this.config.serverUrl);
+      if (urlError) {
+        throw new Error(urlError);
+      }
+
       console.log('[Eluvix Provider] 🚀 Initializing GPU Provider Agent...');
 
       // 1. Detect hardware
@@ -876,6 +909,9 @@ export class EluvixProviderAgent extends EventEmitter {
    * previously issued) one.
    */
   private async registerNode(): Promise<void> {
+    if (!this.config.nodeToken) {
+      throw new Error('Cannot register a provider node without a configured node token.');
+    }
     const registerUrl = `${this.config.serverUrl.replace(/\/+$/, '')}/api/nodes/register`;
     const payload = {
       name: this.config.nodeName || `${os.hostname()} (Eluvix GPU Node)`,
@@ -956,7 +992,11 @@ export class EluvixProviderAgent extends EventEmitter {
     const heartbeatUrl = `${this.config.serverUrl.replace(/\/+$/, '')}/api/nodes/heartbeat`;
     const payload = {
       nodeId: this.nodeId,
-      nodeToken: this.config.nodeToken || 'local-eluvix-token',
+      // No fallback token: start() guarantees a configured token before
+      // heartbeats run. A missing token here means the state was corrupted
+      // mid-run; sending `undefined` lets the server reject honestly
+      // instead of authenticating as a shared, publicly known constant.
+      nodeToken: this.config.nodeToken,
       status: this.isPaused ? 'STANDBY' : 'ONLINE',
       vramFreeGb: this.gpuInfo?.vramFreeGb || 16.0,
       // null when no temperature was actually measured — never report an

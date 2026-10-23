@@ -349,6 +349,7 @@ export function getDb(): SqliteDb {
       initSchema(db);
       dbInstance = db;
       dbInstancePath = dbPath;
+      restrictDbFileModes(dbPath);
       return db;
     }
   } catch (err: any) {
@@ -364,10 +365,29 @@ export function getDb(): SqliteDb {
     initSchema(db);
     dbInstance = db;
     dbInstancePath = dbPath;
+    restrictDbFileModes(dbPath);
     return db;
   } catch (err: any) {
     console.error('[Eluvix DB] Failed to initialize SQLite backend:', err.message);
     throw err;
+  }
+}
+
+/**
+ * The database holds (among other things) the provider node token, so its
+ * files are owner-only (audit M-17). SQLite creates the main file with the
+ * process umask (commonly 0644); tighten it after open. The -wal/-shm
+ * sidecars are chmodded best-effort when they exist — SQLite recreates them
+ * under the umask on later runs, but each getDb() open re-asserts the main
+ * file, which is where the durable secret-bearing data lives.
+ */
+function restrictDbFileModes(dbPath: string): void {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      fs.chmodSync(dbPath + suffix, 0o600);
+    } catch {
+      // Missing sidecars and non-POSIX filesystems are fine.
+    }
   }
 }
 
@@ -719,6 +739,33 @@ export function deleteHarnessSession(sessionId: string, userId: string = 'defaul
   }
 }
 
+/**
+ * The provider server URL receives the node token and job traffic, so it
+ * must be TLS-protected — or plain HTTP confined to loopback for local
+ * development (audit S-5). Returns a human-readable error string when the
+ * URL is unacceptable, or null when it is fine. Lives here (rather than
+ * provider.ts) so saveProviderSettings() can enforce it without a
+ * circular import.
+ */
+export function validateProviderServerUrl(serverUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(serverUrl);
+  } catch {
+    return `provider server URL is not a valid URL: ${serverUrl}`;
+  }
+  if (url.protocol === 'https:') return null;
+  if (url.protocol === 'http:') {
+    // Node's URL keeps the brackets on IPv6 hostnames ('[::1]').
+    const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost' || host === '::1' || host.startsWith('127.')) {
+      return null;
+    }
+    return `provider server URL must use https (plain http is allowed only for loopback): ${serverUrl}`;
+  }
+  return `provider server URL must use https (or loopback http): ${serverUrl}`;
+}
+
 export interface ProviderDbSettings {
   id: number;
   enabled: number;
@@ -752,7 +799,42 @@ export function getProviderSettings(): ProviderDbSettings | null {
   }
 }
 
+/**
+ * API-facing shape of the provider settings: identical to
+ * ProviderDbSettings except the node token is replaced by a boolean
+ * "configured" flag (audit M-29). getProviderSettings() above stays intact
+ * for server-side use; anything returning settings to an HTTP client must
+ * use this variant so the bearer token for the marketplace never leaves
+ * the process.
+ */
+export type RedactedProviderSettings = Omit<ProviderDbSettings, 'node_token'> & {
+  node_token_configured: boolean;
+};
+
+export function redactProviderSettings(
+  settings: ProviderDbSettings | null
+): RedactedProviderSettings | null {
+  if (!settings) return null;
+  const { node_token, ...rest } = settings;
+  return { ...rest, node_token_configured: Boolean(node_token) };
+}
+
+export function getRedactedProviderSettings(): RedactedProviderSettings | null {
+  return redactProviderSettings(getProviderSettings());
+}
+
 export function saveProviderSettings(updates: Partial<ProviderDbSettings>): ProviderDbSettings | null {
+  // Enforced at the save path (audit S-5): an update that carries a
+  // server_url must not persist a URL that would ship the node token over
+  // plaintext HTTP to a network host. Thrown (not swallowed into the
+  // try/catch below) so callers surface the reason. Partial internal
+  // saves that don't touch server_url are unaffected.
+  if (updates.server_url !== undefined) {
+    const urlError = validateProviderServerUrl(updates.server_url);
+    if (urlError) {
+      throw new Error(urlError);
+    }
+  }
   try {
     const db = getDb();
     const current = getProviderSettings();

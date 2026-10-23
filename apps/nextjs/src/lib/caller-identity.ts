@@ -35,6 +35,23 @@ export type CallerIdentityResult =
         | 'no-identity';
     };
 
+/**
+ * For endpoints the middleware passes elx_-shaped bearer tokens through to
+ * for in-handler verification (chat/completions, memory — and now model
+ * listing, see middleware.ts): returns true when the request carries no
+ * elx_ bearer at all (admin password or session cookie, already
+ * authenticated by middleware) or a named key that resolves; false when
+ * it carries an elx_ token that does not resolve — the handler must 401
+ * rather than serve data to a forged key.
+ */
+export function namedKeyAuthorized(req: Request): boolean {
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return true;
+  const token = authHeader.slice(7).trim();
+  if (!token.startsWith('elx_')) return true;
+  return resolveBearerToken(token).valid;
+}
+
 async function secureCompare(provided: string, expected: string): Promise<boolean> {
   const enc = new TextEncoder();
   const [hashProvided, hashExpected] = await Promise.all([

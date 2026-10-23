@@ -1,25 +1,22 @@
 import { NextResponse } from 'next/server';
 import { getProviderAgent } from '@/lib/router';
-import { getProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
-import { resolveCallerIdentity } from '@/lib/caller-identity';
+import { getRedactedProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request) {
+// No identity resolution here: the response is identical for every
+// caller (audit M-29 redaction), and auth is enforced by middleware.
+// The T4 test calls GET() with no request; resolveCallerIdentity would
+// throw on an absent req, so it is deliberately not called.
+export async function GET() {
   try {
-    const caller = await resolveCallerIdentity(req);
     const agent = getProviderAgent();
     const status = await agent.getStatus();
-    const rawSettings = getProviderSettings();
+    // Redacted variant (audit M-29): the node token is a bearer credential
+    // for the marketplace and must never leave the process; the client
+    // gets a boolean node_token_configured flag instead.
+    const settings = getRedactedProviderSettings();
     const recentJobs = getProviderJobLogs(15);
-
-    const isAdmin = caller.ok && caller.role === 'admin';
-    const settings = rawSettings
-      ? {
-          ...rawSettings,
-          node_token: isAdmin ? rawSettings.node_token : (rawSettings.node_token ? '[REDACTED]' : ''),
-        }
-      : rawSettings;
 
     return NextResponse.json({
       success: true,

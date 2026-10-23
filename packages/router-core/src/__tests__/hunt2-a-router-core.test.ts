@@ -564,6 +564,9 @@ describe('L12: malformed registration responses must fail descriptively', () => 
     });
     const agent = new EluvixProviderAgent({
       serverUrl: 'http://127.0.0.1:9',
+      // T4 H-10: start() skips registration entirely with no token, so
+      // the malformed-response path needs a configured token to run.
+      nodeToken: 'test-node-token',
       engineUrl: 'http://127.0.0.1:11434',
       engineType: 'ollama',
     });

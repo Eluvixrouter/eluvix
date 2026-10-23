@@ -279,27 +279,86 @@ function upstreamProblem(upstream: any): string | null {
   return null;
 }
 
-export function saveConfig(newConfig: RouterConfig): RouterConfig {
-  const existingConfig = activeConfig || loadConfig();
-  const mergedUpstreams = (newConfig.upstreams || []).map(u => {
-    if (u.apiKey === '[REDACTED]') {
-      const existing = existingConfig.upstreams?.find(e => e.id === u.id);
-      return { ...u, apiKey: existing?.apiKey };
-    }
-    return u;
-  });
-  let mergedMemory = newConfig.memory;
-  if (mergedMemory && mergedMemory.apiKey === '[REDACTED]') {
-    mergedMemory = { ...mergedMemory, apiKey: existingConfig.memory?.apiKey };
+/**
+ * API-facing shape of the router config (audit M-29): upstream API keys
+ * are replaced by boolean `apiKeyConfigured` flags so GET /api/v1/config
+ * never returns a stored credential. getConfig() above stays intact for
+ * server-side use. Clients that round-trip the redacted shape through
+ * saveConfig() keep their stored keys — see preserveStoredApiKeys().
+ */
+export function redactConfigForApi(config: RouterConfig): any {
+  const clone = JSON.parse(JSON.stringify(config));
+  if (Array.isArray(clone.upstreams)) {
+    clone.upstreams = clone.upstreams.map((upstream: any) => {
+      if (!upstream || typeof upstream !== 'object') return upstream;
+      const { apiKey, ...rest } = upstream;
+      return { ...rest, apiKeyConfigured: typeof apiKey === 'string' && apiKey.length > 0 };
+    });
   }
-  const mergedConfig: RouterConfig = {
-    ...newConfig,
-    upstreams: mergedUpstreams,
-    memory: mergedMemory,
-  };
+  // The memory section carries a provider credential too (mem0 /
+  // OpenViking Authorization tokens) — same treatment.
+  if (clone.memory && typeof clone.memory === 'object' && 'apiKey' in clone.memory) {
+    const { apiKey, ...rest } = clone.memory;
+    clone.memory = { ...rest, apiKeyConfigured: typeof apiKey === 'string' && apiKey.length > 0 };
+  }
+  return clone;
+}
 
-  validateConfig(mergedConfig);
-  activeConfig = mergedConfig;
+/**
+ * saveConfig companion to redactConfigForApi: an incoming upstream whose
+ * apiKey is missing, empty, or not a string (e.g. the redacted boolean
+ * shape posted back by an editor) inherits the stored key for the same
+ * upstream id. Trade-off, flagged in the remediation PR: a key can no
+ * longer be *cleared* by emptying the field in the UI — overwrite it with
+ * a new key, or edit config.json directly to remove it.
+ */
+function preserveStoredApiKeys(newConfig: RouterConfig): void {
+  if (!Array.isArray((newConfig as any).upstreams) || !Array.isArray((activeConfig as any).upstreams)) {
+    return;
+  }
+  const storedById = new Map<string, string>();
+  for (const upstream of (activeConfig as any).upstreams) {
+    if (upstream && typeof upstream.id === 'string' && typeof upstream.apiKey === 'string' && upstream.apiKey) {
+      storedById.set(upstream.id, upstream.apiKey);
+    }
+  }
+  for (const upstream of (newConfig as any).upstreams) {
+    if (!upstream || typeof upstream.id !== 'string') continue;
+    if (typeof upstream.apiKey !== 'string' || upstream.apiKey.length === 0) {
+      const stored = storedById.get(upstream.id);
+      if (stored) upstream.apiKey = stored;
+      else if ('apiKey' in upstream) delete upstream.apiKey;
+    }
+  }
+  const incomingMemory = (newConfig as any).memory;
+  const storedMemory = (activeConfig as any).memory;
+  if (incomingMemory && typeof incomingMemory === 'object') {
+    if (typeof incomingMemory.apiKey !== 'string' || incomingMemory.apiKey.length === 0) {
+      if (storedMemory && typeof storedMemory.apiKey === 'string' && storedMemory.apiKey) {
+        incomingMemory.apiKey = storedMemory.apiKey;
+      } else if ('apiKey' in incomingMemory) {
+        delete incomingMemory.apiKey;
+      }
+    }
+  }
+}
+
+export function saveConfig(newConfig: RouterConfig): RouterConfig {
+  // Two redacted shapes can round-trip back here and both must keep the
+  // stored key: new main's '[REDACTED]' sentinel (emitted by the old
+  // config-route redaction) and T4's apiKeyConfigured flag shape (no
+  // apiKey field at all). Normalize the sentinel to "absent" first so
+  // preserveStoredApiKeys restores the stored key either way — without
+  // this, the literal '[REDACTED]' would be persisted as the API key.
+  for (const u of (newConfig as any).upstreams ?? []) {
+    if (u && u.apiKey === '[REDACTED]') delete u.apiKey;
+  }
+  if ((newConfig as any).memory?.apiKey === '[REDACTED]') {
+    delete (newConfig as any).memory.apiKey;
+  }
+  preserveStoredApiKeys(newConfig);
+  validateConfig(newConfig);
+  activeConfig = newConfig;
   activeRouter = new Eluvix(activeConfig);
   try {
     const configFile = getConfigPath();

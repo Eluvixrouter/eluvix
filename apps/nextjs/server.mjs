@@ -8,6 +8,9 @@ import next from 'next';
 import { getOrCreateLocalCert, getOrCreateAuthConfig } from '@eluvix/router-core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Captured before getOrCreateAuthConfig() propagates the stored password
+// into process.env — this is the value the OPERATOR actually set.
+const operatorAdminPassword = process.env.ADMIN_PASSWORD;
 const auth = getOrCreateAuthConfig();
 
 if (!process.env.ADMIN_PASSWORD) {
@@ -31,6 +34,29 @@ if (!process.env.LEGACY_ADMIN_PASSWORD) {
   } catch {}
 }
 
+// Deprecation (audit L-4, decision D6): the legacy Enclavix credential is
+// honored for this release only, and loudly — a second, silent credential
+// is exactly how it survived unnoticed. It migrates on first legacy login
+// (see src/lib/legacy-credential.ts) and is removed in the next release.
+if (process.env.LEGACY_ADMIN_PASSWORD) {
+  console.warn('');
+  console.warn('  ⚠ [Security] LEGACY ENCLAVIX CREDENTIAL ACTIVE');
+  console.warn('  ⚠ A pre-rename credential from ~/.config/enclavix/auth.json is being honored');
+  console.warn('  ⚠ alongside the current admin password. It is DEPRECATED and will be removed');
+  console.warn('  ⚠ in the next release. Signing in with it once migrates it automatically;');
+  console.warn('  ⚠ to retire it now, delete ~/.config/enclavix/auth.json.');
+  console.warn('');
+}
+
+// Short operator-chosen passwords are brute-forceable even with login
+// throttling; warn, don't block (audit L-3).
+if (operatorAdminPassword && operatorAdminPassword.length < 16) {
+  console.warn(
+    `  ⚠ [Security] ADMIN_PASSWORD is only ${operatorAdminPassword.length} characters. ` +
+      'Use at least 16 characters for the admin password.'
+  );
+}
+
 function resolveHost() {
   const envHost = process.env.ELUVIX_HOST;
   if (envHost) return envHost;
@@ -44,6 +70,18 @@ function resolveHost() {
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.BIND_HOST || resolveHost();
+
+/**
+ * Whether the bind is confined to this machine. Drives decision D5
+ * (plain-HTTP /api is refused on non-loopback binds) and the no-TLS
+ * fallback (plain HTTP on a network interface is a fatal error, not a
+ * silent downgrade — audit H-10).
+ */
+function isLoopbackBind(host) {
+  const h = String(host || '').replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '::1' || h.startsWith('127.');
+}
+const loopbackBind = isLoopbackBind(hostname);
 const httpsPort = parseInt(process.env.PORT || '3588', 10);
 // HTTP redirect port (default 3580, or customizable via HTTP_PORT)
 const httpPort = parseInt(process.env.HTTP_PORT || '3580', 10);
@@ -129,10 +167,14 @@ async function startServer() {
     });
 
     // 2. HTTP Server for Auto-Upgrade / Redirects
-    // Serves /api directly for plain HTTP clients, while upgrading browser navigation to HTTPS via 308 Permanent Redirect
+    // On a loopback bind, serves /api directly for plain HTTP clients
+    // (local tooling), while upgrading browser navigation to HTTPS via
+    // 308 Permanent Redirect. On a non-loopback bind, decision D5:
+    // /api/* gets the 308 too — API credentials must never cross the
+    // network in plaintext (audit H-10).
     const httpServer = createHttpServer((req, res) => {
       const parsedUrl = parse(req.url, true);
-      if (parsedUrl.pathname && parsedUrl.pathname.startsWith('/api/')) {
+      if (loopbackBind && parsedUrl.pathname && parsedUrl.pathname.startsWith('/api/')) {
         handle(req, res, parsedUrl);
         return;
       }
@@ -208,7 +250,10 @@ async function startServer() {
       console.log(`  - Local:        https://${hostname}:${currentPort}`);
       console.log(`  - Dual Protocol: http://${hostname}:${currentPort} and https://${hostname}:${currentPort} share one port (only browser navigation upgrades to HTTPS; /api/ stays plain HTTP by design)`);
       console.log(`  - TLS:          Enabled (mkcert)`);
-      console.log(`  - Admin Pass:   ${auth.adminPassword}`);
+      // The admin password is never printed (audit H-10): startup logs
+      // end up in scrollback, screenshots, and bug reports. The auth
+      // file path tells the operator where the credential lives.
+      console.log(`  - Admin Pass:   [not printed — stored in ${auth.authFile}]`);
       console.log(`  - Config Path:  ${auth.authFile}`);
 
       // Optional extra redirect port for HTTP_PORT (default 3580)
@@ -227,7 +272,23 @@ async function startServer() {
       }
     });
   } else {
-    // Plain HTTP mode if mkcert is not available
+    // No TLS available (mkcert missing or generation failed). Serving
+    // plain HTTP on a network interface would expose the dashboard, the
+    // API, and every credential in transit — that is a fatal startup
+    // error, not a fallback (audit H-10). Plain HTTP survives only on a
+    // loopback bind, where traffic never leaves the machine.
+    if (!loopbackBind) {
+      console.error('');
+      console.error('  ✖ [Security] TLS unavailable and the bind address is not loopback.');
+      console.error(`  ✖ Bind host "${hostname}" would expose the Eluvix dashboard and API over plaintext HTTP`);
+      console.error('  ✖ on a network interface. Refusing to start.');
+      console.error('  ✖ Fix: install mkcert (https://github.com/FiloSottile/mkcert), or bind to loopback');
+      console.error('  ✖ with BIND_HOST=127.0.0.1 if this instance is only used locally.');
+      console.error('');
+      process.exit(1);
+    }
+
+    // Plain HTTP mode on loopback only (mkcert not available)
     let currentHttpPort = httpsPort;
     const server = createHttpServer((req, res) => {
       const parsedUrl = parse(req.url, true);
@@ -249,8 +310,8 @@ async function startServer() {
       process.env.NEXTAUTH_URL = `http://${hostname}:${currentHttpPort}`;
       console.log(`\n  ▲ Next.js 14.2.35`);
       console.log(`  - Local:        http://${hostname}:${currentHttpPort}`);
-      console.log(`  - TLS:          Disabled`);
-      console.log(`  - Admin Pass:   ${auth.adminPassword}`);
+      console.log(`  - TLS:          Disabled (loopback bind only — plaintext HTTP is confined to this machine; install mkcert for TLS)`);
+      console.log(`  - Admin Pass:   [not printed — stored in ${auth.authFile}]`);
       console.log(`  - Config Path:  ${auth.authFile}\n`);
     });
   }
