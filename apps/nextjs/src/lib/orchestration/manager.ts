@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
 import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
+import { DOCKER_SERVICE_CATALOG } from '@/lib/docker-catalog';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
 
@@ -133,7 +134,7 @@ export class OrchestrationManager {
     const composeStatus = {
       running: false,
       activeServices: 0,
-      totalServices: 6,
+      totalServices: DOCKER_SERVICE_CATALOG.length,
       services: [] as any[]
     };
 
@@ -141,19 +142,13 @@ export class OrchestrationManager {
       try {
         const psOut = await executeSafeCommand('docker', ['ps', '--format', '{{.Names}}'], { timeoutMs: 4000 });
         const runningNames = psOut.stdout.split('\n').map(s => s.trim()).filter(Boolean);
-        const targetContainers = [
-          'eluvix-switchyard',
-          'eluvix-vllm-sr',
-          'eluvix-ollama',
-          'eluvix-vllm',
-          'eluvix-agent-router',
-          'eluvix-agentgateway'
-        ];
 
-        composeStatus.services = targetContainers.map(name => {
-          const isRunning = runningNames.includes(name);
+        composeStatus.services = DOCKER_SERVICE_CATALOG.map(entry => {
+          const isRunning = runningNames.includes(entry.container);
           return {
-            name,
+            name: entry.container,
+            service: entry.name,
+            category: entry.category,
             running: isRunning,
             status: isRunning ? 'running' : 'stopped'
           };

@@ -1,4 +1,12 @@
-export type HarnessKind = 'hermes' | 'trueforge' | 'opencode' | 'acp';
+export type HarnessKind =
+  | 'hermes'
+  | 'trueforge'
+  | 'opencode'
+  | 'acp'
+  | 'openhands'
+  | 'mastra'
+  | 'letta'
+  | 'a2a';
 
 export type HarnessApprovalPolicy = 'auto-deny' | 'auto-approve-readonly' | 'read-only' | 'surface';
 
@@ -18,5 +26,9 @@ export interface HarnessConfig {
    * Defaults to true when the harness points back at local Eluvix or local Ollama/vLLM.
    */
   providerIsLocal?: boolean;
+  /**
+   * Optional linked SandboxNode endpoint or runtime type for isolated code execution.
+   */
+  sandboxEndpoint?: string;
+  sandboxType?: 'docker-local' | 'daytona' | 'e2b';
 }
-

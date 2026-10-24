@@ -46,6 +46,15 @@ export interface ModelGatewayConfig {
 
 export type EgressPolicy = 'local-only' | 'allow-egress';
 
+export interface CacheConfig {
+  enabled?: boolean;
+  mode?: 'exact' | 'semantic';
+  similarityThreshold?: number;
+  scopeIsolation?: 'user' | 'session' | 'global';
+  ttlSeconds?: number;
+  bypassOnTools?: boolean;
+}
+
 export interface RouterConfig {
   upstreams: UpstreamConfig[];
   defaultModel?: string;
@@ -62,6 +71,11 @@ export interface RouterConfig {
   promptGuard?: PromptGuardConfig & { action?: 'block' | 'strip' | 'divert' | 'warn' };
   privacyGuard?: PrivacyGuardConfig;
   memory?: MemoryConfig;
+  knowledge?: KnowledgeBaseConfig;
+  cache?: CacheConfig;
+  sandbox?: SandboxConfig;
+  consensusGroups?: ConsensusGroupConfig[];
+  fallbackChains?: FallbackChainConfig[];
 }
 
 export * from './paths.js';
@@ -71,6 +85,9 @@ export * from './guard.js';
 export * from './auth.js';
 export * from './context/index.js';
 export * from './harness/index.js';
+export * from './sandbox/index.js';
+export * from './circuit-breaker.js';
+export * from './consensus.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -89,15 +106,22 @@ import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 import {
   type ContextProvider,
+  type KnowledgeBaseConfig,
   type MemoryConfig,
   type RequestScope,
   createContextProvider,
+  formatKnowledgeSystemBlock,
   formatMemorySystemBlock,
+  injectKnowledgeIntoMessages,
   injectMemoryIntoMessages,
+  recallKnowledgeBase,
   stripMemoryFromMessages,
   teeSseStreamForMemory
 } from './context/index.js';
 import { type HarnessConfig, forwardHarnessRequest } from './harness/index.js';
+import { type SandboxConfig } from './sandbox/index.js';
+import { type FallbackChainConfig, globalCircuitBreaker } from './circuit-breaker.js';
+import { type ConsensusGroupConfig, executeConsensusGroup } from './consensus.js';
 
 /** One recorded stage of upstream selection, in execution order. */
 export interface RouteTraceStep {
@@ -107,8 +131,12 @@ export interface RouteTraceStep {
     | 'egress-policy'
     | 'memory'
     | 'memory-egress'
+    | 'knowledge-rag'
     | 'vision-filter'
     | 'tools-filter'
+    | 'circuit-breaker'
+    | 'fallback-chain'
+    | 'consensus'
     | 'ranking';
   detail: string;
   /** Upstream ids surviving this stage, when the stage filters. */
@@ -911,6 +939,40 @@ export class Eluvix {
       }
     }
 
+    // 0b3. Knowledge Base RAG Recall (Static Project / Docs RAG)
+    let knowledgeStatus = 'disabled';
+    let knowledgeTokens = 0;
+    if (
+      this.config.knowledge?.enabled &&
+      lastUserQuery.trim().length > 0 &&
+      effectiveRequest.messages
+    ) {
+      try {
+        const kbResult = await recallKnowledgeBase(
+          lastUserQuery,
+          this.config.knowledge,
+          scope,
+          options?.signal
+        );
+        if (kbResult.blocks.length > 0) {
+          const kbBlock = formatKnowledgeSystemBlock(kbResult.blocks, this.config.knowledge);
+          if (kbBlock) {
+            effectiveRequest = {
+              ...effectiveRequest,
+              messages: injectKnowledgeIntoMessages(effectiveRequest.messages, kbBlock)
+            };
+            knowledgeTokens = kbResult.tokenEstimate;
+            knowledgeStatus = `${kbResult.provider}:hit(${kbResult.blocks.length})`;
+          }
+        } else {
+          knowledgeStatus = `${kbResult.provider}:miss`;
+        }
+      } catch (err) {
+        console.warn('[KnowledgeBase] RAG recall error (failing open):', err);
+        knowledgeStatus = 'error';
+      }
+    }
+
     // 0c. Rate Limiting Check
     const rateLimit = this.config.modelGateway?.rateLimits?.maxRpm;
     if (rateLimit && rateLimit > 0) {
@@ -938,19 +1000,52 @@ export class Eluvix {
       this.requestCounts.set(windowKey, { count: current.count + 1, resetTime: current.resetTime });
     }
 
-    // 0d. Semantic / Response Cache Check (scoped by userId + memoryDigest when memory or user scope is active)
-    const cacheConfig = this.config.modelGateway?.caching;
+    // 0d. Semantic / Response Cache Check (supports both top-level config.cache and modelGateway.caching)
+    const activeCacheConfig = this.config.cache?.enabled !== undefined
+      ? this.config.cache
+      : this.config.modelGateway?.caching;
+    const hasActiveTools = Array.isArray(effectiveRequest.tools) && effectiveRequest.tools.length > 0;
+    const bypassCache =
+      (this.config.cache?.bypassOnTools !== false && (hasActiveTools || scope.origin === 'harness'));
     let cacheKey = '';
-    if (cacheConfig?.enabled && effectiveRequest.messages) {
-      const hasUserOrMemoryScope =
-        Boolean(this.config.memory?.enabled) ||
-        Boolean(options?.scope?.userId) ||
-        Boolean(request.user);
-      cacheKey = hasUserOrMemoryScope
-        ? `${scope.userId}:${memoryDigest || 'nomem'}:${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`
-        : `${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
-      const cached = this.responseCache.get(cacheKey);
-      const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
+    if (activeCacheConfig?.enabled && !bypassCache && effectiveRequest.messages) {
+      const isolation = this.config.cache?.scopeIsolation || 'user';
+      const scopePrefix =
+        isolation === 'session'
+          ? `${scope.userId}:${scope.sessionId || 'default'}`
+          : isolation === 'global' && !memoryTainted
+          ? 'global'
+          : `${scope.userId}:${memoryDigest || 'nomem'}`;
+      cacheKey = `${scopePrefix}:${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
+      const ttlMs = (activeCacheConfig.ttlSeconds ?? 3600) * 1000;
+      let cached = this.responseCache.get(cacheKey);
+
+      // Optional semantic similarity match across same scopePrefix when mode === 'semantic'
+      if (
+        !cached &&
+        this.config.cache?.mode === 'semantic' &&
+        lastUserQuery.trim().length > 0
+      ) {
+        const threshold = this.config.cache.similarityThreshold ?? 0.9;
+        const queryTokens = new Set(lastUserQuery.toLowerCase().split(/\W+/).filter(Boolean));
+        if (queryTokens.size > 0) {
+          for (const [k, entry] of this.responseCache.entries()) {
+            if (!k.startsWith(`${scopePrefix}:${effectiveRequest.model || 'default'}:`)) continue;
+            if (Date.now() - entry.timestamp >= ttlMs) continue;
+            const entryWords = new Set(k.toLowerCase().split(/\W+/).filter(Boolean));
+            let inter = 0;
+            queryTokens.forEach((w) => {
+              if (entryWords.has(w)) inter++;
+            });
+            const jacc = inter / Math.max(1, queryTokens.size);
+            if (jacc >= threshold) {
+              cached = entry;
+              break;
+            }
+          }
+        }
+      }
+
       if (cached && (Date.now() - cached.timestamp < ttlMs)) {
         const hitHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
@@ -959,6 +1054,9 @@ export class Eluvix {
         if (this.config.memory?.enabled) {
           hitHeaders['x-eluvix-memory'] = memoryStatus;
           hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
+        }
+        if (this.config.knowledge?.enabled) {
+          hitHeaders['x-eluvix-knowledge'] = knowledgeStatus;
         }
         return new Response(JSON.stringify(cached.response), {
           status: 200,
@@ -987,12 +1085,61 @@ export class Eluvix {
       scope,
       hops,
       memoryTainted,
-      memoryTokens
+      memoryTokens: memoryTokens + knowledgeTokens
     });
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
     const switchyardConfig = this.config.switchyard || {};
+
+    // Apply FallbackChain ordering and Circuit Breaker filtering when configured
+    const activeChain = this.config.fallbackChains?.[0];
+    if (activeChain && Array.isArray(activeChain.orderedUpstreamIds) && activeChain.orderedUpstreamIds.length > 0) {
+      const orderMap = new Map<string, number>();
+      activeChain.orderedUpstreamIds.forEach((id, idx) => orderMap.set(id, idx));
+      targetUpstreams.sort((a, b) => {
+        const idxA = orderMap.has(a.id) ? orderMap.get(a.id)! : 999;
+        const idxB = orderMap.has(b.id) ? orderMap.get(b.id)! : 999;
+        return idxA - idxB;
+      });
+      const threshold = activeChain.failureThreshold ?? 3;
+      const cooldown = activeChain.cooldownSeconds ?? 60;
+      const healthy = targetUpstreams.filter((u) =>
+        globalCircuitBreaker.isAllowed(u.id, threshold, cooldown)
+      );
+      if (healthy.length > 0) {
+        targetUpstreams = healthy;
+      }
+    }
+
+    // Consensus Group Execution (Mixture-of-Agents / Parallel Judge / Fastest-First)
+    const activeConsensus = this.config.consensusGroups?.[0];
+    if (
+      activeConsensus &&
+      Array.isArray(activeConsensus.candidateUpstreamIds) &&
+      activeConsensus.candidateUpstreamIds.length >= 2
+    ) {
+      const idSet = new Set(activeConsensus.candidateUpstreamIds);
+      const consensusCandidates = targetUpstreams.filter((u) => idSet.has(u.id));
+      if (consensusCandidates.length >= 2) {
+        const consensusTimeout = activeConsensus.timeoutMs ?? switchyardConfig.timeoutMs ?? 45000;
+        const consensusRes = await executeConsensusGroup(
+          activeConsensus,
+          consensusCandidates,
+          effectiveRequest,
+          (u, req, sig) =>
+            this.forwardRequest(u, req, consensusTimeout, sig, complexity.score, scope, hops),
+          options?.signal
+        );
+        if (this.config.memory?.enabled) {
+          consensusRes.headers.set('x-eluvix-memory', memoryStatus);
+        }
+        if (this.config.knowledge?.enabled) {
+          consensusRes.headers.set('x-eluvix-knowledge', knowledgeStatus);
+        }
+        return consensusRes;
+      }
+    }
 
     // Latency Spillover Filter
     try {
@@ -1032,10 +1179,6 @@ export class Eluvix {
 
     const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
     const retryCount = Math.max(1, switchyardConfig.retryCount ?? 1);
-    // Failover budget: without a bound, N dead upstreams cost N x
-    // upstreamTimeout before the request fails (8 shipped defaults x 60s
-    // = 8 minutes). The first attempt always runs; once the budget is
-    // exhausted no NEW attempt is started.
     const failoverBudgetMs = switchyardConfig.failoverBudgetMs ?? 120000;
     const routeStartTime = Date.now();
     let attemptsMade = 0;
@@ -1101,6 +1244,7 @@ export class Eluvix {
           const duration_ms = Date.now() - startTime;
           
           if (response.ok) {
+            globalCircuitBreaker.recordSuccess(upstream.id);
             let completionTokens = parseInt(response.headers.get('x-eluvix-completion-tokens') || '0', 10);
             let promptTokens = parseInt(response.headers.get('x-eluvix-prompt-tokens') || '0', 10) || complexity.tokenEstimate;
             const servedModel = response.headers.get('x-eluvix-model') || effectiveRequest.model;
@@ -1121,7 +1265,7 @@ export class Eluvix {
                 if (typeof parsed.choices?.[0]?.message?.content === 'string') {
                   assistantOutputText = parsed.choices[0].message.content;
                 }
-                if (cacheConfig?.enabled && cacheKey) {
+                if (activeCacheConfig?.enabled && cacheKey) {
                   this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
                 }
                 responseBody = new Blob([rawData]).stream();
@@ -1192,15 +1336,24 @@ export class Eluvix {
               );
               newResponse.headers.set('x-eluvix-memory-tokens', String(strippedMemoryForCloud ? 0 : memoryTokens));
             }
+            if (this.config.knowledge?.enabled) {
+              newResponse.headers.set('x-eluvix-knowledge', knowledgeStatus);
+              newResponse.headers.set('x-eluvix-knowledge-tokens', String(knowledgeTokens));
+            }
             
             return newResponse;
           } else {
+            globalCircuitBreaker.recordFailure(upstream.id, activeChain?.failureThreshold ?? 3);
             console.warn(`Upstream ${upstream.name} failed with status ${response.status}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
             try {
               await response.text();
             } catch {}
+            if (response.status === 429 && activeChain?.retryOn429 !== false) {
+              break; // Immediately advance to next upstream in fallback chain on 429
+            }
           }
         } catch (err) {
+          globalCircuitBreaker.recordFailure(upstream.id, activeChain?.failureThreshold ?? 3);
           console.error(`Error connecting to upstream ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}:`, err);
         }
       }

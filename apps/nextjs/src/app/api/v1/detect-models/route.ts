@@ -65,8 +65,9 @@ export async function POST(req: Request) {
       });
     }
 
-    // Validate endpoint if provided directly (allow local/LAN LLM servers, block cloud metadata)
-    if (body.endpoint && !String(body.endpoint).startsWith('cli://')) {
+    // Validate endpoint if provided directly (allow local/LAN LLM servers, cli://, and acp://, block cloud metadata)
+    const rawEndpoint = String(body.endpoint || '');
+    if (body.endpoint && !rawEndpoint.startsWith('cli://') && !rawEndpoint.startsWith('acp://')) {
       try {
         const u = new URL(body.endpoint);
         if (u.protocol !== 'http:' && u.protocol !== 'https:') {
@@ -100,6 +101,7 @@ export async function POST(req: Request) {
           ...saved,
           endpoint: body.endpoint || saved.endpoint,
           type: body.type || saved.type,
+          harness: body.harness || saved.harness,
           // Never send a stored API key to a newly changed endpoint host
           apiKey: endpointChanged ? body.apiKey : (body.apiKey || saved.apiKey)
         };
@@ -110,11 +112,12 @@ export async function POST(req: Request) {
       targetUpstream = {
         id: body.id || 'custom-detect',
         name: body.name || 'Custom Node',
-        type: body.type || 'openai-compatible',
+        type: body.type || (rawEndpoint.startsWith('acp://') ? 'harness' : 'openai-compatible'),
         endpoint: body.endpoint,
         apiKey: body.apiKey,
         priority: 1,
-        models: []
+        models: [],
+        ...(body.harness ? { harness: body.harness } : {})
       };
     }
 

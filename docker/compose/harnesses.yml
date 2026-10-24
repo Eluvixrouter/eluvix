@@ -1,0 +1,40 @@
+services:
+  trueforge:
+    build:
+      context: ../trueforge
+      dockerfile: Dockerfile
+    container_name: eluvix-trueforge
+    profiles: ["harnesses", "all"]
+    ports:
+      - "127.0.0.1:${TRUEFORGE_PORT:-8790}:8790"
+    volumes:
+      - trueforge_data:/root/.trueforge
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8790/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  sandbox:
+    build:
+      context: ../sandbox
+      dockerfile: Dockerfile
+    container_name: eluvix-sandbox
+    profiles: ["harnesses", "sandbox", "all"]
+    ports:
+      - "127.0.0.1:${SANDBOX_PORT:-3986}:3986"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3986/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  trueforge_data:
+    driver: local

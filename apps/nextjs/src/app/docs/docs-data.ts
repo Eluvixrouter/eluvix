@@ -142,17 +142,22 @@ pnpm dev`,
         },
         {
           title: 'Supported Node Types',
-          body: 'The editor includes 8 specialized node categories:',
+          body: 'The editor includes 13 specialized node categories across pre-routing, routing, execution, and observability:',
           table: {
             headers: ['Node Type', 'Identifier', 'Key Parameters'],
             rows: [
               ['Router', 'switchyardNode', 'Strategy (cost-complexity, lowest-latency, round-robin), spillover ms, max cost cap'],
               ['Task Router', 'taskRouterNode', 'Dynamic intent handles (#intent-code, #intent-reasoning, #intent-fast)'],
+              ['Knowledge Base (RAG)', 'knowledgeBaseNode', 'Backend (lightrag, openviking-resources, qdrant, sqlite-fts), collectionUri, topK, retrievalMode'],
+              ['Semantic Cache', 'semanticCacheNode', 'Backend (sqlite-fts, qdrant), similarityThreshold, ttlSeconds, hit/miss handles'],
               ['Upstream', 'modelGatewayNode / local / cloud', 'Endpoint URL, API key, model family, context window, priority'],
               ['Privacy Guard', 'privacyGuardNode', 'Redaction style (token, asterisk, hash), entity filters, whitelist'],
               ['Semantic Guard', 'semanticGuardNode', 'Classifier model, sensitivity slider (0.50-0.99), action (block, strip, divert)'],
-              ['Agent Harness', 'harnessNode', 'Runtime (trueforge, opencode, acp, hermes), tool approval policy, max hops'],
-              ['Memory Engine', 'memoryNode', 'Provider (openviking, mem0, sqlite), max tokens, cloudMode (filter, strip)'],
+              ['Agent Harness', 'harnessNode', 'Runtime (trueforge, openhands, mastra, letta, a2a, opencode, acp, hermes), approval policy'],
+              ['Execution Sandbox', 'sandboxNode', 'Runtime (docker-exec, opensandbox, e2b), memoryLimitMb, networkPolicy, autoCleanup'],
+              ['Consensus / Judge', 'consensusNode', 'Mode (judge, majority-vote, fastest-first), candidateCount, judgeModel, rubric'],
+              ['Fallback Chain', 'fallbackChainNode', 'Circuit breaker failureThreshold, cooldownSeconds, hedgeDelayMs, primary/secondary/emergency handles'],
+              ['Memory Engine', 'memoryNode', 'Provider (openviking, graphiti, lightrag, cognee, supermemory, mem0, builtin), cloudMode'],
               ['Tools & MCP', 'mcpToolNode / agentGatewayNode', 'Transport (stdio, SSE), access policy, secret discovery mappings'],
             ],
           },
@@ -178,8 +183,8 @@ pnpm dev`,
               ['Single Local Engine', 'single-engine', 'Direct pipeline to local Ollama or vLLM instance with Privacy Guard'],
               ['Local/Cloud Gateway', 'gateway-cascade', 'Adaptive spillover from local GPU to cloud frontier when latency spikes'],
               ['Enterprise Multimodal', 'enterprise-multimodal', 'DeBERTa injection filter, PII hashing, vision routing, and Langfuse tracing'],
-              ['Harness Orchestrator', 'harness-agent-orchestrator', 'TrueForge/opencode agent loop with loop-guard recursion limiter and tool approval'],
-              ['Memory-Augmented Assistant', 'memory-augmented-assistant', 'OpenViking L0/L1/L2 context injection with privacy egress filter'],
+              ['OpenViking + TrueForge Mesh', 'openviking-trueforge-agentic', 'OpenViking L0/L1/L2 memory recall feeding Switchyard and TrueForge agent loop'],
+              ['Resilient Consensus + RAG Mesh', 'resilient-consensus-rag-mesh', 'Semantic Cache, LightRAG Knowledge Base, Graphiti KG, Fallback Chain, Consensus Judge, and Sandbox'],
             ],
           },
         },
@@ -225,17 +230,34 @@ pnpm dev`,
     category: 'Agent Ecosystem',
     icon: '🤖',
     badge: 'NEW',
-    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, opencode, ACP, and Hermes, protected by the Loop Guard firewall.',
+    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, OpenHands, Mastra, Letta, A2A, opencode, ACP, and Hermes, protected by the Loop Guard firewall.',
     content: {
-      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
+      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates 8 Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
       subsections: [
+        {
+          title: 'Supported Agent Harnesses',
+          body: 'Eluvix provides native protocol adapters for 8 self-hosted and federated agent runtimes:',
+          table: {
+            headers: ['Harness Kind', 'Default Port', 'Protocol & Primary Use Case'],
+            rows: [
+              ['trueforge', ':8790', 'Turn-based SSE runtime with human-in-the-loop tool approval policies'],
+              ['openhands', ':3000', 'Autonomous SWE / CodeAct engineering agent with isolated workspace conversations'],
+              ['mastra', ':4111', 'TypeScript-native workflow & agent server (/api/agents/{id}/generate)'],
+              ['letta', ':8283', 'MemGPT stateful agent server with persistent self-editing core & archival memory'],
+              ['a2a', ':8900', 'Linux Foundation / Google Agent2Agent JSON-RPC 2.0 federated peer delegation'],
+              ['opencode', ':4096', 'Terminal-first autonomous coding server with session message streaming'],
+              ['acp', 'stdio', 'Agent Client Protocol JSON-RPC 2.0 over stdio (e.g. Goose, Zed agents)'],
+              ['hermes', ':8642', 'Lightweight OpenAI-compatible multi-step tool loop'],
+            ],
+          },
+        },
         {
           title: 'TrueForge Integration',
           body: 'TrueForge is an open-source tool-calling agent runtime. Eluvix communicates with TrueForge via REST sessions (POST /api/v1/sessions) and streams multi-step turn executions (POST /api/v1/sessions/{id}/turns) over Server-Sent Events (SSE).',
           code: {
             language: 'bash',
-            content: `# Launch TrueForge container alongside Eluvix
-docker compose --profile harness up -d
+            content: `# Launch TrueForge or OpenHands container selectively via modular compose
+docker compose up -d trueforge openhands
 
 # TrueForge runs on port 8790:
 # POST http://127.0.0.1:8790/api/v1/sessions
@@ -282,10 +304,26 @@ docker compose --profile harness up -d
     category: 'Agent Ecosystem',
     icon: '🧠',
     badge: 'NEW',
-    summary: 'Long-term episodic context recall and session commits with OpenViking (L0/L1/L2), Mem0, and Builtin SQLite, protected by the Memory Egress Guard.',
+    summary: 'Long-term episodic context recall, temporal knowledge graphs, and hybrid RAG with OpenViking, Graphiti, LightRAG, Cognee, Supermemory, Mem0, and SQLite.',
     content: {
-      overview: 'Eluvix features an automated two-phase memory lifecycle: pre-routing recall (injecting relevant user context before prompt hits the model) and post-routing session commits (persisting summaries of user decisions).',
+      overview: 'Eluvix features an automated two-phase memory lifecycle: pre-routing recall (injecting relevant user context and static corpus RAG before the prompt hits the model) and post-routing session commits (persisting facts and temporal episodes).',
       subsections: [
+        {
+          title: 'Supported Memory & Graph Providers',
+          body: 'Switch seamlessly between 7 pluggable memory backends in the Memory Node or RouterConfig:',
+          table: {
+            headers: ['Provider', 'Default Endpoint', 'Architecture & Strengths'],
+            rows: [
+              ['openviking', 'http://localhost:1933', 'Hierarchical L0/L1/L2 context database with viking:// semantic URIs'],
+              ['graphiti', 'http://localhost:8003', 'Bi-temporal knowledge graph tracking time-stamped episodes and evolving facts'],
+              ['lightrag', 'http://localhost:9621', 'Dual-level entity/relation graph + vector RAG for technical documentation'],
+              ['cognee', 'http://localhost:8004', 'Extract-Cognify-Load (ECL) graph pipeline turning unstructured docs into graphs'],
+              ['supermemory', 'https://api.supermemory.ai', 'Low-latency hosted or self-hosted universal memory API'],
+              ['mem0', 'http://localhost:8888', 'Fact-extraction and user personalization vector memory'],
+              ['builtin', 'Embedded SQLite FTS5', 'Zero-dependency local BM25 full-text memory store (~/.config/eluvix)'],
+            ],
+          },
+        },
         {
           title: 'OpenViking Hierarchical Memory (Volcengine / ByteDance)',
           body: 'OpenViking represents context hierarchically across three tiers: L0 (ultra-compact semantic pointers, 10-30 tokens), L1 (structural outlines and categorized summaries, 50-150 tokens), and L2 (raw textual content, code references, and quotes). Memories are addressed via semantic URIs: viking://user/{userId}/memories.',

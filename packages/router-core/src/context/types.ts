@@ -21,7 +21,14 @@ export interface RecallResult {
   latencyMs: number;
 }
 
-export type MemoryProviderType = 'builtin' | 'openviking' | 'mem0';
+export type MemoryProviderType =
+  | 'builtin'
+  | 'openviking'
+  | 'mem0'
+  | 'graphiti'
+  | 'lightrag'
+  | 'cognee'
+  | 'supermemory';
 
 export interface MemoryConfig {
   enabled?: boolean;
@@ -51,6 +58,16 @@ export interface MemoryConfig {
     readingLevel?: 'L0' | 'L1' | 'L2';
     scopePrefixes?: string[];
   };
+}
+
+export interface KnowledgeBaseConfig {
+  enabled?: boolean;
+  backend?: 'openviking-resources' | 'lightrag' | 'local-fts';
+  endpoint?: string;
+  collectionUri?: string;
+  topK?: number;
+  maxTokens?: number;
+  citationMode?: 'inline-uris' | 'silent';
 }
 
 export interface ContextProvider {

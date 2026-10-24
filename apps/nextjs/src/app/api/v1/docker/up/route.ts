@@ -3,6 +3,14 @@ import { exec } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
+import { isValidContainerName } from '@/lib/api-helpers';
+import {
+  DOCKER_SERVICE_CATALOG,
+  type DockerServiceCategory,
+  getRequiredServicesForConfig,
+  getServicesByCategory
+} from '@/lib/docker-catalog';
+import { getConfig } from '@/lib/router';
 
 const execAsync = util.promisify(exec);
 
@@ -20,17 +28,18 @@ function getProjectRoot(): string {
   return current;
 }
 
-import { isValidContainerName } from '@/lib/api-helpers';
-
 export async function POST(req: Request) {
   try {
     const rootDir = getProjectRoot();
-    console.log(`[Docker Up] Executing hardware detection & docker compose up in ${rootDir}`);
+    console.log(`[Docker Up] Executing hardware detection & modular docker compose up in ${rootDir}`);
 
-    // Parse optional specific services requested in body
     let requestedServices: string[] = [];
+    let requestedProfile: string | undefined;
     try {
       const body = await req.json();
+      if (body && typeof body.profile === 'string') {
+        requestedProfile = body.profile.trim().toLowerCase();
+      }
       if (body && Array.isArray(body.services)) {
         requestedServices = body.services
           .filter((s: unknown): s is string => typeof s === 'string' && isValidContainerName(s));
@@ -40,6 +49,27 @@ export async function POST(req: Request) {
     } catch {
       // Body empty or not JSON
     }
+
+    if (requestedServices.length === 0 && requestedProfile) {
+      if (requestedProfile === 'topology') {
+        requestedServices = getRequiredServicesForConfig(getConfig());
+      } else if (
+        requestedProfile === 'core' ||
+        requestedProfile === 'inference' ||
+        requestedProfile === 'memory' ||
+        requestedProfile === 'harnesses'
+      ) {
+        requestedServices = getServicesByCategory(requestedProfile as DockerServiceCategory);
+      } else if (requestedProfile === 'all') {
+        requestedServices = DOCKER_SERVICE_CATALOG.map((s) => s.name);
+      }
+    }
+
+    // Default to all catalog services when no specific service or profile is requested
+    const targetList =
+      requestedServices.length > 0
+        ? requestedServices
+        : DOCKER_SERVICE_CATALOG.map((s) => s.name);
 
     // Pre-flight: detect GPU acceleration (NVIDIA CUDA / AMD ROCm / CPU)
     const detectScript = path.join(rootDir, 'scripts', 'docker-detect-and-spinup.sh');
@@ -61,8 +91,8 @@ export async function POST(req: Request) {
       }
     }
 
-    const serviceArgs = requestedServices.length > 0 ? requestedServices.join(' ') : '';
-    const composeCmd = serviceArgs ? `docker compose up -d --build ${serviceArgs}` : 'docker compose up -d --build';
+    const serviceArgs = targetList.join(' ');
+    const composeCmd = `docker compose --profile all up -d --build ${serviceArgs}`;
 
     const { stdout, stderr } = await execAsync(composeCmd, {
       cwd: rootDir,
@@ -71,10 +101,9 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
-      message: requestedServices.length > 0
-        ? `Containers (${requestedServices.join(', ')}) spin-up initiated.`
-        : 'All containers spin-up initiated successfully.',
-      services: requestedServices.length > 0 ? requestedServices : 'all',
+      message: `Containers (${targetList.join(', ')}) spin-up initiated.`,
+      services: targetList,
+      profile: requestedProfile || (requestedServices.length > 0 ? 'custom' : 'all'),
       hardware: hardwareInfo,
       stdout: stdout.trim(),
       stderr: stderr.trim()

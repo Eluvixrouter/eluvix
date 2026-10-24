@@ -26,6 +26,11 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const claudeCodeNodes = nodes.filter(n => n.type === 'claudeCodeNode');
   const harnessNodes = nodes.filter(n => n.type === 'harnessNode');
   const memoryNodes = nodes.filter(n => n.type === 'memoryNode');
+  const sandboxNodes = nodes.filter(n => n.type === 'sandboxNode');
+  const knowledgeBaseNodes = nodes.filter(n => n.type === 'knowledgeBaseNode');
+  const semanticCacheNodes = nodes.filter(n => n.type === 'semanticCacheNode');
+  const consensusNodes = nodes.filter(n => n.type === 'consensusNode');
+  const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -39,7 +44,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     claudeCodeNodes,
     billamaNodes,
     openaiNodes,
-    claudeNodes
+    claudeNodes,
+    harnessNodes
   );
 
   // 3. Extract Agent Router Configurations
@@ -84,7 +90,12 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     openaiNodes,
     claudeNodes,
     harnessNodes,
-    memoryNodes
+    memoryNodes,
+    sandboxNodes,
+    knowledgeBaseNodes,
+    semanticCacheNodes,
+    consensusNodes,
+    fallbackChainNodes
   );
 
   return {
@@ -116,7 +127,12 @@ function generateEluvixConfig(
   openaiNodes: Node[] = [],
   claudeNodes: Node[] = [],
   harnessNodes: Node[] = [],
-  memoryNodes: Node[] = []
+  memoryNodes: Node[] = [],
+  sandboxNodes: Node[] = [],
+  knowledgeBaseNodes: Node[] = [],
+  semanticCacheNodes: Node[] = [],
+  consensusNodes: Node[] = [],
+  fallbackChainNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -441,8 +457,12 @@ function generateEluvixConfig(
     });
   });
 
+  // Discover connected sandbox per harness node (or global first sandbox)
+  const primarySandbox = sandboxNodes[0];
+
   harnessNodes.forEach(node => {
     const kind = String(node.data?.kind || 'trueforge');
+    const agentId = String(node.data?.agentId || 'default');
     const defaultEndpoint =
       kind === 'trueforge'
         ? 'http://localhost:8790'
@@ -450,12 +470,44 @@ function generateEluvixConfig(
         ? 'http://localhost:4096'
         : kind === 'acp'
         ? 'acp://goose'
+        : kind === 'openhands'
+        ? 'http://localhost:3000'
+        : kind === 'mastra'
+        ? 'http://localhost:4111'
+        : kind === 'letta'
+        ? 'http://localhost:8283'
+        : kind === 'a2a'
+        ? 'http://localhost:8900'
         : 'http://localhost:8642/v1';
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-3',
       tierName: `Tier 3: Agent Harness (${kind})`,
       costPer1kTokens: 0.0
     };
+    const approvalPolicy = String(
+      node.data?.approvals || node.data?.approvalPolicy || 'auto-approve-readonly'
+    );
+    const harnessModels =
+      kind === 'trueforge'
+        ? Array.from(
+            new Set([
+              'harness/trueforge',
+              `trueforge/${agentId}`,
+              'trueforge/default',
+              'trueforge/coder',
+              'trueforge/researcher',
+              '*'
+            ])
+          )
+        : [`harness/${kind}`, `${kind}/${agentId}`, '*'];
+
+    const connectedSandboxEdge = edges.find(
+      e => (e.source === node.id && sandboxNodes.some(s => s.id === e.target)) ||
+           (e.target === node.id && sandboxNodes.some(s => s.id === e.source))
+    );
+    const linkedSandbox = connectedSandboxEdge
+      ? sandboxNodes.find(s => s.id === connectedSandboxEdge.source || s.id === connectedSandboxEdge.target)
+      : primarySandbox;
 
     upstreams.push({
       id: String(node.id),
@@ -463,17 +515,24 @@ function generateEluvixConfig(
       type: 'harness',
       endpoint: String(node.data?.endpoint || defaultEndpoint),
       priority: Number(node.data?.priority ?? 30),
-      models: [`harness/${kind}`, '*'],
+      models: harnessModels,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       harness: {
         kind,
-        agentId: String(node.data?.agentId || 'default'),
-        approvals: String(node.data?.approvals || 'auto-approve-readonly'),
+        agentId,
+        approvals: approvalPolicy,
+        approvalPolicy,
         sessionMode: String(node.data?.sessionMode || 'per-eluvix-session'),
-        providerIsLocal: node.data?.providerIsLocal !== false
+        providerIsLocal: node.data?.providerIsLocal !== false,
+        ...(linkedSandbox
+          ? {
+              sandboxEndpoint: String(linkedSandbox.data?.endpoint || 'http://localhost:8910'),
+              sandboxType: String(linkedSandbox.data?.sandboxType || 'docker-exec')
+            }
+          : {})
       }
     });
   });
@@ -533,6 +592,86 @@ function generateEluvixConfig(
       }
     : undefined;
 
+  const kbNode = knowledgeBaseNodes[0];
+  const kbData = (kbNode?.data || {}) as Record<string, any>;
+  const knowledgeConfig = kbNode
+    ? {
+        enabled: true,
+        backend: String(kbData.backend || 'lightrag'),
+        endpoint: kbData.endpoint ? String(kbData.endpoint) : undefined,
+        collectionUri: String(kbData.collectionUri || 'viking://resources/docs'),
+        retrievalMode: String(kbData.retrievalMode || 'hybrid'),
+        topK: Number(kbData.topK ?? 5),
+        maxTokens: Number(kbData.maxTokens ?? 1200),
+        minScore: Number(kbData.minScore ?? 0.65)
+      }
+    : undefined;
+
+  const scNode = semanticCacheNodes[0];
+  const scData = (scNode?.data || {}) as Record<string, any>;
+  const cacheConfig = scNode
+    ? {
+        enabled: true,
+        backend: String(scData.backend || 'sqlite-fts'),
+        endpoint: scData.endpoint ? String(scData.endpoint) : undefined,
+        similarityThreshold: Number(scData.similarityThreshold ?? 0.94),
+        ttlSeconds: Number(scData.ttlSeconds ?? 3600),
+        scopeByUser: scData.scopeByUser !== false,
+        bypassOnTools: scData.bypassOnTools !== false
+      }
+    : undefined;
+
+  const sbNode = sandboxNodes[0];
+  const sbData = (sbNode?.data || {}) as Record<string, any>;
+  const sandboxConfig = sbNode
+    ? {
+        enabled: true,
+        sandboxType: String(sbData.sandboxType || 'docker-exec'),
+        endpoint: String(sbData.endpoint || 'http://localhost:8910'),
+        timeoutMs: Number(sbData.timeoutMs ?? 30000),
+        memoryLimitMb: Number(sbData.memoryLimitMb ?? 512),
+        networkPolicy: String(sbData.networkPolicy || 'none'),
+        autoCleanup: sbData.autoCleanup !== false
+      }
+    : undefined;
+
+  const consensusGroups = consensusNodes.map(node => {
+    const cData = (node.data || {}) as Record<string, any>;
+    const candidateEdges = edges.filter(
+      e => e.source === node.id && (!e.sourceHandle || e.sourceHandle.startsWith('candidate-'))
+    );
+    const judgeEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'judge');
+    return {
+      id: String(node.id),
+      mode: String(cData.mode || 'judge'),
+      candidateCount: Number(cData.candidateCount ?? 3),
+      candidateUpstreamIds: candidateEdges.map(e => e.target),
+      judgeUpstreamId: judgeEdge?.target,
+      judgeModel: String(cData.judgeModel || 'auto'),
+      timeoutMs: Number(cData.timeoutMs ?? 45000),
+      rubric: String(cData.rubric || 'accuracy-conciseness')
+    };
+  });
+
+  const fallbackChains = fallbackChainNodes.map(node => {
+    const fData = (node.data || {}) as Record<string, any>;
+    const primaryEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'primary');
+    const secondaryEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'secondary');
+    const emergencyEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'emergency');
+    const genericEdges = edges.filter(e => e.source === node.id && !e.sourceHandle);
+    return {
+      id: String(node.id),
+      primaryUpstreamId: primaryEdge?.target || genericEdges[0]?.target,
+      secondaryUpstreamId: secondaryEdge?.target || genericEdges[1]?.target,
+      emergencyUpstreamId: emergencyEdge?.target || genericEdges[2]?.target,
+      failureThreshold: Number(fData.failureThreshold ?? 3),
+      cooldownSeconds: Number(fData.cooldownSeconds ?? 30),
+      hedgeDelayMs: Number(fData.hedgeDelayMs ?? 0),
+      retryOn429: fData.retryOn429 !== false,
+      retryOn5xx: fData.retryOn5xx !== false
+    };
+  });
+
   // Egress is determined by what is actually on the canvas: a graph whose
   // upstreams are all local engines compiles to a fail-closed local-only
   // policy, so the router can never fall back to an external service that
@@ -557,6 +696,11 @@ function generateEluvixConfig(
     switchyard: switchyardConfig,
     modelGateway: modelGatewayConfig,
     ...(memoryConfig ? { memory: memoryConfig } : {}),
+    ...(knowledgeConfig ? { knowledge: knowledgeConfig } : {}),
+    ...(cacheConfig ? { cache: cacheConfig } : {}),
+    ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+    ...(consensusGroups.length > 0 ? { consensusGroups } : {}),
+    ...(fallbackChains.length > 0 ? { fallbackChains } : {}),
     promptGuard: {
       enabled: semanticGuards.length > 0,
       threshold: sgNode ? Number(sgData.threshold ?? 0.85) : 0.85,
@@ -600,7 +744,8 @@ function generateBifrostYaml(
   claudeCodeNodes: Node[] = [],
   billamaNodes: Node[] = [],
   openaiNodes: Node[] = [],
-  claudeNodes: Node[] = []
+  claudeNodes: Node[] = [],
+  harnessNodes: Node[] = []
 ): string {
   if (
     nodes.length === 0 &&
@@ -610,7 +755,8 @@ function generateBifrostYaml(
     claudeCodeNodes.length === 0 &&
     billamaNodes.length === 0 &&
     openaiNodes.length === 0 &&
-    claudeNodes.length === 0
+    claudeNodes.length === 0 &&
+    harnessNodes.length === 0
   ) return '';
   
   const switchyard = switchyardNodes[0];
@@ -765,6 +911,20 @@ function generateBifrostYaml(
     yaml += `    model: "${model}"\n`;
     yaml += `    permission_mode: ${node.data?.permissionMode || 'accept-non-destructive'}\n`;
     yaml += `    thinking_budget: ${node.data?.extendedThinking ? Number(node.data?.thinkingBudget ?? 4096) : 0}\n`;
+  });
+
+  harnessNodes.forEach(node => {
+    const kind = String(node.data?.kind || 'trueforge');
+    const endpoint = String(node.data?.endpoint || (kind === 'trueforge' ? 'http://localhost:8790' : kind === 'opencode' ? 'http://localhost:4096' : 'acp://goose'));
+    const agentId = String(node.data?.agentId || 'default');
+    const approvalPolicy = String(node.data?.approvals || node.data?.approvalPolicy || 'auto-approve-readonly');
+    yaml += `  - id: ${node.id}\n`;
+    yaml += `    type: harness\n`;
+    yaml += `    harness_kind: ${kind}\n`;
+    yaml += `    api_base: ${endpoint}\n`;
+    yaml += `    agent_id: "${agentId}"\n`;
+    yaml += `    approval_policy: ${approvalPolicy}\n`;
+    yaml += `    priority: ${node.data?.priority ?? 30}\n`;
   });
 
   nodes.forEach(node => {

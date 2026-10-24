@@ -39,6 +39,11 @@ import OpenAiNode from './nodes/OpenAiNode';
 import ClaudeNode from './nodes/ClaudeNode';
 import MemoryNode from './nodes/MemoryNode';
 import HarnessNode from './nodes/HarnessNode';
+import SandboxNode from './nodes/SandboxNode';
+import KnowledgeBaseNode from './nodes/KnowledgeBaseNode';
+import SemanticCacheNode from './nodes/SemanticCacheNode';
+import ConsensusNode from './nodes/ConsensusNode';
+import FallbackChainNode from './nodes/FallbackChainNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
@@ -64,6 +69,50 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     approvals: 'auto-approve-readonly',
     sessionMode: 'per-eluvix-session',
     priority: 30
+  },
+  sandboxNode: {
+    label: 'Execution Sandbox',
+    sandboxType: 'docker-exec',
+    endpoint: 'http://localhost:8910',
+    timeoutMs: 30000,
+    memoryLimitMb: 512,
+    networkPolicy: 'none',
+    autoCleanup: true
+  },
+  knowledgeBaseNode: {
+    label: 'Knowledge Base (RAG)',
+    backend: 'lightrag',
+    endpoint: 'http://localhost:9621',
+    collectionUri: 'viking://resources/docs',
+    retrievalMode: 'hybrid',
+    topK: 5,
+    maxTokens: 1200,
+    minScore: 0.65
+  },
+  semanticCacheNode: {
+    label: 'Semantic Cache',
+    backend: 'sqlite-fts',
+    endpoint: 'http://localhost:6333',
+    similarityThreshold: 0.94,
+    ttlSeconds: 3600,
+    scopeByUser: true,
+    bypassOnTools: true
+  },
+  consensusNode: {
+    label: 'Consensus Judge / Arena',
+    mode: 'judge',
+    candidateCount: 3,
+    judgeModel: 'auto',
+    timeoutMs: 45000,
+    rubric: 'accuracy-conciseness'
+  },
+  fallbackChainNode: {
+    label: 'Resilient Fallback Chain',
+    failureThreshold: 3,
+    cooldownSeconds: 30,
+    hedgeDelayMs: 0,
+    retryOn429: true,
+    retryOn5xx: true
   },
   lemonadeNode: {
     label: 'Lemonade Engine',
@@ -481,6 +530,11 @@ const nodeTypes = {
   claudeNode: ClaudeNode,
   memoryNode: MemoryNode,
   harnessNode: HarnessNode,
+  sandboxNode: SandboxNode,
+  knowledgeBaseNode: KnowledgeBaseNode,
+  semanticCacheNode: SemanticCacheNode,
+  consensusNode: ConsensusNode,
+  fallbackChainNode: FallbackChainNode,
 };
 
 let id = 0;
@@ -568,8 +622,18 @@ export default function RoutingEditor() {
       case 'vllmNode': setSelectedLogContainer('vllm'); break;
       case 'taskRouterNode': setSelectedLogContainer('agent-router'); break;
       case 'agentGatewayNode': setSelectedLogContainer('agentgateway'); break;
-      case 'memoryNode': setSelectedLogContainer('openviking'); break;
-      case 'harnessNode': setSelectedLogContainer('trueforge'); break;
+      case 'memoryNode': {
+        const p = String((node.data as any)?.provider || 'openviking');
+        setSelectedLogContainer(p === 'graphiti' ? 'graphiti' : p === 'lightrag' ? 'lightrag' : 'openviking');
+        break;
+      }
+      case 'harnessNode': {
+        const k = String((node.data as any)?.kind || 'trueforge');
+        setSelectedLogContainer(k === 'openhands' ? 'openhands' : k === 'letta' ? 'letta' : 'trueforge');
+        break;
+      }
+      case 'sandboxNode': setSelectedLogContainer('sandbox'); break;
+      case 'knowledgeBaseNode': setSelectedLogContainer('lightrag'); break;
       default: break;
     }
   }, []);
@@ -975,21 +1039,29 @@ export default function RoutingEditor() {
       if (!sourceNode || !targetNode) return false;
 
       // Define valid target types for each source type
+      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
+      const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
+
       const rules: Record<string, string[]> = {
-        inputNode: ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        privacyGuardNode: ['semanticGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        semanticGuardNode: ['privacyGuardNode', 'memoryNode', 'taskRouterNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        memoryNode: ['privacyGuardNode', 'semanticGuardNode', 'taskRouterNode', 'switchyardNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'observabilityNode'],
-        taskRouterNode: ['memoryNode', 'agentNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        agentNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        antigravityNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        codexNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        claudeCodeNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'antigravityNode', 'codexNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        harnessNode: ['agentGatewayNode', 'modelGatewayNode', 'switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'observabilityNode', 'billamaNode', 'openaiNode', 'claudeNode'],
-        agentGatewayNode: ['switchyardNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode'],
+        inputNode: preRouteTargets,
+        privacyGuardNode: preRouteTargets,
+        semanticGuardNode: preRouteTargets,
+        memoryNode: [...preRouteTargets, 'observabilityNode'],
+        knowledgeBaseNode: [...preRouteTargets, 'observabilityNode'],
+        semanticCacheNode: [...preRouteTargets, 'observabilityNode'],
+        taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'switchyardNode', ...allUpstreamTargets],
+        agentNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        antigravityNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        codexNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        claudeCodeNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        harnessNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        sandboxNode: ['harnessNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'agentNode', 'observabilityNode'],
+        agentGatewayNode: ['switchyardNode', 'sandboxNode', ...allUpstreamTargets],
         mcpToolNode: ['agentGatewayNode'],
         modelGatewayNode: ['switchyardNode', 'observabilityNode'],
-        switchyardNode: ['modelGatewayNode', 'lemonadeNode', 'vllmNode', 'ollamaNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'billamaNode', 'openaiNode', 'claudeNode', 'observabilityNode'],
+        switchyardNode: [...allUpstreamTargets, 'observabilityNode'],
+        consensusNode: [...allUpstreamTargets, 'observabilityNode'],
+        fallbackChainNode: [...allUpstreamTargets, 'observabilityNode'],
         lemonadeNode: ['switchyardNode', 'observabilityNode'],
         vllmNode: ['switchyardNode', 'observabilityNode'],
         ollamaNode: ['switchyardNode', 'observabilityNode'],
@@ -1332,11 +1404,45 @@ export default function RoutingEditor() {
               <div className="flex items-center gap-2">
                 <span className="text-lg">🧠</span>
                 <div>
-                  <div className="font-semibold text-xs text-fuchsia-300 group-hover:text-fuchsia-200">OpenViking Memory</div>
-                  <div className="text-[10px] text-slate-400 font-mono">:1933 • L0/L1/L2 Context</div>
+                  <div className="font-semibold text-xs text-fuchsia-300 group-hover:text-fuchsia-200">Context &amp; Memory</div>
+                  <div className="text-[10px] text-slate-400 font-mono">OpenViking • Graphiti • LightRAG</div>
                 </div>
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-fuchsia-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Knowledge Base (RAG) */}
+            <div
+              className="p-2.5 mb-2 border border-indigo-500/80 bg-indigo-950/20 rounded-lg cursor-grab hover:bg-indigo-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'knowledgeBaseNode')}
+              onClick={() => addNode('knowledgeBaseNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">📚</span>
+                <div>
+                  <div className="font-semibold text-xs text-indigo-300 group-hover:text-indigo-200">Knowledge Base (RAG)</div>
+                  <div className="text-[10px] text-slate-400 font-mono">:9621 • Hybrid Corpus RAG</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-indigo-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Semantic Cache */}
+            <div
+              className="p-2.5 mb-2 border border-teal-500/80 bg-teal-950/20 rounded-lg cursor-grab hover:bg-teal-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'semanticCacheNode')}
+              onClick={() => addNode('semanticCacheNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">⚡</span>
+                <div>
+                  <div className="font-semibold text-xs text-teal-300 group-hover:text-teal-200">Semantic Cache</div>
+                  <div className="text-[10px] text-slate-400 font-mono">SQLite FTS5 / Qdrant Hit/Miss</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-teal-400 font-mono">+ Add</span>
             </div>
           </div>
 
@@ -1465,7 +1571,7 @@ export default function RoutingEditor() {
               <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded font-mono">CLI / HARNESS</span>
             </div>
 
-            {/* TrueForge Agent Harness */}
+            {/* Agent Harness */}
             <div
               className="p-2.5 mb-2 border border-amber-500/80 bg-amber-950/20 rounded cursor-grab hover:bg-amber-900/30 transition flex items-center justify-between group"
               onDragStart={(e) => onDragStart(e, 'harnessNode')}
@@ -1475,11 +1581,28 @@ export default function RoutingEditor() {
               <div className="flex items-center gap-2">
                 <span className="text-lg">⚒️</span>
                 <div>
-                  <div className="font-semibold text-xs text-amber-300 group-hover:text-amber-200">TrueForge Harness</div>
-                  <div className="text-[10px] text-gray-400 font-mono">:8790 • Turn SSE Runtime</div>
+                  <div className="font-semibold text-xs text-amber-300 group-hover:text-amber-200">Agent Harness</div>
+                  <div className="text-[10px] text-gray-400 font-mono">TrueForge • OpenHands • Letta • A2A</div>
                 </div>
               </div>
               <span className="text-[10px] text-gray-400 group-hover:text-amber-400">+ Add</span>
+            </div>
+
+            {/* Execution Sandbox */}
+            <div
+              className="p-2.5 mb-2 border border-rose-500/80 bg-rose-950/20 rounded cursor-grab hover:bg-rose-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'sandboxNode')}
+              onClick={() => addNode('sandboxNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">📦</span>
+                <div>
+                  <div className="font-semibold text-xs text-rose-300 group-hover:text-rose-200">Execution Sandbox</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8910 • Isolated Code Runner</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-rose-400">+ Add</span>
             </div>
 
             {/* Antigravity Node */}
@@ -1636,6 +1759,40 @@ export default function RoutingEditor() {
                 </div>
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-blue-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Consensus / Judge Arena */}
+            <div
+              className="p-2.5 mb-2 border border-violet-500/80 bg-violet-950/20 rounded-lg cursor-grab hover:bg-violet-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'consensusNode')}
+              onClick={() => addNode('consensusNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🏛️</span>
+                <div>
+                  <div className="font-semibold text-xs text-violet-300 group-hover:text-violet-200">Consensus / Judge</div>
+                  <div className="text-[10px] text-slate-400 font-mono">Parallel N-Model Fan-Out</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-violet-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Fallback Chain / Circuit Breaker */}
+            <div
+              className="p-2.5 mb-2 border border-sky-500/80 bg-sky-950/20 rounded-lg cursor-grab hover:bg-sky-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'fallbackChainNode')}
+              onClick={() => addNode('fallbackChainNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🛡️</span>
+                <div>
+                  <div className="font-semibold text-xs text-sky-300 group-hover:text-sky-200">Fallback Chain</div>
+                  <div className="text-[10px] text-slate-400 font-mono">Circuit Breaker &amp; Hedging</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-sky-400 font-mono">+ Add</span>
             </div>
 
             {/* Observability */}
@@ -1868,6 +2025,11 @@ export default function RoutingEditor() {
                  if (n.type === 'agentNode') return '#a855f7';
                  if (n.type === 'memoryNode') return '#d946ef';
                  if (n.type === 'harnessNode') return '#f59e0b';
+                 if (n.type === 'sandboxNode') return '#f43f5e';
+                 if (n.type === 'knowledgeBaseNode') return '#6366f1';
+                 if (n.type === 'semanticCacheNode') return '#14b8a6';
+                 if (n.type === 'consensusNode') return '#8b5cf6';
+                 if (n.type === 'fallbackChainNode') return '#0ea5e9';
                  return '#94a3b8';
                }}
                maskColor="rgba(2, 6, 23, 0.75)"
@@ -3393,11 +3555,19 @@ export default function RoutingEditor() {
                             updateData('provider', next);
                             if (next === 'openviking') updateData('endpoint', 'http://localhost:1933');
                             else if (next === 'mem0') updateData('endpoint', 'http://localhost:8888');
+                            else if (next === 'graphiti') updateData('endpoint', 'http://localhost:8003');
+                            else if (next === 'lightrag') updateData('endpoint', 'http://localhost:9621');
+                            else if (next === 'cognee') updateData('endpoint', 'http://localhost:8004');
+                            else if (next === 'supermemory') updateData('endpoint', 'https://api.supermemory.ai');
                           }}
                         >
                           <option value="openviking">OpenViking (:1933)</option>
                           <option value="builtin">Built-in SQLite FTS5</option>
                           <option value="mem0">Mem0 (:8888)</option>
+                          <option value="graphiti">Graphiti Temporal KG (:8003)</option>
+                          <option value="lightrag">LightRAG Hybrid Graph (:9621)</option>
+                          <option value="cognee">Cognee ECL Graph (:8004)</option>
+                          <option value="supermemory">Supermemory Cloud</option>
                         </select>
                       </div>
                       {String(node.data.provider || 'openviking') !== 'builtin' && (
@@ -3451,6 +3621,10 @@ export default function RoutingEditor() {
                             if (next === 'trueforge') updateData('endpoint', 'http://localhost:8790');
                             else if (next === 'opencode') updateData('endpoint', 'http://localhost:4096');
                             else if (next === 'acp') updateData('endpoint', 'acp://goose');
+                            else if (next === 'openhands') updateData('endpoint', 'http://localhost:3000');
+                            else if (next === 'mastra') updateData('endpoint', 'http://localhost:4111');
+                            else if (next === 'letta') updateData('endpoint', 'http://localhost:8283');
+                            else if (next === 'a2a') updateData('endpoint', 'http://localhost:8900');
                             else updateData('endpoint', 'http://localhost:8642/v1');
                           }}
                         >
@@ -3458,6 +3632,10 @@ export default function RoutingEditor() {
                           <option value="opencode">OpenCode Server (:4096)</option>
                           <option value="acp">ACP Agent (stdio)</option>
                           <option value="hermes">Hermes Agent (:8642)</option>
+                          <option value="openhands">OpenHands SWE Agent (:3000)</option>
+                          <option value="mastra">Mastra TS Agent (:4111)</option>
+                          <option value="letta">Letta Stateful Agent (:8283)</option>
+                          <option value="a2a">A2A Remote Peer (:8900)</option>
                         </select>
                       </div>
                       <div>
@@ -3490,6 +3668,190 @@ export default function RoutingEditor() {
                           <option value="surface">Surface to Client</option>
                           <option value="auto-deny">Auto-Deny Mutating</option>
                         </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'sandboxNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-rose-300 mb-1">Sandbox Runtime</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.sandboxType || 'docker-exec')}
+                          onChange={(e) => updateData('sandboxType', e.target.value)}
+                        >
+                          <option value="docker-exec">Docker Ephemeral Exec (:8910)</option>
+                          <option value="opensandbox">OpenSandbox MicroVM</option>
+                          <option value="e2b">E2B Firecracker Cloud</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Sandbox Endpoint</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.endpoint || 'http://localhost:8910')}
+                          onChange={(e) => updateData('endpoint', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Network Policy</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.networkPolicy || 'none')}
+                          onChange={(e) => updateData('networkPolicy', e.target.value)}
+                        >
+                          <option value="none">None (Airgapped)</option>
+                          <option value="allowlist">Allowlist Only</option>
+                          <option value="bridge">Full Bridge</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'knowledgeBaseNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-indigo-300 mb-1">Knowledge Backend</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.backend || 'lightrag')}
+                          onChange={(e) => updateData('backend', e.target.value)}
+                        >
+                          <option value="lightrag">LightRAG (:9621)</option>
+                          <option value="openviking-resources">OpenViking Resources (:1933)</option>
+                          <option value="qdrant">Qdrant Vector DB (:6333)</option>
+                          <option value="sqlite-fts">Built-in SQLite FTS5</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Collection / Corpus URI</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.collectionUri || 'viking://resources/docs')}
+                          onChange={(e) => updateData('collectionUri', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Retrieval Mode</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.retrievalMode || 'hybrid')}
+                          onChange={(e) => updateData('retrievalMode', e.target.value)}
+                        >
+                          <option value="hybrid">Hybrid (BM25 + Graph + Vector)</option>
+                          <option value="vector">Dense Vector Only</option>
+                          <option value="graph-global">Global Graph Community</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'semanticCacheNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-teal-300 mb-1">Cache Backend</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.backend || 'sqlite-fts')}
+                          onChange={(e) => updateData('backend', e.target.value)}
+                        >
+                          <option value="sqlite-fts">SQLite FTS5 + Memory</option>
+                          <option value="qdrant">Qdrant Vector Cache (:6333)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Similarity Threshold</label>
+                        <input
+                          type="number"
+                          min={0.7}
+                          max={1.0}
+                          step={0.01}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.similarityThreshold ?? 0.94)}
+                          onChange={(e) => updateData('similarityThreshold', parseFloat(e.target.value) || 0.94)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">TTL (Seconds)</label>
+                        <input
+                          type="number"
+                          min={60}
+                          max={604800}
+                          step={60}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.ttlSeconds ?? 3600)}
+                          onChange={(e) => updateData('ttlSeconds', parseInt(e.target.value, 10) || 3600)}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'consensusNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-violet-300 mb-1">Aggregation Mode</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.mode || 'judge')}
+                          onChange={(e) => updateData('mode', e.target.value)}
+                        >
+                          <option value="judge">LLM-as-a-Judge Synthesis</option>
+                          <option value="majority-vote">Majority Vote / Self-Consistency</option>
+                          <option value="fastest-first">Speculative Race (First Valid Wins)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Candidate Count (N)</label>
+                        <input
+                          type="number"
+                          min={2}
+                          max={5}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.candidateCount ?? 3)}
+                          onChange={(e) => updateData('candidateCount', parseInt(e.target.value, 10) || 3)}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'fallbackChainNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-sky-300 mb-1">Failure Threshold (Trips)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.failureThreshold ?? 3)}
+                          onChange={(e) => updateData('failureThreshold', parseInt(e.target.value, 10) || 3)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Cooldown (Seconds)</label>
+                        <input
+                          type="number"
+                          min={5}
+                          max={600}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.cooldownSeconds ?? 30)}
+                          onChange={(e) => updateData('cooldownSeconds', parseInt(e.target.value, 10) || 30)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Speculative Hedge Delay (ms)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={30000}
+                          step={250}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.hedgeDelayMs ?? 0)}
+                          onChange={(e) => updateData('hedgeDelayMs', parseInt(e.target.value, 10) || 0)}
+                        />
                       </div>
                     </div>
                   )}
@@ -3584,6 +3946,11 @@ export default function RoutingEditor() {
                 {applyDiff.egressPolicy && (
                   <div className="bg-gray-900/60 border border-gray-700 rounded-lg p-3 text-gray-300 font-mono text-xs">
                     Egress policy: {applyDiff.egressPolicy.from ?? '(legacy default)'} → {applyDiff.egressPolicy.to ?? '(legacy default)'}
+                  </div>
+                )}
+                {applyDiff.memoryChanged && (
+                  <div className="bg-purple-950/40 border border-purple-700/50 rounded-lg p-3 text-purple-200 font-mono text-xs">
+                    🧠 Context &amp; Memory settings changed: {applyDiff.memoryChanged.fields.join(', ')}
                   </div>
                 )}
               </div>

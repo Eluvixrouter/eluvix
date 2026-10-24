@@ -152,8 +152,8 @@ get_status() {
   local version
   version="$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || echo 'unknown')"
 
-  local services=("switchyard" "vllm-sr" "ollama" "vllm" "agent-router" "agentgateway" "openviking" "trueforge")
-  local ports=("8080" "8001" "11434" "8000" "8002" "8003" "1933" "8790")
+  local services=("switchyard" "vllm-sr" "ollama" "vllm" "agent-router" "agentgateway" "openviking" "lightrag" "graphiti" "trueforge" "sandbox")
+  local ports=("8080" "8001" "11434" "8000" "8002" "8003" "1933" "9621" "8004" "8790" "3986")
   local json_services="["
 
   cd "${ROOT_DIR}"
@@ -193,8 +193,9 @@ spin_up() {
   echo "🔍 [Eluvix] Detecting hardware acceleration (NVIDIA CUDA / AMD ROCm / CPU)..."
   detect_and_configure_gpu "false" > /dev/null
 
-  echo "🚀 [Eluvix] Spinning up containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway, openviking, trueforge)..."
-  docker compose up -d --build
+  local profile="${ARG2:-all}"
+  echo "🚀 [Eluvix] Spinning up modular containers (profile: ${profile})..."
+  docker compose --profile "${profile}" up -d --build
 
   echo "📦 [Eluvix] Checking Ollama models..."
   # Wait briefly for Ollama to become responsive
@@ -209,21 +210,24 @@ spin_up() {
 
   echo "✨ Container stack successfully launched!"
   echo "--------------------------------------------------------"
-  echo "  - Switchyard Balancer:    http://localhost:8080"
-  echo "  - vLLM-sr Semantic Guard: http://localhost:8001"
-  echo "  - Ollama Engine:          http://localhost:11434"
-  echo "  - vLLM Inference Engine:  http://localhost:8000"
-  echo "  - Agent Router:           http://localhost:8002"
-  echo "  - Agent Gateway (MCP):    http://localhost:8003"
-  echo "  - OpenViking Context DB:  http://localhost:1933"
-  echo "  - TrueForge Agent Harness:http://localhost:8790"
+  echo "  - Switchyard Balancer:     http://localhost:8080"
+  echo "  - vLLM-sr Semantic Guard:  http://localhost:8001"
+  echo "  - Ollama Engine:           http://localhost:11434"
+  echo "  - vLLM Inference Engine:   http://localhost:8000"
+  echo "  - Agent Router:            http://localhost:8002"
+  echo "  - Agent Gateway (MCP):     http://localhost:8003"
+  echo "  - OpenViking Context DB:   http://localhost:1933"
+  echo "  - LightRAG Graph Index:    http://localhost:9621"
+  echo "  - Graphiti Temporal Graph: http://localhost:8004"
+  echo "  - TrueForge Agent Harness: http://localhost:8790"
+  echo "  - Code Execution Sandbox:  http://localhost:3986"
   echo "--------------------------------------------------------"
 }
 
 spin_down() {
   echo "🛑 [Eluvix] Stopping container stack..."
   cd "${ROOT_DIR}"
-  docker compose down
+  docker compose --profile all down
   echo "✓ Containers stopped."
 }
 

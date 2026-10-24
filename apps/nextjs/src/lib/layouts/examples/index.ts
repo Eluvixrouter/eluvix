@@ -863,13 +863,170 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     edges: [
       { id: 'e-in-priv', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-priv-mem', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'openviking-memory-1', animated: true, style: { stroke: '#d946ef' } },
-      { id: 'e-mem-sw', source: 'openviking-memory-1', sourceHandle: 'out', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-mem-sw', source: 'openviking-memory-1', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
       { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-sw-oll', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'ollama-1', animated: true, style: { stroke: '#eab308' } },
       { id: 'e-sw-tf', source: 'switchyard-1', sourceHandle: 'tier-3', target: 'trueforge-harness-1', animated: true, style: { stroke: '#f59e0b' } },
       { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-oll-obs', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
-      { id: 'e-tf-obs', source: 'trueforge-harness-1', sourceHandle: 'out', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
+      { id: 'e-tf-obs', source: 'trueforge-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
+    ]
+  },
+
+  // 14. Resilient Consensus + LightRAG + Sandbox Agent Mesh
+  {
+    id: 'resilient-consensus-rag-mesh',
+    name: 'Resilient Consensus + LightRAG + Sandbox Mesh',
+    description: 'Full next-gen pipeline: Semantic Cache, LightRAG Knowledge Base, Graphiti Temporal Memory, Switchyard with Resilient Fallback Chain, Consensus Judge Arena, and OpenHands Harness backed by an Execution Sandbox.',
+    category: 'agent',
+    tags: ['consensus', 'lightrag', 'graphiti', 'sandbox', 'openhands', 'fallback', 'cache'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.78 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Client / Agent Input' } },
+      {
+        id: 'semantic-cache-1',
+        type: 'semanticCacheNode',
+        position: { x: 260, y: 180 },
+        data: {
+          label: 'Semantic Cache',
+          backend: 'sqlite-fts',
+          similarityThreshold: 0.94,
+          ttlSeconds: 3600,
+          scopeByUser: true,
+          bypassOnTools: true
+        }
+      },
+      {
+        id: 'knowledge-base-1',
+        type: 'knowledgeBaseNode',
+        position: { x: 560, y: 80 },
+        data: {
+          label: 'LightRAG Knowledge Base',
+          backend: 'lightrag',
+          endpoint: 'http://localhost:9621',
+          collectionUri: 'viking://resources/docs',
+          retrievalMode: 'hybrid',
+          topK: 5,
+          maxTokens: 1200,
+          minScore: 0.65
+        }
+      },
+      {
+        id: 'graphiti-memory-1',
+        type: 'memoryNode',
+        position: { x: 560, y: 310 },
+        data: {
+          label: 'Graphiti Temporal KG',
+          provider: 'graphiti',
+          endpoint: 'http://localhost:8003',
+          recallBudgetTokens: 600,
+          writeBack: true,
+          allowCloudEgress: false,
+          cloudMode: 'filter'
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 900, y: 200 },
+        data: { strategy: 'cost-complexity', failover: 'enabled', codeEscalation: true }
+      },
+      {
+        id: 'fallback-chain-1',
+        type: 'fallbackChainNode',
+        position: { x: 1240, y: 40 },
+        data: {
+          label: 'Resilient Fallback Chain',
+          failureThreshold: 3,
+          cooldownSeconds: 30,
+          hedgeDelayMs: 1500,
+          retryOn429: true,
+          retryOn5xx: true
+        }
+      },
+      {
+        id: 'consensus-judge-1',
+        type: 'consensusNode',
+        position: { x: 1240, y: 260 },
+        data: {
+          label: 'Consensus Judge Arena',
+          mode: 'judge',
+          candidateCount: 2,
+          judgeModel: 'auto',
+          timeoutMs: 45000,
+          rubric: 'accuracy-conciseness'
+        }
+      },
+      {
+        id: 'openhands-harness-1',
+        type: 'harnessNode',
+        position: { x: 1240, y: 480 },
+        data: {
+          label: 'OpenHands SWE Harness',
+          kind: 'openhands',
+          endpoint: 'http://localhost:3000',
+          agentId: 'codeact',
+          approvals: 'auto-approve-readonly',
+          sessionMode: 'per-eluvix-session',
+          priority: 25,
+          providerIsLocal: true
+        }
+      },
+      {
+        id: 'sandbox-1',
+        type: 'sandboxNode',
+        position: { x: 1620, y: 480 },
+        data: {
+          label: 'Execution Sandbox',
+          sandboxType: 'docker-exec',
+          endpoint: 'http://localhost:8910',
+          timeoutMs: 30000,
+          memoryLimitMb: 512,
+          networkPolicy: 'none',
+          autoCleanup: true
+        }
+      },
+      {
+        id: 'lemonade-1',
+        type: 'lemonadeNode',
+        position: { x: 1620, y: 40 },
+        data: { label: 'Lemonade Engine', endpoint: 'http://localhost:13305', priority: 30, selectedModel: '*' }
+      },
+      {
+        id: 'ollama-1',
+        type: 'ollamaNode',
+        position: { x: 1620, y: 240 },
+        data: { label: 'Ollama Engine', endpoint: 'http://localhost:11434', priority: 25, selectedModel: '*' }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1980, y: 240 },
+        data: { projectName: 'eluvix-consensus-rag-mesh', captureInputs: true }
+      }
+    ],
+    edges: [
+      { id: 'e-in-cache', source: 'input-1', target: 'semantic-cache-1', animated: true, style: { stroke: '#14b8a6' } },
+      { id: 'e-cache-kb', source: 'semantic-cache-1', sourceHandle: 'miss', target: 'knowledge-base-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-cache-obs', source: 'semantic-cache-1', sourceHandle: 'hit', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-kb-mem', source: 'knowledge-base-1', target: 'graphiti-memory-1', animated: true, style: { stroke: '#d946ef' } },
+      { id: 'e-mem-sw', source: 'graphiti-memory-1', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-sw-fb', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'fallback-chain-1', animated: true, style: { stroke: '#0ea5e9' } },
+      { id: 'e-sw-con', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'consensus-judge-1', animated: true, style: { stroke: '#8b5cf6' } },
+      { id: 'e-sw-oh', source: 'switchyard-1', sourceHandle: 'tier-3', target: 'openhands-harness-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-fb-lem', source: 'fallback-chain-1', sourceHandle: 'primary', target: 'lemonade-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-fb-oll', source: 'fallback-chain-1', sourceHandle: 'secondary', target: 'ollama-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e-con-lem', source: 'consensus-judge-1', sourceHandle: 'candidate-1', target: 'lemonade-1', animated: true, style: { stroke: '#8b5cf6' } },
+      { id: 'e-con-oll', source: 'consensus-judge-1', sourceHandle: 'candidate-2', target: 'ollama-1', animated: true, style: { stroke: '#8b5cf6' } },
+      { id: 'e-oh-sb', source: 'openhands-harness-1', sourceHandle: 'tools', target: 'sandbox-1', animated: true, style: { stroke: '#f43f5e' } },
+      { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-oll-obs', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-oh-obs', source: 'openhands-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
     ]
   }
 ];
+

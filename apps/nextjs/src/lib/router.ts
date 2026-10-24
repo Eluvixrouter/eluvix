@@ -79,12 +79,21 @@ export function sanitizeLoadedConfig(raw: unknown): LoadedConfigSanitization {
     if (!config.memory || typeof config.memory !== 'object') {
       warnings.push('Dropping invalid "memory" config (expected an object)');
       delete config.memory;
-    } else if (
-      config.memory.provider !== undefined &&
-      !['builtin', 'openviking', 'mem0'].includes(config.memory.provider)
-    ) {
-      warnings.push(`Repairing invalid memory.provider ${JSON.stringify(config.memory.provider)} to "builtin"`);
-      config.memory = { ...config.memory, provider: 'builtin' };
+    } else {
+      if (
+        config.memory.provider !== undefined &&
+        !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory'].includes(config.memory.provider)
+      ) {
+        warnings.push(`Repairing invalid memory.provider ${JSON.stringify(config.memory.provider)} to "builtin"`);
+        config.memory = { ...config.memory, provider: 'builtin' };
+      }
+      if (
+        config.memory.cloudMode !== undefined &&
+        !['filter', 'strip'].includes(config.memory.cloudMode)
+      ) {
+        warnings.push(`Repairing invalid memory.cloudMode ${JSON.stringify(config.memory.cloudMode)} to "filter"`);
+        config.memory = { ...config.memory, cloudMode: 'filter' };
+      }
     }
   }
 
@@ -193,9 +202,9 @@ export function validateConfig(config: any): void {
     }
     if (
       config.memory.provider !== undefined &&
-      !['builtin', 'openviking', 'mem0'].includes(config.memory.provider)
+      !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory'].includes(config.memory.provider)
     ) {
-      throw new ConfigValidationError('Invalid configuration: "memory.provider" must be "builtin", "openviking", or "mem0"');
+      throw new ConfigValidationError('Invalid configuration: "memory.provider" must be "builtin", "openviking", "mem0", "graphiti", "lightrag", "cognee", or "supermemory"');
     }
     if (
       config.memory.cloudMode !== undefined &&
@@ -242,7 +251,7 @@ function upstreamProblem(upstream: any): string | null {
   if (upstream.type === 'harness' && upstream.harness) {
     if (
       upstream.harness.kind &&
-      !['hermes', 'trueforge', 'opencode', 'acp'].includes(upstream.harness.kind)
+      !['hermes', 'trueforge', 'opencode', 'acp', 'openhands', 'mastra', 'letta', 'a2a'].includes(upstream.harness.kind)
     ) {
       return `invalid harness.kind "${upstream.harness.kind}"`;
     }

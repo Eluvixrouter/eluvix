@@ -2,11 +2,19 @@ export * from './types.js';
 export * from './trueforge.js';
 export * from './opencode.js';
 export * from './acp.js';
+export * from './openhands.js';
+export * from './mastra.js';
+export * from './letta.js';
+export * from './a2a.js';
 
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { forwardA2aHarness } from './a2a.js';
 import { forwardAcpHarness } from './acp.js';
+import { forwardLettaHarness } from './letta.js';
+import { forwardMastraHarness } from './mastra.js';
 import { forwardOpencodeHarness } from './opencode.js';
+import { forwardOpenHandsHarness } from './openhands.js';
 import { forwardTrueForgeHarness } from './trueforge.js';
 
 export async function forwardHarnessRequest(
@@ -26,6 +34,18 @@ export async function forwardHarnessRequest(
   }
   if (kind === 'acp') {
     return forwardAcpHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'openhands') {
+    return forwardOpenHandsHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'mastra') {
+    return forwardMastraHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'letta') {
+    return forwardLettaHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'a2a') {
+    return forwardA2aHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
   }
 
   // kind === 'hermes': OpenAI-compatible HTTP endpoint with origin + hop headers

@@ -202,7 +202,9 @@ export async function forwardAcpHarness(
               onDelta(note);
             }
 
-            const shouldApprove = approvalPolicy === 'auto-approve-readonly' && isReadonlyTool(title);
+            const shouldApprove =
+              (approvalPolicy === 'auto-approve-readonly' || approvalPolicy === 'read-only') &&
+              isReadonlyTool(title);
             const selectedOptionId = shouldApprove
               ? allowOpt?.optionId || 'allow'
               : rejectOpt?.optionId || 'reject';

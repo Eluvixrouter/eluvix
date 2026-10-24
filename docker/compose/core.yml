@@ -1,0 +1,68 @@
+services:
+  switchyard:
+    build:
+      context: ../switchyard
+      dockerfile: Dockerfile
+    container_name: eluvix-switchyard
+    profiles: ["core", "all"]
+    ports:
+      - "127.0.0.1:${SWITCHYARD_PORT:-8080}:8080"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  vllm-sr:
+    build:
+      context: ../vllm-sr
+      dockerfile: Dockerfile
+    container_name: eluvix-vllm-sr
+    profiles: ["core", "all"]
+    ports:
+      - "127.0.0.1:${VLLM_SR_PORT:-8001}:8001"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  agent-router:
+    build:
+      context: ../agent-router
+      dockerfile: Dockerfile
+    container_name: eluvix-agent-router
+    profiles: ["core", "all"]
+    ports:
+      - "127.0.0.1:${AGENT_ROUTER_PORT:-8002}:8002"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8002/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  agentgateway:
+    build:
+      context: ../agentgateway
+      dockerfile: Dockerfile
+    container_name: eluvix-agentgateway
+    profiles: ["core", "all"]
+    ports:
+      - "127.0.0.1:${AGENT_GATEWAY_PORT:-8003}:8003"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8003/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

@@ -90,6 +90,23 @@ describe('sanitizeLoadedConfig', () => {
     expect(config.upstreams[0].models).toEqual(['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF', '*']);
     expect(warnings.some(w => w.includes('placeholder'))).toBe(true);
   });
+
+  it('drops invalid memory.cloudMode while keeping valid filter or strip modes', () => {
+    const invalid = sanitizeLoadedConfig({
+      upstreams: [structuredClone(GOOD_UPSTREAM)],
+      memory: { enabled: true, endpoint: 'http://localhost:1933', cloudMode: 'invalid-mode' }
+    });
+    expect(invalid.changed).toBe(true);
+    expect(invalid.config.memory?.cloudMode).toBe('filter');
+    expect(invalid.warnings.some(w => w.includes('memory.cloudMode'))).toBe(true);
+
+    const valid = sanitizeLoadedConfig({
+      upstreams: [structuredClone(GOOD_UPSTREAM)],
+      memory: { enabled: true, endpoint: 'http://localhost:1933', cloudMode: 'strip' }
+    });
+    expect(valid.changed).toBe(false);
+    expect(valid.config.memory?.cloudMode).toBe('strip');
+  });
 });
 
 describe('loadConfig applies sanitization to the on-disk config', () => {

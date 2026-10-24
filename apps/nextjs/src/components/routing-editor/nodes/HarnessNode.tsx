@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function HarnessNode({ id, data }: { id: string; data: any }) {
@@ -8,8 +8,18 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
   const [kind, setKind] = useState(data?.kind || 'trueforge');
   const [endpoint, setEndpoint] = useState(data?.endpoint || 'http://localhost:8790');
   const [agentId, setAgentId] = useState(data?.agentId || 'default');
-  const [approvals, setApprovals] = useState(data?.approvals || 'auto-approve-readonly');
+  const [approvals, setApprovals] = useState(data?.approvals || data?.approvalPolicy || 'auto-approve-readonly');
   const [sessionMode, setSessionMode] = useState(data?.sessionMode || 'per-eluvix-session');
+
+  useEffect(() => {
+    if (data?.kind !== undefined) setKind(data.kind);
+    if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
+    if (data?.agentId !== undefined) setAgentId(data.agentId);
+    if (data?.approvals !== undefined || data?.approvalPolicy !== undefined) {
+      setApprovals(data.approvals || data.approvalPolicy);
+    }
+    if (data?.sessionMode !== undefined) setSessionMode(data.sessionMode);
+  }, [data?.kind, data?.endpoint, data?.agentId, data?.approvals, data?.approvalPolicy, data?.sessionMode]);
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -35,7 +45,7 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
           <span className="text-lg">⚙️</span>
           <div>
             <div className="font-bold text-indigo-400 text-sm">Agent Harness Runtime</div>
-            <div className="text-[10px] text-gray-400 font-mono">TrueForge / opencode / ACP / Hermes</div>
+            <div className="text-[10px] text-gray-400 font-mono">TrueForge / OpenHands / Letta / A2A / ACP</div>
           </div>
         </div>
         <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded font-mono uppercase">
@@ -59,6 +69,14 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
                     ? 'http://localhost:4096'
                     : next === 'acp'
                     ? 'acp://goose'
+                    : next === 'openhands'
+                    ? 'http://localhost:3000'
+                    : next === 'mastra'
+                    ? 'http://localhost:4111'
+                    : next === 'letta'
+                    ? 'http://localhost:8283'
+                    : next === 'a2a'
+                    ? 'http://localhost:8090'
                     : 'http://localhost:8642/v1';
                 setKind(next);
                 setEndpoint(defaultEndpoint);
@@ -66,6 +84,10 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
               }}
             >
               <option value="trueforge">TrueForge (:8790)</option>
+              <option value="openhands">OpenHands (:3000)</option>
+              <option value="letta">Letta / MemGPT (:8283)</option>
+              <option value="mastra">Mastra Agent (:4111)</option>
+              <option value="a2a">A2A Protocol (:8090)</option>
               <option value="opencode">opencode Server (:4096)</option>
               <option value="acp">ACP Stdio (Goose / opencode)</option>
               <option value="hermes">Hermes Agent (:8642)</option>
@@ -78,10 +100,11 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
               value={approvals}
               onChange={(e) => {
                 setApprovals(e.target.value);
-                syncData({ approvals: e.target.value });
+                syncData({ approvals: e.target.value, approvalPolicy: e.target.value });
               }}
             >
               <option value="auto-approve-readonly">Read-Only Auto-Approve</option>
+              <option value="read-only">Read-Only (Strict)</option>
               <option value="auto-deny">Strict Headless Auto-Deny</option>
               <option value="surface">Surface to Stream</option>
             </select>

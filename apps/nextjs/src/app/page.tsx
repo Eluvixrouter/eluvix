@@ -10,6 +10,10 @@ interface DockerService {
   name: string;
   container: string;
   port: number;
+  category?: 'core' | 'inference' | 'memory' | 'harnesses';
+  composeFile?: string;
+  description?: string;
+  requiredByTopology?: boolean;
   running: boolean;
   status: 'running' | 'exited' | 'not_created';
   url: string;
@@ -21,6 +25,7 @@ interface DockerStatusResponse {
   version?: string | null;
   composeVersion?: string | null;
   allRunning?: boolean;
+  topologyServices?: string[];
   services?: DockerService[];
   message?: string;
   error?: string;
@@ -40,6 +45,12 @@ export default function Home() {
   const [dockerStatus, setDockerStatus] = useState<DockerStatusResponse | null>(null);
   const [dockerLoading, setDockerLoading] = useState(false);
   const [dockerActionMessage, setDockerActionMessage] = useState<string | null>(null);
+  const [selectedDockerServices, setSelectedDockerServices] = useState<string[]>([
+    'switchyard',
+    'ollama',
+    'openviking',
+    'trueforge'
+  ]);
   const [analytics, setAnalytics] = useState<any>(null);
 
   useEffect(() => {
@@ -285,6 +296,9 @@ export default function Home() {
       const res = await fetch('/api/v1/docker/status');
       const data = await res.json();
       setDockerStatus(data);
+      if (Array.isArray(data?.topologyServices) && data.topologyServices.length > 0) {
+        setSelectedDockerServices((prev) => (prev.length > 0 ? prev : data.topologyServices));
+      }
     } catch (err) {
       console.error('Failed to fetch Docker status:', err);
     } finally {
@@ -292,18 +306,47 @@ export default function Home() {
     }
   };
 
-  const handleDockerUp = async () => {
+  const toggleDockerServiceSelection = (serviceName: string) => {
+    setSelectedDockerServices((prev) =>
+      prev.includes(serviceName) ? prev.filter((s) => s !== serviceName) : [...prev, serviceName]
+    );
+  };
+
+  const selectDockerPreset = (preset: 'topology' | 'core' | 'inference' | 'memory' | 'harnesses' | 'all') => {
+    const services = dockerStatus?.services || [];
+    if (preset === 'all') {
+      setSelectedDockerServices(services.map((s) => s.name));
+      return;
+    }
+    if (preset === 'topology') {
+      const topo = services.filter((s) => s.requiredByTopology).map((s) => s.name);
+      setSelectedDockerServices(topo.length > 0 ? topo : ['switchyard', 'ollama']);
+      return;
+    }
+    setSelectedDockerServices(services.filter((s) => s.category === preset).map((s) => s.name));
+  };
+
+  const handleDockerUp = async (servicesOverride?: string[]) => {
+    const targets = servicesOverride ?? selectedDockerServices;
     setDockerLoading(true);
-    setDockerActionMessage('🚀 Launching containers (switchyard, vllm-sr, ollama, vllm, agent-router, agentgateway, openviking, trueforge)...');
+    setDockerActionMessage(
+      targets.length > 0
+        ? `🚀 Launching selected containers (${targets.join(', ')})...`
+        : '🚀 Launching all modular compose containers...'
+    );
     try {
-      const res = await fetch('/api/v1/docker/up', { method: 'POST' });
+      const res = await fetch('/api/v1/docker/up', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(targets.length > 0 ? { services: targets } : { profile: 'all' })
+      });
       const data = await res.json();
       if (data.success) {
-        setDockerActionMessage('✓ Container stack started! Refreshing service status...');
+        setDockerActionMessage(`✓ ${data.message || 'Containers started!'} Refreshing status...`);
         setTimeout(() => {
           fetchDockerStatus();
           setDockerActionMessage(null);
-        }, 4000);
+        }, 3500);
       } else {
         setDockerActionMessage(`Failed: ${data.error || 'Unknown error'}`);
       }
@@ -315,14 +358,22 @@ export default function Home() {
     }
   };
 
-  const handleDockerDown = async () => {
+  const handleDockerDown = async (servicesOverride?: string[]) => {
     setDockerLoading(true);
-    setDockerActionMessage('🛑 Stopping container stack...');
+    setDockerActionMessage(
+      servicesOverride && servicesOverride.length > 0
+        ? `🛑 Stopping (${servicesOverride.join(', ')})...`
+        : '🛑 Stopping container stack...'
+    );
     try {
-      const res = await fetch('/api/v1/docker/down', { method: 'POST' });
+      const res = await fetch('/api/v1/docker/down', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(servicesOverride && servicesOverride.length > 0 ? { services: servicesOverride } : {})
+      });
       const data = await res.json();
       if (data.success) {
-        setDockerActionMessage('✓ Container stack stopped.');
+        setDockerActionMessage(`✓ ${data.message || 'Container stack stopped.'}`);
         setTimeout(() => {
           fetchDockerStatus();
           setDockerActionMessage(null);
@@ -380,7 +431,7 @@ export default function Home() {
             </Link>
             <Link
               href="/editor"
-              className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow-lg shadow-indigo-600/20 transition flex items-center gap-1.5"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3.5 py-2 rounded-lg shadow-lg shadow-indigo-500/20 transition flex items-center gap-1.5"
             >
               <span>🔀</span> Node Routing Editor ➔
             </Link>
@@ -485,7 +536,7 @@ export default function Home() {
               <span className="text-2xl">🐳</span>
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-slate-100 text-base">Docker Infrastructure Engine</h3>
+                  <h3 className="font-bold text-slate-100 text-base">Modular Docker Infrastructure Engine</h3>
                   {dockerStatus?.installed ? (
                     <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -503,12 +554,12 @@ export default function Home() {
                   )}
                 </div>
                 <p className="text-xs text-slate-400 mt-1">
-                  Automated containerized stack: Switchyard, vLLM-sr, Ollama, vLLM, Agent Router, Agent Gateway, OpenViking, and TrueForge.
+                  Split across <code className="text-cyan-300">docker/compose/&#123;core,inference,memory,harnesses&#125;.yml</code> — pick &amp; choose individual sidecars or launch by stack profile.
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={fetchDockerStatus}
                 disabled={dockerLoading}
@@ -519,22 +570,74 @@ export default function Home() {
               {dockerStatus?.running && (
                 <>
                   <button
-                    onClick={handleDockerUp}
-                    disabled={dockerLoading}
+                    onClick={() => handleDockerUp(selectedDockerServices)}
+                    disabled={dockerLoading || selectedDockerServices.length === 0}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3.5 py-1.5 rounded-lg shadow-lg shadow-emerald-600/20 transition flex items-center gap-1.5 disabled:opacity-50"
                   >
-                    <span>{dockerLoading ? '⏳ Launching...' : '🚀 Spin Up Containers'}</span>
+                    <span>
+                      {dockerLoading
+                        ? '⏳ Launching...'
+                        : `🚀 Spin Up Selected (${selectedDockerServices.length})`}
+                    </span>
                   </button>
                   <button
-                    onClick={handleDockerDown}
+                    onClick={() => handleDockerDown(selectedDockerServices)}
+                    disabled={dockerLoading || selectedDockerServices.length === 0}
+                    className="bg-amber-900/60 hover:bg-amber-800 text-amber-200 text-xs px-3 py-1.5 rounded-lg border border-amber-700/60 transition disabled:opacity-50"
+                  >
+                    ⏸ Stop Selected
+                  </button>
+                  <button
+                    onClick={() => handleDockerDown()}
                     disabled={dockerLoading}
                     className="bg-red-900/60 hover:bg-red-800 text-red-200 text-xs px-3 py-1.5 rounded-lg border border-red-700/60 transition disabled:opacity-50"
                   >
-                    🛑 Stop
+                    🛑 Stop All
                   </button>
                 </>
               )}
             </div>
+          </div>
+
+          {/* Preset Quick-Select Pills */}
+          <div className="flex flex-wrap items-center gap-2 mb-4 text-[11px]">
+            <span className="text-slate-400 font-semibold mr-1">Quick Select:</span>
+            <button
+              onClick={() => selectDockerPreset('topology')}
+              className="px-2.5 py-1 rounded-md bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-500/40 text-cyan-200 font-mono transition"
+            >
+              🎯 Active Topology
+            </button>
+            <button
+              onClick={() => selectDockerPreset('core')}
+              className="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-mono transition"
+            >
+              ⚡ Core Gateway
+            </button>
+            <button
+              onClick={() => selectDockerPreset('inference')}
+              className="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-mono transition"
+            >
+              🦙 Local Inference
+            </button>
+            <button
+              onClick={() => selectDockerPreset('memory')}
+              className="px-2.5 py-1 rounded-md bg-purple-950/50 hover:bg-purple-900/60 border border-purple-500/40 text-purple-200 font-mono transition"
+            >
+              🧠 Memory &amp; RAG
+            </button>
+            <button
+              onClick={() => selectDockerPreset('harnesses')}
+              className="px-2.5 py-1 rounded-md bg-indigo-950/50 hover:bg-indigo-900/60 border border-indigo-500/40 text-indigo-200 font-mono transition"
+            >
+              ⚙️ Harnesses &amp; Sandbox
+            </button>
+            <button
+              onClick={() => selectDockerPreset('all')}
+              className="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-mono transition"
+            >
+              All ({dockerStatus?.services?.length || 11})
+            </button>
           </div>
 
           {dockerActionMessage && (
@@ -543,44 +646,89 @@ export default function Home() {
             </div>
           )}
 
-          {/* Grid of the 8 services */}
+          {/* Grid of modular compose services */}
           {dockerStatus?.services && dockerStatus.services.length > 0 ? (
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
-              {dockerStatus.services.map((srv) => (
-                <div
-                  key={srv.name}
-                  className={`p-3 rounded-lg border flex flex-col justify-between ${
-                    srv.running
-                      ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
-                      : 'bg-slate-950/60 border-slate-800 text-slate-400'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold font-mono text-slate-200">{srv.name}</span>
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          srv.running ? 'bg-emerald-400 shadow-sm shadow-emerald-400' : 'bg-slate-600'
-                        }`}
-                      ></span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
+              {dockerStatus.services.map((srv) => {
+                const isSelected = selectedDockerServices.includes(srv.name);
+                return (
+                  <div
+                    key={srv.name}
+                    className={`p-3 rounded-lg border flex flex-col justify-between transition ${
+                      srv.running
+                        ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                        : isSelected
+                        ? 'bg-cyan-950/20 border-cyan-500/40 text-slate-200'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleDockerServiceSelection(srv.name)}
+                            className="accent-cyan-400 rounded"
+                          />
+                          <span className="text-xs font-bold font-mono text-slate-100">{srv.name}</span>
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          {srv.category && (
+                            <span className="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                              {srv.category}
+                            </span>
+                          )}
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              srv.running ? 'bg-emerald-400 shadow-sm shadow-emerald-400' : 'bg-slate-600'
+                            }`}
+                          ></span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] font-mono text-slate-400">:{srv.port}</span>
+                        {srv.requiredByTopology && (
+                          <span className="text-[9px] font-mono text-cyan-300 bg-cyan-500/10 px-1.5 py-0.2 rounded">
+                            in topology
+                          </span>
+                        )}
+                      </div>
+                      {srv.description && (
+                        <p className="text-[10px] text-slate-400 mt-1 line-clamp-1">{srv.description}</p>
+                      )}
                     </div>
-                    <span className="text-[10px] font-mono text-slate-400 mt-1 block">:{srv.port}</span>
+                    <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px]">
+                      <span
+                        className={`px-1.5 py-0.5 rounded font-mono ${
+                          srv.running
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : srv.status === 'exited'
+                            ? 'bg-amber-500/20 text-amber-300'
+                            : 'bg-slate-800 text-slate-400'
+                        }`}
+                      >
+                        {srv.status}
+                      </span>
+                      {dockerStatus.running && (
+                        <button
+                          onClick={() =>
+                            srv.running ? handleDockerDown([srv.name]) : handleDockerUp([srv.name])
+                          }
+                          disabled={dockerLoading}
+                          className={`px-2 py-0.5 rounded font-mono font-semibold transition ${
+                            srv.running
+                              ? 'bg-red-950/70 hover:bg-red-900 text-red-200 border border-red-700/50'
+                              : 'bg-emerald-950/70 hover:bg-emerald-900 text-emerald-200 border border-emerald-700/50'
+                          }`}
+                        >
+                          {srv.running ? '■ Stop' : '▶ Start'}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div className="mt-2 text-[10px]">
-                    <span
-                      className={`px-1.5 py-0.5 rounded font-mono ${
-                        srv.running
-                          ? 'bg-emerald-500/20 text-emerald-300'
-                          : srv.status === 'exited'
-                          ? 'bg-amber-500/20 text-amber-300'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {srv.status}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="text-xs text-slate-400 italic">

@@ -73,4 +73,187 @@ describe('diffRouterConfigs', () => {
     expect(diff.added.map(u => u.id)).toEqual(['local-lemonade', 'local-ollama']);
     expect(diff.removed).toEqual([]);
   });
+
+  it('detects harness field changes and memory subsystem changes', () => {
+    const tfUpstream: UpstreamConfig = {
+      id: 'local-trueforge',
+      name: 'TrueForge Harness',
+      type: 'harness',
+      endpoint: 'http://localhost:8790',
+      priority: 17,
+      models: ['harness/trueforge'],
+      harness: {
+        kind: 'trueforge',
+        agentId: 'default',
+        approvalPolicy: 'auto-approve-readonly'
+      }
+    };
+    const current: RouterConfig = {
+      upstreams: [tfUpstream],
+      memory: { enabled: true, provider: 'builtin', recallBudgetTokens: 600 }
+    };
+    const next: RouterConfig = {
+      upstreams: [
+        {
+          ...tfUpstream,
+          harness: {
+            kind: 'trueforge',
+            agentId: 'coder',
+            approvalPolicy: 'surface'
+          }
+        }
+      ],
+      memory: { enabled: true, provider: 'openviking', recallBudgetTokens: 1200 }
+    };
+    const diff = diffRouterConfigs(current, next);
+    expect(diff.isEmpty).toBe(false);
+    expect(diff.changed).toEqual([
+      { id: 'local-trueforge', name: 'TrueForge Harness', fields: ['harness'] }
+    ]);
+    expect(diff.memoryChanged).toEqual({
+      fields: ['provider', 'recallBudgetTokens']
+    });
+  });
 });
+
+describe('compileGraph harnessNode & memoryNode compilation', () => {
+  it('preserves TrueForge profile models, approvalPolicy alias, and emits harness gateway into bifrostYaml', async () => {
+    const { compileGraph } = await import('../orchestration/compiler');
+    const nodes: any[] = [
+      {
+        id: 'router-1',
+        type: 'routerNode',
+        position: { x: 0, y: 0 },
+        data: { strategy: 'cost-complexity', egressPolicy: 'local-only' }
+      },
+      {
+        id: 'harness-tf',
+        type: 'harnessNode',
+        position: { x: 200, y: 0 },
+        data: {
+          label: 'TrueForge Harness',
+          kind: 'trueforge',
+          endpoint: 'http://localhost:8790',
+          priority: 17,
+          agentId: 'coder',
+          approvalPolicy: 'surface'
+        }
+      }
+    ];
+    const edges: any[] = [
+      { id: 'e1', source: 'router-1', target: 'harness-tf' }
+    ];
+    const compiled = compileGraph(nodes, edges);
+    const upstream = compiled.rawRouterConfig.upstreams[0];
+    expect(upstream.models).toContain('harness/trueforge');
+    expect(upstream.models).toContain('trueforge/default');
+    expect(upstream.models).toContain('trueforge/coder');
+    expect(upstream.models).toContain('trueforge/researcher');
+    expect(upstream.harness.approvalPolicy).toBe('surface');
+    expect(compiled.bifrostYaml).toContain('type: harness');
+    expect(compiled.bifrostYaml).toContain('harness_kind: trueforge');
+    expect(compiled.bifrostYaml).toContain('http://localhost:8790');
+  });
+
+  it('compiles knowledgeBaseNode, semanticCacheNode, sandboxNode, consensusNode, and fallbackChainNode into rawRouterConfig', async () => {
+    const { compileGraph } = await import('../orchestration/compiler');
+    const nodes: any[] = [
+      {
+        id: 'kb-1',
+        type: 'knowledgeBaseNode',
+        position: { x: 100, y: 0 },
+        data: { backend: 'lightrag', endpoint: 'http://localhost:9621', collectionUri: 'viking://resources/docs', topK: 4 }
+      },
+      {
+        id: 'cache-1',
+        type: 'semanticCacheNode',
+        position: { x: 100, y: 100 },
+        data: { backend: 'sqlite-fts', similarityThreshold: 0.96, ttlSeconds: 1800 }
+      },
+      {
+        id: 'sandbox-1',
+        type: 'sandboxNode',
+        position: { x: 400, y: 200 },
+        data: { sandboxType: 'docker-exec', endpoint: 'http://localhost:8910', memoryLimitMb: 1024 }
+      },
+      {
+        id: 'harness-oh',
+        type: 'harnessNode',
+        position: { x: 200, y: 200 },
+        data: { kind: 'openhands', agentId: 'codeact' }
+      },
+      {
+        id: 'consensus-1',
+        type: 'consensusNode',
+        position: { x: 200, y: 300 },
+        data: { mode: 'judge', candidateCount: 2 }
+      },
+      {
+        id: 'fallback-1',
+        type: 'fallbackChainNode',
+        position: { x: 200, y: 400 },
+        data: { failureThreshold: 4, cooldownSeconds: 45, hedgeDelayMs: 1200 }
+      },
+      {
+        id: 'lem-1',
+        type: 'lemonadeNode',
+        position: { x: 500, y: 300 },
+        data: { endpoint: 'http://localhost:13305' }
+      },
+      {
+        id: 'oll-1',
+        type: 'ollamaNode',
+        position: { x: 500, y: 400 },
+        data: { endpoint: 'http://localhost:11434' }
+      }
+    ];
+    const edges: any[] = [
+      { id: 'e-oh-sb', source: 'harness-oh', sourceHandle: 'tools', target: 'sandbox-1' },
+      { id: 'e-con-1', source: 'consensus-1', sourceHandle: 'candidate-1', target: 'lem-1' },
+      { id: 'e-con-2', source: 'consensus-1', sourceHandle: 'candidate-2', target: 'oll-1' },
+      { id: 'e-fb-1', source: 'fallback-1', sourceHandle: 'primary', target: 'lem-1' },
+      { id: 'e-fb-2', source: 'fallback-1', sourceHandle: 'secondary', target: 'oll-1' }
+    ];
+
+    const compiled = compileGraph(nodes, edges);
+    const cfg = compiled.rawRouterConfig;
+
+    expect(cfg.knowledge).toMatchObject({
+      enabled: true,
+      backend: 'lightrag',
+      endpoint: 'http://localhost:9621',
+      topK: 4
+    });
+    expect(cfg.cache).toMatchObject({
+      enabled: true,
+      backend: 'sqlite-fts',
+      similarityThreshold: 0.96,
+      ttlSeconds: 1800
+    });
+    expect(cfg.sandbox).toMatchObject({
+      enabled: true,
+      sandboxType: 'docker-exec',
+      endpoint: 'http://localhost:8910',
+      memoryLimitMb: 1024
+    });
+
+    const ohUpstream = cfg.upstreams.find((u: any) => u.id === 'harness-oh');
+    expect(ohUpstream.harness.kind).toBe('openhands');
+    expect(ohUpstream.harness.sandboxEndpoint).toBe('http://localhost:8910');
+    expect(ohUpstream.harness.sandboxType).toBe('docker-exec');
+
+    expect(cfg.consensusGroups).toHaveLength(1);
+    expect(cfg.consensusGroups[0].candidateUpstreamIds).toEqual(['lem-1', 'oll-1']);
+
+    expect(cfg.fallbackChains).toHaveLength(1);
+    expect(cfg.fallbackChains[0]).toMatchObject({
+      primaryUpstreamId: 'lem-1',
+      secondaryUpstreamId: 'oll-1',
+      failureThreshold: 4,
+      cooldownSeconds: 45,
+      hedgeDelayMs: 1200
+    });
+  });
+});
+
+

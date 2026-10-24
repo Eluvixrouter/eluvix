@@ -260,7 +260,10 @@ export const ALLOWED_DOCKER_SERVICES = new Set([
   'agent-router',
   'agentgateway',
   'openviking',
+  'lightrag',
+  'graphiti',
   'trueforge',
+  'sandbox',
   'lemonade',
   'router'
 ]);

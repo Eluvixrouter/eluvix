@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import util from 'util';
+import {
+  DOCKER_SERVICE_CATALOG,
+  type DockerServiceCategory,
+  getRequiredServicesForConfig
+} from '@/lib/docker-catalog';
+import { getConfig } from '@/lib/router';
 
 const execAsync = util.promisify(exec);
 
@@ -10,6 +16,10 @@ export interface ServiceStatus {
   name: string;
   container: string;
   port: number;
+  category: DockerServiceCategory;
+  composeFile: string;
+  description: string;
+  requiredByTopology: boolean;
   running: boolean;
   status: 'running' | 'exited' | 'not_created';
   url: string;
@@ -58,17 +68,9 @@ export async function GET() {
       });
     }
 
-    // 4. Query container statuses
-    const targetServices = [
-      { name: 'switchyard', container: 'eluvix-switchyard', port: 8080 },
-      { name: 'vllm-sr', container: 'eluvix-vllm-sr', port: 8001 },
-      { name: 'ollama', container: 'eluvix-ollama', port: 11434 },
-      { name: 'vllm', container: 'eluvix-vllm', port: 8000 },
-      { name: 'agent-router', container: 'eluvix-agent-router', port: 8002 },
-      { name: 'agentgateway', container: 'eluvix-agentgateway', port: 8003 },
-      { name: 'openviking', container: 'eluvix-openviking', port: 1933 },
-      { name: 'trueforge', container: 'eluvix-trueforge', port: 8790 }
-    ];
+    // 4. Query container statuses using centralized catalog
+    const activeConfig = getConfig();
+    const requiredSet = new Set(getRequiredServicesForConfig(activeConfig));
 
     let runningContainers: string[] = [];
     let allContainers: string[] = [];
@@ -83,7 +85,7 @@ export async function GET() {
       console.error('Error inspecting docker containers:', e);
     }
 
-    const services: ServiceStatus[] = targetServices.map(srv => {
+    const services: ServiceStatus[] = DOCKER_SERVICE_CATALOG.map(srv => {
       const isRunning = runningContainers.includes(srv.container);
       const exists = allContainers.includes(srv.container);
       const status = isRunning ? 'running' : exists ? 'exited' : 'not_created';
@@ -92,6 +94,10 @@ export async function GET() {
         name: srv.name,
         container: srv.container,
         port: srv.port,
+        category: srv.category,
+        composeFile: srv.composeFile,
+        description: srv.description,
+        requiredByTopology: requiredSet.has(srv.name),
         running: isRunning,
         status,
         url: `http://localhost:${srv.port}`
@@ -106,6 +112,7 @@ export async function GET() {
       version,
       composeVersion,
       allRunning,
+      topologyServices: Array.from(requiredSet),
       services,
       message: allRunning
         ? `All ${services.length} containers are actively running.`

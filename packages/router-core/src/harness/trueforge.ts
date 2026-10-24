@@ -2,7 +2,16 @@ import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
+const MAX_SESSION_CACHE = 500;
 const sessionCache = new Map<string, string>();
+
+function setCachedSession(key: string, sessionId: string) {
+  if (sessionCache.size >= MAX_SESSION_CACHE) {
+    const oldest = sessionCache.keys().next().value;
+    if (oldest) sessionCache.delete(oldest);
+  }
+  sessionCache.set(key, sessionId);
+}
 
 function extractPromptFromMessages(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
@@ -99,10 +108,14 @@ export async function forwardTrueForgeHarness(
   try {
     // 1. Resolve or create TrueForge session
     const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
+    let usedCachedSession = false;
     let tfSessionId =
       reuseSession && scope?.sessionId ? sessionCache.get(cacheKey) : undefined;
+    if (tfSessionId) {
+      usedCachedSession = true;
+    }
 
-    if (!tfSessionId) {
+    const createNewSession = async (): Promise<Response | string> => {
       const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
         method: 'POST',
         headers,
@@ -116,21 +129,29 @@ export async function forwardTrueForgeHarness(
         signal: controller.signal
       });
       if (!sessionRes.ok) {
-        clearTimeout(timer);
         return sessionRes;
       }
       const sessionData: any = await sessionRes.json();
-      tfSessionId = String(sessionData?.id || sessionData?.sessionId || `tf-${Date.now()}`);
+      const newId = String(sessionData?.id || sessionData?.sessionId || `tf-${Date.now()}`);
       if (reuseSession && scope?.sessionId) {
-        sessionCache.set(cacheKey, tfSessionId);
+        setCachedSession(cacheKey, newId);
       }
+      return newId;
+    };
+
+    if (!tfSessionId) {
+      const createdSession = await createNewSession();
+      if (createdSession instanceof Response) {
+        clearTimeout(timer);
+        return createdSession;
+      }
+      tfSessionId = createdSession;
     }
 
     // 2. Start turn (POST /api/v1/sessions/{id}/turns)
     const prompt = extractPromptFromMessages(request.messages || []);
-    const turnRes = await fetch(
-      `${baseUrl}/api/v1/sessions/${encodeURIComponent(tfSessionId)}/turns`,
-      {
+    const postTurn = (sid: string) =>
+      fetch(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sid)}/turns`, {
         method: 'POST',
         headers: {
           ...headers,
@@ -138,12 +159,24 @@ export async function forwardTrueForgeHarness(
         },
         body: JSON.stringify({
           input: prompt,
+          prompt,
           messages: request.messages,
           stream: true
         }),
         signal: controller.signal
+      });
+
+    let turnRes = await postTurn(tfSessionId);
+    if (turnRes.status === 404 && usedCachedSession) {
+      sessionCache.delete(cacheKey);
+      const recreated = await createNewSession();
+      if (recreated instanceof Response) {
+        clearTimeout(timer);
+        return recreated;
       }
-    );
+      tfSessionId = recreated;
+      turnRes = await postTurn(tfSessionId);
+    }
 
     if (!turnRes.ok) {
       clearTimeout(timer);
@@ -192,6 +225,7 @@ export async function forwardTrueForgeHarness(
     }
 
     // Parse SSE turn stream from TrueForge
+    let receivedDelta = false;
     const parseTurnSseEvent = async (
       eventName: string,
       dataStr: string,
@@ -218,7 +252,10 @@ export async function forwardTrueForgeHarness(
               : typeof evt?.delta?.text === 'string'
               ? evt.delta.text
               : '';
-          if (delta) onDelta(delta);
+          if (delta) {
+            receivedDelta = true;
+            onDelta(delta);
+          }
         } else if (
           type === 'approval-required' ||
           type === 'tool-approval-request' ||
@@ -239,8 +276,14 @@ export async function forwardTrueForgeHarness(
               approvalPolicy
             );
           }
-        } else if (type === 'turn.completed' || type === 'turn_complete' || type === 'message.completed') {
-          if (typeof evt?.output === 'string' && evt.output) {
+        } else if (
+          type === 'turn.completed' ||
+          type === 'turn.end' ||
+          type === 'turn_complete' ||
+          type === 'message.completed'
+        ) {
+          if (!receivedDelta && typeof evt?.output === 'string' && evt.output) {
+            receivedDelta = true;
             onDelta(evt.output);
           }
         }

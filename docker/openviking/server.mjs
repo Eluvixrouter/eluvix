@@ -12,28 +12,44 @@ const PORT = parseInt(process.env.PORT || process.env.OPENVIKING_PORT || '1933',
 
 // In-memory memory store mapped by URI prefix
 const memoryStore = new Map();
+// Per-session buffered messages awaiting /commit
+const sessionBuffers = new Map();
+
+function buildMemoryRecord({ id, uri, score = 0.9, l0, l1, l2, category = 'general' }) {
+  return {
+    id,
+    uri,
+    score,
+    L0: l0,
+    L1: l1,
+    L2: l2,
+    abstract: l0,
+    overview: l1,
+    content: l2,
+    category,
+    created_at: new Date().toISOString()
+  };
+}
 
 // Seed initial memory items for testing
 const defaultUri = 'viking://user/default/memories';
 memoryStore.set(defaultUri, [
-  {
+  buildMemoryRecord({
     id: 'mem_ov_init_1',
     uri: `${defaultUri}/preferences`,
     score: 0.94,
-    L0: 'Prefers TypeScript strict mode with no implicit any',
-    L1: 'Coding guidelines: Strict typing, modern ESM modules, pnpm workspaces, and functional pure handlers.',
-    L2: 'User preferences: Always enforce TypeScript strict compiler flags. Prefer pnpm workspace packages and avoid legacy CommonJS syntax in new components.',
-    created_at: new Date().toISOString()
-  },
-  {
+    l0: 'Prefers TypeScript strict mode with no implicit any',
+    l1: 'Coding guidelines: Strict typing, modern ESM modules, pnpm workspaces, and functional pure handlers.',
+    l2: 'User preferences: Always enforce TypeScript strict compiler flags. Prefer pnpm workspace packages and avoid legacy CommonJS syntax in new components.'
+  }),
+  buildMemoryRecord({
     id: 'mem_ov_init_2',
     uri: `${defaultUri}/architecture`,
     score: 0.88,
-    L0: 'Eluvix sovereign gateway on port 3588 with dual-protocol demuxing',
-    L1: 'Infrastructure setup: Next.js console running on port 3588 with same-port HTTP/1.1 308 auto-upgrade to HTTPS.',
-    L2: 'Architecture details: Port 3588 performs TCP first-byte sniffing to transparently upgrade cleartext HTTP clients to TLS without protocol mismatch errors.',
-    created_at: new Date().toISOString()
-  }
+    l0: 'Eluvix sovereign gateway on port 3588 with dual-protocol demuxing',
+    l1: 'Infrastructure setup: Next.js console running on port 3588 with same-port HTTP/1.1 308 auto-upgrade to HTTPS.',
+    l2: 'Architecture details: Port 3588 performs TCP first-byte sniffing to transparently upgrade cleartext HTTP clients to TLS without protocol mismatch errors.'
+  })
 ]);
 
 function applyCors(req, res) {
@@ -167,34 +183,81 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // POST /api/v1/sessions/:id/messages - Append turn messages to session buffer and index into user memory
+  const messagesMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/messages$/);
+  if (req.method === 'POST' && messagesMatch) {
+    const sessionId = decodeURIComponent(messagesMatch[1]);
+    const body = await parseBody(req);
+    const userId = body.user_id || req.headers['x-openviking-user'] || 'default';
+    const targetUri = body.target_uri || `viking://user/${userId}/memories`;
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+
+    const buf = sessionBuffers.get(sessionId) || [];
+    buf.push(...messages);
+    sessionBuffers.set(sessionId, buf);
+
+    const existing = memoryStore.get(targetUri) || [];
+    if (messages.length > 0) {
+      const userMsg = messages.find(m => m && m.role === 'user');
+      const assistantMsg = messages.find(m => m && m.role === 'assistant');
+      const uText = userMsg ? String(userMsg.content || '') : '';
+      const aText = assistantMsg ? String(assistantMsg.content || '') : '';
+      const combined = [uText && `User: ${uText}`, aText && `Assistant: ${aText}`].filter(Boolean).join(' | ');
+      if (combined) {
+        existing.push(
+          buildMemoryRecord({
+            id: `mem_turn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            uri: `${targetUri}/turn_${Date.now()}`,
+            score: 0.91,
+            l0: (uText || combined).slice(0, 60),
+            l1: `Turn memory (${sessionId}): ${combined.slice(0, 180)}`,
+            l2: combined
+          })
+        );
+        memoryStore.set(targetUri, existing);
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'buffered',
+      session_id: sessionId,
+      target_uri: targetUri,
+      buffered_messages: buf.length
+    }));
+    return;
+  }
+
   // POST /api/v1/sessions/:id/commit - Session context commit
   const commitMatch = url.pathname.match(/^\/api\/v1\/sessions\/([^/]+)\/commit$/);
   if (req.method === 'POST' && commitMatch) {
-    const sessionId = commitMatch[1];
+    const sessionId = decodeURIComponent(commitMatch[1]);
     const body = await parseBody(req);
-    const targetUri = body.target_uri || `viking://session/${sessionId}/memories`;
-    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const userId = body.user_id || req.headers['x-openviking-user'] || 'default';
+    const targetUri = body.target_uri || `viking://user/${userId}/memories`;
+    const buffered = sessionBuffers.get(sessionId) || [];
+    const messages = Array.isArray(body.messages) && body.messages.length > 0 ? body.messages : buffered;
 
     const existing = memoryStore.get(targetUri) || [];
     const newItems = [];
 
-    // Extract significant facts from messages
-    if (messages.length > 0) {
+    // Extract significant facts from messages if not already indexed
+    if (Array.isArray(body.messages) && body.messages.length > 0) {
       const lastUser = [...messages].reverse().find(m => m.role === 'user');
       const text = lastUser ? (typeof lastUser.content === 'string' ? lastUser.content : JSON.stringify(lastUser.content)) : 'Session turn';
-      const newItem = {
+      const newItem = buildMemoryRecord({
         id: `mem_commit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         uri: `${targetUri}/commit_${Date.now()}`,
         score: 0.9,
-        L0: text.slice(0, 40) + '...',
-        L1: `Session summary (${sessionId}): ${text.slice(0, 100)}`,
-        L2: `Committed session transcript context: ${text}`,
-        created_at: new Date().toISOString()
-      };
+        l0: text.slice(0, 50),
+        l1: `Session summary (${sessionId}): ${text.slice(0, 140)}`,
+        l2: `Committed session transcript context: ${text}`
+      });
       existing.push(newItem);
       newItems.push(newItem);
     }
 
+    sessionBuffers.delete(sessionId);
     memoryStore.set(targetUri, existing);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -227,16 +290,15 @@ const server = http.createServer(async (req, res) => {
     const targetUri = body.target_uri || defaultUri;
     const text = body.text || body.content || '';
     const existing = memoryStore.get(targetUri) || [];
-    const item = {
+    const item = buildMemoryRecord({
       id: `mem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       uri: `${targetUri}/item_${Date.now()}`,
       score: 0.95,
-      L0: text.slice(0, 35) + '...',
-      L1: `Memory note: ${text.slice(0, 90)}`,
-      L2: text,
-      category: body.category || 'general',
-      created_at: new Date().toISOString()
-    };
+      l0: text.slice(0, 50),
+      l1: `Memory note: ${text.slice(0, 140)}`,
+      l2: text,
+      category: body.category || 'general'
+    });
     existing.push(item);
     memoryStore.set(targetUri, existing);
 

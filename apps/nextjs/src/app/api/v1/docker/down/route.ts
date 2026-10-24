@@ -3,6 +3,11 @@ import { exec } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
+import { isValidContainerName } from '@/lib/api-helpers';
+import {
+  type DockerServiceCategory,
+  getServicesByCategory
+} from '@/lib/docker-catalog';
 
 const execAsync = util.promisify(exec);
 
@@ -20,16 +25,17 @@ function getProjectRoot(): string {
   return current;
 }
 
-import { isValidContainerName } from '@/lib/api-helpers';
-
 export async function POST(req: Request) {
   try {
     const rootDir = getProjectRoot();
 
-    // Parse optional specific services requested in body
     let requestedServices: string[] = [];
+    let requestedProfile: string | undefined;
     try {
       const body = await req.json();
+      if (body && typeof body.profile === 'string') {
+        requestedProfile = body.profile.trim().toLowerCase();
+      }
       if (body && Array.isArray(body.services)) {
         requestedServices = body.services
           .filter((s: unknown): s is string => typeof s === 'string' && isValidContainerName(s));
@@ -40,9 +46,20 @@ export async function POST(req: Request) {
       // Body empty or not JSON
     }
 
+    if (
+      requestedServices.length === 0 &&
+      requestedProfile &&
+      (requestedProfile === 'core' ||
+        requestedProfile === 'inference' ||
+        requestedProfile === 'memory' ||
+        requestedProfile === 'harnesses')
+    ) {
+      requestedServices = getServicesByCategory(requestedProfile as DockerServiceCategory);
+    }
+
     const cmd = requestedServices.length > 0
-      ? `docker compose stop ${requestedServices.join(' ')}`
-      : 'docker compose down';
+      ? `docker compose --profile all stop ${requestedServices.join(' ')}`
+      : 'docker compose --profile all down';
 
     console.log(`[Docker Down] Executing "${cmd}" in ${rootDir}`);
 
@@ -55,7 +72,7 @@ export async function POST(req: Request) {
       success: true,
       message: requestedServices.length > 0
         ? `Containers (${requestedServices.join(', ')}) stopped successfully.`
-        : 'Containers stopped successfully.',
+        : 'All containers stopped successfully.',
       services: requestedServices.length > 0 ? requestedServices : 'all',
       stdout: stdout.trim(),
       stderr: stderr.trim()

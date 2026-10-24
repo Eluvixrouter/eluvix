@@ -1,7 +1,16 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
 
+const MAX_SESSION_CACHE = 500;
 const sessionCache = new Map<string, string>();
+
+function setCachedSession(key: string, sessionId: string) {
+  if (sessionCache.size >= MAX_SESSION_CACHE) {
+    const oldest = sessionCache.keys().next().value;
+    if (oldest) sessionCache.delete(oldest);
+  }
+  sessionCache.set(key, sessionId);
+}
 
 function extractPromptFromMessages(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
@@ -28,6 +37,7 @@ export async function forwardOpencodeHarness(
   const harnessCfg = upstream.harness || { kind: 'opencode' as const };
   const agent = harnessCfg.agentId || 'build';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -57,10 +67,14 @@ export async function forwardOpencodeHarness(
 
   try {
     const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
+    let usedCachedSession = false;
     let ocSessionId =
-      sessionMode === 'per-eluvix-session' && scope?.sessionId ? sessionCache.get(cacheKey) : undefined;
+      reuseSession && scope?.sessionId ? sessionCache.get(cacheKey) : undefined;
+    if (ocSessionId) {
+      usedCachedSession = true;
+    }
 
-    if (!ocSessionId) {
+    const createNewSession = async (): Promise<Response | string> => {
       const sessionRes = await fetch(`${baseUrl}/session`, {
         method: 'POST',
         headers,
@@ -68,26 +82,48 @@ export async function forwardOpencodeHarness(
         signal: controller.signal
       });
       if (!sessionRes.ok) {
-        clearTimeout(timer);
         return sessionRes;
       }
       const sessionData: any = await sessionRes.json();
-      ocSessionId = String(sessionData?.id || `oc-${Date.now()}`);
-      if (sessionMode === 'per-eluvix-session' && scope?.sessionId) {
-        sessionCache.set(cacheKey, ocSessionId);
+      const newId = String(sessionData?.id || `oc-${Date.now()}`);
+      if (reuseSession && scope?.sessionId) {
+        setCachedSession(cacheKey, newId);
       }
+      return newId;
+    };
+
+    if (!ocSessionId) {
+      const createdSession = await createNewSession();
+      if (createdSession instanceof Response) {
+        clearTimeout(timer);
+        return createdSession;
+      }
+      ocSessionId = createdSession;
     }
 
     const prompt = extractPromptFromMessages(request.messages || []);
-    const msgRes = await fetch(`${baseUrl}/session/${encodeURIComponent(ocSessionId)}/message`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        agent,
-        parts: [{ type: 'text', text: prompt }]
-      }),
-      signal: controller.signal
-    });
+    const postMessage = (sid: string) =>
+      fetch(`${baseUrl}/session/${encodeURIComponent(sid)}/message`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          agent,
+          parts: [{ type: 'text', text: prompt }]
+        }),
+        signal: controller.signal
+      });
+
+    let msgRes = await postMessage(ocSessionId);
+    if (msgRes.status === 404 && usedCachedSession) {
+      sessionCache.delete(cacheKey);
+      const recreated = await createNewSession();
+      if (recreated instanceof Response) {
+        clearTimeout(timer);
+        return recreated;
+      }
+      ocSessionId = recreated;
+      msgRes = await postMessage(ocSessionId);
+    }
 
     clearTimeout(timer);
     if (!msgRes.ok) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function MemoryNode({ id, data }: { id: string; data: any }) {
@@ -14,6 +14,24 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
   const [writeBack, setWriteBack] = useState(data?.writeBack !== false);
   const [allowCloudEgress, setAllowCloudEgress] = useState(Boolean(data?.allowCloudEgress));
   const [cloudMode, setCloudMode] = useState(data?.cloudMode || 'filter');
+
+  useEffect(() => {
+    if (data?.provider !== undefined) setProvider(data.provider);
+    if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
+    if (data?.recallBudgetTokens !== undefined) setRecallBudgetTokens(data.recallBudgetTokens);
+    if (data?.readingLevel !== undefined) setReadingLevel(data.readingLevel);
+    if (data?.writeBack !== undefined) setWriteBack(data.writeBack !== false);
+    if (data?.allowCloudEgress !== undefined) setAllowCloudEgress(Boolean(data.allowCloudEgress));
+    if (data?.cloudMode !== undefined) setCloudMode(data.cloudMode);
+  }, [
+    data?.provider,
+    data?.endpoint,
+    data?.recallBudgetTokens,
+    data?.readingLevel,
+    data?.writeBack,
+    data?.allowCloudEgress,
+    data?.cloudMode
+  ]);
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -39,7 +57,7 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
           <span className="text-lg">🧠</span>
           <div>
             <div className="font-bold text-purple-400 text-sm">Context &amp; Memory Engine</div>
-            <div className="text-[10px] text-gray-400 font-mono">OpenViking / Builtin / Mem0</div>
+            <div className="text-[10px] text-gray-400 font-mono">OpenViking / Graphiti / LightRAG / Mem0</div>
           </div>
         </div>
         <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded font-mono uppercase">
@@ -61,6 +79,14 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
                     ? 'http://localhost:1933'
                     : next === 'mem0'
                     ? 'http://localhost:8888'
+                    : next === 'graphiti'
+                    ? 'http://localhost:8004'
+                    : next === 'lightrag'
+                    ? 'http://localhost:9621'
+                    : next === 'cognee'
+                    ? 'http://localhost:8005'
+                    : next === 'supermemory'
+                    ? 'http://localhost:6767'
                     : '';
                 setProvider(next);
                 if (defaultUrl) setEndpoint(defaultUrl);
@@ -69,7 +95,11 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
             >
               <option value="builtin">SQLite Builtin (Zero-Dep)</option>
               <option value="openviking">OpenViking (:1933)</option>
+              <option value="graphiti">Graphiti Temporal Graph (:8004)</option>
+              <option value="lightrag">LightRAG Hybrid Graph (:9621)</option>
               <option value="mem0">Mem0 REST (:8888)</option>
+              <option value="cognee">Cognee ECL Graph (:8005)</option>
+              <option value="supermemory">Supermemory (:6767)</option>
             </select>
           </div>
           <div>

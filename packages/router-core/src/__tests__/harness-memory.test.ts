@@ -12,7 +12,15 @@ import {
   resolveBearerToken,
   revokeNamedApiKey,
   listNamedApiKeys,
-  OpenVikingContextProvider
+  OpenVikingContextProvider,
+  GraphitiContextProvider,
+  LightRagContextProvider,
+  CogneeContextProvider,
+  SupermemoryContextProvider,
+  recallKnowledgeBase,
+  formatKnowledgeSystemBlock,
+  CircuitBreakerRegistry,
+  executeConsensusGroup
 } from '../index.js';
 
 function startMockServer(
@@ -494,4 +502,366 @@ rl.on('line', (line) => {
     const afterRevoke = resolveBearerToken(created.key, 'admin-secret');
     expect(afterRevoke.valid).toBe(false);
   });
+
+  it('recalls L0/L1/L2 uppercase fields from OpenViking simulator and recovers from stale 404 TrueForge sessions without duplicating output', async () => {
+    // 1. OpenViking uppercase L0/L1/L2 payload compatibility
+    const mockViking = await startMockServer((req, _body, res) => {
+      if (req.url === '/api/v1/search/find') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            status: 'success',
+            results: [
+              {
+                id: 'mem_ov_1',
+                uri: 'viking://user/default/memories/preferences',
+                score: 0.94,
+                L0: 'Strict TypeScript L0 abstract',
+                L1: 'Coding guidelines L1 overview',
+                L2: 'Full L2 content details'
+              }
+            ]
+          })
+        );
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    });
+
+    // 2. TrueForge simulator: first session succeeds on turn 1, then expires after restart (404 on turn 2) and recovers to tf-sess-2
+    let createdSessions = 0;
+    let session1Expired = false;
+    const mockTrueForge = await startMockServer((req, _body, res) => {
+      if (req.method === 'POST' && req.url === '/api/v1/sessions') {
+        createdSessions += 1;
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: `tf-sess-${createdSessions}` }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/v1/sessions/tf-sess-1/turns') {
+        if (session1Expired) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Session not found after restart' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`event: turn.end\ndata: ${JSON.stringify({ status: 'completed', output: 'First turn output.' })}\n\n`);
+        res.end();
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/v1/sessions/tf-sess-2/turns') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(`event: text-delta\ndata: ${JSON.stringify({ type: 'text-delta', delta: 'Exact once output.' })}\n\n`);
+        res.write(`event: turn.completed\ndata: ${JSON.stringify({ status: 'completed', output: 'Exact once output.' })}\n\n`);
+        res.end();
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    try {
+      const ovL1 = new OpenVikingContextProvider({
+        enabled: true,
+        provider: 'openviking',
+        endpoint: mockViking.url,
+        openviking: { readingLevel: 'L1' }
+      });
+      const recallL1 = await ovL1.recall('typescript', { userId: 'default', origin: 'client' }, 500);
+      expect(recallL1.blocks).toHaveLength(1);
+      expect(recallL1.blocks[0].text).toBe('Coding guidelines L1 overview');
+
+      const router = new Eluvix({
+        upstreams: [
+          {
+            id: 'tf-recover',
+            name: 'TrueForge Recover',
+            type: 'harness',
+            endpoint: mockTrueForge.url,
+            priority: 50,
+            models: ['harness/trueforge'],
+            harness: {
+              kind: 'trueforge',
+              sessionMode: 'per-eluvix-session'
+            }
+          }
+        ]
+      });
+
+      // Turn 1: creates tf-sess-1 and receives turn.end event without text-delta
+      const firstRes = await router.routeChatCompletion(
+        {
+          model: 'harness/trueforge',
+          messages: [{ role: 'user', content: 'First turn' }]
+        },
+        { scope: { userId: 'u1', sessionId: 'conv-recover', origin: 'client' } }
+      );
+      expect(firstRes.status).toBe(200);
+      const firstJson = await firstRes.json();
+      expect(firstJson.choices[0].message.content).toBe('First turn output.');
+
+      // Simulate container restart invalidating tf-sess-1
+      session1Expired = true;
+
+      // Turn 2: cached tf-sess-1 returns 404 -> automatically evicted, recreates tf-sess-2, and deduplicates text-delta + turn.completed
+      const secondRes = await router.routeChatCompletion(
+        {
+          model: 'harness/trueforge',
+          messages: [{ role: 'user', content: 'Second turn after restart' }]
+        },
+        { scope: { userId: 'u1', sessionId: 'conv-recover', origin: 'client' } }
+      );
+      expect(secondRes.status).toBe(200);
+      expect(secondRes.headers.get('x-eluvix-session')).toBe('tf-sess-2');
+      const secondJson = await secondRes.json();
+      expect(secondJson.choices[0].message.content).toBe('Exact once output.');
+    } finally {
+      await mockViking.close();
+      await mockTrueForge.close();
+    }
+  });
+
+  it('supports Graphiti, LightRAG, Cognee, and Supermemory context providers + Knowledge RAG', async () => {
+    const mockServer = await startMockServer((req, body, res) => {
+      if (req.url === '/search') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            facts: [{ uuid: 'fact-1', fact: 'User migrated cluster to k3d on Friday.', valid_at: '2026-10-23T12:00:00Z', score: 0.91 }]
+          })
+        );
+        return;
+      }
+      if (req.url === '/query') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            results: [{ id: 'doc-1', content: 'Switchyard uses 4 complexity tiers.', source: 'viking://resources/docs/arch', score: 0.95 }]
+          })
+        );
+        return;
+      }
+      if (req.url === '/api/v1/search') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            results: [{ id: 'cog-1', text: 'Cognee ECL graph node summary.', score: 0.88 }]
+          })
+        );
+        return;
+      }
+      if (req.url === '/v3/search') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            results: [{ id: 'sm-1', memory: 'Supermemory recalled preference.', score: 0.92 }]
+          })
+        );
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    });
+
+    try {
+      const scope = { userId: 'u-graph', origin: 'client' as const };
+
+      const graphiti = new GraphitiContextProvider({ enabled: true, provider: 'graphiti', endpoint: mockServer.url });
+      const gRecall = await graphiti.recall('cluster migration', scope, 500);
+      expect(gRecall.blocks[0].text).toContain('User migrated cluster to k3d');
+
+      const lightrag = new LightRagContextProvider({ enabled: true, provider: 'lightrag', endpoint: mockServer.url });
+      const lRecall = await lightrag.recall('complexity tiers', scope, 500);
+      expect(lRecall.blocks[0].text).toContain('Switchyard uses 4 complexity tiers');
+
+      const cognee = new CogneeContextProvider({ enabled: true, provider: 'cognee', endpoint: mockServer.url });
+      const cRecall = await cognee.recall('ECL', scope, 500);
+      expect(cRecall.blocks[0].text).toContain('Cognee ECL graph node');
+
+      const supermem = new SupermemoryContextProvider({ enabled: true, provider: 'supermemory', endpoint: mockServer.url });
+      const sRecall = await supermem.recall('preference', scope, 500);
+      expect(sRecall.blocks[0].text).toContain('Supermemory recalled preference');
+
+      const kbResult = await recallKnowledgeBase(
+        'How many tiers in Switchyard?',
+        {
+          enabled: true,
+          backend: 'lightrag',
+          endpoint: mockServer.url,
+          collectionUri: 'viking://resources/docs',
+          topK: 3,
+          maxTokens: 600
+        },
+        scope
+      );
+      expect(kbResult.blocks).toHaveLength(1);
+      const formatted = formatKnowledgeSystemBlock(kbResult.blocks, {
+        enabled: true,
+        backend: 'lightrag',
+        collectionUri: 'viking://resources/docs'
+      });
+      expect(formatted).toContain('<eluvix-knowledge>');
+      expect(formatted).toContain('Switchyard uses 4 complexity tiers.');
+    } finally {
+      await mockServer.close();
+    }
+  });
+
+  it('routes to OpenHands, Mastra, Letta, and A2A agent harnesses', async () => {
+    const mockHarnesses = await startMockServer((req, _body, res) => {
+      if (req.url === '/api/conversations') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ conversation_id: 'oh-conv-1' }));
+        return;
+      }
+      if (req.url === '/api/conversations/oh-conv-1/messages') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ response: 'OpenHands fixed the bug.' }));
+        return;
+      }
+      if (req.url?.includes('/api/agents/') && req.url?.endsWith('/generate')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ text: 'Mastra workflow completed.' }));
+        return;
+      }
+      if (req.url === '/v1/agents') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([{ id: 'letta-agent-1', name: 'default' }]));
+        return;
+      }
+      if (req.url === '/v1/agents/letta-agent-1/messages' || req.url === '/v1/agents/default/messages') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            messages: [{ message_type: 'assistant_message', content: 'Letta updated core memory.' }]
+          })
+        );
+        return;
+      }
+      if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: '1',
+            result: {
+              id: 'task-a2a-1',
+              status: { state: 'completed' },
+              artifacts: [{ parts: [{ type: 'text', text: 'A2A peer agent response.' }] }]
+            }
+          })
+        );
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+    });
+
+    try {
+      const router = new Eluvix({
+        upstreams: [
+          {
+            id: 'oh',
+            name: 'OpenHands',
+            type: 'harness',
+            endpoint: mockHarnesses.url,
+            priority: 40,
+            models: ['harness/openhands'],
+            harness: { kind: 'openhands', agentId: 'codeact' }
+          },
+          {
+            id: 'mastra',
+            name: 'Mastra',
+            type: 'harness',
+            endpoint: mockHarnesses.url,
+            priority: 35,
+            models: ['harness/mastra'],
+            harness: { kind: 'mastra', agentId: 'default' }
+          },
+          {
+            id: 'letta',
+            name: 'Letta',
+            type: 'harness',
+            endpoint: mockHarnesses.url,
+            priority: 30,
+            models: ['harness/letta'],
+            harness: { kind: 'letta', agentId: 'default' }
+          },
+          {
+            id: 'a2a',
+            name: 'A2A Peer',
+            type: 'harness',
+            endpoint: mockHarnesses.url,
+            priority: 25,
+            models: ['harness/a2a'],
+            harness: { kind: 'a2a', agentId: 'peer' }
+          }
+        ]
+      });
+
+      const ohRes = await router.routeChatCompletion({ model: 'harness/openhands', messages: [{ role: 'user', content: 'Fix bug' }] });
+      expect((await ohRes.json()).choices[0].message.content).toBe('OpenHands fixed the bug.');
+
+      const maRes = await router.routeChatCompletion({ model: 'harness/mastra', messages: [{ role: 'user', content: 'Run workflow' }] });
+      expect((await maRes.json()).choices[0].message.content).toBe('Mastra workflow completed.');
+
+      const leRes = await router.routeChatCompletion({ model: 'harness/letta', messages: [{ role: 'user', content: 'Remember state' }] });
+      expect((await leRes.json()).choices[0].message.content).toBe('Letta updated core memory.');
+
+      const a2aRes = await router.routeChatCompletion({ model: 'harness/a2a', messages: [{ role: 'user', content: 'Delegate task' }] });
+      expect((await a2aRes.json()).choices[0].message.content).toBe('A2A peer agent response.');
+    } finally {
+      await mockHarnesses.close();
+    }
+  });
+
+  it('tracks upstream health in CircuitBreakerRegistry and executes Consensus Judge fan-out', async () => {
+    const breaker = new CircuitBreakerRegistry();
+
+    expect(breaker.isAllowed('u1', 2, 60)).toBe(true);
+    breaker.recordFailure('u1', 2);
+    expect(breaker.isAllowed('u1', 2, 60)).toBe(true);
+    breaker.recordFailure('u1', 2);
+    expect(breaker.getState('u1', 2, 60)).toBe('open');
+    expect(breaker.isAllowed('u1', 2, 60)).toBe(false);
+    breaker.recordSuccess('u1');
+    expect(breaker.getState('u1', 2, 60)).toBe('closed');
+
+    let callIdx = 0;
+    const consensusRes = await executeConsensusGroup(
+      {
+        id: 'arena-1',
+        strategy: 'judge-synthesize',
+        candidateUpstreamIds: ['cand-a', 'cand-b'],
+        judgeModel: 'judge-model'
+      },
+      [
+        { id: 'cand-a', name: 'Candidate A', type: 'ollama', endpoint: 'http://localhost:11434', priority: 20, models: ['*'] },
+        { id: 'cand-b', name: 'Candidate B', type: 'lemonade', endpoint: 'http://localhost:13305', priority: 25, models: ['*'] }
+      ],
+      { model: 'auto', messages: [{ role: 'user', content: 'Explain Raft consensus' }] },
+      async (upstream, req) => {
+        callIdx++;
+        const content =
+          req.model === 'judge-model'
+            ? 'Synthesized best answer from Candidate A and Candidate B.'
+            : `Response from ${upstream.name}`;
+        return new Response(
+          JSON.stringify({
+            id: `cmpl-${callIdx}`,
+            choices: [{ index: 0, message: { role: 'assistant', content } }]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    );
+
+    expect(consensusRes.status).toBe(200);
+    const consensusJson = await consensusRes.json();
+    expect(consensusJson.choices[0].message.content).toBe(
+      'Synthesized best answer from Candidate A and Candidate B.'
+    );
+  });
 });
+

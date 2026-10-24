@@ -43,18 +43,22 @@ export async function GET(req: Request) {
   const providerHealthy = contextProvider ? await contextProvider.health().catch(() => false) : true;
 
   if (query.trim().length > 0 && contextProvider) {
-    const recall = await contextProvider.recall(
-      query,
-      { userId, origin: 'client' },
-      config.memory?.recallBudgetTokens ?? 600
-    );
-    return NextResponse.json({
-      enabled: Boolean(config.memory?.enabled),
-      provider: config.memory?.provider || 'builtin',
-      healthy: providerHealthy,
-      userId,
-      recall
-    });
+    try {
+      const recall = await contextProvider.recall(
+        query,
+        { userId, origin: 'client' },
+        config.memory?.recallBudgetTokens ?? 600
+      );
+      return NextResponse.json({
+        enabled: Boolean(config.memory?.enabled),
+        provider: config.memory?.provider || 'builtin',
+        healthy: providerHealthy,
+        userId,
+        recall
+      });
+    } catch {
+      // Fall back to local SQLite search if external memory container is unreachable
+    }
   }
 
   const items = query.trim()
@@ -104,14 +108,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "'content' string is required" }, { status: 400 });
   }
 
+  const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : undefined;
   const item = addMemoryItem({
     userId,
-    sessionId: typeof body?.sessionId === 'string' ? body.sessionId : undefined,
+    sessionId,
     uri: typeof body?.uri === 'string' ? body.uri : undefined,
     level: body?.level === 'L0' || body?.level === 'L1' || body?.level === 'L2' ? body.level : 'L1',
     content,
     metadata: body?.metadata && typeof body.metadata === 'object' ? body.metadata : undefined
   });
+
+  // Also sync manual memory notes to the active external ContextProvider (e.g., OpenViking / Mem0)
+  if (contextProvider && contextProvider.id !== 'builtin') {
+    await contextProvider
+      .remember(
+        { user: { role: 'user', content }, assistant: '' },
+        { userId, sessionId, origin: 'client' }
+      )
+      .catch(() => {});
+  }
 
   return NextResponse.json({ success: true, item });
 }
@@ -139,6 +154,11 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Provide '?id=<number>' or '?clearAll=true'" }, { status: 400 });
   }
 
-  const deleted = deleteMemoryItem(parseInt(idParam, 10));
+  const parsedId = parseInt(idParam, 10);
+  if (!Number.isFinite(parsedId) || parsedId <= 0) {
+    return NextResponse.json({ error: "Invalid '?id=<number>' parameter" }, { status: 400 });
+  }
+
+  const deleted = deleteMemoryItem(parsedId, auth.userId);
   return NextResponse.json({ success: deleted });
 }

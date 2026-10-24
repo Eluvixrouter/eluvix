@@ -3,11 +3,20 @@ export * from './stream-tee.js';
 export * from './builtin.js';
 export * from './openviking.js';
 export * from './mem0.js';
+export * from './graphiti.js';
+export * from './lightrag.js';
+export * from './cognee.js';
+export * from './supermemory.js';
+export * from './knowledge.js';
 
 import type { ChatMessage } from '../index.js';
 import { BuiltinContextProvider } from './builtin.js';
+import { CogneeContextProvider } from './cognee.js';
+import { GraphitiContextProvider } from './graphiti.js';
+import { LightRagContextProvider } from './lightrag.js';
 import { Mem0ContextProvider } from './mem0.js';
 import { OpenVikingContextProvider } from './openviking.js';
+import { SupermemoryContextProvider } from './supermemory.js';
 import type { ContextProvider, MemoryConfig, RecallBlock } from './types.js';
 
 export const MEMORY_BLOCK_START = '<eluvix-memory>';
@@ -20,6 +29,18 @@ export function createContextProvider(config?: MemoryConfig): ContextProvider {
   }
   if (providerType === 'mem0') {
     return new Mem0ContextProvider(config);
+  }
+  if (providerType === 'graphiti') {
+    return new GraphitiContextProvider(config);
+  }
+  if (providerType === 'lightrag') {
+    return new LightRagContextProvider(config);
+  }
+  if (providerType === 'cognee') {
+    return new CogneeContextProvider(config);
+  }
+  if (providerType === 'supermemory') {
+    return new SupermemoryContextProvider(config);
   }
   return new BuiltinContextProvider();
 }

@@ -155,15 +155,16 @@ export class OpenVikingContextProvider implements ContextProvider {
       const maxTokens = Math.max(64, budgetTokens || 800);
 
       for (const entry of rawItems) {
-        const text = String(
-          (this.readingLevel === 'L0' && entry?.abstract) ||
-            (this.readingLevel === 'L1' && (entry?.overview || entry?.abstract)) ||
-            entry?.content ||
-            entry?.overview ||
-            entry?.abstract ||
-            entry?.text ||
-            ''
-        ).trim();
+        const l0 = entry?.abstract || entry?.L0 || entry?.l0;
+        const l1 = entry?.overview || entry?.L1 || entry?.l1;
+        const l2 = entry?.content || entry?.L2 || entry?.l2;
+        const picked =
+          this.readingLevel === 'L0'
+            ? l0 || l1 || l2
+            : this.readingLevel === 'L1'
+            ? l1 || l0 || l2
+            : l2 || l1 || l0;
+        const text = String(picked || entry?.text || '').trim();
         if (!text) continue;
 
         const est = Math.max(1, Math.ceil(text.length / 4));
@@ -209,7 +210,9 @@ export class OpenVikingContextProvider implements ContextProvider {
     const assistantText = (turn.assistant || '').trim();
     if (!userText && !assistantText) return;
 
-    const sessionId = scope.sessionId || `eluvix-${scope.userId || 'default'}`;
+    const userId = scope.userId || 'default';
+    const sessionId = scope.sessionId || `eluvix-${userId}`;
+    const targetUri = `viking://user/${userId}/memories`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
 
@@ -218,7 +221,8 @@ export class OpenVikingContextProvider implements ContextProvider {
         method: 'POST',
         headers: this.buildHeaders(scope),
         body: JSON.stringify({
-          user_id: scope.userId || 'default',
+          user_id: userId,
+          target_uri: targetUri,
           messages: [
             { role: 'user', content: userText },
             { role: 'assistant', content: assistantText }
@@ -241,14 +245,19 @@ export class OpenVikingContextProvider implements ContextProvider {
   }
 
   public async commit(scope: RequestScope): Promise<void> {
-    const sessionId = scope.sessionId || `eluvix-${scope.userId || 'default'}`;
+    const userId = scope.userId || 'default';
+    const sessionId = scope.sessionId || `eluvix-${userId}`;
+    const targetUri = `viking://user/${userId}/memories`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     try {
       await fetch(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`, {
         method: 'POST',
         headers: this.buildHeaders(scope),
-        body: JSON.stringify({ user_id: scope.userId || 'default' }),
+        body: JSON.stringify({
+          user_id: userId,
+          target_uri: targetUri
+        }),
         signal: controller.signal
       });
     } catch {

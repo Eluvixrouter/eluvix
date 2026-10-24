@@ -88,6 +88,10 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       object: 'list',
       data: [
+        { id: 'harness/trueforge', object: 'model', owned_by: 'trueforge' },
+        { id: 'trueforge/default', object: 'model', owned_by: 'trueforge' },
+        { id: 'trueforge/coder', object: 'model', owned_by: 'trueforge' },
+        { id: 'trueforge/researcher', object: 'model', owned_by: 'trueforge' },
         { id: 'trueforge-agent', object: 'model', owned_by: 'trueforge' },
         { id: 'trueforge-coder', object: 'model', owned_by: 'trueforge' }
       ]
@@ -101,9 +105,9 @@ const server = http.createServer(async (req, res) => {
     const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const session = {
       id: sessionId,
-      agent_id: body.agent_id || 'default',
+      agent_id: body.agentId || body.agent_id || 'default',
       tools: body.tools || ['bash', 'file_reader', 'grep_search'],
-      context: body.context || {},
+      context: body.context || body.metadata || {},
       status: 'ready',
       created_at: new Date().toISOString()
     };
@@ -135,11 +139,15 @@ const server = http.createServer(async (req, res) => {
     const sessionId = turnMatch[1];
     const body = await parseBody(req);
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const prompt = body.prompt || body.message || 'Run agent task';
+    const msgPrompt = Array.isArray(body.messages)
+      ? ([...body.messages].reverse().find(m => m && m.role === 'user')?.content || '')
+      : '';
+    const prompt = String(body.input || body.prompt || body.message || msgPrompt || 'Run agent task');
 
     turns.set(turnId, { id: turnId, sessionId, prompt, status: 'running' });
 
     const wantsStream = req.headers.accept?.includes('text/event-stream') || body.stream !== false;
+    const output = `TrueForge agent processed prompt "${prompt.slice(0, 60)}" successfully across 2 steps.`;
 
     if (wantsStream) {
       res.writeHead(200, {
@@ -156,7 +164,7 @@ const server = http.createServer(async (req, res) => {
 
       setTimeout(() => {
         sendEvent('step.start', { step: 1, action: 'analyze', description: `Analyzing input: "${prompt.slice(0, 50)}"` });
-      }, 50);
+      }, 20);
 
       setTimeout(() => {
         sendEvent('tool.call', {
@@ -165,7 +173,7 @@ const server = http.createServer(async (req, res) => {
           arguments: { query: 'components' },
           approval_required: false
         });
-      }, 150);
+      }, 40);
 
       setTimeout(() => {
         sendEvent('tool.result', {
@@ -173,17 +181,16 @@ const server = http.createServer(async (req, res) => {
           tool_name: 'inspect_repo',
           output: 'Found 14 TypeScript files and packages/router-core'
         });
-      }, 250);
+      }, 60);
 
       setTimeout(() => {
-        sendEvent('step.start', { step: 2, action: 'formulate', description: 'Generating final solution...' });
-      }, 350);
+        sendEvent('text-delta', { type: 'text-delta', turn_id: turnId, delta: output });
+      }, 80);
 
       setTimeout(() => {
-        const output = `TrueForge agent processed prompt "${prompt.slice(0, 40)}..." successfully across 2 steps.`;
-        sendEvent('turn.end', { turn_id: turnId, session_id: sessionId, status: 'completed', output });
+        sendEvent('turn.completed', { turn_id: turnId, session_id: sessionId, status: 'completed', output });
         res.end();
-      }, 450);
+      }, 100);
 
       return;
     }
@@ -194,7 +201,7 @@ const server = http.createServer(async (req, res) => {
       turn_id: turnId,
       session_id: sessionId,
       status: 'completed',
-      output: `TrueForge agent processed prompt "${prompt.slice(0, 40)}..." successfully.`,
+      output,
       steps_executed: 2
     }));
     return;
