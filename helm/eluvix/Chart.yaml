@@ -2,8 +2,8 @@ apiVersion: v2
 name: eluvix
 description: Eluvix Sovereign AI Router and Local LLM Inference Stack
 type: application
-version: 1.0.4
-appVersion: "1.0.4"
+version: 1.0.5
+appVersion: "1.0.5"
 keywords:
   - ai
   - llm
