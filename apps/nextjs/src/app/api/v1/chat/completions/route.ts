@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
+import { resolveSessionUserId } from '@/lib/caller-identity';
+import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
 
@@ -84,15 +86,19 @@ export async function POST(req: Request) {
     }
 
     const router = getRouter();
+    // Identity comes only from credentials the caller actually proved:
+    // a named elx_ key's bound userId, or the browser session (the
+    // admin's 'default' store). The x-eluvix-user header and body.user
+    // are self-asserted and are deliberately NOT consulted (audit H-2):
+    // keyless, sessionless callers that reach this route passed the
+    // middleware with the admin bearer, so they belong to 'default'.
+    const sessionUserId = keyUserId ? null : await resolveSessionUserId(req);
     const headerOrigin = req.headers.get('x-eluvix-origin');
     const origin: RequestScope['origin'] =
       keyOrigin ||
       (headerOrigin === 'harness' || headerOrigin === 'playground' ? headerOrigin : 'client');
     const scope: Partial<RequestScope> = {
-      userId:
-        keyUserId ||
-        req.headers.get('x-eluvix-user') ||
-        (typeof body.user === 'string' && body.user.trim() ? body.user.trim() : 'default'),
+      userId: keyUserId || sessionUserId || 'default',
       sessionId:
         req.headers.get('x-eluvix-session') ||
         (typeof body.metadata?.sessionId === 'string' ? body.metadata.sessionId : undefined),
@@ -264,8 +270,9 @@ export async function POST(req: Request) {
   } catch (error) {
     const err = error as Error;
     const msg = err.message || 'Internal server error';
+    const kind = classifyChatError(err);
 
-    if (msg.startsWith('No upstream available for model:')) {
+    if (kind === 'no-upstream') {
       const isVision = msg.includes('with vision capability');
       return NextResponse.json(
         {
@@ -280,7 +287,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (msg.startsWith('All upstreams failed to process the request.')) {
+    if (kind === 'all-upstreams-failed') {
       return NextResponse.json(
         {
           error: {
@@ -294,7 +301,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (err.name === 'AbortError' || msg.includes('Client aborted') || msg.includes('client_closed_request')) {
+    if (kind === 'client-aborted') {
       return NextResponse.json(
         {
           error: {
@@ -308,7 +315,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (err.name === 'TimeoutError' || msg.includes('timed out')) {
+    if (kind === 'timeout') {
       return NextResponse.json(
         {
           error: {

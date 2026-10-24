@@ -1,8 +1,13 @@
 /**
  * Wraps an OpenAI-compatible SSE ReadableStream, passing every byte through
  * untouched to the caller while accumulating `choices[].delta.content` chunks.
- * When the stream ends (or `[DONE]` is observed), `onComplete` is called
- * asynchronously (fire-and-forget) with the assembled assistant text.
+ * `onComplete` is called asynchronously (fire-and-forget) with the assembled
+ * assistant text ONLY when the stream terminates cleanly with `[DONE]`
+ * (security audit M-21). A stream that simply ends — or errors — without
+ * `[DONE]` is a truncated reply: its partial text must not be stored as a
+ * completed turn, where it would later be recalled as authoritative memory.
+ * If the consumer cancels (client disconnect), `onComplete` is NOT called
+ * either.
  */
 export function teeSseStreamForMemory(
   source: ReadableStream<Uint8Array>,
@@ -12,9 +17,13 @@ export function teeSseStreamForMemory(
   let lineBuffer = '';
   let accumulated = '';
   let fired = false;
+  let cancelled = false;
+  let sawDone = false;
 
   const fireOnce = () => {
-    if (fired) return;
+    // Only a clean [DONE] finish counts as a completed turn (audit M-21):
+    // stream end without [DONE], and any error path, must never fire.
+    if (fired || cancelled || !sawDone) return;
     fired = true;
     const text = accumulated.trim();
     if (text.length > 0) {
@@ -35,6 +44,7 @@ export function teeSseStreamForMemory(
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
       if (payload === '[DONE]') {
+        sawDone = true;
         fireOnce();
         continue;
       }
@@ -62,6 +72,9 @@ export function teeSseStreamForMemory(
           if (lineBuffer.trim()) {
             processLines('\n');
           }
+          // Fires only if a [DONE] line was seen (possibly in the final
+          // flush above); a stream that ends without [DONE] is truncated
+          // and its partial text is discarded, never stored (audit M-21).
           fireOnce();
           controller.close();
           return;
@@ -73,12 +86,16 @@ export function teeSseStreamForMemory(
           controller.enqueue(value);
         }
       } catch (err) {
-        fireOnce();
+        // Upstream error mid-stream: never write the partial reply back
+        // to memory (audit M-21) — just propagate the error.
         controller.error(err);
       }
     },
     cancel(reason) {
-      fireOnce();
+      // Client disconnected mid-stream: the accumulated text is a truncated
+      // reply, not a completed turn. Do NOT write it back to memory —
+      // otherwise the partial answer is later recalled as if complete.
+      cancelled = true;
       return reader.cancel(reason).catch(() => {});
     }
   });

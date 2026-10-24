@@ -73,7 +73,9 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
       const model = parts[0] || 'NVIDIA GPU';
       const totalMb = parseFloat(parts[1]) || 8192;
       const freeMb = parseFloat(parts[2]) || 6144;
-      const temp = parseInt(parts[3], 10) || 45;
+      // Only report a temperature nvidia-smi actually measured; some GPUs
+      // report 'N/A' — never substitute an invented constant.
+      const temp = parseInt(parts[3], 10);
       const util = parseInt(parts[4], 10) || 0;
 
       return {
@@ -82,7 +84,7 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
         count: lines.length,
         vramTotalGb: Number((totalMb / 1024).toFixed(1)),
         vramFreeGb: Number((freeMb / 1024).toFixed(1)),
-        temperatureC: temp,
+        ...(Number.isNaN(temp) ? {} : { temperatureC: temp }),
         utilPercent: util,
       };
     }
@@ -124,7 +126,9 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
 
       let totalBytes = 0;
       let usedBytes = 0;
-      let tempC = 45;
+      // Stays undefined unless a hwmon sensor file yields a real reading —
+      // an unmeasured temperature must be absent, never an invented constant.
+      let tempC: number | undefined = undefined;
       let utilPercent = 0;
       let foundAmdCard = false;
 
@@ -168,7 +172,10 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
                 for (const h of hwmons) {
                   const tempFile = `${hwmonDir}/${h}/temp1_input`;
                   if (fs.existsSync(tempFile)) {
-                    tempC = Math.round(parseInt(fs.readFileSync(tempFile, 'utf8').trim(), 10) / 1000) || 45;
+                    const milliC = parseInt(fs.readFileSync(tempFile, 'utf8').trim(), 10);
+                    if (!Number.isNaN(milliC) && milliC > 0) {
+                      tempC = Math.round(milliC / 1000);
+                    }
                     break;
                   }
                 }
@@ -182,8 +189,10 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
       }
 
       if (foundAmdCard || model || fs.existsSync('/sys/module/amdgpu')) {
-        const vramTotalGb = totalBytes > 0 ? Number((totalBytes / (1024 * 1024 * 1024)).toFixed(1)) : 16.0;
-        const vramFreeGb = totalBytes > 0 ? Math.max(0, Number(((totalBytes - usedBytes) / (1024 * 1024 * 1024)).toFixed(1))) : 12.0;
+        // When sysfs exposed no memory counters, fall back to host memory
+        // (the shared-memory reality for APUs) instead of inventing VRAM.
+        const vramTotalGb = totalBytes > 0 ? Number((totalBytes / (1024 * 1024 * 1024)).toFixed(1)) : Number((os.totalmem() / (1024 * 1024 * 1024)).toFixed(1));
+        const vramFreeGb = totalBytes > 0 ? Math.max(0, Number(((totalBytes - usedBytes) / (1024 * 1024 * 1024)).toFixed(1))) : Number((os.freemem() / (1024 * 1024 * 1024)).toFixed(1));
 
         return {
           vendor: 'AMD',
@@ -191,7 +200,7 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
           count: 1,
           vramTotalGb,
           vramFreeGb,
-          temperatureC: tempC,
+          ...(tempC !== undefined ? { temperatureC: tempC } : {}),
           utilPercent,
         };
       }
@@ -208,13 +217,17 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     if (stdout.includes('Card') || stdout.includes('GPU')) {
+      // rocm-smi answered but yielded no parseable memory/temperature data:
+      // derive capacity from host memory and omit temperature entirely
+      // rather than inventing VRAM figures or a temperature.
+      const totalMem = os.totalmem();
+      const freeMem = os.freemem();
       return {
         vendor: 'AMD',
         model: 'AMD Radeon / Instinct Accelerator',
         count: 1,
-        vramTotalGb: 16.0,
-        vramFreeGb: 12.0,
-        temperatureC: 48,
+        vramTotalGb: Number((totalMem / (1024 * 1024 * 1024)).toFixed(1)),
+        vramFreeGb: Number((freeMem / (1024 * 1024 * 1024)).toFixed(1)),
         utilPercent: 0,
       };
     }
@@ -227,6 +240,7 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
     try {
       const brand = execSync('sysctl -n machdep.cpu.brand_string', { encoding: 'utf8' }).trim();
       const totalMem = os.totalmem();
+      const freeMem = os.freemem();
       const totalGb = Number((totalMem / (1024 * 1024 * 1024)).toFixed(1));
 
       return {
@@ -234,8 +248,11 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
         model: brand || 'Apple Silicon (Metal Unified Memory)',
         count: 1,
         vramTotalGb: totalGb,
-        vramFreeGb: Number((totalGb * 0.75).toFixed(1)),
-        temperatureC: 42,
+        // Unified memory: free capacity is the host's free memory, not a
+        // fixed fraction of the total. No temperature is reported — none is
+        // measured here, and an invented constant would defeat the thermal
+        // guard that consumes this field.
+        vramFreeGb: Number((freeMem / (1024 * 1024 * 1024)).toFixed(1)),
         utilPercent: 0,
       };
     } catch {
@@ -255,18 +272,27 @@ export async function detectGpuHardware(): Promise<GpuInfo> {
     count: cpus.length,
     vramTotalGb: Number((totalMem / (1024 * 1024 * 1024)).toFixed(1)),
     vramFreeGb: Number((freeMem / (1024 * 1024 * 1024)).toFixed(1)),
-    temperatureC: 45,
+    // No temperature: a CPU-only host has no GPU sensor read here, and a
+    // hardcoded value would be presented as measured telemetry (and would
+    // silently disable the thermal guard, which keys off this field).
     utilPercent: 0,
   };
 }
 
 /**
- * Queries local inference engine (Ollama, vLLM, Lemonade) for loaded/available models.
+ * Probes a local inference engine (Ollama, vLLM, Lemonade) for its models.
+ *
+ * Returns the models an engine actually reported (possibly an empty list if
+ * an engine answered but serves no models), or `null` when NO probe got a
+ * successful response — i.e. detection did not succeed and nothing is known
+ * about the engine's catalog. Callers that advertise models (registration,
+ * status) must use this probe so an unreachable engine can never result in
+ * an invented catalog being presented as installed.
  */
-export async function detectLocalEngineModels(
+export async function probeLocalEngineModels(
   engineUrl: string = 'http://localhost:11434',
   engineType: string = 'ollama'
-): Promise<LocalEngineModelInfo[]> {
+): Promise<LocalEngineModelInfo[] | null> {
   const trimmed = engineUrl.trim().replace(/\/+$/, '');
   const candidateUrls: string[] = [];
 
@@ -276,11 +302,14 @@ export async function detectLocalEngineModels(
     candidateUrls.push(`${trimmed}/v1/models`, `${trimmed}/models`, `${trimmed}/api/tags`);
   }
 
+  let engineResponded = false;
+
   for (const url of candidateUrls) {
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
       if (!res.ok) continue;
       const data = await res.json();
+      engineResponded = true;
 
       // Standard Ollama format: { models: [{ name, size }] }
       if (Array.isArray(data.models) && data.models.length > 0) {
@@ -302,6 +331,29 @@ export async function detectLocalEngineModels(
     } catch {
       // Continue to next probe
     }
+  }
+
+  // An engine answered but reported no models: that is an honest empty
+  // catalog. No answer at all: detection failed.
+  return engineResponded ? [] : null;
+}
+
+/**
+ * Queries local inference engine (Ollama, vLLM, Lemonade) for loaded/available models.
+ *
+ * Legacy convenience wrapper: when no probe succeeds (or the engine reports
+ * no models) it returns plausible fallback defaults for display purposes.
+ * These fallbacks are INVENTED — never register or advertise them as a
+ * node's installed models. Use probeLocalEngineModels() where the truth
+ * matters.
+ */
+export async function detectLocalEngineModels(
+  engineUrl: string = 'http://localhost:11434',
+  engineType: string = 'ollama'
+): Promise<LocalEngineModelInfo[]> {
+  const probed = await probeLocalEngineModels(engineUrl, engineType);
+  if (probed && probed.length > 0) {
+    return probed;
   }
 
   // Fallback defaults
@@ -394,6 +446,10 @@ export class EluvixProviderAgent extends EventEmitter {
       } else {
         status = 'ONLINE';
       }
+    } else if (this.lastErrorMessage) {
+      // A failed start (e.g. registration rejected) must read as an error,
+      // never as a clean offline — the error message is surfaced below.
+      status = 'ERROR';
     }
 
     return {
@@ -421,8 +477,17 @@ export class EluvixProviderAgent extends EventEmitter {
       this.gpuInfo = await this.detectHardware();
       console.log(`[Eluvix Provider] 🎮 Hardware: ${this.gpuInfo.count}x ${this.gpuInfo.model} (${this.gpuInfo.vramTotalGb}GB VRAM)`);
 
-      // 2. Discover local models
-      this.installedModels = await detectLocalEngineModels(this.config.engineUrl, this.config.engineType);
+      // 2. Discover local models. Only models an engine probe actually
+      // reported may be advertised to the marketplace; if no engine
+      // answered, register with an honestly empty catalog instead of the
+      // invented fallback list detectLocalEngineModels() would return.
+      const probedModels = await probeLocalEngineModels(this.config.engineUrl, this.config.engineType);
+      if (probedModels) {
+        this.installedModels = probedModels;
+      } else {
+        this.installedModels = [];
+        console.warn(`[Eluvix Provider] ⚠️ Local engine at ${this.config.engineUrl} did not answer model probes; registering with an empty model catalog.`);
+      }
       console.log(`[Eluvix Provider] 📦 Local Models: ${this.installedModels.map((m) => m.name).join(', ')}`);
 
       // 3. Register with Billama
@@ -527,6 +592,12 @@ export class EluvixProviderAgent extends EventEmitter {
 
   /**
    * Registers this node with Billama Edge Marketplace.
+   *
+   * Registration failure is FATAL to start(): it throws, so start() records
+   * the error and the agent never reports ONLINE for a node the marketplace
+   * did not accept. No substitute node identity is ever fabricated or
+   * persisted — a node id exists only if the server issued (or had
+   * previously issued) one.
    */
   private async registerNode(): Promise<void> {
     const registerUrl = `${this.config.serverUrl.replace(/\/+$/, '')}/api/nodes/register`;
@@ -547,38 +618,29 @@ export class EluvixProviderAgent extends EventEmitter {
       })),
     };
 
-    try {
-      const res = await fetch(registerUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+    const res = await fetch(registerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to register GPU node with Billama Edge');
-      }
-
-      this.nodeId = data.node.id;
-      if (data.node.reputationScore) {
-        this.reputationScore = data.node.reputationScore;
-      }
-
-      saveProviderSettings({
-        node_id: this.nodeId || undefined,
-        node_token: data.rawToken || this.config.nodeToken,
-        reputation_score: this.reputationScore,
-      });
-
-      console.log(`[Eluvix Provider] ✅ Registered successfully with Billama! Node ID: ${this.nodeId}`);
-    } catch (err: any) {
-      console.warn(`[Eluvix Provider] Note: Running in local provider mode (${err.message}).`);
-      // Keep mock node ID if offline or local testing
-      if (!this.nodeId) {
-        this.nodeId = `eluvix-node-${Date.now().toString(36)}`;
-        saveProviderSettings({ node_id: this.nodeId });
-      }
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to register GPU node with Billama Edge');
     }
+
+    this.nodeId = data.node.id;
+    if (data.node.reputationScore) {
+      this.reputationScore = data.node.reputationScore;
+    }
+
+    saveProviderSettings({
+      node_id: this.nodeId || undefined,
+      node_token: data.rawToken || this.config.nodeToken,
+      reputation_score: this.reputationScore,
+    });
+
+    console.log(`[Eluvix Provider] ✅ Registered successfully with Billama! Node ID: ${this.nodeId}`);
   }
 
   /**
@@ -611,7 +673,9 @@ export class EluvixProviderAgent extends EventEmitter {
       nodeToken: this.config.nodeToken || 'local-eluvix-token',
       status: this.isPaused ? 'STANDBY' : 'ONLINE',
       vramFreeGb: this.gpuInfo?.vramFreeGb || 16.0,
-      temperatureC: this.gpuInfo?.temperatureC || 45,
+      // null when no temperature was actually measured — never report an
+      // invented constant as measured telemetry.
+      temperatureC: this.gpuInfo?.temperatureC ?? null,
     };
 
     try {
@@ -621,10 +685,12 @@ export class EluvixProviderAgent extends EventEmitter {
         body: JSON.stringify(payload),
       });
 
-      const nowIso = new Date().toISOString();
-      saveProviderSettings({ last_heartbeat_at: nowIso });
-
       if (res.ok) {
+        // Liveness is recorded ONLY on a heartbeat the server accepted.
+        // A rejected or undelivered heartbeat must leave last_heartbeat_at
+        // untouched so status consumers can see the node is actually stale.
+        saveProviderSettings({ last_heartbeat_at: new Date().toISOString() });
+
         const data = await res.json();
         if (data.reputationScore) {
           this.reputationScore = data.reputationScore;
@@ -636,8 +702,9 @@ export class EluvixProviderAgent extends EventEmitter {
         }
       }
     } catch (err: any) {
-      // Offline fallback: update local heartbeat timestamp
-      saveProviderSettings({ last_heartbeat_at: new Date().toISOString() });
+      // Network error: the heartbeat never arrived. Deliberately do NOT
+      // update last_heartbeat_at — a fresh timestamp here would fabricate
+      // liveness for a node the server has not heard from.
     }
   }
 

@@ -1,30 +1,6 @@
+import { setBounded } from '../bounded-map.js';
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
-
-function isLocalEndpointUrl(endpoint: string): boolean {
-  try {
-    const u = new URL(endpoint);
-    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host === '::1' ||
-      host === '0.0.0.0' ||
-      host === 'openviking' ||
-      host === 'host.docker.internal' ||
-      host.endsWith('.local') ||
-      host.endsWith('.internal')
-    ) {
-      return true;
-    }
-    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -54,10 +30,6 @@ export class OpenVikingContextProvider implements ContextProvider {
     this.autoCommitTurns = Math.max(1, config.autoCommitTurns ?? 5);
     this.readingLevel = config.openviking?.readingLevel || 'L1';
     this.scopePrefixes = config.openviking?.scopePrefixes;
-  }
-
-  public isLocal(): boolean {
-    return isLocalEndpointUrl(this.endpoint);
   }
 
   private buildHeaders(scope?: RequestScope): Record<string, string> {
@@ -232,7 +204,10 @@ export class OpenVikingContextProvider implements ContextProvider {
       });
 
       const count = (this.turnCounts.get(sessionId) || 0) + 1;
-      this.turnCounts.set(sessionId, count);
+      // Bounded: one counter per session id, evicted oldest-first, so the
+      // map cannot grow without bound for the process lifetime. (Eviction
+      // only loses auto-commit progress for the evicted session.)
+      setBounded(this.turnCounts, sessionId, count);
       if (count >= this.autoCommitTurns) {
         this.turnCounts.set(sessionId, 0);
         await this.commit(scope);

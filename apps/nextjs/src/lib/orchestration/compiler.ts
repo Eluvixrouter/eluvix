@@ -526,7 +526,26 @@ function generateEluvixConfig(
         approvals: approvalPolicy,
         approvalPolicy,
         sessionMode: String(node.data?.sessionMode || 'per-eluvix-session'),
-        providerIsLocal: node.data?.providerIsLocal !== false,
+        // Locality is never defaulted: emit the declaration only when the
+        // canvas carries an explicit boolean. Without it, the router derives
+        // locality from the endpoint (acp:// and cli:// wrappers are not
+        // local) instead of the old default-true that marked every canvas
+        // harness as on-machine.
+        ...(typeof node.data?.providerIsLocal === 'boolean'
+          ? { providerIsLocal: node.data.providerIsLocal }
+          : {}),
+        ...(typeof node.data?.command === 'string' || Array.isArray(node.data?.command)
+          ? { command: node.data.command }
+          : {}),
+        ...(Array.isArray(node.data?.args)
+          ? { args: node.data.args.map((a: any) => String(a)) }
+          : {}),
+        // M-4: explicit per-harness tool allowlist for auto-approval.
+        // Absent/empty means nothing is auto-approved by name.
+        ...(Array.isArray(node.data?.autoApproveTools)
+          ? { autoApproveTools: node.data.autoApproveTools.map((t: any) => String(t)) }
+          : {}),
+        ...(node.data?.cwd ? { cwd: String(node.data.cwd) } : {}),
         ...(linkedSandbox
           ? {
               sandboxEndpoint: String(linkedSandbox.data?.endpoint || 'http://localhost:8910'),
@@ -586,9 +605,24 @@ function generateEluvixConfig(
         writeBack: memData.writeBack !== false,
         allowCloudEgress: Boolean(memData.allowCloudEgress),
         cloudMode: memData.cloudMode === 'strip' ? 'strip' : 'filter',
-        openviking: memData.readingLevel
-          ? { readingLevel: memData.readingLevel as 'L0' | 'L1' | 'L2' }
-          : undefined
+        ...(memData.apiKey ? { apiKey: String(memData.apiKey) } : {}),
+        ...(memData.recallTimeoutMs !== undefined
+          ? { recallTimeoutMs: Number(memData.recallTimeoutMs) }
+          : {}),
+        ...(memData.autoCommitTurns !== undefined
+          ? { autoCommitTurns: Number(memData.autoCommitTurns) }
+          : {}),
+        openviking:
+          memData.readingLevel || (Array.isArray(memData.scopePrefixes) && memData.scopePrefixes.length > 0)
+            ? {
+                ...(memData.readingLevel
+                  ? { readingLevel: memData.readingLevel as 'L0' | 'L1' | 'L2' }
+                  : {}),
+                ...(Array.isArray(memData.scopePrefixes) && memData.scopePrefixes.length > 0
+                  ? { scopePrefixes: memData.scopePrefixes.map((p: any) => String(p)) }
+                  : {})
+              }
+            : undefined
       }
     : undefined;
 
@@ -686,7 +720,10 @@ function generateEluvixConfig(
     openaiNodes.length > 0 ||
     claudeNodes.length > 0 ||
     modelGateways.length > 0 ||
-    harnessNodes.some(n => (n.data as any)?.providerIsLocal === false);
+    // A harness counts as on-machine only when it explicitly declares
+    // providerIsLocal: true — an undeclared harness may front a cloud
+    // model, so the layout opts into egress (fail-closed).
+    harnessNodes.some(n => (n.data as any)?.providerIsLocal !== true);
 
   return {
     upstreams,

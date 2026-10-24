@@ -100,8 +100,9 @@ export default function Home() {
               kind: 'trueforge',
               agentId: 'default',
               approvals: 'auto-approve-readonly',
-              sessionMode: 'per-eluvix-session',
-              providerIsLocal: true
+              sessionMode: 'per-eluvix-session'
+              // providerIsLocal intentionally omitted: locality is derived
+              // from the endpoint unless the operator declares it.
             }
           }
         : {})

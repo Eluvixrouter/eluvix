@@ -1,33 +1,17 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { RequestScope } from '../context/types.js';
-import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
+import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { resolveCliExecutable, ACP_CLI_BINARIES } from '../cli-exec.js';
+import { buildHarnessPrompt } from './prompt.js';
+import { buildChildEnv } from './env.js';
+import { isToolAutoApproved } from './approval.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
-const ALLOWED_ACP_BINARIES = new Set([
-  'goose',
-  'opencode',
-  'openhands',
-  'claude-code-acp',
-  'agy'
-]);
-
-function extractPromptFromMessages(messages: ChatMessage[]): string {
-  const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
-  if (!lastUser) return '';
-  if (typeof lastUser.content === 'string') return lastUser.content;
-  if (Array.isArray(lastUser.content)) {
-    return lastUser.content
-      .filter(p => p.type === 'text')
-      .map(p => (p as { type: 'text'; text: string }).text)
-      .join('\n');
-  }
-  return '';
-}
-
-function isReadonlyTool(title: string): boolean {
-  return /^(read|get|list|search|find|fetch|query|view|inspect|cat|ls|grep)/i.test(title || '');
-}
+/** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
+const ACP_KILL_GRACE_MS = 2000;
+/** Only the tail of the child's stderr is retained for diagnostics. */
+const ACP_STDERR_TAIL_BYTES = 8192;
 
 export async function forwardAcpHarness(
   upstream: UpstreamConfig,
@@ -47,16 +31,36 @@ export async function forwardAcpHarness(
     cmdArray = ['goose', 'acp'];
   }
   const rawBin = cmdArray[0].trim();
-  const baseBin = path.basename(rawBin);
   const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
 
-  if (!ALLOWED_ACP_BINARIES.has(baseBin) && !(isTestEnv && baseBin === 'node')) {
-    throw new Error(`ACP execution denied: '${baseBin}' is not an authorized ACP agent binary.`);
+  // Resolve through the central executable gate (audit M-1): the old
+  // basename-only check let a config value like `/tmp/dropped/goose` pass
+  // and execute. The resolver enforces the allowlist on the canonical
+  // path — the file must exist, be executable, and not live under a
+  // world-writable or config-controlled directory. The spawn below uses
+  // the RESOLVED path, never the raw config value. (Test env keeps its
+  // historical exception: `node`, used by the suite's fake ACP agents via
+  // process.execPath.)
+  const resolvedBin = resolveCliExecutable(rawBin, {
+    allowedBasenames: isTestEnv ? [...ACP_CLI_BINARIES, 'node'] : ACP_CLI_BINARIES
+  });
+  const baseBin = path.basename(resolvedBin);
+
+  // The ACP session/prompt channel carries text only: forwarding a
+  // tool-bearing request would silently drop the tools. Fail the attempt
+  // instead so router failover can pick an upstream that supports them.
+  if (Array.isArray(request.tools) && request.tools.length > 0) {
+    throw new Error(
+      'ACP harness does not support client tool calling; refusing to silently drop request tools'
+    );
   }
 
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
-  const promptText = extractPromptFromMessages(request.messages || []);
+  // ACP sessions are spawned per request, so the full conversation —
+  // system context (incl. the injected <eluvix-memory> block) plus the
+  // history transcript — is folded into the prompt.
+  const promptText = buildHarnessPrompt(request.messages || [], { includeHistory: true });
   const cwd = harnessCfg.cwd || process.cwd();
   const servedModel = `acp/${baseBin}`;
   const completionId = `chatcmpl-acp-${Date.now()}`;
@@ -64,25 +68,40 @@ export async function forwardAcpHarness(
 
   const runAcpSession = (onDelta: (text: string) => void): Promise<string> => {
     return new Promise((resolve, reject) => {
-      const child = spawn(rawBin, cmdArray.slice(1), {
+      const child = spawn(resolvedBin, cmdArray.slice(1), {
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
+        // Spawn-boundary env scrub (audit H-1 / D3): the agent never
+        // inherits the router's own credentials — see harness/env.ts.
+        env: buildChildEnv({
           ELUVIX_ORIGIN: 'harness',
           ELUVIX_HOPS: String(hops + 1)
-        }
+        })
       });
 
       let fullText = '';
       let lineBuf = '';
       let settled = false;
+      let childExited = false;
+      let stderrTail = '';
+      let killTimer: NodeJS.Timeout | null = null;
       let sessionId = 'acp-session-1';
 
       const cleanup = () => {
         clearTimeout(timer);
+        if (childExited) return;
         try {
-          if (!child.killed) child.kill('SIGTERM');
+          if (!child.killed) {
+            child.kill('SIGTERM');
+            // Escalate if the agent ignores SIGTERM, otherwise a wedged
+            // child outlives the request that spawned it.
+            killTimer = setTimeout(() => {
+              try {
+                if (!childExited) child.kill('SIGKILL');
+              } catch {}
+            }, ACP_KILL_GRACE_MS);
+            killTimer.unref?.();
+          }
         } catch {}
       };
 
@@ -117,18 +136,43 @@ export async function forwardAcpHarness(
       }
 
       const sendRpc = (msg: Record<string, any>) => {
-        if (child.stdin.writable) {
-          child.stdin.write(JSON.stringify(msg) + '\n');
+        try {
+          if (child.stdin.writable) {
+            child.stdin.write(JSON.stringify(msg) + '\n');
+          }
+        } catch {
+          // Agent died mid-write; the close/error handlers settle the turn.
         }
       };
 
+      // Writing to a dead agent's stdin raises EPIPE asynchronously; without
+      // a listener that becomes an unhandled error that crashes the router.
+      child.stdin.on('error', () => {});
+      // stderr is piped, so it MUST be drained: an agent that logs more than
+      // the OS pipe buffer (~64KB) blocks mid-turn and the request times
+      // out. Consume it, retaining only a bounded rolling tail.
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-ACP_STDERR_TAIL_BYTES);
+      });
+      child.stderr.on('error', () => {});
+
       child.on('error', err => finishErr(err));
       child.on('close', code => {
+        childExited = true;
+        if (killTimer) {
+          clearTimeout(killTimer);
+          killTimer = null;
+        }
         if (!settled) {
           if (fullText.length > 0 || code === 0) {
             finishOk();
           } else {
-            finishErr(new Error(`ACP process '${baseBin}' exited with code ${code}`));
+            const tail = stderrTail.trim();
+            finishErr(
+              new Error(
+                `ACP process '${baseBin}' exited with code ${code}${tail ? `: ${tail.slice(-500)}` : ''}`
+              )
+            );
           }
         }
       });
@@ -202,9 +246,20 @@ export async function forwardAcpHarness(
               onDelta(note);
             }
 
-            const shouldApprove =
-              (approvalPolicy === 'auto-approve-readonly' || approvalPolicy === 'read-only') &&
-              isReadonlyTool(title);
+            // Auto-approval requires an exact allowlist match (audit
+            // M-4): a read-only-looking title is never sufficient — the
+            // title is supplied by the agent being approved.
+            const toolIdentifiers = [
+              msg.params?.toolCall?.name,
+              msg.params?.toolCall?.toolName,
+              msg.params?.toolCall?.title,
+              msg.params?.title
+            ].filter((v: any): v is string => typeof v === 'string' && v.length > 0);
+            const shouldApprove = isToolAutoApproved(
+              approvalPolicy,
+              toolIdentifiers,
+              harnessCfg.autoApproveTools
+            );
             const selectedOptionId = shouldApprove
               ? allowOpt?.optionId || 'allow'
               : rejectOpt?.optionId || 'reject';

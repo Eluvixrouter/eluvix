@@ -11,9 +11,20 @@ import {
   TlsCertificates,
   EluvixProviderAgent,
   getProviderSettings,
-  getProviderJobLogs
+  getProviderJobLogs,
+  getOrCreateDesktopToken,
+  isTrustedLocalOrigin,
+  isAllowedLocalHost,
+  desktopTokenEquals,
+  extractDesktopToken,
+  DESKTOP_TOKEN_HEADER
 } from '@eluvix/router-core';
 import EventEmitter from 'node:events';
+
+/** Request-body ceiling for the desktop API (audit L-12). */
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+/** A stalled body must not pin a handler forever (audit L-12). */
+const BODY_READ_TIMEOUT_MS = 30000;
 
 export interface RequestLog {
   id: string;
@@ -33,10 +44,21 @@ export class DesktopRouterServer extends EventEmitter {
   private port: number;
   private tlsCerts: TlsCertificates | null = null;
   private isHttps: boolean = false;
+  private desktopToken: string;
+  private desktopTokenFile: string;
 
   constructor(port = 3001) {
     super();
     this.port = port;
+
+    // Per-install API token (audit C-1, decision D1): every route on this
+    // server requires it. It is generated on first run into a 0o600 file
+    // in the config dir; the renderer receives it from the main process
+    // over IPC, and local CLI tools read the file — it is never served
+    // over this HTTP API itself.
+    const desktopToken = getOrCreateDesktopToken();
+    this.desktopToken = desktopToken.token;
+    this.desktopTokenFile = desktopToken.tokenFile;
 
     // Default configuration with Billama as a first-class citizen alongside local engines
     this.config = {
@@ -124,6 +146,16 @@ export class DesktopRouterServer extends EventEmitter {
     return this.providerAgent;
   }
 
+  /** The per-install API token. Main-process/IPC use only — never routed. */
+  public getDesktopToken(): string {
+    return this.desktopToken;
+  }
+
+  /** Path of the 0o600 token file, for the startup banner and CLI docs. */
+  public getDesktopTokenFile(): string {
+    return this.desktopTokenFile;
+  }
+
   public async getProviderStatus() {
     return await this.providerAgent.getStatus();
   }
@@ -174,21 +206,29 @@ export class DesktopRouterServer extends EventEmitter {
         this.server = http.createServer((req, res) => this.handleRequest(req, res));
       }
 
+      // start()'s promise resolves only from this callback, so EVERY listen
+      // attempt — including EADDRINUSE retries — must carry it. A bare
+      // retry listen() binds the new port but leaves the promise pending
+      // forever: no window is created and no error is surfaced.
+      const onListening = () => {
+        const protocol = this.isHttps ? 'https' : 'http';
+        console.log(`[Eluvix Desktop] Server listening on ${protocol}://127.0.0.1:${this.port} (TLS: ${this.isHttps ? 'Enabled via mkcert' : 'Disabled'})`);
+        console.log(`[Eluvix Desktop] API token file: ${this.desktopTokenFile} (send it as the '${DESKTOP_TOKEN_HEADER}' header or 'Authorization: Bearer <token>')`);
+        resolve(this.port);
+      };
+
       this.server.on('error', (err: any) => {
         if (err.code === 'EADDRINUSE') {
           console.warn(`Port ${this.port} is in use, trying next port ${this.port + 1}...`);
           this.port += 1;
-          this.server?.listen(this.port, '127.0.0.1');
+          this.server?.removeListener('listening', onListening);
+          this.server?.listen(this.port, '127.0.0.1', onListening);
         } else {
           reject(err);
         }
       });
 
-      this.server.listen(this.port, '127.0.0.1', () => {
-        const protocol = this.isHttps ? 'https' : 'http';
-        console.log(`[Eluvix Desktop] Server listening on ${protocol}://127.0.0.1:${this.port} (TLS: ${this.isHttps ? 'Enabled via mkcert' : 'Disabled'})`);
-        resolve(this.port);
-      });
+      this.server.listen(this.port, '127.0.0.1', onListening);
     });
   }
 
@@ -218,35 +258,70 @@ export class DesktopRouterServer extends EventEmitter {
 
   private setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
     const origin = req.headers.origin;
-    if (origin && origin !== 'null') {
-      try {
-        const u = new URL(origin);
-        const host = u.hostname.replace(/^\[|\]$/g, '');
-        if (
-          host === 'localhost' ||
-          host === '127.0.0.1' ||
-          host === '::1' ||
-          host.endsWith('.local') ||
-          u.protocol === 'app:' ||
-          u.protocol === 'vscode-webview:' ||
-          u.protocol === 'file:'
-        ) {
-          res.setHeader('Access-Control-Allow-Origin', origin);
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
-          res.setHeader('Vary', 'Origin');
-          return;
-        }
-      } catch {}
+    if (!origin) return;
+    // Reflect only trusted local origins. The opaque 'null' origin (the
+    // file:// renderer's fetches) is reflected so its preflights succeed —
+    // reflection grants nothing by itself: every actual request still has
+    // to present the desktop token. Arbitrary *.local names are NOT
+    // reflected anymore (audit H-12: any LAN device can claim one).
+    if (origin === 'null' || isTrustedLocalOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        `Content-Type, Authorization, x-api-key, ${DESKTOP_TOKEN_HEADER}`
+      );
+      res.setHeader('Vary', 'Origin');
     }
   }
 
-  private async handleRequest(req: IncomingMessage, res: ServerResponse) {
-    this.setCorsHeaders(req, res);
+  private rejectJson(res: ServerResponse, status: number, message: string, code: string) {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { message, type: 'invalid_request_error', code } }));
+  }
 
+  private async handleRequest(req: IncomingMessage, res: ServerResponse) {
+    // 1. Host allowlist — defeats DNS rebinding regardless of any other
+    //    header: a rebound attacker hostname is not a local host (audit
+    //    C-1/H-12).
+    if (!isAllowedLocalHost(req.headers.host)) {
+      this.rejectJson(res, 403, 'Host not allowed.', 'forbidden_host');
+      return;
+    }
+
+    // 2. Preflight: answer only for trusted local origins (plus the
+    //    renderer's opaque 'null'); anything else is rejected, not
+    //    merely left unreflected.
     if (req.method === 'OPTIONS') {
+      const origin = req.headers.origin;
+      if (origin && origin !== 'null' && !isTrustedLocalOrigin(origin)) {
+        this.rejectJson(res, 403, 'Cross-Origin requests from untrusted origins are blocked.', 'unauthorized_origin');
+        return;
+      }
+      this.setCorsHeaders(req, res);
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // 3. Origin rejection, mirroring the Next.js middleware: a present
+    //    Origin that is not a trusted local origin is blocked before any
+    //    handler runs. 'null' (the file:// renderer, sandboxed frames) is
+    //    not rejected here — those requests still have to pass the token
+    //    check below, which a drive-by page cannot satisfy.
+    const origin = req.headers.origin;
+    if (origin && origin !== 'null' && !isTrustedLocalOrigin(origin)) {
+      this.rejectJson(res, 403, 'Cross-Origin requests from untrusted origins are blocked.', 'unauthorized_origin');
+      return;
+    }
+    this.setCorsHeaders(req, res);
+
+    // 4. Token auth on EVERY route (audit C-1/H-12/H-13): no route —
+    //    config, provider, detect-models, chat, health — is reachable
+    //    without the per-install token.
+    const providedToken = extractDesktopToken(req.headers);
+    if (!providedToken || !desktopTokenEquals(providedToken, this.desktopToken)) {
+      this.rejectJson(res, 401, 'Missing or invalid desktop API token.', 'invalid_api_key');
       return;
     }
 
@@ -413,21 +488,28 @@ export class DesktopRouterServer extends EventEmitter {
         const chatReq: ChatRequest = JSON.parse(bodyStr);
 
         let chosenUpstreamName = 'unknown';
+        // chatReq.model is optional (the router defaults it); an absent
+        // model can only match wildcard upstreams in this label pre-filter,
+        // exactly as before.
         const targetUpstreams = this.config.upstreams.filter(u =>
-          u.models.includes(chatReq.model) || u.models.includes('*')
+          (chatReq.model !== undefined && u.models.includes(chatReq.model)) || u.models.includes('*')
         );
         if (targetUpstreams.length > 0) {
           chosenUpstreamName = targetUpstreams[0].name;
         }
 
-        const upstreamResponse = await this.router.routeChatCompletion(chatReq);
+        // The desktop app is a single-user local app: its callers share
+        // the owner's 'default' identity partition, passed explicitly.
+        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
+          scope: { userId: 'default', origin: 'client' }
+        });
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || chosenUpstreamName;
 
         const logEntry: RequestLog = {
           id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           timestamp: new Date().toLocaleTimeString(),
-          model: chatReq.model,
+          model: chatReq.model || 'auto',
           upstream: actualUpstream,
           status: upstreamResponse.status,
           durationMs,
@@ -466,17 +548,62 @@ export class DesktopRouterServer extends EventEmitter {
       res.end(JSON.stringify({ error: { message: `Route ${pathname} not found on Eluvix Desktop`, type: 'invalid_request_error' } }));
     } catch (err: any) {
       console.error('[Eluvix Server Error]', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      if (res.destroyed || res.writableEnded) return;
+      const status = typeof err?.statusCode === 'number' ? err.statusCode : 500;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: err.message || 'Internal Eluvix Error', type: 'api_error' } }));
     }
   }
 
   private readBody(req: IncomingMessage): Promise<string> {
+    // Bounded body read (audit L-12): the previous implementation
+    // accumulated chunks with no size limit and no timeout, so any local
+    // process (or website, via the old unauthenticated path) could stream
+    // an unbounded body and exhaust the desktop process's memory.
     return new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', chunk => { data += chunk; });
-      req.on('end', () => resolve(data));
-      req.on('error', err => reject(err));
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let overflow = false;
+      let settled = false;
+
+      const timer = setTimeout(() => {
+        // A stalled body gets its socket torn down; there is no live
+        // response channel left to report the 408 on, and that is fine.
+        fail(Object.assign(new Error('Request body read timed out'), { statusCode: 408 }), true);
+      }, BODY_READ_TIMEOUT_MS);
+      timer.unref?.();
+
+      const fail = (err: Error & { statusCode?: number }, destroy = false) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (destroy) {
+          try { req.destroy(); } catch {}
+        }
+        reject(err);
+      };
+
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY_BYTES) {
+          // Over the cap: keep draining but discard, so memory stays
+          // bounded AND the socket survives to deliver the 413.
+          overflow = true;
+          return;
+        }
+        if (!overflow) chunks.push(chunk);
+      });
+      req.on('end', () => {
+        if (settled) return;
+        if (overflow) {
+          fail(Object.assign(new Error('Request body too large'), { statusCode: 413 }));
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(Buffer.concat(chunks).toString('utf8'));
+      });
+      req.on('error', (err) => fail(err));
     });
   }
 }

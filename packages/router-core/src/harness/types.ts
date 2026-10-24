@@ -20,6 +20,16 @@ export interface HarnessConfig {
   cwd?: string;
   approvals?: HarnessApprovalPolicy;
   approvalPolicy?: HarnessApprovalPolicy;
+  /**
+   * Explicit allowlist of tool names eligible for auto-approval under the
+   * 'auto-approve-readonly' / 'read-only' policies (security audit M-4).
+   * Auto-approval is NEVER inferred from a tool's title or a read-only-
+   * looking name pattern — titles are self-descriptive labels supplied by
+   * the agent/server being approved. A permission request is auto-approved
+   * only when the tool's name appears verbatim in this list.
+   * Default: empty — nothing is auto-approved.
+   */
+  autoApproveTools?: string[];
   sessionMode?: HarnessSessionMode;
   /**
    * Whether the harness's underlying model provider is local to this machine/LAN.

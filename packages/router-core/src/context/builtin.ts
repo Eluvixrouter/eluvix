@@ -16,10 +16,6 @@ function extractText(msg: ChatMessage): string {
 export class BuiltinContextProvider implements ContextProvider {
   public readonly id = 'builtin';
 
-  public isLocal(): boolean {
-    return true;
-  }
-
   public async health(): Promise<boolean> {
     return true;
   }

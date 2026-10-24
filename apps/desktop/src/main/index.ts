@@ -1,11 +1,34 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DesktopRouterServer } from './server';
 import { getProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
 
 let mainWindow: BrowserWindow | null = null;
 let server: DesktopRouterServer | null = null;
 let tray: Tray | null = null;
+
+/** Only https:/http: URLs may be handed to the OS (audit M-22, decision D2). */
+function isSafeExternalUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * IPC handlers serve only the app's own local renderer. A frame that is
+ * not a file:// page (e.g. remote content that somehow got loaded into a
+ * webContents with the preload bridge attached) gets nothing (audit M-22).
+ */
+function assertTrustedSender(event: Electron.IpcMainInvokeEvent): void {
+  const frameUrl = event.senderFrame?.url || '';
+  if (!frameUrl.startsWith('file://')) {
+    throw new Error('IPC rejected: untrusted sender frame');
+  }
+}
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -23,6 +46,25 @@ async function createWindow() {
   });
 
   const rendererPath = path.join(__dirname, '..', 'renderer', 'index.html');
+  const rendererUrl = pathToFileURL(rendererPath).href;
+
+  // Window-open and navigation lockdown (audit M-22): the window exists to
+  // show the local renderer only. New windows are denied (validated
+  // http(s) links go to the system browser instead), and navigation away
+  // from the renderer file is blocked — remote content must never load in
+  // a webContents that carries the eluvixAPI preload bridge.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSafeExternalUrl(url)) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== rendererUrl) {
+      event.preventDefault();
+    }
+  });
+
   await mainWindow.loadFile(rendererPath);
 
   mainWindow.on('closed', () => {
@@ -62,7 +104,8 @@ async function initServer() {
 }
 
 function setupIpcHandlers() {
-  ipcMain.handle('get-server-status', () => {
+  ipcMain.handle('get-server-status', (event) => {
+    assertTrustedSender(event);
     if (!server) return { status: 'stopped', port: null, endpoint: null, tls: false };
     const port = server.getPort();
     const baseUrl = server.getBaseUrl();
@@ -72,15 +115,25 @@ function setupIpcHandlers() {
       port,
       tls,
       endpoint: `${baseUrl}/v1`,
-      healthUrl: `${baseUrl}/health`
+      healthUrl: `${baseUrl}/health`,
+      tokenFile: server.getDesktopTokenFile()
     };
   });
 
-  ipcMain.handle('get-config', () => {
+  // The desktop API token reaches the renderer ONLY over this IPC channel
+  // (audit C-1, decision D1) — it is never served by the HTTP API itself.
+  ipcMain.handle('get-desktop-token', (event) => {
+    assertTrustedSender(event);
+    return server ? server.getDesktopToken() : null;
+  });
+
+  ipcMain.handle('get-config', (event) => {
+    assertTrustedSender(event);
     return server ? server.getConfig() : null;
   });
 
-  ipcMain.handle('save-config', (_event, newConfig) => {
+  ipcMain.handle('save-config', (event, newConfig) => {
+    assertTrustedSender(event);
     if (server) {
       server.updateConfig(newConfig);
       return { success: true, config: server.getConfig() };
@@ -88,7 +141,8 @@ function setupIpcHandlers() {
     return { success: false, error: 'Server not initialized' };
   });
 
-  ipcMain.handle('detect-models', async (_event, params) => {
+  ipcMain.handle('detect-models', async (event, params) => {
+    assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not initialized' };
 
     if (params?.all) {
@@ -139,7 +193,8 @@ function setupIpcHandlers() {
   });
 
   // Provider IPC handlers for GPU monetization
-  ipcMain.handle('get-provider-status', async () => {
+  ipcMain.handle('get-provider-status', async (event) => {
+    assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not ready' };
     const status = await server.getProviderStatus();
     const settings = getProviderSettings();
@@ -147,26 +202,30 @@ function setupIpcHandlers() {
     return { success: true, status, settings, recentJobs };
   });
 
-  ipcMain.handle('toggle-provider', async (_event, enabled: boolean) => {
+  ipcMain.handle('toggle-provider', async (event, enabled: boolean) => {
+    assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not ready' };
     const status = await server.toggleProvider(enabled);
     return { success: true, status };
   });
 
-  ipcMain.handle('save-provider-config', (_event, config) => {
+  ipcMain.handle('save-provider-config', (event, config) => {
+    assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not ready' };
     const settings = server.updateProviderConfig(config);
     return { success: true, settings };
   });
 
-  ipcMain.handle('run-provider-benchmark', async (_event, model?: string) => {
+  ipcMain.handle('run-provider-benchmark', async (event, model?: string) => {
+    assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not ready' };
     const result = await server.runProviderBenchmark(model);
     const status = await server.getProviderStatus();
     return { success: true, result, status };
   });
 
-  ipcMain.handle('get-provider-jobs', (_event, limit?: number) => {
+  ipcMain.handle('get-provider-jobs', (event, limit?: number) => {
+    assertTrustedSender(event);
     const jobs = getProviderJobLogs(limit || 20);
     return { success: true, jobs };
   });

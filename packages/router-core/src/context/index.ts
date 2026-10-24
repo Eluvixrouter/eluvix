@@ -22,6 +22,26 @@ import type { ContextProvider, MemoryConfig, RecallBlock } from './types.js';
 export const MEMORY_BLOCK_START = '<eluvix-memory>';
 export const MEMORY_BLOCK_END = '</eluvix-memory>';
 
+/**
+ * Escape the block delimiters inside recalled memory text (security audit
+ * H-5). Memory text is stored, attacker-influenceable content: if it could
+ * emit a literal `</eluvix-memory>`, it would terminate its own block
+ * early — and in cloud-egress `strip` mode the non-greedy strip regex
+ * would stop at that fake closing tag and forward the remaining text to
+ * the cloud upstream. Escaping the angle brackets of any delimiter
+ * occurrence makes the real closing tag the only literal one in the
+ * formatted block. Applied at format time (per request), so memories
+ * stored before this fix are covered too. The escaped form stays
+ * human/model-readable as inert text.
+ */
+export function escapeMemoryBlockText(text: string): string {
+  return text
+    .split(MEMORY_BLOCK_END)
+    .join('&lt;/eluvix-memory&gt;')
+    .split(MEMORY_BLOCK_START)
+    .join('&lt;eluvix-memory&gt;');
+}
+
 export function createContextProvider(config?: MemoryConfig): ContextProvider {
   const providerType = config?.provider || 'builtin';
   if (providerType === 'openviking') {
@@ -49,8 +69,8 @@ export function formatMemorySystemBlock(blocks: RecallBlock[], providerId: strin
   if (!blocks || blocks.length === 0) return '';
   const body = blocks
     .map((b, idx) => {
-      const header = b.uri ? `[${idx + 1}] (${b.level || 'L1'}) ${b.uri}` : `[${idx + 1}] (${b.level || 'L1'})`;
-      return `${header}\n${b.text}`;
+      const header = b.uri ? `[${idx + 1}] (${b.level || 'L1'}) ${escapeMemoryBlockText(b.uri)}` : `[${idx + 1}] (${b.level || 'L1'})`;
+      return `${header}\n${escapeMemoryBlockText(b.text)}`;
     })
     .join('\n\n');
   return `${MEMORY_BLOCK_START}\nRelevant context recalled from ${providerId} memory:\n${body}\n${MEMORY_BLOCK_END}`;
@@ -71,6 +91,12 @@ export function injectMemoryIntoMessages(messages: ChatMessage[], memoryBlock: s
 }
 
 export function stripMemoryFromMessages(messages: ChatMessage[]): ChatMessage[] {
+  // Blocks produced by formatMemorySystemBlock are delimiter-escaped
+  // (audit H-5), so the only literal MEMORY_BLOCK_END in a system message
+  // is the block's real closing tag and this non-greedy match spans
+  // exactly one block. (Transcripts formatted by pre-fix code and
+  // replayed by a client can still contain unescaped blocks; those are
+  // stripped only up to their first closing tag, as before.)
   const regex = new RegExp(`${MEMORY_BLOCK_START}[\\s\\S]*?${MEMORY_BLOCK_END}\\s*`, 'g');
   const result: ChatMessage[] = [];
   for (const m of messages) {

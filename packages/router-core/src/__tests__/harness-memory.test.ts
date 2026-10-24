@@ -7,6 +7,7 @@ import {
   Eluvix,
   addMemoryItem,
   clearUserMemories,
+  deleteMemoryItem,
   listMemoryItems,
   createNamedApiKey,
   resolveBearerToken,
@@ -343,6 +344,9 @@ describe('Agent Harness Upstreams (TrueForge, opencode, ACP) & Loop Guard', () =
             harness: {
               kind: 'trueforge',
               approvalPolicy: 'read-only',
+              // M-4: auto-approval is by explicit allowlist only — a
+              // read-only-looking tool name ('Read') is no longer enough.
+              autoApproveTools: ['Read'],
               sessionMode: 'per-conversation'
             }
           }
@@ -862,6 +866,30 @@ rl.on('line', (line) => {
     expect(consensusJson.choices[0].message.content).toBe(
       'Synthesized best answer from Candidate A and Candidate B.'
     );
+  });
+
+  it('scopes deleteMemoryItem to the owning user when a userId is given (bug hunt finding 2)', () => {
+    const owner = `test-delete-owner-${Date.now()}`;
+    const other = `test-delete-other-${Date.now()}`;
+    const mine = addMemoryItem({
+      userId: owner,
+      level: 'L1',
+      content: 'Owner delete-scope probe'
+    });
+    expect(mine).not.toBeNull();
+    const item = mine!;
+    expect(item.id).toBeGreaterThan(0);
+
+    // Another user cannot delete the owner's item by id.
+    expect(deleteMemoryItem(item.id, other)).toBe(false);
+    expect(listMemoryItems(owner, 50).some(i => i.id === item.id)).toBe(true);
+
+    // The owner can.
+    expect(deleteMemoryItem(item.id, owner)).toBe(true);
+    expect(listMemoryItems(owner, 50).some(i => i.id === item.id)).toBe(false);
+
+    clearUserMemories(owner);
+    clearUserMemories(other);
   });
 });
 

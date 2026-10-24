@@ -29,8 +29,6 @@ spec:
           env:
             - name: NODE_ENV
               value: {{ .Values.nextjs.env.NODE_ENV | quote }}
-            - name: SWITCHYARD_URL
-              value: {{ .Values.nextjs.env.SWITCHYARD_URL | quote }}
             - name: PORT
               value: "{{ .Values.nextjs.port }}"
           {{- if .Values.nextjs.persistence.enabled }}

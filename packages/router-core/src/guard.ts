@@ -125,6 +125,24 @@ const PII_PATTERNS: Array<{ regex: RegExp; label: string; placeholder: string; k
   }
 ];
 
+// Prompt-guard modes 'classifier' and 'llm-guard' are declared in
+// PromptGuardConfig but NOT implemented — only the regex heuristics below
+// exist. Silently accepting the config would let an operator believe
+// model-based screening is active when it is not, so warn loudly (once per
+// mode per process) and apply the heuristics.
+const warnedUnimplementedGuardModes = new Set<string>();
+
+function noteUnimplementedGuardMode(config?: PromptGuardConfig): void {
+  const mode = config?.mode;
+  if (!mode || mode === 'heuristic') return;
+  if (warnedUnimplementedGuardModes.has(mode)) return;
+  warnedUnimplementedGuardModes.add(mode);
+  console.warn(
+    `[Prompt Guard] WARNING: promptGuard.mode '${mode}' is not implemented — no classifier/LLM guard exists in this build. ` +
+    `Falling back to the built-in regex heuristics; do not rely on '${mode}' for model-based screening.`
+  );
+}
+
 function simpleHash(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -144,6 +162,8 @@ export function checkPromptHeuristics(content: string, configOrThreshold: number
 
   const threshold = typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80);
   const config = typeof configOrThreshold === 'object' ? configOrThreshold : undefined;
+
+  noteUnimplementedGuardMode(config);
 
   // 1. Check custom banned phrases
   if (config?.bannedPhrases && config.bannedPhrases.length > 0) {
@@ -198,6 +218,7 @@ export interface ChatMessageLike {
  * Checks an entire chat request against prompt injection rules
  */
 export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshold: number | PromptGuardConfig = 0.80): GuardCheckResult {
+  noteUnimplementedGuardMode(typeof configOrThreshold === 'object' ? configOrThreshold : undefined);
   for (const msg of messages) {
     if (msg.role === 'user' || msg.role === 'system') {
       const text = typeof msg.content === 'string'
@@ -374,6 +395,16 @@ export function applyPrivacyGuard<T extends ChatMessageLike>(
         }
       }
     }
+  }
+
+  if (detectedPiiTypes.size > 0 && config.action === 'warn') {
+    // 'warn' means the messages pass through unredacted — but never
+    // silently. Log the detection TYPES only; the PII content itself must
+    // never be written to the log.
+    console.warn(
+      `[Privacy Guard Warning] Detected sensitive personal data (${Array.from(detectedPiiTypes).join(', ')}) — ` +
+      `proceeding without redaction (action: 'warn').`
+    );
   }
 
   if (detectedPiiTypes.size > 0 && config.action === 'block') {

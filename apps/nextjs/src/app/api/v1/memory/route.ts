@@ -3,37 +3,45 @@ import {
   addMemoryItem,
   clearUserMemories,
   deleteMemoryItem,
+  invalidateUserCache,
   listMemoryItems,
-  resolveBearerToken,
   searchMemoryItems
 } from '@eluvix/router-core';
 import { getConfig, getRouter } from '@/lib/router';
+import { resolveCallerIdentity, type CallerIdentityResult } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
-function checkNamedKeyIfPresent(req: Request): { valid: boolean; userId?: string } {
-  const authHeader = req.headers.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      return { valid: resolved.valid, userId: resolved.userId };
-    }
-  }
-  return { valid: true };
+/**
+ * Memory data is per-user, so every handler scopes strictly to the
+ * authenticated caller's identity (named elx_ key, admin bearer, or the
+ * NextAuth session — see lib/caller-identity). A userId supplied via
+ * query string or request body is deliberately ignored: it must never
+ * widen access beyond the caller's own store.
+ */
+function unauthorized(identity: Extract<CallerIdentityResult, { ok: false }>) {
+  return NextResponse.json(
+    {
+      error: {
+        message:
+          identity.reason === 'invalid-key'
+            ? 'Incorrect API key provided.'
+            : 'You must provide a valid API key or an authenticated session.',
+        code: identity.reason === 'invalid-key' ? 'invalid_api_key' : 'unauthorized'
+      }
+    },
+    { status: 401 }
+  );
 }
 
 export async function GET(req: Request) {
-  const auth = checkNamedKeyIfPresent(req);
-  if (!auth.valid) {
-    return NextResponse.json(
-      { error: { message: 'Incorrect API key provided.', code: 'invalid_api_key' } },
-      { status: 401 }
-    );
+  const identity = await resolveCallerIdentity(req);
+  if (!identity.ok) {
+    return unauthorized(identity);
   }
+  const userId = identity.userId;
 
   const url = new URL(req.url);
-  const userId = auth.userId || url.searchParams.get('userId') || 'default';
   const query = url.searchParams.get('q') || url.searchParams.get('query') || '';
   const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
 
@@ -75,13 +83,11 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const auth = checkNamedKeyIfPresent(req);
-  if (!auth.valid) {
-    return NextResponse.json(
-      { error: { message: 'Incorrect API key provided.', code: 'invalid_api_key' } },
-      { status: 401 }
-    );
+  const identity = await resolveCallerIdentity(req);
+  if (!identity.ok) {
+    return unauthorized(identity);
   }
+  const userId = identity.userId;
 
   let body: any;
   try {
@@ -90,7 +96,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const userId = auth.userId || body?.userId || 'default';
   const router = getRouter();
   const contextProvider = router.getContextProvider();
 
@@ -132,21 +137,21 @@ export async function POST(req: Request) {
 }
 
 export async function DELETE(req: Request) {
-  const auth = checkNamedKeyIfPresent(req);
-  if (!auth.valid) {
-    return NextResponse.json(
-      { error: { message: 'Incorrect API key provided.', code: 'invalid_api_key' } },
-      { status: 401 }
-    );
+  const identity = await resolveCallerIdentity(req);
+  if (!identity.ok) {
+    return unauthorized(identity);
   }
+  const userId = identity.userId;
 
   const url = new URL(req.url);
   const idParam = url.searchParams.get('id');
   const clearAll = url.searchParams.get('clearAll') === 'true';
-  const userId = auth.userId || url.searchParams.get('userId') || 'default';
 
   if (clearAll) {
     const deletedCount = clearUserMemories(userId);
+    // Answers derived from the cleared memories must stop being served
+    // from the response cache immediately (audit M-10).
+    invalidateUserCache(userId);
     return NextResponse.json({ success: true, deletedCount, userId });
   }
 
@@ -159,6 +164,10 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Invalid '?id=<number>' parameter" }, { status: 400 });
   }
 
-  const deleted = deleteMemoryItem(parsedId, auth.userId);
+  // Scoped delete: the item is removed only if it belongs to the caller.
+  const deleted = deleteMemoryItem(parsedId, userId);
+  if (deleted) {
+    invalidateUserCache(userId);
+  }
   return NextResponse.json({ success: deleted });
 }

@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { getAppPaths } from './paths.js';
+import { tryResolveCliExecutable, ANTIGRAVITY_CLI_BINARIES } from './cli-exec.js';
+import { buildChildEnv } from './harness/env.js';
 
 export type AgyEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -201,11 +203,20 @@ export function getCachedAntigravityModels(): AgyModelEntry[] {
     if (fs.existsSync(cacheFile)) {
       const raw = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
       if (Array.isArray(raw.models) && raw.models.length > 0) {
-        memoryCache = {
-          models: raw.models,
-          timestamp: raw.timestamp || Date.now()
-        };
-        return raw.models;
+        // The disk cache is subject to the same TTL as the memory cache.
+        // Adopting raw.timestamp without an age check (the old behavior)
+        // served an arbitrarily old catalog — e.g. one written days ago
+        // on a previous run — as if it were current, and those models
+        // feed isAntigravitySupportedModel routing decisions.
+        const cachedAt = typeof raw.timestamp === 'number' ? raw.timestamp : 0;
+        if (Date.now() - cachedAt < CACHE_TTL_MS) {
+          memoryCache = {
+            models: raw.models,
+            timestamp: cachedAt
+          };
+          return raw.models;
+        }
+        // Stale disk cache: treat as a miss and fall through to defaults.
       }
     }
   } catch {}
@@ -228,6 +239,21 @@ export async function discoverAntigravityModels(
     };
   }
 
+  // This function spawns the CLI, so the path is gated here too (audit
+  // M-2) — callers that hand in a raw config value get the catalog
+  // fallback instead of an arbitrary spawn.
+  const resolvedCli = tryResolveCliExecutable(cliPath, {
+    allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+  });
+  if (!resolvedCli) {
+    const fallback = getCachedAntigravityModels();
+    return {
+      models: fallback,
+      cachedAt: new Date(memoryCache?.timestamp || Date.now()).toISOString(),
+      source: memoryCache ? ('cache' as const) : ('default' as const)
+    };
+  }
+
   return new Promise((resolve) => {
     let stdout = '';
     let resolved = false;
@@ -245,7 +271,10 @@ export async function discoverAntigravityModels(
 
     let child;
     try {
-      child = spawn(cliPath, ['models'], {
+      child = spawn(resolvedCli, ['models'], {
+        // Spawn-boundary env scrub (audit H-1 / D3) — this probe previously
+        // passed no env option, i.e. full process.env inheritance.
+        env: buildChildEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       });
     } catch {

@@ -29,12 +29,6 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.agentRouter.port }}"
-            - name: ROUTING_CONFIG_PATH
-              value: "/etc/eluvix/routing.json"
-          volumeMounts:
-            - name: config-volume
-              mountPath: /etc/eluvix
-              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -49,8 +43,4 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.agentRouter.resources | nindent 12 }}
-      volumes:
-        - name: config-volume
-          configMap:
-            name: {{ include "eluvix.fullname" . }}-routing-config
 {{- end }}

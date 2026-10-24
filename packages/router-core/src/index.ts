@@ -83,6 +83,8 @@ export * from './db.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
+export * from './cli-exec.js';
+export * from './local-request-guard.js';
 export * from './context/index.js';
 export * from './harness/index.js';
 export * from './sandbox/index.js';
@@ -102,6 +104,11 @@ import {
   prepareCleanAgyHome,
   parseAgyStreamJsonLine
 } from './antigravity-models.js';
+import {
+  resolveCliExecutable,
+  tryResolveCliExecutable,
+  ANTIGRAVITY_CLI_BINARIES
+} from './cli-exec.js';
 import { logRequest, getRequestLogs } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 import {
@@ -118,7 +125,7 @@ import {
   stripMemoryFromMessages,
   teeSseStreamForMemory
 } from './context/index.js';
-import { type HarnessConfig, forwardHarnessRequest } from './harness/index.js';
+import { type HarnessConfig, buildChildEnv, forwardHarnessRequest } from './harness/index.js';
 import { type SandboxConfig } from './sandbox/index.js';
 import { type FallbackChainConfig, globalCircuitBreaker } from './circuit-breaker.js';
 import { type ConsensusGroupConfig, executeConsensusGroup } from './consensus.js';
@@ -222,20 +229,29 @@ export interface UpstreamConfig {
  * user's own machine / LAN. Antigravity and other cli:// agent wrappers are
  * NOT local: the CLI is a front-end for an external service, so the prompt
  * leaves the machine even though the process runs locally.
- * For 'harness' upstreams, locality depends on `harness.providerIsLocal`
- * (or whether its endpoint is on localhost/LAN when not explicitly false).
+ * For 'harness' upstreams, an explicit `harness.providerIsLocal` decides.
+ * When the flag is absent, locality is derived from the endpoint with the
+ * same rule as every other wrapper: cli:// and acp:// endpoints spawn a
+ * local process that fronts an external service, so they are NOT local;
+ * http(s) endpoints are judged by host like any other upstream. (The flag
+ * used to default to local — including a blanket shortcut for ACP — which
+ * let the egress policy and the memory-egress guard treat remote or
+ * cloud-backed harnesses as on-machine.)
  */
 export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
   if (upstream.type === 'antigravity') return false;
-  if (upstream.type === 'harness') {
-    if (upstream.harness?.providerIsLocal === false) return false;
-    if (upstream.harness?.providerIsLocal === true) return true;
-    if (upstream.harness?.kind === 'acp') return true;
+  if (upstream.type === 'harness' && upstream.harness?.providerIsLocal !== undefined) {
+    return upstream.harness.providerIsLocal;
   }
   const endpoint = upstream.endpoint || '';
   if (endpoint.startsWith('cli://')) return false;
-  if (endpoint.startsWith('acp://')) return upstream.harness?.providerIsLocal !== false;
+  if (endpoint.startsWith('acp://')) {
+    // Process-wrapper endpoint (see above): a harness with no explicit
+    // providerIsLocal declaration is not local. Non-harness upstreams keep
+    // the legacy behavior.
+    return upstream.type === 'harness' ? false : upstream.harness?.providerIsLocal !== false;
+  }
   let host: string;
   try {
     host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
@@ -421,15 +437,29 @@ export interface ChatMessage {
 }
 
 export interface ChatRequest {
-  model: string;
+  // Optional: the runtime falls back to config.defaultModel, then 'auto'
+  // (see routeChatCompletion/explainRoute). The repo's own tests rely on
+  // omitting it.
+  model?: string;
   messages: ChatMessage[];
   temperature?: number;
   stream?: boolean;
   tools?: any[];
   tool_choice?: any;
+  // Advisory only (forwarded to upstreams that understand it); NEVER
+  // used as the caller's identity — identity is options.scope.userId.
   user?: string;
   metadata?: Record<string, any>;
 }
+
+/**
+ * A ChatRequest whose model has been resolved. The public entry points
+ * (routeChatCompletion, explainRoute) accept an optional model and default
+ * it immediately (`request.model || config.defaultModel || 'auto'`); all
+ * internal routing/forwarding code works with this type, so `model` is a
+ * string there — exactly what the runtime already guarantees.
+ */
+export type ResolvedChatRequest = ChatRequest & { model: string };
 
 export interface DiscoveredModel {
   id: string;
@@ -448,8 +478,17 @@ export interface UpstreamDiscoveryResult {
 
 export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeoutMs = 5000): Promise<UpstreamDiscoveryResult> {
   if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-    const cliPath = upstream.antigravity?.cliPath || 'agy';
-    const discovered = await discoverAntigravityModels(cliPath);
+    // Model discovery spawns the CLI (via discoverAntigravityModels), so
+    // the config-supplied path goes through the same executable gate as
+    // forwarding — previously this path spawned it with no check at all
+    // (audit M-2). An unresolvable/denied path degrades to the cached /
+    // default catalog, exactly like a failed probe did before.
+    const cliPath = tryResolveCliExecutable(upstream.antigravity?.cliPath || 'agy', {
+      allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+    });
+    const discovered = cliPath
+      ? await discoverAntigravityModels(cliPath)
+      : { models: getCachedAntigravityModels(), cachedAt: new Date().toISOString(), source: 'default' as const };
     const models = [...discovered.models.map(m => m.baseId), '*'];
     const details: DiscoveredModel[] = discovered.models.map(m => ({
       id: m.baseId,
@@ -656,6 +695,32 @@ function parseModelDetails(data: any): UpstreamDiscoveryResult {
   };
 }
 
+/**
+ * Upper bound on the in-memory response cache. Entries hold full response
+ * bodies, so without a cap the map grows for the life of the process.
+ * Oldest entries (Map insertion order) are evicted on insert.
+ */
+export const MAX_RESPONSE_CACHE_ENTRIES = 500;
+
+/**
+ * Live router instances, for process-wide per-user cache invalidation
+ * (see invalidateUserCache). WeakRefs so short-lived instances — tests,
+ * preview routers — are not retained by the registry.
+ */
+const liveRouterInstances = new Set<WeakRef<Eluvix>>();
+
+/** JSON.stringify with recursively sorted object keys, for cache keys. */
+function stableStringify(value: any): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  const keys = Object.keys(value).sort();
+  return `{${keys.map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
 export class Eluvix {
   private config: RouterConfig;
   private roundRobinIndex: number = 0;
@@ -663,7 +728,37 @@ export class Eluvix {
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
   private contextProvider: ContextProvider | null = null;
 
+  /** Insert into the response cache, evicting oldest entries past the cap. */
+  private setCachedResponse(cacheKey: string, response: any) {
+    this.responseCache.delete(cacheKey); // refresh recency on overwrite
+    while (this.responseCache.size >= MAX_RESPONSE_CACHE_ENTRIES) {
+      const oldest = this.responseCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.responseCache.delete(oldest);
+    }
+    this.responseCache.set(cacheKey, { response, timestamp: Date.now() });
+  }
+
+  /**
+   * Drop every cached response in one user's identity partition and
+   * return how many entries were removed. Wired to memory deletion so
+   * answers derived from deleted memories stop being served immediately
+   * instead of at TTL expiry (audit M-10).
+   */
+  public invalidateUserCache(userId: string): number {
+    const prefix = `v2:${encodeURIComponent(userId)}:`;
+    let removed = 0;
+    for (const key of [...this.responseCache.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.responseCache.delete(key);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   constructor(config: RouterConfig) {
+    liveRouterInstances.add(new WeakRef(this));
     this.config = {
       ...config,
       upstreams: [...(config.upstreams || [])].sort((a, b) => b.priority - a.priority)
@@ -725,7 +820,12 @@ export class Eluvix {
     }
 
     const scope: RequestScope = {
-      userId: options?.scope?.userId || request.user || 'default',
+      // Identity comes ONLY from the caller's proven scope (audit H-2):
+      // request.user is a client-supplied body field and must never
+      // select a cache/memory partition. Callers that authenticate pass
+      // scope.userId explicitly; unscoped calls land in the shared,
+      // visible 'default' partition.
+      userId: options?.scope?.userId || 'default',
       sessionId:
         options?.scope?.sessionId ||
         (typeof request.metadata?.sessionId === 'string' ? request.metadata.sessionId : undefined),
@@ -735,7 +835,7 @@ export class Eluvix {
       origin: options?.scope?.origin || 'client'
     };
 
-    let effectiveRequest: ChatRequest = {
+    let effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
@@ -916,6 +1016,35 @@ export class Eluvix {
           usableBlocks = scrubbed;
         }
 
+        // Recalled memory is stored, attacker-influenceable content
+        // (audit H-4): turns are auto-written from ordinary chat, so a
+        // planted instruction would otherwise be re-injected below with
+        // system-role privilege, after the pre-flight guard (step 0b)
+        // has already run. Scan every block with the prompt guard
+        // before injection and drop blocks that trip it. Note the
+        // residual limits, accepted for this tier: the guard is a
+        // heuristic regex scan (Tier 5 hardens it), and the surviving
+        // block is still injected in the system role for consumer
+        // compatibility — the mitigations are this scan plus the
+        // delimiter-escaped block format (context/index.ts, audit H-5).
+        if (usableBlocks.length > 0 && this.config.promptGuard?.enabled) {
+          const kept: typeof usableBlocks = [];
+          for (const b of usableBlocks) {
+            const scan = validateChatPrompt(
+              [{ role: 'user', content: b.text }],
+              this.config.promptGuard
+            );
+            if (scan.passed) {
+              kept.push(b);
+            } else {
+              console.warn(
+                `[Prompt Guard] Dropping recalled memory block from ${recallResult.provider}: ${scan.reason || 'heuristic match'} (${scan.matchedRule || 'unknown rule'})`
+              );
+            }
+          }
+          usableBlocks = kept;
+        }
+
         if (usableBlocks.length > 0) {
           const memoryBlock = formatMemorySystemBlock(usableBlocks, recallResult.provider);
           if (memoryBlock) {
@@ -977,6 +1106,13 @@ export class Eluvix {
     const rateLimit = this.config.modelGateway?.rateLimits?.maxRpm;
     if (rateLimit && rateLimit > 0) {
       const now = Date.now();
+      // Prune expired minute windows: one entry is added per minute and,
+      // without this, the map grows for the life of the process.
+      for (const [key, entry] of this.requestCounts) {
+        if (entry.resetTime <= now) {
+          this.requestCounts.delete(key);
+        }
+      }
       const windowKey = Math.floor(now / 60000).toString();
       const current = this.requestCounts.get(windowKey) || { count: 0, resetTime: (Math.floor(now / 60000) + 1) * 60000 };
       if (current.count >= rateLimit) {
@@ -1000,70 +1136,16 @@ export class Eluvix {
       this.requestCounts.set(windowKey, { count: current.count + 1, resetTime: current.resetTime });
     }
 
-    // 0d. Semantic / Response Cache Check (supports both top-level config.cache and modelGateway.caching)
-    const activeCacheConfig = this.config.cache?.enabled !== undefined
+    // The response cache is consulted only after the routing context is
+    // known (step 0e2, after upstream selection): its key must capture
+    // the caller's identity partition and everything about the routing
+    // decision that shapes the response (audit H-2/H-3/M-9).
+    // Accepts both the top-level config.cache block and
+    // modelGateway.caching, whichever is explicitly enabled.
+    const cacheConfig = this.config.cache?.enabled !== undefined
       ? this.config.cache
       : this.config.modelGateway?.caching;
-    const hasActiveTools = Array.isArray(effectiveRequest.tools) && effectiveRequest.tools.length > 0;
-    const bypassCache =
-      (this.config.cache?.bypassOnTools !== false && (hasActiveTools || scope.origin === 'harness'));
     let cacheKey = '';
-    if (activeCacheConfig?.enabled && !bypassCache && effectiveRequest.messages) {
-      const isolation = this.config.cache?.scopeIsolation || 'user';
-      const scopePrefix =
-        isolation === 'session'
-          ? `${scope.userId}:${scope.sessionId || 'default'}`
-          : isolation === 'global' && !memoryTainted
-          ? 'global'
-          : `${scope.userId}:${memoryDigest || 'nomem'}`;
-      cacheKey = `${scopePrefix}:${effectiveRequest.model || 'default'}:${JSON.stringify(effectiveRequest.messages)}`;
-      const ttlMs = (activeCacheConfig.ttlSeconds ?? 3600) * 1000;
-      let cached = this.responseCache.get(cacheKey);
-
-      // Optional semantic similarity match across same scopePrefix when mode === 'semantic'
-      if (
-        !cached &&
-        this.config.cache?.mode === 'semantic' &&
-        lastUserQuery.trim().length > 0
-      ) {
-        const threshold = this.config.cache.similarityThreshold ?? 0.9;
-        const queryTokens = new Set(lastUserQuery.toLowerCase().split(/\W+/).filter(Boolean));
-        if (queryTokens.size > 0) {
-          for (const [k, entry] of this.responseCache.entries()) {
-            if (!k.startsWith(`${scopePrefix}:${effectiveRequest.model || 'default'}:`)) continue;
-            if (Date.now() - entry.timestamp >= ttlMs) continue;
-            const entryWords = new Set(k.toLowerCase().split(/\W+/).filter(Boolean));
-            let inter = 0;
-            queryTokens.forEach((w) => {
-              if (entryWords.has(w)) inter++;
-            });
-            const jacc = inter / Math.max(1, queryTokens.size);
-            if (jacc >= threshold) {
-              cached = entry;
-              break;
-            }
-          }
-        }
-      }
-
-      if (cached && (Date.now() - cached.timestamp < ttlMs)) {
-        const hitHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'X-Eluvix-Cache': 'HIT'
-        };
-        if (this.config.memory?.enabled) {
-          hitHeaders['x-eluvix-memory'] = memoryStatus;
-          hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
-        }
-        if (this.config.knowledge?.enabled) {
-          hitHeaders['x-eluvix-knowledge'] = knowledgeStatus;
-        }
-        return new Response(JSON.stringify(cached.response), {
-          status: 200,
-          headers: hitHeaders
-        });
-      }
-    }
 
     // 0e. System Prompt Prepend (clone messages to avoid mutating caller's request object)
     if (this.config.modelGateway?.systemPromptPrepend && effectiveRequest.messages) {
@@ -1090,6 +1172,137 @@ export class Eluvix {
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
+
+    // 0e2. Semantic / Response Cache Check. The key ALWAYS carries the
+    // identity partition (scope.userId — proven identity only; unscoped
+    // calls share the 'default' partition: per decision D4 the cache is
+    // partitioned for them rather than disabled), the memory digest, and
+    // a digest of the routing context: the selected upstream id set, the
+    // system-prompt prepend, and the egress state — including, per
+    // candidate upstream, whether recalled memory would be stripped
+    // before forwarding to it. A body produced under one context (e.g.
+    // memory stripped for a cloud upstream) is therefore never replayed
+    // under another (e.g. memory intact for a local one), and a hit can
+    // never cross identity partitions.
+    if (cacheConfig?.enabled && effectiveRequest.messages) {
+      // bypassOnTools: opt-in safety valve — set to true to never serve
+      // tool-bearing requests (or harness-origin traffic) from the cache.
+      // Default is false: the variant key already captures the tools, so
+      // tool variants are cached under their own keys.
+      const hasActiveTools = Array.isArray(effectiveRequest.tools) && effectiveRequest.tools.length > 0;
+      const bypassCache =
+        (cacheConfig as CacheConfig).bypassOnTools === true && (hasActiveTools || scope.origin === 'harness');
+      if (bypassCache) {
+        cacheKey = '';
+      } else {
+      // The variant segment must capture everything else that changes
+      // the response. Keying only on model + messages served a buffered
+      // non-streaming body to streaming requests (as application/json,
+      // not SSE) and a tool-less answer to requests that differed only
+      // by tools or sampling params.
+      const variantKey = stableStringify({
+        stream: effectiveRequest.stream === true,
+        tools: effectiveRequest.tools ?? null,
+        toolChoice: effectiveRequest.tool_choice ?? null,
+        temperature: effectiveRequest.temperature ?? null,
+        topP: (effectiveRequest as any).top_p ?? null,
+        maxTokens: (effectiveRequest as any).max_tokens ?? null
+      });
+      const stripByUpstream = [...targetUpstreams]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map(u => ({
+          id: u.id,
+          strip:
+            memoryTainted &&
+            !this.config.memory?.allowCloudEgress &&
+            this.config.memory?.cloudMode === 'strip' &&
+            !isLocalUpstream(u)
+        }));
+      const routingDigest = crypto
+        .createHash('sha256')
+        .update(
+          stableStringify({
+            upstreams: [...targetUpstreams].map(u => u.id).sort(),
+            systemPromptPrepend: this.config.modelGateway?.systemPromptPrepend ?? null,
+            egressPolicy: this.config.egressPolicy ?? null,
+            memoryAllowCloudEgress: this.config.memory?.allowCloudEgress ?? null,
+            memoryCloudMode: this.config.memory?.cloudMode ?? null,
+            memoryTainted,
+            stripByUpstream
+          })
+        )
+        .digest('hex')
+        .slice(0, 16);
+      // Scope granularity (config.cache.scopeIsolation): 'session' keys
+      // per conversation, 'global' shares across users only while the
+      // answer carries no recalled memory, 'user' (default) always
+      // partitions by proven identity + memory digest.
+      const isolation = (cacheConfig as CacheConfig).scopeIsolation || 'user';
+      const scopePrefix =
+        isolation === 'session'
+          ? `${encodeURIComponent(scope.userId)}:${scope.sessionId || 'default'}`
+          : isolation === 'global' && !memoryTainted
+          ? 'global'
+          : `${encodeURIComponent(scope.userId)}:${memoryDigest || 'nomem'}`;
+      cacheKey = `v2:${scopePrefix}:${routingDigest}:${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`;
+      let cached = this.responseCache.get(cacheKey) as
+        | { response: any; timestamp: number }
+        | undefined;
+      const ttlMs = (cacheConfig.ttlSeconds ?? 3600) * 1000;
+      if (cached && Date.now() - cached.timestamp >= ttlMs) {
+        // Expired entries are deleted, not just ignored — otherwise they
+        // accumulate forever behind keys that are never asked for again.
+        this.responseCache.delete(cacheKey);
+      }
+      // Optional semantic similarity match across the same scope prefix
+      // and routing context when mode === 'semantic' (config.cache).
+      if (
+        (cacheConfig as CacheConfig).mode === 'semantic' && 
+        !cached &&
+        lastUserQuery.trim().length > 0
+      ) {
+        const threshold = (cacheConfig as CacheConfig).similarityThreshold ?? 0.9;
+        const queryTokens = new Set(lastUserQuery.toLowerCase().split(/\W+/).filter(Boolean));
+        if (queryTokens.size > 0) {
+          const scanPrefix = `v2:${scopePrefix}:${routingDigest}:${effectiveRequest.model || 'default'}:`;
+          for (const [k, entry] of this.responseCache.entries()) {
+            if (!k.startsWith(scanPrefix)) continue;
+            if (Date.now() - entry.timestamp >= ttlMs) continue;
+            const bodyMatch = /\{(.*)\}$/.exec(k);
+            const bodyText = bodyMatch ? bodyMatch[1] : k;
+            const entryWords = new Set(bodyText.toLowerCase().split(/\W+/).filter(Boolean));
+            let inter = 0;
+            queryTokens.forEach((w) => {
+              if (entryWords.has(w)) inter++;
+            });
+            const jacc = inter / Math.max(1, queryTokens.size);
+            if (jacc >= threshold) {
+              cached = entry;
+              break;
+            }
+          }
+        }
+      }
+      if (cached && Date.now() - cached.timestamp < ttlMs) {
+        const hitHeaders: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-Eluvix-Cache': 'HIT'
+        };
+        if (this.config.memory?.enabled) {
+          hitHeaders['x-eluvix-memory'] = memoryStatus;
+          hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
+        }
+        if (this.config.knowledge?.enabled) {
+          hitHeaders['x-eluvix-knowledge'] = knowledgeStatus;
+        }
+        return new Response(JSON.stringify(cached.response), {
+          status: 200,
+          headers: hitHeaders
+        });
+      }
+      }
+    }
+
     const switchyardConfig = this.config.switchyard || {};
 
     // Apply FallbackChain ordering and Circuit Breaker filtering when configured
@@ -1128,7 +1341,7 @@ export class Eluvix {
           consensusCandidates,
           effectiveRequest,
           (u, req, sig) =>
-            this.forwardRequest(u, req, consensusTimeout, sig, complexity.score, scope, hops),
+            this.forwardRequest(u, req as ResolvedChatRequest, consensusTimeout, sig, complexity.score, scope, hops),
           options?.signal
         );
         if (this.config.memory?.enabled) {
@@ -1265,8 +1478,8 @@ export class Eluvix {
                 if (typeof parsed.choices?.[0]?.message?.content === 'string') {
                   assistantOutputText = parsed.choices[0].message.content;
                 }
-                if (activeCacheConfig?.enabled && cacheKey) {
-                  this.responseCache.set(cacheKey, { response: parsed, timestamp: Date.now() });
+                if (cacheConfig?.enabled && cacheKey) {
+                  this.setCachedResponse(cacheKey, parsed);
                 }
                 responseBody = new Blob([rawData]).stream();
               } catch {}
@@ -1380,7 +1593,7 @@ export class Eluvix {
       memoryTokens?: number;
     }
   ): RouteExplanation {
-    const effectiveRequest: ChatRequest = {
+    const effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
@@ -1427,7 +1640,7 @@ export class Eluvix {
    * truncation, vision/tools filtering, and strategy ranking.
    */
   private selectTargetUpstreams(
-    effectiveRequest: ChatRequest,
+    effectiveRequest: ResolvedChatRequest,
     options?: {
       silent?: boolean;
       scope?: Partial<RequestScope>;
@@ -1436,7 +1649,7 @@ export class Eluvix {
       memoryTokens?: number;
     }
   ): {
-    effectiveRequest: ChatRequest;
+    effectiveRequest: ResolvedChatRequest;
     complexity: PromptComplexityAssessment;
     strategy: RoutingStrategy;
     targetUpstreams: UpstreamConfig[];
@@ -1751,7 +1964,7 @@ export class Eluvix {
 
   private async forwardRequest(
     upstream: UpstreamConfig,
-    request: ChatRequest,
+    request: ResolvedChatRequest,
     timeoutMs = 60000,
     clientSignal?: AbortSignal,
     complexityScore: 1 | 2 | 3 | 4 = 1,
@@ -1774,7 +1987,7 @@ export class Eluvix {
         effectiveModel = upstream.antigravity?.model || 'gemini-4-argon';
       }
     }
-    const effectiveRequest: ChatRequest = {
+    const effectiveRequest: ResolvedChatRequest = {
       ...request,
       model: effectiveModel
     };
@@ -1841,8 +2054,15 @@ export class Eluvix {
       });
 
       if (!res.ok) {
+        // Consume the error body under the still-armed deadline too, so a
+        // stalled error body cannot hang the attempt either.
+        const errorText = await res.text();
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        return res;
+        return new Response(errorText, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers
+        });
       }
 
       // If streaming, verify that the upstream can produce the first chunk before returning
@@ -1895,12 +2115,19 @@ export class Eluvix {
         });
       }
 
-      // Non-streaming response: clear timeout once headers and body are ready
+      // Non-streaming response: keep the attempt deadline armed while the
+      // body is consumed. Clearing it when headers arrive (the old
+      // behavior) left the caller's body read unbounded — an upstream
+      // that sent headers and then stalled hung the request forever,
+      // and the failover budget only gates NEW attempts. Aborting the
+      // controller rejects the pending read, failing this attempt so
+      // failover can proceed; the buffered body is returned instead.
+      const bodyText = await res.text();
       if (timeoutTimer) clearTimeout(timeoutTimer);
 
       const resHeaders = new Headers(res.headers);
       resHeaders.set('x-eluvix-model', effectiveModel);
-      return new Response(res.body, {
+      return new Response(bodyText, {
         status: res.status,
         statusText: res.statusText,
         headers: resHeaders
@@ -1913,18 +2140,21 @@ export class Eluvix {
 
   private async forwardAntigravityCli(
     upstream: UpstreamConfig,
-    request: ChatRequest,
+    request: ResolvedChatRequest,
     complexityScore: 1 | 2 | 3 | 4 = 1,
     clientSignal?: AbortSignal,
     upstreamTimeoutMs = 60000
   ): Promise<Response> {
     const startTime = Date.now();
-    const rawCli = (upstream.antigravity?.cliPath || 'agy').trim();
-    const baseCli = path.basename(rawCli);
-    if (!['agy', 'antigravity'].includes(baseCli)) {
-      throw new Error(`Execution denied: '${baseCli}' is not an authorized Antigravity CLI binary.`);
-    }
-    const cliPath = rawCli;
+    // The config-supplied cliPath is resolved through the central gate:
+    // basename allowlist + canonical-path checks (exists, executable, not
+    // under a world-writable or config-controlled dir). The basename-only
+    // check that stood here before let `/any/dir/agy` execute (audit M-2,
+    // and the router-core half of C-1). Spawn sites below use the RESOLVED
+    // path, never the raw config value.
+    const cliPath = resolveCliExecutable(upstream.antigravity?.cliPath || 'agy', {
+      allowedBasenames: ANTIGRAVITY_CLI_BINARIES
+    });
 
     const isAgyModel = isAntigravitySupportedModel(request.model, upstream.models);
     const requestedModel = isAgyModel ? request.model : (upstream.antigravity?.model || 'gemini-4-argon');
@@ -1972,10 +2202,9 @@ export class Eluvix {
     args.push('--sandbox');
     args.push('--print', promptText);
 
-    const childEnv = {
-      ...process.env,
-      HOME: effectiveHome
-    };
+    // Spawn-boundary env scrub (audit H-1 / D3): the agy child never
+    // inherits the router's own credentials — see harness/env.ts.
+    const childEnv = buildChildEnv({ HOME: effectiveHome });
 
     // Real-time SSE Streaming Mode
     if (request.stream) {
@@ -1990,6 +2219,7 @@ export class Eluvix {
         let resolvedInitial = false;
         let streamClosed = false;
         let emittedDelta = false;
+        let streamError: string | null = null;
         let killTimer: NodeJS.Timeout | null = null;
         const timeoutMs = processTimeoutMs;
         const completionId = `chatcmpl-agy-${Date.now()}`;
@@ -2121,6 +2351,11 @@ export class Eluvix {
               exactCompletionTokens = ev.usage.completion_tokens;
             }
             if (ev.status && ev.status.toUpperCase() === 'ERROR') {
+              // An ERROR result is a failed attempt, not a successful
+              // empty reply: record it so the close handler can surface
+              // a stream error (or a 502 if nothing was streamed yet)
+              // instead of a clean finish_reason 'stop' logged as 200.
+              streamError = ev.response?.trim() || 'agy CLI reported an ERROR result';
               return;
             }
             ensureStreamStarted();
@@ -2173,6 +2408,32 @@ export class Eluvix {
           if (lineBuffer.trim()) {
             processLine(lineBuffer);
             lineBuffer = '';
+          }
+
+          if (streamError) {
+            if (!resolvedInitial) {
+              resolvedInitial = true;
+              resolve(new Response(JSON.stringify({
+                error: {
+                  message: `agy CLI reported an error: ${streamError}`,
+                  type: 'antigravity_cli_error'
+                }
+              }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+            } else if (!streamClosed && streamControllerRef) {
+              streamClosed = true;
+              try {
+                streamControllerRef.error(new Error(`agy CLI reported an error: ${streamError}`));
+              } catch {}
+            }
+            logRequest({
+              model,
+              upstream_id: upstream.id,
+              status: 502,
+              duration_ms: Date.now() - startTime,
+              prompt_tokens: exactPromptTokens,
+              completion_tokens: exactCompletionTokens
+            });
+            return;
           }
 
           if (!resolvedInitial) {
@@ -2333,6 +2594,7 @@ export class Eluvix {
         // Parse stream-json NDJSON lines if present, with plain text fallback
         let deltaAccumulated = '';
         let finalResultText: string | undefined;
+        let resultError: string | null = null;
         let exactUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
         const plainLines: string[] = [];
 
@@ -2341,6 +2603,9 @@ export class Eluvix {
           if (ev.type === 'delta' && ev.textDelta) {
             deltaAccumulated += ev.textDelta;
           } else if (ev.type === 'result') {
+            if (ev.status && ev.status.toUpperCase() === 'ERROR') {
+              resultError = ev.response?.trim() || 'agy CLI reported an ERROR result';
+            }
             if (ev.response !== undefined) {
               finalResultText = ev.response.trim();
             }
@@ -2356,9 +2621,34 @@ export class Eluvix {
           }
         }
 
+        // A stream-json result with status ERROR is a failed attempt: its
+        // text is an error message, not an assistant reply. Returning it
+        // as a 200 (the old behavior) also blocked failover, since the
+        // attempt looked successful. Same for agy exiting 0 while
+        // producing no output at all — fail the attempt with a 502.
+        if (resultError) {
+          resolve(new Response(JSON.stringify({
+            error: {
+              message: `agy CLI reported an error: ${resultError}`,
+              type: 'antigravity_cli_error'
+            }
+          }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+          return;
+        }
+
         const responseContent =
           finalResultText ??
           (deltaAccumulated.trim() || plainLines.join('\n').trim() || cleanStderr);
+
+        if (!responseContent) {
+          resolve(new Response(JSON.stringify({
+            error: {
+              message: 'agy CLI exited with code 0 but produced no output',
+              type: 'antigravity_cli_error'
+            }
+          }), { status: 502, headers: { 'Content-Type': 'application/json' } }));
+          return;
+        }
 
         const usage = exactUsage || {
           prompt_tokens: Math.ceil(promptText.length / 4),
@@ -2458,6 +2748,33 @@ export function buildCliPrompt(messages: ChatMessage[], maxBytes = 100000): stri
     if (currentBytes + turnBytes <= remainingBudget) {
       includedTurns.unshift(turn);
       currentBytes += turnBytes;
+    } else if (i === conversationTurns.length - 1 && includedTurns.length === 0) {
+      // The newest turn ALONE exceeds the remaining budget. Dropping it
+      // (the old behavior) sent the CLI a prompt containing none of the
+      // user's message — only the history-omitted note below. Truncate
+      // the turn byte-safely instead and mark the truncation inline.
+      // (4 spare bytes cover a multibyte codepoint split by the cut
+      // decoding to U+FFFD.)
+      const prefix = `[${conversationTurns[i].role}]: `;
+      const truncNote = '\n[Eluvix Note: Latest message truncated to stay within argument limit]';
+      // When older turns exist they are omitted, which adds the
+      // history-omitted note (plus its separator) to the assembled
+      // prompt — reserve room for it so the total stays within budget.
+      const omitReserve = i > 0
+        ? Buffer.byteLength('[Eluvix Note: Prior conversation history omitted to stay within argument limit]', 'utf8') + 2
+        : 0;
+      const avail =
+        remainingBudget - 2 - Buffer.byteLength(prefix, 'utf8') - Buffer.byteLength(truncNote, 'utf8') - omitReserve - 4;
+      if (avail > 0) {
+        const textBuf = Buffer.from(conversationTurns[i].text, 'utf8');
+        const truncated = prefix + textBuf.subarray(0, avail).toString('utf8') + truncNote;
+        includedTurns.unshift(truncated);
+        currentBytes += Buffer.byteLength(truncated, 'utf8') + 2;
+        if (i > 0) omittedTurns = true;
+      } else {
+        omittedTurns = true;
+      }
+      break;
     } else {
       omittedTurns = true;
       break;
@@ -2476,6 +2793,26 @@ export function buildCliPrompt(messages: ChatMessage[], maxBytes = 100000): stri
   }
 
   return parts.join('\n\n');
+}
+
+/**
+ * Invalidate one user's cached responses on every live router instance
+ * in this process (audit M-10). Callers that delete or clear a user's
+ * memories (the Next.js memory routes) invoke this so answers derived
+ * from those memories stop being served immediately. Returns the total
+ * number of entries removed.
+ */
+export function invalidateUserCache(userId: string): number {
+  let removed = 0;
+  for (const ref of [...liveRouterInstances]) {
+    const router = ref.deref();
+    if (!router) {
+      liveRouterInstances.delete(ref);
+      continue;
+    }
+    removed += router.invalidateUserCache(userId);
+  }
+  return removed;
 }
 
 export { Eluvix as LibreRouter, Eluvix as NodeRouter };

@@ -1,17 +1,11 @@
+import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
+import { isSessionGoneResponse } from './prompt.js';
+import { isToolAutoApproved } from './approval.js';
 import type { HarnessApprovalPolicy } from './types.js';
 
-const MAX_SESSION_CACHE = 500;
 const sessionCache = new Map<string, string>();
-
-function setCachedSession(key: string, sessionId: string) {
-  if (sessionCache.size >= MAX_SESSION_CACHE) {
-    const oldest = sessionCache.keys().next().value;
-    if (oldest) sessionCache.delete(oldest);
-  }
-  sessionCache.set(key, sessionId);
-}
 
 function extractPromptFromMessages(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
@@ -26,10 +20,6 @@ function extractPromptFromMessages(messages: ChatMessage[]): string {
   return '';
 }
 
-function isReadonlyToolName(toolName: string): boolean {
-  return /^(read|get|list|search|find|fetch|query|view|inspect|cat|ls|grep)/i.test(toolName || '');
-}
-
 async function respondToApproval(
   baseUrl: string,
   headers: Record<string, string>,
@@ -37,11 +27,13 @@ async function respondToApproval(
   turnId: string,
   approvalId: string,
   toolName: string,
-  policy: HarnessApprovalPolicy
+  policy: HarnessApprovalPolicy,
+  autoApproveTools?: readonly string[]
 ): Promise<boolean> {
   if (policy === 'surface') return false;
-  const approved =
-    (policy === 'auto-approve-readonly' || policy === 'read-only') && isReadonlyToolName(toolName);
+  // Auto-approval requires an exact allowlist match (audit M-4): the
+  // server-supplied tool name looking read-only is never sufficient.
+  const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
   try {
     await fetch(
       `${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/events`,
@@ -108,14 +100,9 @@ export async function forwardTrueForgeHarness(
   try {
     // 1. Resolve or create TrueForge session
     const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
-    let usedCachedSession = false;
-    let tfSessionId =
-      reuseSession && scope?.sessionId ? sessionCache.get(cacheKey) : undefined;
-    if (tfSessionId) {
-      usedCachedSession = true;
-    }
+    const cacheable = reuseSession && Boolean(scope?.sessionId);
 
-    const createNewSession = async (): Promise<Response | string> => {
+    const createSession = async (): Promise<{ id: string } | { errorRes: Response }> => {
       const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
         method: 'POST',
         headers,
@@ -129,29 +116,33 @@ export async function forwardTrueForgeHarness(
         signal: controller.signal
       });
       if (!sessionRes.ok) {
-        return sessionRes;
+        return { errorRes: sessionRes };
       }
       const sessionData: any = await sessionRes.json();
-      const newId = String(sessionData?.id || sessionData?.sessionId || `tf-${Date.now()}`);
-      if (reuseSession && scope?.sessionId) {
-        setCachedSession(cacheKey, newId);
-      }
-      return newId;
+      return { id: String(sessionData?.id || sessionData?.sessionId || `tf-${Date.now()}`) };
     };
 
+    let tfSessionId = cacheable ? sessionCache.get(cacheKey) : undefined;
+    let usedCachedSession = Boolean(tfSessionId);
+
     if (!tfSessionId) {
-      const createdSession = await createNewSession();
-      if (createdSession instanceof Response) {
+      const createdSessionId = await createSession();
+      if ('errorRes' in createdSessionId) {
         clearTimeout(timer);
-        return createdSession;
+        return createdSessionId.errorRes;
       }
-      tfSessionId = createdSession;
+      tfSessionId = createdSessionId.id;
+      if (cacheable) {
+        setBounded(sessionCache, cacheKey, tfSessionId);
+      }
     }
 
-    // 2. Start turn (POST /api/v1/sessions/{id}/turns)
+    // 2. Start turn (POST /api/v1/sessions/{id}/turns). The full request
+    // messages (system context incl. <eluvix-memory>, history, tools) are
+    // sent alongside the extracted input prompt.
     const prompt = extractPromptFromMessages(request.messages || []);
-    const postTurn = (sid: string) =>
-      fetch(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sid)}/turns`, {
+    const startTurn = (sessionId: string) =>
+      fetch(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns`, {
         method: 'POST',
         headers: {
           ...headers,
@@ -161,21 +152,35 @@ export async function forwardTrueForgeHarness(
           input: prompt,
           prompt,
           messages: request.messages,
+          ...(Array.isArray(request.tools) && request.tools.length > 0
+            ? { tools: request.tools }
+            : {}),
           stream: true
         }),
         signal: controller.signal
       });
 
-    let turnRes = await postTurn(tfSessionId);
-    if (turnRes.status === 404 && usedCachedSession) {
+    let turnRes = await startTurn(tfSessionId!);
+
+    // A cached session id can outlive the server-side session (agent server
+    // restart or expiry). Evict it, create a fresh session, and retry the
+    // turn exactly once instead of returning the 404 forever.
+    if (!turnRes.ok && usedCachedSession && (await isSessionGoneResponse(turnRes))) {
       sessionCache.delete(cacheKey);
-      const recreated = await createNewSession();
-      if (recreated instanceof Response) {
+      try {
+        await turnRes.text();
+      } catch {}
+      const created = await createSession();
+      if ('errorRes' in created) {
         clearTimeout(timer);
-        return recreated;
+        return created.errorRes;
       }
-      tfSessionId = recreated;
-      turnRes = await postTurn(tfSessionId);
+      tfSessionId = created.id;
+      usedCachedSession = false;
+      if (cacheable) {
+        setBounded(sessionCache, cacheKey, tfSessionId);
+      }
+      turnRes = await startTurn(tfSessionId);
     }
 
     if (!turnRes.ok) {
@@ -273,7 +278,8 @@ export async function forwardTrueForgeHarness(
               turnId,
               approvalId,
               toolName,
-              approvalPolicy
+              approvalPolicy,
+              harnessCfg.autoApproveTools
             );
           }
         } else if (
