@@ -39,7 +39,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'capabilities',
   'apiKey',
   'harness',
-  'antigravity'
+  'antigravity',
+  'disaggregation'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [

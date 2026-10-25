@@ -1,83 +1,159 @@
 # Eluvix
 
-**Eluvix** is an intelligent, privacy-first, multimodal LLM routing gateway and orchestration UI. It unifies local hardware (vLLM, Ollama, Lemonade) and cloud fallbacks (OpenAI, Anthropic) into a single resilient endpoint.
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22.13.0+-green.svg)](https://nodejs.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-14.2-black.svg)](https://nextjs.org/)
+[![Vitest](https://img.shields.io/badge/Vitest-Passing-brightgreen.svg)](https://vitest.dev/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Eluvix** is an intelligent, sovereign, multimodal LLM routing gateway, disaggregated inference coordinator, and visual node studio. It unites on-premises GPU clusters (NVIDIA CUDA or AMD ROCm) and frontier cloud models into a single resilient OpenAI-compatible endpoint.
 
 ---
 
-## 🌟 Key Features (Phases 1-4)
+## 🌟 Key Capabilities
 
-- **Cost-Complexity Routing**: Dynamically grades incoming prompts based on reasoning depth and token length, seamlessly routing simple tasks to local GPUs and complex tasks to frontier cloud models.
-- **Multimodal Support (Vision)**: Automatically detects image payloads and filters upstreams to strictly target Vision-capable nodes.
-- **Latency Spillover & Failover**: Monitors its own SQLite logs for latency spikes. If a local node lags (>3000ms) or crashes, Eluvix gracefully falls back to the next tier without dropping the request.
-- **Privacy & Security Guards**: Intercepts requests to strip PII (SSNs, API keys, IP addresses) and heuristically blocks prompt injections before they hit the LLM.
-- **Native Tools & MCP Injection**: Drag-and-drop tool wiring via the UI. Supports the open Model Context Protocol (MCP) and bundles native tools (WebScraper, Calculator) out of the box.
-- **JSONL Fine-Tuning Export**: Chat histories from the integrated Trace Playground are persisted in SQLite and can be exported as ready-to-train OpenAI JSONL datasets.
+- **Disaggregated LLM Serving (RDMA / RoCEv2)**: Separates compute-bound prompt Prefill ($>2,048\text{ FLOPs/Byte}$) from memory-bound auto-regressive Decode ($16\text{–}32\text{ FLOPs/Byte}$) across 100G/200G/400G/800G fabrics using **vLLM NIXL** and **SGLang Mooncake** layer-pipelined connectors.
+- **DeepSeek MLA & GQA KV-Cache Modeling**: Built-in KV-footprint math modeling Grouped-Query Attention ($160\text{ KiB/tok}$ in FP8) vs. DeepSeek Multi-Head Latent Attention ($34.3\text{ KiB/tok}$ in FP8, a **$4.66\times$ compression**).
+- **Switchyard Prefill-Isolation & Prefix Affinity**: Steers heavy prompts ($\ge 1,024$ tokens) to dedicated prefill workers to eliminate the time-to-first-token bubble, and hashes static system prompt prefixes to pin repeated requests to warm PagedAttention/RadixAttention GPU cache.
+- **Split TTFT vs. ITL Telemetry**: Measures Time to First Token (TTFT) and Inter-Token Latency (ITL) per request, tracking real-time **SLA Goodput %** ($\text{TTFT} \le 1,500\text{ms}, \text{ITL} \le 30\text{ms/tok}$).
+- **Autonomous Agent & SWE Harness Mesh**: First-class gateways for coding agents including **OpenHands**, **Devin**, **SWE-bench**, **TrueForge**, and **Antigravity**, coupled with isolated **Sandboxes** (Docker, gVisor, Firecracker).
+- **Stateful Memory & RAG**: Temporal knowledge graphs (**Graphiti**), semantic preference memory (**Mem0**, **Letta**), dual-level RAG (**LightRAG**), and sub-millisecond **Semantic Caching**.
+- **Privacy & Prompt Injection Defense**: In-flight PII masking/blocking (API keys, SSNs, credit cards, emails) and heuristic semantic prompt injection defense.
+- **Dual-Protocol Same-Port TLS Auto-Upgrade**: In-kernel TCP byte-sniffing on port `3588`. Plaintext HTTP clients receive an instant `HTTP 308` redirect to HTTPS on the exact same port without proxy overhead.
+- **Interactive Roofline & RDMA Lab**: Client-side simulator on `/provider` modeling arithmetic intensity, network wire time, layer overlap %, and exposed TTFT overhead across hardware architectures.
+- **Monetize Idle Compute**: Decentralized Billama Provider daemon allowing developers to sell idle GPU compute time with instant consumer preemption.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ System Architecture
 
 ```mermaid
 graph TD
-    Client[Client App / Playground] -->|ChatRequest| Router[Switchyard Core Router]
-    
-    subgraph Eluvix Gateway
-    Router --> Guards[Privacy & Semantic Guards]
-    Guards --> Estimator[Complexity & Vision Estimator]
-    Estimator --> Balancer[Load Balancer & Latency Spillover]
-    Balancer --> DB[(SQLite DB)]
+    Client["Client / Agent (OpenCode, Cursor, Python SDK)"] -->|HTTPS / HTTP Port 3588| Demux["Same-Port TLS Auto-Upgrade"]
+    Demux --> Gateway["Eluvix Gateway Engine"]
+
+    subgraph Security & Guardrails
+        Gateway --> Privacy["Privacy Guard (PII Token Masking)"]
+        Privacy --> Semantic["Semantic Guard (Injection Defense)"]
+        Semantic --> Complexity["Complexity & Vision Estimator"]
     end
-    
-    Balancer -->|Tier 1: Fast| Local[Local vLLM / Ollama]
-    Balancer -->|Tier 2: Multimodal| LocalVision[Local Vision Models]
-    Balancer -->|Tier 3: Cloud| OpenAI[OpenAI / Claude]
-    
-    subgraph Agent Tools
-    Router -.-> Agents[Agent Gateways]
-    Agents --> Native[Native Tools API]
-    Agents --> MCP[External MCP Servers]
+
+    subgraph Switchyard Routing Engine
+        Complexity --> Switchyard["Switchyard Traffic Balancer"]
+        Switchyard -->|Prefill Isolation| PDCheck{"Tokens >= 1024?"}
+        PDCheck -->|Yes| PrefillNode["Prefill Pool (vLLM / SGLang TP4)"]
+        PDCheck -->|No| DecodeNode["Decode Pool (Low-Latency GEMV)"]
+        Switchyard -->|Prefix Hash Match| PrefixAffinity["KV Prefix-Affinity Cache"]
+        Switchyard -->|Fallback Cascade| Fallback["Tiered Multi-Provider Fallback"]
+    end
+
+    subgraph High-Speed Fabric
+        PrefillNode -.->|Layer-Pipelined RDMA Write| DecodeNode
+        PrefillNode --> ConnectX["ConnectX-6/7/8 RoCEv2 / InfiniBand"]
+        DecodeNode --> ConnectX
+    end
+
+    subgraph Agent & Memory Mesh
+        Switchyard -.-> SWE["SWE Harnesses (OpenHands, TrueForge)"]
+        SWE --> Sandbox["Execution Sandbox (Docker / gVisor)"]
+        Switchyard -.-> Memory["Memory & RAG (Graphiti, LightRAG)"]
+        Switchyard -.-> Arena["Consensus Tournament & Judge"]
+    end
+
+    subgraph Telemetry & Audit
+        Gateway --> DB[("Local SQLite (WAL Mode)")]
+        DB --> Metrics["TTFT, ITL, KV Wire, Goodput SLA"]
+        DB --> JSONL["Fine-Tuning JSONL Export"]
     end
 ```
+
+---
+
+## 🧩 Visual Routing Studio & Templates
+
+The interactive node editor at `https://127.0.0.1:3588/editor` provides drag-and-drop orchestration with 15 bundled production templates:
+
+| Template | Focus | Key Nodes Included |
+| :--- | :--- | :--- |
+| **Disaggregated RDMA Cluster** | Ultra-Low-Latency Serving | Switchyard (`prefill-isolation`), vLLM Prefill (NIXL), vLLM Decode, SGLang Mooncake |
+| **Consensus RAG & SWE Mesh** | Autonomous Coding & Quality | OpenHands Harness, Docker Sandbox, Graphiti Memory, Consensus Judge Arena |
+| **Full Production Stack** | Sovereign Defense & Hybrid | Privacy Guard, Semantic Guard, Switchyard, Local Engines, Cloud Fallback |
+| **Privacy First Zero-Trust** | Air-Gapped Data Protection | Strict PII Anonymization, Prompt Injection Defense, Local vLLM/Ollama only |
+| **High-Throughput Batching** | Heavy Workload Processing | Semantic Cache, Fallback Chain, High-Priority Engine Clusters |
 
 ---
 
 ## 🚀 Quickstart
 
 ### Prerequisites
-- [Node.js v18+](https://nodejs.org/)
-- [pnpm](https://pnpm.io/)
-- Docker (Optional, for production builds)
+- **Node.js**: `v22.13.0+ LTS` (uses built-in `node:sqlite` and native ESM)
+- **pnpm**: `v11.0.0+`
+- **GPU Acceleration (Optional)**: NVIDIA CUDA (Driver 535+) or AMD ROCm 6.2+
+- **Docker & Compose**: `v2.20+` (for containerized deployments)
 
 ### 1. Local Development
-Clone the repo, install dependencies, and start the Next.js visual dashboard.
-
 ```bash
+# 1. Clone repository
 git clone https://github.com/Eluvixrouter/eluvix.git
 cd eluvix
 
-# Configure your secure credentials
+# 2. Configure credentials
 cp .env.example .env
-# Edit .env and set ADMIN_PASSWORD
+# Edit .env and set your ADMIN_PASSWORD
 
-# Install dependencies and run
+# 3. Install dependencies & build core
 pnpm install
 pnpm dev
 ```
-Navigate to `http://localhost:3588` to access the visual routing editor, trace playground, and analytics.
+Open **`https://127.0.0.1:3588`** in your browser.
 
-### 2. Cloud Production Deployment
-Eluvix is optimized for Docker.
+### 2. Modular Docker Compose Deployment
+Eluvix features a split, pick-and-choose compose architecture in `docker/compose/`:
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+# Start Core Gateway & UI only
+docker compose -f docker/compose/core.yml up -d
+
+# Start Core + Local Inference Engines (vLLM & SGLang)
+docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d
+
+# Start Full Production Mesh (Gateway + Inference + SWE Harnesses + Memory)
+docker compose \
+  -f docker/compose/core.yml \
+  -f docker/compose/inference.yml \
+  -f docker/compose/harnesses.yml \
+  -f docker/compose/memory.yml \
+  up -d
 ```
-This deploys the Next.js frontend in `standalone` mode alongside the background Switchyard engine, persisting your analytics and fine-tuning datasets to the `./data` volume.
 
 ---
 
-## 🛠️ Tech Stack
-- **Next.js 14** (App Router, React Flow)
-- **Tailwind CSS** (Styling)
-- **TypeScript**
-- **better-sqlite3** (Local low-latency persistence)
-- **Vitest** (Unit testing)
+## 📖 Documentation Index
+
+- [**System Architecture Deep Dive**](docs/architecture.md): Request pipeline, complexity scoring, and failover mechanics.
+- [**Disaggregated Serving & RDMA Fabrics**](docs/disaggregated-serving-rdma.md): Roofline math, DeepSeek MLA compression, NIXL/Mooncake pipelining, and RoCEv2 tuning.
+- [**Next-Gen Routing Nodes & Agent Mesh**](docs/next-gen-nodes.md): Harness, Memory, Sandbox, KnowledgeBase, Consensus, and Fallback nodes.
+- [**Modular Docker Compose Guide**](docs/docker-modular-compose.md): Pick-and-choose deployment recipes and profile management.
+- [**Interactive Web Docs**](apps/nextjs/src/app/docs/docs-data.ts): Built-in in-app documentation at `https://127.0.0.1:3588/docs`.
+
+---
+
+## 🧪 Testing & Verification
+
+Eluvix maintains a comprehensive test suite across the monorepo:
+
+```bash
+# Test router core (17 test files, 169 tests)
+pnpm --filter @eluvix/router-core test
+
+# Test Next.js application & layout store (12 test files, 121 tests)
+pnpm --filter nextjs test
+
+# Run full monorepo production build
+pnpm build
+```
+
+---
+
+## ⚖️ License
+Licensed under the [MIT License](LICENSE).

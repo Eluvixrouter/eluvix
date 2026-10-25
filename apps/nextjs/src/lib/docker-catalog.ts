@@ -68,6 +68,15 @@ export const DOCKER_SERVICE_CATALOG: DockerCatalogEntry[] = [
     defaultSelected: false
   },
   {
+    name: 'sglang',
+    container: 'eluvix-sglang',
+    port: 30000,
+    category: 'inference',
+    composeFile: 'docker/compose/inference.yml',
+    description: 'RadixAttention & Mooncake RDMA inference server',
+    defaultSelected: false
+  },
+  {
     name: 'openviking',
     container: 'eluvix-openviking',
     port: 1933,
@@ -141,6 +150,9 @@ export function getRequiredServicesForConfig(config?: RouterConfig | null): stri
     }
     if (u.type === 'vllm' || ep.includes(':8000')) {
       needed.add('vllm');
+    }
+    if (u.type === 'sglang' || ep.includes(':30000') || ep.includes('sglang')) {
+      needed.add('sglang');
     }
     if (ep.includes(':8080') || ep.includes('switchyard')) {
       needed.add('switchyard');

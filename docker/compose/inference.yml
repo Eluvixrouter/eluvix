@@ -33,6 +33,23 @@ services:
       timeout: 3s
       retries: 3
 
+  sglang:
+    image: lmsysorg/sglang:latest
+    container_name: eluvix-sglang
+    profiles: ["inference", "all"]
+    ports:
+      - "127.0.0.1:${SGLANG_PORT:-30000}:30000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:30000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
 volumes:
   ollama_data:
     driver: local

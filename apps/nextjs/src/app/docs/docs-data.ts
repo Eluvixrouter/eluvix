@@ -535,16 +535,16 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
       overview: 'Eluvix orchestrates on-premises hardware across NVIDIA CUDA, AMD ROCm, and CPU inference engines with automatic capability tagging.',
       subsections: [
         {
-          title: 'Hardware Profiles & Docker Overlays',
-          body: 'Modular compose overlays adapt Eluvix to your specific acceleration hardware:',
+          title: 'Hardware Profiles & Modular Docker Compose',
+          body: 'Eluvix provides a split pick-and-choose compose architecture in docker/compose/ allowing individual subsystems to be launched independently:',
           table: {
-            headers: ['Hardware', 'Compose Command', 'Requirements'],
+            headers: ['Subsystem', 'Compose Command', 'Description'],
             rows: [
-              ['NVIDIA CUDA', 'docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d', 'nvidia-smi and NVIDIA Container Toolkit'],
-              ['AMD ROCm', 'docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d', 'ROCm 6.2 with /dev/kfd and /dev/dri passthrough'],
-              ['CPU Only', 'docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d', 'Standard x86_64 or ARM64 host without GPU'],
-              ['OpenViking Profile', 'docker compose --profile memory up -d', 'Runs OpenViking context database on port 1933'],
-              ['TrueForge Profile', 'docker compose --profile harness up -d', 'Runs TrueForge agent runtime on port 8790'],
+              ['Core Gateway & UI', 'docker compose -f docker/compose/core.yml up -d', 'Gateway router, Next.js UI, SQLite telemetry on port 3588'],
+              ['Inference Pool (vLLM / SGLang)', 'docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d', 'High-throughput local vLLM (:8000), SGLang (:30000), and Ollama (:11434)'],
+              ['SWE Harnesses', 'docker compose -f docker/compose/core.yml -f docker/compose/harnesses.yml up -d', 'TrueForge (:8790) and OpenHands (:3000) coding agent environments'],
+              ['Memory & Knowledge RAG', 'docker compose -f docker/compose/core.yml -f docker/compose/memory.yml up -d', 'Graphiti temporal graphs (:8000), LightRAG (:9621), OpenViking (:1933)'],
+              ['Full Mesh Stack', 'docker compose -f docker/compose/core.yml -f docker/compose/inference.yml -f docker/compose/harnesses.yml -f docker/compose/memory.yml up -d', 'Complete production deployment running all engines, harnesses, and memory databases'],
             ],
           },
         },
@@ -663,6 +663,67 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
         {
           title: 'Native Features',
           body: 'The desktop app includes a native system tray icon with quick actions (Start/Stop Gateway, Toggle Provider, Copy OpenAI API Env), GPU VRAM temperature gauges, and automated OS boot launch.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'disaggregated-serving',
+    title: 'Disaggregated Serving & RDMA Fabrics',
+    category: 'Hardware & Platform',
+    icon: '🌐',
+    badge: 'RDMA / RoCEv2',
+    summary: 'Disaggregate compute-bound Prefill and memory-bound Decode across RoCEv2/InfiniBand fabrics using vLLM NIXL and SGLang Mooncake connectors.',
+    content: {
+      overview: 'Modern LLM inference exhibits two fundamentally distinct operational regimes: the prompt Prefill phase is compute-bound (operating at thousands of FLOPs/Byte), while the auto-regressive Decode phase is memory-bandwidth bound (operating at 16–32 FLOPs/Byte). In traditional colocated serving, long prompts saturate Tensor Cores and stall interactive token generation for all concurrent users (the "time-to-first-token bubble"). Eluvix disaggregates Prefill and Decode onto dedicated hardware nodes interconnected by ultra-low-latency GPUDirect RDMA / RoCEv2 fabrics.',
+      subsections: [
+        {
+          title: 'The Roofline Model: Compute-Bound vs. Memory-Bound',
+          body: 'On an NVIDIA H100 SXM5 GPU (989.4 TFLOPS dense FP8, 3.35 TB/s HBM3), the Roofline operational ridge point occurs at 295.3 FLOPs/Byte. During Decode, memory arithmetic intensity is restricted by loading model weights once per token generated (~16–32 FLOPs/Byte), severely underutilizing Tensor Cores. During Prefill with prompt lengths >1,024 tokens, arithmetic intensity surges above 2,048 FLOPs/Byte, fully saturating the compute pipeline. Separating these phases prevents batch-stragglers and TTFT head-of-line blocking.',
+          table: {
+            headers: ['Phase', 'Bottleneck', 'Arithmetic Intensity', 'Optimal Node Topology'],
+            rows: [
+              ['Prefill (Prompt Processing)', 'Compute (Tensor Cores)', '>2,048 FLOPs/Byte', 'High Tensor Parallelism (TP4/TP8), FP8 Matrix Units'],
+              ['Decode (Token Generation)', 'Memory Bandwidth (HBM)', '16–32 FLOPs/Byte', 'High Pipeline Parallelism (PP) or Tensor Parallelism (TP2/TP4), Low Batch Size'],
+            ],
+          },
+        },
+        {
+          title: 'KV-Cache Footprints: GQA vs. DeepSeek MLA',
+          body: 'To enable seamless KV-cache transfer from Prefill to Decode workers, KV footprint must be minimized. Standard Grouped-Query Attention (GQA-8, e.g. Llama-3.3-70B) requires 160 KiB/token in FP8 (320 KiB in BF16). DeepSeek Multi-Head Latent Attention (MLA) uses low-rank latent compression (512-dim latent + 64-dim decoupled RoPE), shrinking the KV cache to 34.3 KiB/token (4.66x smaller), dramatically accelerating wire transfer across RDMA links.',
+          table: {
+            headers: ['Architecture', 'KV Dimension / Token', 'FP8 Cache Size (4k tokens)', 'Wire Transfer Time (400GbE)'],
+            rows: [
+              ['Llama-3.3-70B (GQA-8)', '163,840 bytes/tok', '625.0 MB', '12.5 ms'],
+              ['DeepSeek-V3 / R1 (MLA)', '35,136 bytes/tok', '134.0 MB', '2.68 ms'],
+              ['Llama-3.1-8B (GQA-8)', '65,536 bytes/tok', '250.0 MB', '5.0 ms'],
+            ],
+          },
+        },
+        {
+          title: 'Pipelined KV-Transfer with vLLM NIXL and SGLang Mooncake',
+          body: 'Rather than waiting for the entire prompt prefill to complete before initiating network transmission, Eluvix leverages layer-by-layer GPUDirect RDMA pipelining. As each transformer layer finishes computation on the Prefill node, its KV tensors are immediately written over RDMA into the target Decode node GPU memory. This overlaps 96%–98% of the transfer time with compute, exposing less than 1–2ms of network overhead to the client.',
+          code: {
+            language: 'bash',
+            content: `# Launch vLLM Prefill Node with NIXL Connector
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_buffer_device":"mlx5_0"}' \
+  --tensor-parallel-size 4 --port 8000
+
+# Launch vLLM Decode Node with NIXL Connector
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_buffer_device":"mlx5_0"}' \
+  --tensor-parallel-size 4 --port 8001`,
+          },
+        },
+        {
+          title: 'Switchyard Prefill-Isolation & Prefix Affinity',
+          body: 'Switchyard automatically detects request token volume: prompts exceeding prefillIsolationThresholdTokens (default 1,024) are steered to dedicated Prefill nodes or disaggregated clusters. Prompts sharing common system prefixes are hashed (SHA-256) and routed with affinity to the specific worker retaining the warm KV cache in GPU memory, maximizing RadixAttention and chunked prefill hit rates.',
+          note: 'Prefix affinity entries are held in an in-memory LRU cache with a 30-minute time-to-live (TTL).',
+        },
+        {
+          title: 'TTFT vs. ITL Telemetry and Goodput SLAs',
+          body: 'Traditional gateways measure only end-to-end request duration. Eluvix instruments Server-Sent Events (SSE) streaming chunks to isolate Time to First Token (TTFT, prefill phase) from Inter-Token Latency (ITL, decode phase). Every response emits x-eluvix-ttft-ms, x-eluvix-itl-ms, and x-eluvix-kv-cache-kb headers, allowing observability dashboards to track SLA Goodput (percentage of requests meeting both TTFT and ITL SLOs).',
         },
       ],
     },

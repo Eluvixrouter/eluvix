@@ -50,8 +50,8 @@ describe('Layout Storage & Template System', () => {
     }
   });
 
-  it('seeds all 14 bundled example templates into layouts directory', () => {
-    expect(EXAMPLE_LAYOUTS).toHaveLength(14);
+  it('seeds all 15 bundled example templates into layouts directory', () => {
+    expect(EXAMPLE_LAYOUTS).toHaveLength(15);
     ensureLayoutsDirectory();
     ensureExamplesSeeded(false);
 
@@ -59,7 +59,7 @@ describe('Layout Storage & Template System', () => {
     expect(fs.existsSync(layoutsDir)).toBe(true);
 
     const files = fs.readdirSync(layoutsDir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
-    expect(files.length).toBe(14);
+    expect(files.length).toBe(15);
 
     for (const example of EXAMPLE_LAYOUTS) {
       expect(files).toContain(`${example.id}.json`);

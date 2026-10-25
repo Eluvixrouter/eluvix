@@ -12,6 +12,9 @@ interface RequestLog {
   duration_ms: number;
   prompt_tokens?: number;
   completion_tokens?: number;
+  ttft_ms?: number;
+  itl_ms?: number;
+  kv_cache_kb?: number;
 }
 
 interface UpstreamHealth {
@@ -36,6 +39,12 @@ interface ObservabilityData {
     completionTokens: number;
     totalTokens: number;
     estimatedSavings: string;
+    p50TtftMs?: number;
+    p99TtftMs?: number;
+    p50ItlMs?: number;
+    p99ItlMs?: number;
+    slaGoodputPct?: number;
+    totalKvTransferredMb?: number;
     activeUpstreamsCount: number;
     totalUpstreamsCount: number;
   };
@@ -363,6 +372,84 @@ export default function ObservabilityPage() {
           </div>
         </section>
 
+        {/* Disaggregated Prefill vs. Decode (TTFT & ITL) & Goodput */}
+        <section className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-4 border-b border-slate-800 gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Disaggregated Latency &amp; Goodput</span>
+                <span className="bg-indigo-950 text-indigo-300 text-[10px] px-2 py-0.5 rounded border border-indigo-800 font-mono font-semibold">
+                  RDMA / RoCEv2 Aware
+                </span>
+              </div>
+              <h2 className="text-lg font-bold text-white mt-0.5">
+                Prefill TTFT vs. Decode ITL Telemetry
+              </h2>
+            </div>
+            <div className="text-xs text-slate-400">
+              SLA Targets: TTFT &le; 1,500ms • ITL &le; 30.0ms/tok
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5">
+            {/* TTFT */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Time to First Token (TTFT)</span>
+                <span className="bg-sky-950 text-sky-400 text-[10px] px-1.5 py-0.5 rounded border border-sky-800">Prefill</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-sky-400 font-mono">
+                {summary.p50TtftMs ?? 0} <span className="text-xs text-slate-400 font-normal">ms (p50)</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-1 font-mono">
+                p99: <span className="text-slate-300 font-semibold">{summary.p99TtftMs ?? 0} ms</span>
+              </div>
+            </div>
+
+            {/* ITL */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Inter-Token Latency (ITL)</span>
+                <span className="bg-emerald-950 text-emerald-400 text-[10px] px-1.5 py-0.5 rounded border border-emerald-800">Decode</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-emerald-400 font-mono">
+                {summary.p50ItlMs ?? 0} <span className="text-xs text-slate-400 font-normal">ms/tok (p50)</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-1 font-mono">
+                p99: <span className="text-slate-300 font-semibold">{summary.p99ItlMs ?? 0} ms/tok</span>
+              </div>
+            </div>
+
+            {/* SLA Goodput */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>SLA Goodput Rate</span>
+                <span className="text-base">🎯</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-purple-400 font-mono">
+                {summary.slaGoodputPct ?? 100}%
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Completed within TTFT &amp; ITL SLO boundaries
+              </div>
+            </div>
+
+            {/* KV Wire Transferred */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>KV Wire Volume</span>
+                <span className="text-base">⚡</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-400 font-mono">
+                {summary.totalKvTransferredMb ?? 0} <span className="text-xs text-slate-400 font-normal">MB</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Estimated KV-cache transferred or cached
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* 2. Upstream Node Health Matrix */}
         <section className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
           <div className="flex justify-between items-center pb-4 border-b border-slate-800">
@@ -559,15 +646,18 @@ export default function ObservabilityPage() {
                   <th className="p-3">Time</th>
                   <th className="p-3">Model</th>
                   <th className="p-3">Upstream Engine</th>
-                  <th className="p-3 w-28 text-right">Latency</th>
-                  <th className="p-3 w-32 text-right">Tokens</th>
-                  <th className="p-3 w-16 text-center">Inspect</th>
+                  <th className="p-3 w-20 text-right">TTFT</th>
+                  <th className="p-3 w-20 text-right">ITL</th>
+                  <th className="p-3 w-24 text-right">Latency</th>
+                  <th className="p-3 w-20 text-right">KV Cache</th>
+                  <th className="p-3 w-28 text-right">Tokens</th>
+                  <th className="p-3 w-14 text-center">Inspect</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-850">
                 {filteredLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500 text-xs">
+                    <td colSpan={10} className="p-8 text-center text-slate-500 text-xs">
                       No request activity found matching current filters. Send a prompt via OpenCode, curl, or click &ldquo;Send Test Ping&rdquo; above!
                     </td>
                   </tr>
@@ -603,6 +693,12 @@ export default function ObservabilityPage() {
                         <td className="p-3 text-slate-300 font-mono text-[11px]">
                           {log.upstream_id}
                         </td>
+                        <td className="p-3 font-mono text-right text-sky-400">
+                          {log.ttft_ms != null ? `${log.ttft_ms} ms` : '-'}
+                        </td>
+                        <td className="p-3 font-mono text-right text-emerald-400">
+                          {log.itl_ms != null ? `${log.itl_ms.toFixed(1)} ms` : '-'}
+                        </td>
                         <td className="p-3 font-mono text-right">
                           <span
                             className={
@@ -615,6 +711,13 @@ export default function ObservabilityPage() {
                           >
                             {log.duration_ms} ms
                           </span>
+                        </td>
+                        <td className="p-3 font-mono text-right text-slate-300">
+                          {log.kv_cache_kb != null
+                            ? log.kv_cache_kb > 1024
+                              ? `${(log.kv_cache_kb / 1024).toFixed(1)} MB`
+                              : `${log.kv_cache_kb.toFixed(0)} KB`
+                            : '-'}
                         </td>
                         <td className="p-3 font-mono text-right text-slate-400">
                           {log.prompt_tokens || 0} / {log.completion_tokens || 0}
@@ -678,6 +781,24 @@ export default function ObservabilityPage() {
                 <div className="flex justify-between py-1 border-b border-slate-800">
                   <span className="text-slate-400">Latency Duration:</span>
                   <span className="font-mono text-slate-200">{selectedLog.duration_ms} ms</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-800">
+                  <span className="text-slate-400">Time to First Token (TTFT):</span>
+                  <span className="font-mono text-sky-300">{selectedLog.ttft_ms != null ? `${selectedLog.ttft_ms} ms` : 'N/A'}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-800">
+                  <span className="text-slate-400">Inter-Token Latency (ITL):</span>
+                  <span className="font-mono text-emerald-300">{selectedLog.itl_ms != null ? `${selectedLog.itl_ms.toFixed(2)} ms/token` : 'N/A'}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-800">
+                  <span className="text-slate-400">Estimated KV Footprint:</span>
+                  <span className="font-mono text-amber-300">
+                    {selectedLog.kv_cache_kb != null
+                      ? selectedLog.kv_cache_kb > 1024
+                        ? `${(selectedLog.kv_cache_kb / 1024).toFixed(2)} MB`
+                        : `${selectedLog.kv_cache_kb.toFixed(1)} KB`
+                      : 'N/A'}
+                  </span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-800">
                   <span className="text-slate-400">Prompt Tokens:</span>

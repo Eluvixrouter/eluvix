@@ -23,6 +23,25 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   const [details, setDetails] = useState<DiscoveredModel[]>(data?.modelDetails || []);
   const [status, setStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
   const [expanded, setExpanded] = useState<boolean>(false);
+  const [showDisagg, setShowDisagg] = useState<boolean>(Boolean(data?.disaggregation?.role && data.disaggregation.role !== 'colocated'));
+  const [disaggregationRole, setDisaggregationRole] = useState<'colocated' | 'prefill' | 'decode' | 'pd-pair'>(
+    data?.disaggregation?.role || 'colocated'
+  );
+  const [kvConnector, setKvConnector] = useState<'NixlConnector' | 'LMCacheConnectorV1' | 'none'>(
+    data?.disaggregation?.kvConnector || (data?.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
+  );
+  const [kvCacheDtype, setKvCacheDtype] = useState<'auto' | 'fp8_e4m3' | 'bf16'>(
+    data?.disaggregation?.kvCacheDtype || 'fp8_e4m3'
+  );
+  const [tensorParallelSize, setTensorParallelSize] = useState<number>(
+    data?.disaggregation?.tensorParallelSize ?? 4
+  );
+  const [rdmaDevice, setRdmaDevice] = useState<string>(
+    data?.disaggregation?.rdmaDevice || 'mlx5_0:1'
+  );
+  const [decodeEndpoint, setDecodeEndpoint] = useState<string>(
+    data?.disaggregation?.decodeEndpoint || 'http://localhost:8200'
+  );
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -251,6 +270,191 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
             </div>
           </div>
         )}
+
+        {/* Disaggregated Serving & RDMA KV-Transfer Panel */}
+        <div className="bg-gray-950/80 rounded border border-gray-800 p-2 space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-400 flex items-center gap-1">
+              <span>⚡</span> RDMA & Disaggregation
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowDisagg(!showDisagg)}
+              className="nodrag text-[10px] text-gray-400 hover:text-cyan-300"
+            >
+              {showDisagg ? 'Hide' : disaggregationRole === 'colocated' ? 'Configure' : disaggregationRole}
+            </button>
+          </div>
+
+          {showDisagg && (
+            <div className="space-y-2 pt-1 border-t border-gray-800/80">
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">Serving Role</label>
+                <select
+                  className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white text-[11px] outline-none"
+                  value={disaggregationRole}
+                  onChange={(e) => {
+                    const next = e.target.value as any;
+                    setDisaggregationRole(next);
+                    const connector = next === 'colocated' ? 'none' : 'NixlConnector';
+                    setKvConnector(connector);
+                    syncData({
+                      disaggregation: {
+                        role: next,
+                        kvConnector: connector,
+                        kvCacheDtype,
+                        tensorParallelSize,
+                        rdmaDevice,
+                        decodeEndpoint: next === 'pd-pair' ? decodeEndpoint : undefined
+                      }
+                    });
+                  }}
+                >
+                  <option value="colocated">Co-Located (Continuous Batching)</option>
+                  <option value="prefill">Prefill Node (Compute-Bound Producer)</option>
+                  <option value="decode">Decode Node (Bandwidth-Bound Consumer)</option>
+                  <option value="pd-pair">Coordinated P+D Pair (RDMA)</option>
+                </select>
+              </div>
+
+              {disaggregationRole !== 'colocated' && (
+                <>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">KV Connector</label>
+                      <select
+                        className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white text-[10px] outline-none font-mono"
+                        value={kvConnector}
+                        onChange={(e) => {
+                          const next = e.target.value as any;
+                          setKvConnector(next);
+                          syncData({
+                            disaggregation: {
+                              role: disaggregationRole,
+                              kvConnector: next,
+                              kvCacheDtype,
+                              tensorParallelSize,
+                              rdmaDevice,
+                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                            }
+                          });
+                        }}
+                      >
+                        <option value="NixlConnector">NIXL (GPUDirect)</option>
+                        <option value="LMCacheConnectorV1">LMCache v1</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">KV Cache Dtype</label>
+                      <select
+                        className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white text-[10px] outline-none font-mono"
+                        value={kvCacheDtype}
+                        onChange={(e) => {
+                          const next = e.target.value as any;
+                          setKvCacheDtype(next);
+                          syncData({
+                            disaggregation: {
+                              role: disaggregationRole,
+                              kvConnector,
+                              kvCacheDtype: next,
+                              tensorParallelSize,
+                              rdmaDevice,
+                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                            }
+                          });
+                        }}
+                      >
+                        <option value="fp8_e4m3">fp8_e4m3 (50% BW)</option>
+                        <option value="bf16">bf16 (Standard)</option>
+                        <option value="auto">auto</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">Tensor Parallel (TP)</label>
+                      <select
+                        className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white text-[10px] outline-none font-mono"
+                        value={tensorParallelSize}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10);
+                          setTensorParallelSize(v);
+                          syncData({
+                            disaggregation: {
+                              role: disaggregationRole,
+                              kvConnector,
+                              kvCacheDtype,
+                              tensorParallelSize: v,
+                              rdmaDevice,
+                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                            }
+                          });
+                        }}
+                      >
+                        <option value={1}>TP=1</option>
+                        <option value={2}>TP=2</option>
+                        <option value={4}>TP=4 (H100)</option>
+                        <option value={8}>TP=8 (HGX)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">RoCEv2 / IB Device</label>
+                      <input
+                        type="text"
+                        className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white font-mono text-[10px] outline-none"
+                        value={rdmaDevice}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setRdmaDevice(next);
+                          syncData({
+                            disaggregation: {
+                              role: disaggregationRole,
+                              kvConnector,
+                              kvCacheDtype,
+                              tensorParallelSize,
+                              rdmaDevice: next,
+                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                            }
+                          });
+                        }}
+                        placeholder="mlx5_0:1"
+                      />
+                    </div>
+                  </div>
+
+                  {disaggregationRole === 'pd-pair' && (
+                    <div>
+                      <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">Decode Endpoint (Node B)</label>
+                      <input
+                        type="text"
+                        className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white font-mono text-[10px] outline-none"
+                        value={decodeEndpoint}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setDecodeEndpoint(next);
+                          syncData({
+                            disaggregation: {
+                              role: disaggregationRole,
+                              kvConnector,
+                              kvCacheDtype,
+                              tensorParallelSize,
+                              rdmaDevice,
+                              decodeEndpoint: next
+                            }
+                          });
+                        }}
+                        placeholder="http://10.200.1.20:8200"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Priority Slider */}
         <div>

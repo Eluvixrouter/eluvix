@@ -6,7 +6,8 @@ export type RoutingStrategy =
   | 'lowest-cost' 
   | 'lowest-latency' 
   | 'round-robin' 
-  | 'priority';
+  | 'priority'
+  | 'prefill-isolation';
 
 export interface SwitchyardConfig {
   strategy?: RoutingStrategy;
@@ -28,6 +29,18 @@ export interface SwitchyardConfig {
     frontier?: number;
   };
   maxCostPerRequest?: number;
+  /**
+   * Threshold in tokens above which a request is marked as a heavy-prefill burst.
+   * Switchyard prioritizes dedicated pd-disaggregated or prefill-pool upstreams
+   * to protect interactive decode streams from head-of-line SM stalls.
+   * Default: 4096 when disaggregated upstreams are present.
+   */
+  prefillIsolationThresholdTokens?: number;
+  /**
+   * Sticky routing based on common system prompt / RAG context prefix hashes to
+   * maximize PagedAttention / RadixAttention KV-cache reuse.
+   */
+  kvPrefixAffinity?: boolean;
 }
 
 export interface ModelGatewayConfig {
@@ -90,6 +103,7 @@ export * from './harness/index.js';
 export * from './sandbox/index.js';
 export * from './circuit-breaker.js';
 export * from './consensus.js';
+export * from './kv-math.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -129,6 +143,7 @@ import { type HarnessConfig, buildChildEnv, forwardHarnessRequest } from './harn
 import { type SandboxConfig } from './sandbox/index.js';
 import { type FallbackChainConfig, globalCircuitBreaker } from './circuit-breaker.js';
 import { type ConsensusGroupConfig, executeConsensusGroup } from './consensus.js';
+import { estimateKvCacheFootprint } from './kv-math.js';
 
 /** One recorded stage of upstream selection, in execution order. */
 export interface RouteTraceStep {
@@ -144,6 +159,8 @@ export interface RouteTraceStep {
     | 'circuit-breaker'
     | 'fallback-chain'
     | 'consensus'
+    | 'prefill-isolation'
+    | 'kv-prefix-affinity'
     | 'ranking';
   detail: string;
   /** Upstream ids surviving this stage, when the stage filters. */
@@ -183,11 +200,26 @@ export type UpstreamType =
   | 'anthropic'
   | 'vllm-sr'
   | 'vllm'
+  | 'sglang'
   | 'switchyard'
   | 'ollama'
   | 'lemonade'
   | 'antigravity'
   | 'harness';
+
+export interface DisaggregationConfig {
+  role?: 'colocated' | 'prefill' | 'decode' | 'pd-disaggregated';
+  kvConnector?: 'NixlConnector' | 'LMCacheConnectorV1' | 'mooncake' | 'nixl' | 'none';
+  kvCacheDtype?: 'auto' | 'fp8_e4m3' | 'bf16';
+  tensorParallelSize?: number;
+  gpuMemoryUtilization?: number;
+  rdmaDevice?: string;
+  sideChannelHost?: string;
+  sideChannelPort?: number;
+  prefillEndpoint?: string;
+  decodeEndpoint?: string;
+  chunkedPrefillTokens?: number;
+}
 
 export interface AntigravityConfig {
   model?: string;
@@ -222,6 +254,7 @@ export interface UpstreamConfig {
   capabilities?: string[];
   antigravity?: AntigravityConfig;
   harness?: HarnessConfig;
+  disaggregation?: DisaggregationConfig;
 }
 
 /**
@@ -309,6 +342,42 @@ export interface PromptComplexityAssessment {
   features: string[];
   hasImages?: boolean;
   hasTools?: boolean;
+}
+
+/**
+ * Computes a deterministic 32-bit hex hash over static system prompts,
+ * knowledge blocks, or initial message turns to support KV-cache prefix affinity.
+ */
+export function computeKvPrefixHash(messages: ChatMessage[], maxChars = 2048): string {
+  if (!messages || messages.length === 0) return 'empty';
+  let prefix = '';
+  const hasSystem = messages.some(m => m.role === 'system');
+
+  if (hasSystem) {
+    for (const m of messages) {
+      if (m.role === 'system') {
+        const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+        prefix += `[${m.role}]${c}\n`;
+        if (prefix.length >= maxChars) break;
+      }
+    }
+  } else {
+    // No explicit system prompt: hash initial context turn
+    for (const m of messages) {
+      const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      prefix += `[${m.role}]${c}\n`;
+      if (prefix.length >= 512) break;
+    }
+  }
+
+  if (!prefix) return 'empty';
+
+  let h = 0x811c9dc5;
+  for (let i = 0; i < prefix.length; i++) {
+    h ^= prefix.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 export function estimatePromptComplexity(
@@ -727,6 +796,27 @@ export class Eluvix {
   private responseCache: Map<string, { response: any; timestamp: number }> = new Map();
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
   private contextProvider: ContextProvider | null = null;
+  private kvPrefixAffinityMap: Map<string, { upstreamId: string; timestamp: number }> = new Map();
+
+  /** Bounded prefix affinity lookup for KV cache reuse (30-min TTL). */
+  private getAffinityUpstream(prefixHash: string, ttlMs = 1800000): string | null {
+    const entry = this.kvPrefixAffinityMap.get(prefixHash);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > ttlMs) {
+      this.kvPrefixAffinityMap.delete(prefixHash);
+      return null;
+    }
+    return entry.upstreamId;
+  }
+
+  /** Record upstream used for this prefix hash. */
+  private setAffinityUpstream(prefixHash: string, upstreamId: string) {
+    if (this.kvPrefixAffinityMap.size >= 1024) {
+      const oldest = this.kvPrefixAffinityMap.keys().next().value;
+      if (oldest !== undefined) this.kvPrefixAffinityMap.delete(oldest);
+    }
+    this.kvPrefixAffinityMap.set(prefixHash, { upstreamId, timestamp: Date.now() });
+  }
 
   /** Insert into the response cache, evicting oldest entries past the cap. */
   private setCachedResponse(cacheKey: string, response: any) {
@@ -1518,6 +1608,19 @@ export class Eluvix {
                 .catch(() => {});
             }
 
+            const ttftHeader = response.headers.get('x-eluvix-ttft-ms');
+            const ttftMs = ttftHeader ? parseInt(ttftHeader, 10) : duration_ms;
+            let itlMs: number | undefined = undefined;
+            if (completionTokens > 0) {
+              const decodeMs = Math.max(0, duration_ms - ttftMs);
+              itlMs = completionTokens > 1
+                ? Number((decodeMs / (completionTokens - 1)).toFixed(2))
+                : Number((decodeMs || duration_ms).toFixed(2));
+            }
+            const kvDtype = upstream.disaggregation?.kvCacheDtype === 'bf16' ? 'bf16' : 'fp8_e4m3';
+            const kvFootprint = estimateKvCacheFootprint(servedModel, promptTokens, kvDtype);
+            const kvCacheKb = Number((kvFootprint.totalBytes / 1024).toFixed(1));
+
             // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
             if (!(effectiveRequest.stream && (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')))) {
               logRequest({
@@ -1526,7 +1629,10 @@ export class Eluvix {
                 status: response.status,
                 duration_ms,
                 prompt_tokens: promptTokens,
-                completion_tokens: completionTokens
+                completion_tokens: completionTokens,
+                ttft_ms: ttftMs,
+                itl_ms: itlMs,
+                kv_cache_kb: kvCacheKb
               });
             }
             
@@ -1539,6 +1645,21 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-model', servedModel);
             newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
+            newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
+            if (itlMs !== undefined) {
+              newResponse.headers.set('x-eluvix-itl-ms', String(itlMs));
+            }
+            newResponse.headers.set('x-eluvix-kv-cache-kb', String(kvCacheKb));
+            if (upstream.disaggregation?.role) {
+              newResponse.headers.set('x-eluvix-pd-role', upstream.disaggregation.role);
+            }
+            const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+            if (reqPrefixHash !== 'empty') {
+              newResponse.headers.set('x-eluvix-kv-prefix-hash', reqPrefixHash);
+              if (this.config.switchyard?.kvPrefixAffinity) {
+                this.setAffinityUpstream(reqPrefixHash, upstream.id);
+              }
+            }
             if (effortHeader) {
               newResponse.headers.set('x-eluvix-effort', effortHeader);
             }
@@ -1939,6 +2060,62 @@ export class Eluvix {
       detail: `strategy "${strategy}" ranked the surviving upstreams; the first is tried first, the rest are failover order`,
       kept: targetUpstreams.map(u => u.id)
     });
+
+    // Prefill-Isolation: Separate compute-bound heavy prompt prefills from latency-critical decode streams
+    const prefillThreshold = switchyardConfig.prefillIsolationThresholdTokens ?? 4096;
+    const isHeavyPrefill = complexity.tokenEstimate >= prefillThreshold;
+
+    if (isHeavyPrefill) {
+      const disaggPrefill = targetUpstreams.filter(u =>
+        u.disaggregation?.role === 'pd-disaggregated' ||
+        u.disaggregation?.role === 'prefill'
+      );
+      if (disaggPrefill.length > 0) {
+        steps.push({
+          stage: 'prefill-isolation',
+          detail: `tokenEstimate=${complexity.tokenEstimate} >= ${prefillThreshold}: heavy-prefill burst routed to dedicated disaggregated/prefill upstreams to protect decode streams from head-of-line SM stalls`,
+          kept: disaggPrefill.map(u => u.id),
+          removed: targetUpstreams.filter(u => !disaggPrefill.includes(u)).map(u => u.id)
+        });
+        targetUpstreams = [
+          ...disaggPrefill,
+          ...targetUpstreams.filter(u => !disaggPrefill.includes(u) && u.disaggregation?.role !== 'decode')
+        ];
+      }
+    } else {
+      const purePrefill = targetUpstreams.filter(u => u.disaggregation?.role === 'prefill');
+      if (purePrefill.length > 0 && targetUpstreams.length > purePrefill.length) {
+        steps.push({
+          stage: 'prefill-isolation',
+          detail: `tokenEstimate=${complexity.tokenEstimate} < ${prefillThreshold}: interactive prompt preferring decode/colocated upstreams over pure prefill workers`,
+          kept: targetUpstreams.filter(u => !purePrefill.includes(u)).map(u => u.id),
+          removed: purePrefill.map(u => u.id)
+        });
+        targetUpstreams = [
+          ...targetUpstreams.filter(u => !purePrefill.includes(u)),
+          ...purePrefill
+        ];
+      }
+    }
+
+    // KV Prefix Affinity: Sticky routing for common prompt prefixes to maximize PagedAttention / RadixAttention reuse
+    const prefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+    if (switchyardConfig.kvPrefixAffinity && prefixHash !== 'empty') {
+      const cachedUpstreamId = this.getAffinityUpstream(prefixHash);
+      if (cachedUpstreamId) {
+        const cachedIdx = targetUpstreams.findIndex(u => u.id === cachedUpstreamId);
+        if (cachedIdx > 0) {
+          const preferred = targetUpstreams[cachedIdx];
+          targetUpstreams = [preferred, ...targetUpstreams.filter(u => u.id !== cachedUpstreamId)];
+          steps.push({
+            stage: 'kv-prefix-affinity',
+            detail: `prefixHash=${prefixHash} hit warm KV-cache affinity; prioritised upstream ${preferred.name} (${preferred.id})`,
+            kept: [preferred.id]
+          });
+        }
+      }
+    }
+
     return { effectiveRequest, complexity, strategy, targetUpstreams, steps };
   }
 
@@ -1954,7 +2131,7 @@ export class Eluvix {
     }
     if (upstream.models.includes('*')) {
       // Local inference engines shouldn't greedily capture explicit cloud/agent/harness models
-      if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'switchyard'].includes(upstream.type)) {
+      if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'sglang', 'switchyard'].includes(upstream.type)) {
         if (/^(gemini-|claude-|gpt-oss-120b|harness\/)/i.test(requestedModel)) return false;
       }
       return true;
@@ -2046,6 +2223,7 @@ export class Eluvix {
 
     // Initial connection / TTFT timeout
     resetTimeout(timeoutMs, `Connection or first token timed out after ${timeoutMs}ms`);
+    const fetchStartTime = Date.now();
 
     try {
       const res = await fetch(url, {
@@ -2075,6 +2253,8 @@ export class Eluvix {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           throw new Error(`Upstream ${upstream.name} closed stream before producing any tokens`);
         }
+
+        const ttftMs = Date.now() - fetchStartTime;
 
         // Successfully received first chunk!
         const idleTimeoutMs = Math.max(60000, timeoutMs);
@@ -2108,6 +2288,7 @@ export class Eluvix {
 
         const resHeaders = new Headers(res.headers);
         resHeaders.set('x-eluvix-model', effectiveModel);
+        resHeaders.set('x-eluvix-ttft-ms', String(ttftMs));
         return new Response(stream, {
           status: res.status,
           statusText: res.statusText,
@@ -2125,8 +2306,10 @@ export class Eluvix {
       const bodyText = await res.text();
       if (timeoutTimer) clearTimeout(timeoutTimer);
 
+      const ttftMs = Date.now() - fetchStartTime;
       const resHeaders = new Headers(res.headers);
       resHeaders.set('x-eluvix-model', effectiveModel);
+      resHeaders.set('x-eluvix-ttft-ms', String(ttftMs));
       return new Response(bodyText, {
         status: res.status,
         statusText: res.statusText,

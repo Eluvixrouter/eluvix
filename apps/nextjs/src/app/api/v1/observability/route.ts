@@ -170,6 +170,33 @@ export async function GET(req: Request) {
     const completionTokens = rawLogs.reduce((acc, l) => acc + (l.completion_tokens || 0), 0);
     const totalTokens = promptTokens + completionTokens;
 
+    // Disaggregated Serving Latency Percentiles (Prefill TTFT & Decode ITL)
+    const ttftValues = successLogs.map(l => l.ttft_ms ?? l.duration_ms).filter((v): v is number => typeof v === 'number' && v > 0).sort((a, b) => a - b);
+    const itlValues = successLogs.map(l => l.itl_ms).filter((v): v is number => typeof v === 'number' && v > 0).sort((a, b) => a - b);
+
+    const percentile = (arr: number[], p: number): number => {
+      if (arr.length === 0) return 0;
+      const index = Math.ceil((p / 100) * arr.length) - 1;
+      return Math.round(arr[Math.max(0, Math.min(arr.length - 1, index))]);
+    };
+
+    const p50TtftMs = percentile(ttftValues, 50);
+    const p99TtftMs = percentile(ttftValues, 99);
+    const p50ItlMs = Number((itlValues.length > 0 ? (percentile(itlValues.map(v => Math.round(v * 10)), 50) / 10) : 0).toFixed(1));
+    const p99ItlMs = Number((itlValues.length > 0 ? (percentile(itlValues.map(v => Math.round(v * 10)), 99) / 10) : 0).toFixed(1));
+
+    // SLA criteria: TTFT < 1500ms and ITL < 30ms/tok
+    const slaMetCount = successLogs.filter(l => {
+      const ttft = l.ttft_ms ?? l.duration_ms;
+      const itl = l.itl_ms ?? (l.completion_tokens && l.completion_tokens > 0 ? l.duration_ms / l.completion_tokens : 20);
+      return ttft <= 1500 && itl <= 30;
+    }).length;
+    const slaGoodputPct = successCount > 0 ? Math.round((slaMetCount / successCount) * 100) : 100;
+
+    const totalKvTransferredMb = Number(
+      (rawLogs.reduce((acc, l) => acc + (l.kv_cache_kb || 0), 0) / 1024).toFixed(2)
+    );
+
     // Model and Upstream distributions
     const modelDistribution: Record<string, number> = {};
     const upstreamDistribution: Record<string, number> = {};
@@ -187,6 +214,7 @@ export async function GET(req: Request) {
       return (
         up.includes('ollama') ||
         up.includes('vllm') ||
+        up.includes('sglang') ||
         up.includes('lemonade') ||
         up.includes('switchyard') ||
         up.includes('antigravity')
@@ -207,6 +235,12 @@ export async function GET(req: Request) {
           completionTokens,
           totalTokens,
           estimatedSavings,
+          p50TtftMs,
+          p99TtftMs,
+          p50ItlMs,
+          p99ItlMs,
+          slaGoodputPct,
+          totalKvTransferredMb,
           activeUpstreamsCount: upstreamsHealth.filter(u => u.status === 'online').length,
           totalUpstreamsCount: upstreamsHealth.length,
         },

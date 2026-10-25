@@ -14,6 +14,9 @@ export interface RequestLog {
   duration_ms: number;
   prompt_tokens?: number;
   completion_tokens?: number;
+  ttft_ms?: number;
+  itl_ms?: number;
+  kv_cache_kb?: number;
 }
 
 export interface SqliteDb {
@@ -37,7 +40,10 @@ function initSchema(db: SqliteDb) {
       status INTEGER NOT NULL,
       duration_ms INTEGER,
       prompt_tokens INTEGER DEFAULT 0,
-      completion_tokens INTEGER DEFAULT 0
+      completion_tokens INTEGER DEFAULT 0,
+      ttft_ms INTEGER,
+      itl_ms REAL,
+      kv_cache_kb REAL
     );
 
     CREATE TABLE IF NOT EXISTS chat_history (
@@ -110,6 +116,18 @@ function initSchema(db: SqliteDb) {
     db.exec("ALTER TABLE chat_history ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_chat_history_user_session ON chat_history(user_id, session_id, id)');
+
+  // Migration for request_logs: add ttft_ms, itl_ms, and kv_cache_kb columns for disaggregated serving telemetry
+  const reqCols = db.prepare('PRAGMA table_info(request_logs)').all() as Array<{ name: string }>;
+  if (!reqCols.some(c => c.name === 'ttft_ms')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN ttft_ms INTEGER');
+  }
+  if (!reqCols.some(c => c.name === 'itl_ms')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN itl_ms REAL');
+  }
+  if (!reqCols.some(c => c.name === 'kv_cache_kb')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN kv_cache_kb REAL');
+  }
 }
 
 export function getDb(): SqliteDb {
@@ -155,8 +173,8 @@ export function logRequest(log: RequestLog) {
   try {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -165,7 +183,10 @@ export function logRequest(log: RequestLog) {
       log.status,
       log.duration_ms,
       log.prompt_tokens || 0,
-      log.completion_tokens || 0
+      log.completion_tokens || 0,
+      log.ttft_ms ?? null,
+      log.itl_ms ?? null,
+      log.kv_cache_kb ?? null
     );
   } catch (err: any) {
     console.error('Failed to log request to DB:', err.message);

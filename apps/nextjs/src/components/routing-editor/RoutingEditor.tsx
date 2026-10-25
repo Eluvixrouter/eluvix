@@ -30,6 +30,7 @@ import ObservabilityNode from './nodes/ObservabilityNode';
 import PrivacyGuardNode from './nodes/PrivacyGuardNode';
 import LemonadeNode from './nodes/LemonadeNode';
 import VllmNode from './nodes/VllmNode';
+import SglangNode from './nodes/SglangNode';
 import OllamaNode from './nodes/OllamaNode';
 import AntigravityNode from './nodes/AntigravityNode';
 import CodexNode from './nodes/CodexNode';
@@ -129,6 +130,21 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     selectedModel: '*',
     maxContextTokens: 32768,
     maxParallelRequests: 8
+  },
+  sglangNode: {
+    label: 'SGLang Engine',
+    endpoint: 'http://localhost:30000',
+    priority: 24,
+    selectedModel: '*',
+    maxContextTokens: 32768,
+    maxParallelRequests: 8,
+    disaggregation: {
+      role: 'colocated',
+      kvConnector: 'mooncake',
+      kvCacheDtype: 'fp8_e4m3',
+      tensorParallelSize: 4,
+      rdmaDevice: 'mlx5_0'
+    }
   },
   ollamaNode: {
     label: 'Ollama Engine',
@@ -521,6 +537,7 @@ const nodeTypes = {
   observabilityNode: ObservabilityNode,
   lemonadeNode: LemonadeNode,
   vllmNode: VllmNode,
+  sglangNode: SglangNode,
   ollamaNode: OllamaNode,
   antigravityNode: AntigravityNode,
   codexNode: CodexNode,
@@ -620,6 +637,7 @@ export default function RoutingEditor() {
       case 'semanticGuardNode': setSelectedLogContainer('vllm-sr'); break;
       case 'ollamaNode': setSelectedLogContainer('ollama'); break;
       case 'vllmNode': setSelectedLogContainer('vllm'); break;
+      case 'sglangNode': setSelectedLogContainer('sglang'); break;
       case 'taskRouterNode': setSelectedLogContainer('agent-router'); break;
       case 'agentGatewayNode': setSelectedLogContainer('agentgateway'); break;
       case 'memoryNode': {
@@ -1039,7 +1057,7 @@ export default function RoutingEditor() {
       if (!sourceNode || !targetNode) return false;
 
       // Define valid target types for each source type
-      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
+      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
       const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
 
       const rules: Record<string, string[]> = {
@@ -1064,6 +1082,7 @@ export default function RoutingEditor() {
         fallbackChainNode: [...allUpstreamTargets, 'observabilityNode'],
         lemonadeNode: ['switchyardNode', 'observabilityNode'],
         vllmNode: ['switchyardNode', 'observabilityNode'],
+        sglangNode: ['switchyardNode', 'observabilityNode'],
         ollamaNode: ['switchyardNode', 'observabilityNode'],
         billamaNode: ['switchyardNode', 'observabilityNode'],
         openaiNode: ['switchyardNode', 'observabilityNode'],
@@ -1481,10 +1500,27 @@ export default function RoutingEditor() {
                 <span className="text-lg">⚡</span>
                 <div>
                   <div className="font-semibold text-xs text-cyan-300 group-hover:text-cyan-200">vLLM Engine</div>
-                  <div className="text-[10px] text-gray-400 font-mono">:8000 • PagedAttention</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8000 • PagedAttention / NIXL</div>
                 </div>
               </div>
               <span className="text-[10px] text-gray-400 group-hover:text-cyan-400">+ Add</span>
+            </div>
+
+            {/* SGLang */}
+            <div
+              className="p-2.5 mb-2 border border-emerald-500/80 bg-emerald-950/20 rounded cursor-grab hover:bg-emerald-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'sglangNode')}
+              onClick={() => addNode('sglangNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🌙</span>
+                <div>
+                  <div className="font-semibold text-xs text-emerald-300 group-hover:text-emerald-200">SGLang Engine</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:30000 • RadixAttention / Mooncake</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-emerald-400">+ Add</span>
             </div>
 
             {/* Ollama */}
@@ -2013,6 +2049,7 @@ export default function RoutingEditor() {
                  if (n.type === 'switchyardNode') return '#3b82f6';
                  if (n.type === 'lemonadeNode') return '#eab308';
                  if (n.type === 'vllmNode') return '#06b6d4';
+                 if (n.type === 'sglangNode') return '#10b981';
                  if (n.type === 'ollamaNode') return '#c084fc';
                  if (n.type === 'antigravityNode') return '#06b6d4';
                  if (n.type === 'codexNode') return '#10b981';
@@ -3312,7 +3349,7 @@ export default function RoutingEditor() {
                     </div>
                   )}
 
-                  {(node.type === 'lemonadeNode' || node.type === 'vllmNode' || node.type === 'ollamaNode') && (
+                  {(node.type === 'lemonadeNode' || node.type === 'vllmNode' || node.type === 'sglangNode' || node.type === 'ollamaNode') && (
                     <div className="space-y-4">
                       <div>
                         <label className="block text-xs font-semibold text-slate-300 mb-1">Local Server Endpoint</label>
@@ -4217,6 +4254,18 @@ export default function RoutingEditor() {
                     </h4>
                     <pre className="bg-gray-950 p-4 rounded text-sm text-gray-300 overflow-x-auto border border-gray-700 font-mono text-xs">
                       {compiledConfigs.claudeCodeConfig}
+                    </pre>
+                  </div>
+                )}
+
+                {compiledConfigs.disaggregatedSetup && (
+                  <div>
+                    <h4 className="text-emerald-400 font-bold mb-2 flex items-center justify-between">
+                      <span>Disaggregated Serving RDMA Launch Scripts (vLLM NIXL &amp; SGLang Mooncake)</span>
+                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-mono">RDMA Manifest</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-emerald-200 overflow-x-auto border border-emerald-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.disaggregatedSetup}
                     </pre>
                   </div>
                 )}

@@ -1027,6 +1027,112 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-oll-obs', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-oh-obs', source: 'openhands-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
     ]
+  },
+  // 15. Disaggregated Prefill-Decode RDMA Cluster (vLLM NIXL & SGLang Mooncake)
+  {
+    id: 'disaggregated-rdma-cluster',
+    name: 'Disaggregated Prefill-Decode RDMA Cluster',
+    description: 'Hardware-accelerated disaggregated LLM serving separating compute-bound Prefill from memory-bound Decode across RoCEv2/InfiniBand fabrics using vLLM NIXL and SGLang Mooncake connectors.',
+    category: 'performance',
+    tags: ['disaggregated', 'prefill-decode', 'rdma', 'rocev2', 'nixl', 'mooncake', 'vllm', 'sglang'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.8 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 50, y: 260 }, data: { label: 'Client Input' } },
+      {
+        id: 'semantic-cache-1',
+        type: 'semanticCacheNode',
+        position: { x: 340, y: 260 },
+        data: { label: 'Semantic KV Cache', threshold: 0.92, ttlSeconds: 3600, provider: 'redis' }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 680, y: 260 },
+        data: {
+          label: 'Switchyard Disaggregation Router',
+          strategy: 'prefill-isolation',
+          prefillIsolationThresholdTokens: 1024,
+          kvPrefixAffinity: true,
+          failover: 'enabled'
+        }
+      },
+      {
+        id: 'vllm-prefill-1',
+        type: 'vllmNode',
+        position: { x: 1080, y: 80 },
+        data: {
+          label: 'vLLM Prefill Worker (H100)',
+          endpoint: 'http://prefill-node-1.rdma.local:8000',
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct',
+          priority: 30,
+          disaggregation: {
+            mode: 'prefill',
+            transferProtocol: 'NixlConnector',
+            kvPrecision: 'fp8_e4m3',
+            tensorParallelSize: 4,
+            rdmaDevice: 'mlx5_0',
+            decodeEndpoint: 'http://decode-node-1.rdma.local:8001'
+          }
+        }
+      },
+      {
+        id: 'vllm-decode-1',
+        type: 'vllmNode',
+        position: { x: 1080, y: 260 },
+        data: {
+          label: 'vLLM Decode Worker (H100)',
+          endpoint: 'http://decode-node-1.rdma.local:8001',
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct',
+          priority: 30,
+          disaggregation: {
+            mode: 'decode',
+            transferProtocol: 'NixlConnector',
+            kvPrecision: 'fp8_e4m3',
+            tensorParallelSize: 4,
+            rdmaDevice: 'mlx5_0'
+          }
+        }
+      },
+      {
+        id: 'sglang-cluster-1',
+        type: 'sglangNode',
+        position: { x: 1080, y: 440 },
+        data: {
+          label: 'SGLang Mooncake Cluster',
+          endpoint: 'http://sglang-router.rdma.local:30000',
+          selectedModel: 'deepseek-ai/DeepSeek-V3',
+          disaggregationMode: 'pd-router',
+          mooncakeConnector: true,
+          radixAttention: true,
+          memFractionStatic: 0.88,
+          priority: 25
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1540, y: 260 },
+        data: {
+          projectName: 'disaggregated-rdma-cluster',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-cache', source: 'input-1', target: 'semantic-cache-1', animated: true, style: { stroke: '#14b8a6' } },
+      { id: 'e-cache-sw', source: 'semantic-cache-1', sourceHandle: 'miss', target: 'switchyard-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-cache-obs', source: 'semantic-cache-1', sourceHandle: 'hit', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-prefill', source: 'switchyard-1', sourceHandle: 'prefill', target: 'vllm-prefill-1', animated: true, style: { stroke: '#0ea5e9' } },
+      { id: 'e-sw-decode', source: 'switchyard-1', sourceHandle: 'decode', target: 'vllm-decode-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'mooncake', target: 'sglang-cluster-1', animated: true, style: { stroke: '#a855f7' } },
+      { id: 'e-prefill-obs', source: 'vllm-prefill-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-decode-obs', source: 'vllm-decode-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-sglang-obs', source: 'sglang-cluster-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
 

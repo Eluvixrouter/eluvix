@@ -23,6 +23,13 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [strategy, setStrategy] = useState(data?.strategy || 'cost-complexity');
   const [routes, setRoutes] = useState<SwitchyardRoute[]>(data?.routes || DEFAULT_ROUTES);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [kvPrefixAffinity, setKvPrefixAffinity] = useState<boolean>(data?.kvPrefixAffinity ?? true);
+  const [prefillIsolationThreshold, setPrefillIsolationThreshold] = useState<number>(
+    data?.prefillIsolationThresholdTokens ?? 4096
+  );
+  const [enablePrefillIsolation, setEnablePrefillIsolation] = useState<boolean>(
+    data?.prefillIsolationThresholdTokens !== undefined
+  );
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -42,6 +49,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     if (data.retryCount === undefined) data.retryCount = 1;
     if (data.spilloverThresholdMs === undefined) data.spilloverThresholdMs = 30000;
     if (data.codeEscalation === undefined) data.codeEscalation = true;
+    if (data.kvPrefixAffinity === undefined) data.kvPrefixAffinity = kvPrefixAffinity;
     if (!data.complexityThresholds) {
       data.complexityThresholds = { moderate: 300, heavy: 1500, frontier: 6000 };
     }
@@ -211,6 +219,58 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
             <span className="text-emerald-400">💰</span>
             <span>Cap: ${data?.maxCostPerRequest !== undefined ? data.maxCostPerRequest : '0.05'}</span>
           </div>
+        </div>
+
+        {/* Disaggregated Prefill & KV-Prefix Optimization Controls */}
+        <div className="bg-gray-950/80 rounded border border-gray-800 p-2 space-y-2">
+          <label className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer">
+            <span className="font-semibold text-blue-300">KV-Cache Prefix Affinity</span>
+            <input
+              type="checkbox"
+              className="nodrag accent-blue-500 w-3.5 h-3.5 cursor-pointer"
+              checked={kvPrefixAffinity}
+              onChange={(e) => {
+                setKvPrefixAffinity(e.target.checked);
+                syncData({ kvPrefixAffinity: e.target.checked });
+              }}
+            />
+          </label>
+
+          <label className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer">
+            <span className="font-semibold text-blue-300">Prefill-Decode Isolation</span>
+            <input
+              type="checkbox"
+              className="nodrag accent-blue-500 w-3.5 h-3.5 cursor-pointer"
+              checked={enablePrefillIsolation}
+              onChange={(e) => {
+                setEnablePrefillIsolation(e.target.checked);
+                syncData({
+                  prefillIsolationThresholdTokens: e.target.checked ? prefillIsolationThreshold : undefined
+                });
+              }}
+            />
+          </label>
+
+          {enablePrefillIsolation && (
+            <div className="pt-1 border-t border-gray-800 flex items-center justify-between">
+              <span className="text-[10px] text-gray-400">Burst Threshold:</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={1024}
+                  step={1024}
+                  className="nodrag w-16 bg-gray-900 border border-gray-700 focus:border-blue-500 rounded px-1.5 py-0.5 text-white font-mono text-[10px] outline-none"
+                  value={prefillIsolationThreshold}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10) || 4096;
+                    setPrefillIsolationThreshold(v);
+                    syncData({ prefillIsolationThresholdTokens: v });
+                  }}
+                />
+                <span className="text-[9px] font-mono text-gray-400">tok</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Complexity Auto-Detection Note */}

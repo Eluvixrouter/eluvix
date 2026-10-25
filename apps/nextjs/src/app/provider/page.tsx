@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 
 interface GpuInfo {
@@ -24,6 +24,19 @@ interface ProviderStatus {
   models?: string[];
   lastHeartbeatAt?: string;
   errorMessage?: string;
+  rdma?: {
+    available: boolean;
+    driverLoaded: boolean;
+    ibDevices: string[];
+    hasLosslessRoce: boolean;
+    pciP2pSupported: boolean;
+    tuningChecklist: {
+      item: string;
+      status: 'pass' | 'warn' | 'fail';
+      detail: string;
+      remediation?: string;
+    }[];
+  };
 }
 
 interface JobLog {
@@ -58,6 +71,76 @@ export default function ProviderPage() {
   const [floorPriceOut, setFloorPriceOut] = useState(0.50);
   const [pauseOnUserActive, setPauseOnUserActive] = useState(true);
   const [maxGpuTempC, setMaxGpuTempC] = useState(82);
+
+  // RDMA & Roofline Simulator state
+  const [simModel, setSimModel] = useState<'llama-3.3-70b' | 'deepseek-v3' | 'llama-3.1-8b' | 'qwen-2.5-72b'>('llama-3.3-70b');
+  const [simPrecision, setSimPrecision] = useState<'fp8' | 'bf16'>('fp8');
+  const [simBandwidthGbps, setSimBandwidthGbps] = useState<100 | 200 | 400 | 800>(400);
+  const [simTokens, setSimTokens] = useState<number>(4096);
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+
+  const copyToClipboard = (cmd: string) => {
+    navigator.clipboard.writeText(cmd);
+    setCopiedCmd(cmd);
+    setTimeout(() => setCopiedCmd(null), 2500);
+  };
+
+  const simResult = useMemo(() => {
+    const bytesPerElement = simPrecision === 'fp8' ? 1 : 2;
+    let bytesPerToken = 0;
+    let layers = 80;
+    let activeParamsB = 70;
+    let archType = 'GQA (8 kv heads)';
+
+    if (simModel === 'llama-3.3-70b') {
+      layers = 80;
+      activeParamsB = 70;
+      bytesPerToken = 2 * 80 * 8 * 128 * bytesPerElement; // 163,840 bytes for fp8 = 160 KiB
+      archType = 'GQA (8 kv heads)';
+    } else if (simModel === 'deepseek-v3') {
+      layers = 61;
+      activeParamsB = 37; // active in MoE
+      bytesPerToken = 61 * (512 + 64) * bytesPerElement; // 35,136 bytes for fp8 = 34.3 KiB
+      archType = 'MLA (Latent Compression)';
+    } else if (simModel === 'llama-3.1-8b') {
+      layers = 32;
+      activeParamsB = 8;
+      bytesPerToken = 2 * 32 * 8 * 128 * bytesPerElement; // 65,536 bytes for fp8 = 64 KiB
+      archType = 'GQA (8 kv heads)';
+    } else if (simModel === 'qwen-2.5-72b') {
+      layers = 80;
+      activeParamsB = 72;
+      bytesPerToken = 2 * 80 * 8 * 128 * bytesPerElement;
+      archType = 'GQA (8 kv heads)';
+    }
+
+    const totalBytes = bytesPerToken * simTokens;
+    const totalMb = totalBytes / (1024 * 1024);
+    const wireBps = (simBandwidthGbps * 1e9) / 8; // B/s in decimal
+    const rawWireTimeMs = (totalBytes / wireBps) * 1000;
+
+    // H100 SXM5 FP8 dense roofline: 989.4 TFLOPS, 3.35 TB/s HBM3 -> Ridge: 295.3 FLOPs/B
+    const prefillFlops = 2 * activeParamsB * 1e9 * simTokens;
+    const effectiveTflops = 989.4 * 0.60 * 1e12; // 60% MFU on H100
+    const prefillComputeTimeMs = (prefillFlops / effectiveTflops) * 1000;
+
+    // Layer-pipelined overlap (NIXL / Mooncake RDMA)
+    const singleLayerWireTimeMs = rawWireTimeMs / layers;
+    const exposedLatencyMs = Number((singleLayerWireTimeMs + 0.005).toFixed(2));
+    const overlapPct = Math.min(99.2, Number((((rawWireTimeMs - singleLayerWireTimeMs) / Math.max(1, rawWireTimeMs)) * 100).toFixed(1)));
+
+    return {
+      bytesPerTokenKb: (bytesPerToken / 1024).toFixed(1),
+      totalMb: totalMb.toFixed(2),
+      rawWireTimeMs: rawWireTimeMs.toFixed(1),
+      prefillComputeTimeMs: prefillComputeTimeMs.toFixed(1),
+      exposedLatencyMs,
+      overlapPct,
+      archType,
+      layers,
+      ridgePoint: 295.3,
+    };
+  }, [simModel, simPrecision, simBandwidthGbps, simTokens]);
 
   const fetchStatus = async () => {
     try {
@@ -470,6 +553,282 @@ export default function ProviderPage() {
               <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-xs flex justify-between items-center">
                 <span className="text-slate-400">Redemption Status:</span>
                 <span className="text-emerald-400 font-bold">Active</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* RoCEv2 & GPUDirect RDMA Readiness Checklist */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-3 border-b border-slate-800 gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-sky-400 uppercase tracking-wider">Hardware Fabric Probe</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold border ${
+                  status?.rdma?.available
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                    : 'bg-slate-850 text-slate-400 border-slate-700'
+                }`}>
+                  {status?.rdma?.available ? 'RDMA / RoCEv2 Capable' : 'Standard Host Network (TCP/IP)'}
+                </span>
+              </div>
+              <h2 className="text-base font-bold text-slate-100 mt-1">
+                RoCEv2 &amp; GPUDirect RDMA Fabric Readiness
+              </h2>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Mellanox ConnectX / InfiniBand &bull; nvidia-peermem &bull; PFC / ECN
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">Kernel Driver (nvidia-peermem)</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${status?.rdma?.driverLoaded ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                <span className={status?.rdma?.driverLoaded ? 'text-emerald-300' : 'text-amber-300'}>
+                  {status?.rdma?.driverLoaded ? 'Loaded' : 'Not Detected'}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">InfiniBand / RoCE Devices</span>
+              <div className="mt-1 font-mono text-xs font-bold text-slate-200 truncate">
+                {status?.rdma?.ibDevices && status.rdma.ibDevices.length > 0
+                  ? status.rdma.ibDevices.join(', ')
+                  : 'None detected'}
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">Lossless RoCE (PFC / ECN)</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${status?.rdma?.hasLosslessRoce ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                <span className={status?.rdma?.hasLosslessRoce ? 'text-emerald-300' : 'text-slate-400'}>
+                  {status?.rdma?.hasLosslessRoce ? 'Configured' : 'DSCP Default'}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">PCIe P2P Direct DMA</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${status?.rdma?.pciP2pSupported ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                <span className={status?.rdma?.pciP2pSupported ? 'text-emerald-300' : 'text-slate-400'}>
+                  {status?.rdma?.pciP2pSupported ? 'Supported' : 'Check IOMMU/ACS'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Tuning Checklist Table */}
+          {status?.rdma?.tuningChecklist && status.rdma.tuningChecklist.length > 0 && (
+            <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60 mt-3">
+              <table className="w-full text-left text-xs font-sans">
+                <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="p-2.5 w-16">Status</th>
+                    <th className="p-2.5 w-48">Check Item</th>
+                    <th className="p-2.5">Details &amp; Tuning Recommendation</th>
+                    <th className="p-2.5 w-24 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {status.rdma.tuningChecklist.map((check, idx) => (
+                    <tr key={idx} className="hover:bg-slate-900/40">
+                      <td className="p-2.5">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                          check.status === 'pass'
+                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            : check.status === 'warn'
+                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                            : 'bg-rose-950 text-rose-400 border border-rose-800'
+                        }`}>
+                          {check.status.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="p-2.5 font-semibold text-slate-200">{check.item}</td>
+                      <td className="p-2.5 text-slate-400 text-[11px] leading-relaxed">
+                        {check.detail}
+                      </td>
+                      <td className="p-2.5 text-right">
+                        {check.remediation ? (
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(check.remediation!)}
+                            className="bg-slate-800 hover:bg-slate-700 text-sky-300 text-[11px] font-mono px-2 py-1 rounded border border-slate-700 transition"
+                            title={check.remediation}
+                          >
+                            {copiedCmd === check.remediation ? 'Copied!' : 'Copy Fix'}
+                          </button>
+                        ) : (
+                          <span className="text-slate-600 text-[11px]">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Interactive Roofline & Disaggregated KV-Transfer Simulator */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl space-y-5">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-3 border-b border-slate-800 gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Roofline &amp; Network Lab</span>
+                <span className="bg-indigo-950 text-indigo-300 text-[10px] px-2 py-0.5 rounded border border-indigo-800 font-mono font-semibold">
+                  Disaggregation Simulator
+                </span>
+              </div>
+              <h2 className="text-base font-bold text-slate-100 mt-1">
+                Prefill-Decode KV Transfer &amp; Arithmetic Intensity Modeling
+              </h2>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Simulates GQA vs. DeepSeek MLA across 100G/200G/400G/800G RDMA fabrics
+            </div>
+          </div>
+
+          {/* Interactive Controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+            {/* Model Architecture */}
+            <div>
+              <label className="block text-slate-400 font-medium mb-1">Target Model Architecture</label>
+              <select
+                value={simModel}
+                onChange={(e) => setSimModel(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:border-indigo-400 outline-none"
+              >
+                <option value="llama-3.3-70b">Llama-3.3-70B (80 layers, GQA-8)</option>
+                <option value="deepseek-v3">DeepSeek-V3 / R1 (61 layers, MLA)</option>
+                <option value="llama-3.1-8b">Llama-3.1-8B (32 layers, GQA-8)</option>
+                <option value="qwen-2.5-72b">Qwen-2.5-72B (80 layers, GQA-8)</option>
+              </select>
+            </div>
+
+            {/* Precision */}
+            <div>
+              <label className="block text-slate-400 font-medium mb-1">KV Cache Precision</label>
+              <div className="flex gap-2">
+                {(['fp8', 'bf16'] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setSimPrecision(p)}
+                    className={`flex-1 py-2 px-3 rounded-lg border text-xs font-mono uppercase transition ${
+                      simPrecision === p
+                        ? 'bg-indigo-600 border-indigo-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {p} ({p === 'fp8' ? '1 byte' : '2 bytes'})
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Network Fabric Bandwidth */}
+            <div>
+              <label className="block text-slate-400 font-medium mb-1">RDMA Fabric Bandwidth</label>
+              <div className="grid grid-cols-4 gap-1">
+                {([100, 200, 400, 800] as const).map((bw) => (
+                  <button
+                    key={bw}
+                    type="button"
+                    onClick={() => setSimBandwidthGbps(bw)}
+                    className={`py-2 px-1 text-center rounded-lg border text-[11px] font-mono transition ${
+                      simBandwidthGbps === bw
+                        ? 'bg-sky-600 border-sky-500 text-white font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {bw}G
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Prompt Length */}
+            <div>
+              <div className="flex justify-between text-slate-400 font-medium mb-1">
+                <span>Prompt Context</span>
+                <span className="text-sky-400 font-mono">{simTokens.toLocaleString()} tokens</span>
+              </div>
+              <input
+                type="range"
+                min="512"
+                max="65536"
+                step="512"
+                value={simTokens}
+                onChange={(e) => setSimTokens(parseInt(e.target.value, 10))}
+                className="w-full accent-sky-500"
+              />
+            </div>
+          </div>
+
+          {/* Simulation Output Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+            {/* KV Cache Footprint */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>KV Footprint</span>
+                <span className="text-[10px] bg-slate-900 border border-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono">
+                  {simResult.archType}
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-400 font-mono">
+                {simResult.totalMb} <span className="text-xs text-slate-400 font-normal">MB</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                Unit rate: <span className="text-slate-200 font-semibold">{simResult.bytesPerTokenKb} KiB/token</span>
+              </div>
+            </div>
+
+            {/* Wire Transfer vs Prefill Compute */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Raw Wire Transfer</span>
+                <span className="text-[10px] text-sky-400 font-mono">{simBandwidthGbps} Gbps</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-sky-400 font-mono">
+                {simResult.rawWireTimeMs} <span className="text-xs text-slate-400 font-normal">ms</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                Compute duration: <span className="text-slate-200 font-semibold">{simResult.prefillComputeTimeMs} ms</span>
+              </div>
+            </div>
+
+            {/* Layer-Pipelined Overlap */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Pipelined RDMA Overlap</span>
+                <span className="text-[10px] bg-emerald-950 border border-emerald-800 text-emerald-300 px-1.5 py-0.5 rounded font-mono">
+                  NIXL / Mooncake
+                </span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-emerald-400 font-mono">
+                {simResult.overlapPct}%
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                Exposed TTFT overhead: <span className="text-emerald-300 font-semibold">~{simResult.exposedLatencyMs} ms</span>
+              </div>
+            </div>
+
+            {/* Roofline Operational Regime */}
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Roofline Ridge Point</span>
+                <span className="text-[10px] text-indigo-400 font-mono">H100 FP8</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-indigo-400 font-mono">
+                {simResult.ridgePoint} <span className="text-xs text-slate-400 font-normal">FLOPs/B</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                Prefill: <span className="text-purple-300 font-mono font-semibold">Compute-Bound</span> &bull; Decode: <span className="text-amber-300 font-mono font-semibold">Memory-Bound</span>
               </div>
             </div>
           </div>
