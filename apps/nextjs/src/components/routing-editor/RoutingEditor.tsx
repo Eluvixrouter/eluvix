@@ -45,6 +45,7 @@ import KnowledgeBaseNode from './nodes/KnowledgeBaseNode';
 import SemanticCacheNode from './nodes/SemanticCacheNode';
 import ConsensusNode from './nodes/ConsensusNode';
 import FallbackChainNode from './nodes/FallbackChainNode';
+import ConfidentialEnclaveNode from './nodes/ConfidentialEnclaveNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
@@ -114,6 +115,15 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     hedgeDelayMs: 0,
     retryOn429: true,
     retryOn5xx: true
+  },
+  confidentialEnclaveNode: {
+    label: 'Confidential Silicon Enclave',
+    architecture: 'sev-snp-h100-cc',
+    confidentialPolicy: 'require-dual-attestation',
+    kbsEndpoint: 'https://kbs.internal.corp:8080',
+    expectedMeasurement: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+    restrictedInjection: true,
+    spdmAttested: true
   },
   lemonadeNode: {
     label: 'Lemonade Engine',
@@ -552,6 +562,7 @@ const nodeTypes = {
   semanticCacheNode: SemanticCacheNode,
   consensusNode: ConsensusNode,
   fallbackChainNode: FallbackChainNode,
+  confidentialEnclaveNode: ConfidentialEnclaveNode,
 };
 
 let id = 0;
@@ -1394,6 +1405,23 @@ export default function RoutingEditor() {
                 </div>
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-orange-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Confidential Silicon Enclave (TEE) */}
+            <div
+              className="p-2.5 mb-2 border border-emerald-500/80 bg-emerald-950/25 rounded-lg cursor-grab hover:bg-emerald-900/35 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'confidentialEnclaveNode')}
+              onClick={() => addNode('confidentialEnclaveNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🔐</span>
+                <div>
+                  <div className="font-semibold text-xs text-emerald-300 group-hover:text-emerald-200">Confidential Enclave</div>
+                  <div className="text-[10px] text-slate-400 font-mono">SEV-SNP / TDX + H100 CC RATS</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-emerald-400 font-mono">+ Add</span>
             </div>
 
             {/* Task Router */}

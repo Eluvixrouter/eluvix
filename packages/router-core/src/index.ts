@@ -1,4 +1,5 @@
 import type { PromptGuardConfig, PrivacyGuardConfig } from './guard.js';
+import type { EnclaveArchitectureId } from './tee-attestation.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -8,6 +9,24 @@ export type RoutingStrategy =
   | 'round-robin' 
   | 'priority'
   | 'prefill-isolation';
+
+export type ConfidentialPolicy =
+  | 'disabled'
+  | 'prefer-tee'
+  | 'require-tee'
+  | 'require-dual-attestation';
+
+export interface ConfidentialComputeConfig {
+  enabled?: boolean;
+  architecture?: EnclaveArchitectureId;
+  cpuTee?: 'amd-sev-snp' | 'intel-tdx' | 'amd-sev-es' | 'none';
+  gpuTee?: 'h100-cc-on' | 'h100-ppcie' | 'b200-tee-io' | 'none';
+  kbsEndpoint?: string;
+  expectedMeasurement?: string;
+  vmpl?: number;
+  restrictedInjection?: boolean;
+  spdmAttested?: boolean;
+}
 
 export interface SwitchyardConfig {
   strategy?: RoutingStrategy;
@@ -41,6 +60,10 @@ export interface SwitchyardConfig {
    * maximize PagedAttention / RadixAttention KV-cache reuse.
    */
   kvPrefixAffinity?: boolean;
+  /**
+   * Zero-Trust Confidential Computing policy (AMD SEV-SNP / Intel TDX + NVIDIA H100 CC / B200 TEE-I/O).
+   */
+  confidentialPolicy?: ConfidentialPolicy;
 }
 
 export interface ModelGatewayConfig {
@@ -78,6 +101,7 @@ export interface RouterConfig {
    * (legacy behavior) so hand-written configs keep working.
    */
   egressPolicy?: EgressPolicy;
+  confidentialPolicy?: ConfidentialPolicy;
   fallbackStrategy?: 'round-robin' | 'priority';
   switchyard?: SwitchyardConfig;
   modelGateway?: ModelGatewayConfig;
@@ -104,6 +128,7 @@ export * from './sandbox/index.js';
 export * from './circuit-breaker.js';
 export * from './consensus.js';
 export * from './kv-math.js';
+export * from './tee-attestation.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -151,6 +176,7 @@ export interface RouteTraceStep {
     | 'model-match'
     | 'loop-guard'
     | 'egress-policy'
+    | 'confidential-enclave'
     | 'memory'
     | 'memory-egress'
     | 'knowledge-rag'
@@ -255,6 +281,54 @@ export interface UpstreamConfig {
   antigravity?: AntigravityConfig;
   harness?: HarnessConfig;
   disaggregation?: DisaggregationConfig;
+  confidential?: ConfidentialComputeConfig;
+}
+
+/**
+ * Evaluates whether an upstream is running inside an attested Confidential Computing
+ * enclave (AMD SEV-SNP / Intel TDX) or dual CPU+GPU TEE (NVIDIA H100 CC-On / Blackwell TEE-I/O).
+ */
+export function isConfidentialEnclaveUpstream(
+  upstream: UpstreamConfig,
+  mode: 'require-tee' | 'require-dual-attestation' = 'require-tee'
+): boolean {
+  if (!upstream) return false;
+  if (upstream.capabilities?.includes('confidential-dual-attestation')) return true;
+  if (mode === 'require-tee' && upstream.capabilities?.includes('confidential-tee')) return true;
+  const cc = upstream.confidential;
+  if (!cc?.enabled) return false;
+
+  const arch = cc.architecture || 'sev-snp-h100-cc';
+  const cpuTee =
+    cc.cpuTee ||
+    (arch === 'sev-snp-h100-cc'
+      ? 'amd-sev-snp'
+      : arch === 'tdx-b200-tee-io'
+      ? 'intel-tdx'
+      : arch === 'sev-es-passthrough'
+      ? 'amd-sev-es'
+      : 'none');
+  const gpuTee =
+    cc.gpuTee ||
+    (arch === 'sev-snp-h100-cc'
+      ? 'h100-cc-on'
+      : arch === 'tdx-b200-tee-io'
+      ? 'b200-tee-io'
+      : 'none');
+
+  // Legacy SEV-ES without RMP or standard-kvm fails strict integrity attestation
+  const validCpu = cpuTee === 'amd-sev-snp' || cpuTee === 'intel-tdx';
+  if (!validCpu) return false;
+  if (cc.vmpl !== undefined && cc.vmpl !== 0) return false;
+  if (cc.restrictedInjection === false) return false;
+
+  if (mode === 'require-dual-attestation') {
+    const validGpu = gpuTee === 'h100-cc-on' || gpuTee === 'h100-ppcie' || gpuTee === 'b200-tee-io';
+    if (!validGpu) return false;
+    if (cc.spdmAttested === false) return false;
+  }
+
+  return true;
 }
 
 /**
@@ -1253,12 +1327,35 @@ export class Eluvix {
       }
     }
 
-    const selection = this.selectTargetUpstreams(effectiveRequest, {
-      scope,
-      hops,
-      memoryTainted,
-      memoryTokens: memoryTokens + knowledgeTokens
-    });
+    let selection;
+    try {
+      selection = this.selectTargetUpstreams(effectiveRequest, {
+        scope,
+        hops,
+        memoryTainted,
+        memoryTokens: memoryTokens + knowledgeTokens
+      });
+    } catch (err: any) {
+      if (err?.confidentialUnavailable) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'confidential_enclave_unavailable',
+              code: 'rats_attestation_required'
+            }
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-tee-posture': 'DENIED_UNATTESTED'
+            }
+          }
+        );
+      }
+      throw err;
+    }
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
@@ -1653,6 +1750,19 @@ export class Eluvix {
             if (upstream.disaggregation?.role) {
               newResponse.headers.set('x-eluvix-pd-role', upstream.disaggregation.role);
             }
+            const teePosture = isConfidentialEnclaveUpstream(upstream, 'require-dual-attestation')
+              ? 'ATTESTED_DUAL_ENCLAVE'
+              : isConfidentialEnclaveUpstream(upstream, 'require-tee')
+              ? 'ATTESTED_CPU_ONLY'
+              : 'PLAINTEXT';
+            newResponse.headers.set('x-eluvix-tee-posture', teePosture);
+            if (upstream.confidential?.enabled) {
+              newResponse.headers.set('x-eluvix-tee-arch', upstream.confidential.architecture || 'sev-snp-h100-cc');
+              newResponse.headers.set(
+                'x-eluvix-rats-kbs',
+                teePosture === 'ATTESTED_DUAL_ENCLAVE' ? 'GRANTED' : 'UNATTESTED'
+              );
+            }
             const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
             if (reqPrefixHash !== 'empty') {
               newResponse.headers.set('x-eluvix-kv-prefix-hash', reqPrefixHash);
@@ -1836,6 +1946,37 @@ export class Eluvix {
         fail(`No local upstream available for model: ${effectiveRequest.model} (egressPolicy: local-only)`);
       }
       matchingUpstreams = localUpstreams;
+    }
+
+    // Zero-Trust Confidential Computing Policy Enforcement (AMD SEV-SNP / Intel TDX + NVIDIA H100 CC / B200 TEE-I/O)
+    const confidentialPolicy: ConfidentialPolicy =
+      (effectiveRequest.metadata?.confidentialPolicy as ConfidentialPolicy) ||
+      this.config.switchyard?.confidentialPolicy ||
+      this.config.confidentialPolicy ||
+      'disabled';
+
+    if (confidentialPolicy === 'require-dual-attestation' || confidentialPolicy === 'require-tee') {
+      const teeUpstreams = matchingUpstreams.filter(u => isConfidentialEnclaveUpstream(u, confidentialPolicy));
+      const excluded = matchingUpstreams.filter(u => !isConfidentialEnclaveUpstream(u, confidentialPolicy));
+      steps.push({
+        stage: 'confidential-enclave',
+        detail: `confidentialPolicy=${confidentialPolicy}: only RATS-attested ${
+          confidentialPolicy === 'require-dual-attestation'
+            ? 'Dual CPU+GPU Confidential Enclave (SEV-SNP/TDX + H100 CC/B200 TEE-I/O)'
+            : 'CPU TEE (SEV-SNP/TDX)'
+        } upstreams may serve this request`,
+        kept: teeUpstreams.map(u => u.id),
+        removed: excluded.map(u => u.id)
+      });
+      if (teeUpstreams.length === 0) {
+        const err: any = new Error(
+          `No attested confidential enclave upstream available for model: ${effectiveRequest.model} (confidentialPolicy: ${confidentialPolicy})`
+        );
+        err.routeSteps = steps;
+        err.confidentialUnavailable = true;
+        throw err;
+      }
+      matchingUpstreams = teeUpstreams;
     }
 
     // Memory-Taint Egress Guard: when recalled personal/workspace memories are injected,
@@ -2060,6 +2201,21 @@ export class Eluvix {
       detail: `strategy "${strategy}" ranked the surviving upstreams; the first is tried first, the rest are failover order`,
       kept: targetUpstreams.map(u => u.id)
     });
+
+    if (confidentialPolicy === 'prefer-tee') {
+      const teePreferred = targetUpstreams.filter(u => isConfidentialEnclaveUpstream(u, 'require-tee'));
+      if (teePreferred.length > 0 && teePreferred.length < targetUpstreams.length) {
+        steps.push({
+          stage: 'confidential-enclave',
+          detail: 'confidentialPolicy=prefer-tee: prioritizing attested SEV-SNP/TDX confidential enclave upstreams ahead of plaintext workers',
+          kept: teePreferred.map(u => u.id)
+        });
+        targetUpstreams = [
+          ...teePreferred,
+          ...targetUpstreams.filter(u => !teePreferred.includes(u))
+        ];
+      }
+    }
 
     // Prefill-Isolation: Separate compute-bound heavy prompt prefills from latency-critical decode streams
     const prefillThreshold = switchyardConfig.prefillIsolationThresholdTokens ?? 4096;

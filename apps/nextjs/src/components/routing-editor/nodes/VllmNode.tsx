@@ -42,6 +42,12 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   const [decodeEndpoint, setDecodeEndpoint] = useState<string>(
     data?.disaggregation?.decodeEndpoint || 'http://localhost:8200'
   );
+  const [confidentialEnabled, setConfidentialEnabled] = useState<boolean>(
+    Boolean(data?.confidential?.enabled)
+  );
+  const [confidentialArch, setConfidentialArch] = useState<string>(
+    data?.confidential?.architecture || 'sev-snp-h100-cc'
+  );
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -485,6 +491,49 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
               syncData({ visionCapable: e.target.checked });
             }}
           />
+        </div>
+
+        {/* Confidential TEE Enclave */}
+        <div className="bg-gray-900/60 p-2 rounded border border-gray-800 space-y-1.5">
+          <div className="flex justify-between items-center">
+            <label className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1">
+              <span>🔐</span> Confidential TEE Enclave
+            </label>
+            <input
+              type="checkbox"
+              className="nodrag accent-emerald-500 w-3 h-3 cursor-pointer"
+              checked={confidentialEnabled}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setConfidentialEnabled(next);
+                syncData({
+                  confidential: {
+                    enabled: next,
+                    architecture: confidentialArch
+                  }
+                });
+              }}
+            />
+          </div>
+          {confidentialEnabled && (
+            <select
+              className="nodrag w-full bg-gray-950 border border-emerald-700/60 rounded p-1 text-emerald-300 text-[10px] font-mono outline-none"
+              value={confidentialArch}
+              onChange={(e) => {
+                const next = e.target.value;
+                setConfidentialArch(next);
+                syncData({
+                  confidential: {
+                    enabled: confidentialEnabled,
+                    architecture: next
+                  }
+                });
+              }}
+            >
+              <option value="sev-snp-h100-cc">AMD SEV-SNP + H100 CC-On</option>
+              <option value="tdx-b200-tee-io">Intel TDX + B200 TEE-I/O</option>
+            </select>
+          )}
         </div>
       </div>
 

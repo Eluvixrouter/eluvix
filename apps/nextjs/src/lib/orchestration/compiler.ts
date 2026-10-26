@@ -12,6 +12,7 @@ export interface CompilationResult {
   claudeCodeConfig: string;
   eluvixJson: string;
   disaggregatedSetup: string;
+  confidentialSetup?: string;
   rawRouterConfig: any;
 }
 
@@ -34,6 +35,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const semanticCacheNodes = nodes.filter(n => n.type === 'semanticCacheNode');
   const consensusNodes = nodes.filter(n => n.type === 'consensusNode');
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
+  const confidentialEnclaveNodes = nodes.filter(n => n.type === 'confidentialEnclaveNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -98,7 +100,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     knowledgeBaseNodes,
     semanticCacheNodes,
     consensusNodes,
-    fallbackChainNodes
+    fallbackChainNodes,
+    confidentialEnclaveNodes
   );
 
   return {
@@ -113,6 +116,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     claudeCodeConfig,
     eluvixJson: JSON.stringify(rawRouterConfig, null, 2),
     disaggregatedSetup: generateDisaggregatedLaunchScripts(vllmNodes, sglangNodes),
+    confidentialSetup: generateConfidentialAttestationSetup(confidentialEnclaveNodes, localEngineNodes),
     rawRouterConfig
   };
 }
@@ -136,7 +140,8 @@ function generateEluvixConfig(
   knowledgeBaseNodes: Node[] = [],
   semanticCacheNodes: Node[] = [],
   consensusNodes: Node[] = [],
-  fallbackChainNodes: Node[] = []
+  fallbackChainNodes: Node[] = [],
+  confidentialEnclaveNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -211,6 +216,33 @@ function generateEluvixConfig(
       costPer1kTokens: 0.0
     };
 
+    const primaryEnclave = confidentialEnclaveNodes[0];
+    const enclaveData = (primaryEnclave?.data || {}) as Record<string, any>;
+    const nodeConfidential = (node.data as any)?.confidential;
+    const connectedToEnclave =
+      Boolean(primaryEnclave) &&
+      edges.some(
+        (e) =>
+          (e.source === primaryEnclave.id && e.target === node.id) ||
+          (e.target === primaryEnclave.id && e.source === node.id)
+      );
+
+    const confidentialCfg =
+      nodeConfidential?.enabled || connectedToEnclave
+        ? {
+            enabled: true,
+            architecture:
+              nodeConfidential?.architecture || enclaveData.architecture || 'sev-snp-h100-cc',
+            kbsEndpoint:
+              nodeConfidential?.kbsEndpoint || enclaveData.kbsEndpoint || 'https://kbs.internal.corp:8080',
+            expectedMeasurement:
+              nodeConfidential?.expectedMeasurement || enclaveData.expectedMeasurement,
+            restrictedInjection:
+              nodeConfidential?.restrictedInjection ?? enclaveData.restrictedInjection ?? true,
+            spdmAttested: nodeConfidential?.spdmAttested ?? enclaveData.spdmAttested ?? true
+          }
+        : undefined;
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
@@ -223,7 +255,8 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
-      ...(node.data?.disaggregation ? { disaggregation: node.data.disaggregation } : {})
+      ...(node.data?.disaggregation ? { disaggregation: node.data.disaggregation } : {}),
+      ...(confidentialCfg ? { confidential: confidentialCfg } : {})
     });
   });
 
@@ -566,6 +599,15 @@ function generateEluvixConfig(
   });
 
   const swData = (switchyard?.data || {}) as Record<string, any>;
+  const enclaveNode = confidentialEnclaveNodes[0];
+  const enclaveNodeData = (enclaveNode?.data || {}) as Record<string, any>;
+  const resolvedConfidentialPolicy =
+    swData.confidentialPolicy && swData.confidentialPolicy !== 'disabled'
+      ? String(swData.confidentialPolicy)
+      : enclaveNodeData.confidentialPolicy
+      ? String(enclaveNodeData.confidentialPolicy)
+      : undefined;
+
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
     strategy: switchyardStrategy,
@@ -577,6 +619,7 @@ function generateEluvixConfig(
       ? Number(swData.prefillIsolationThresholdTokens)
       : undefined,
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
+    ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
       heavy: Number(thresholds.heavy ?? 1500),
@@ -741,6 +784,7 @@ function generateEluvixConfig(
   return {
     upstreams,
     egressPolicy: hasExternalUpstream ? 'allow-egress' : 'local-only',
+    ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
@@ -1549,5 +1593,73 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
   }
 
   return parts.join('\n');
+}
+
+function generateConfidentialAttestationSetup(
+  confidentialEnclaveNodes: Node[],
+  localEngines: Node[]
+): string {
+  const enclaveNode = confidentialEnclaveNodes[0];
+  const teeEngines = localEngines.filter((n) => (n.data as any)?.confidential?.enabled);
+
+  if (!enclaveNode && teeEngines.length === 0) {
+    return '# No Confidential Enclave node or TEE-enabled inference engine configured on canvas.';
+  }
+
+  const eData = (enclaveNode?.data || {}) as Record<string, any>;
+  const arch = eData.architecture || (teeEngines[0]?.data as any)?.confidential?.architecture || 'sev-snp-h100-cc';
+  const policy = eData.confidentialPolicy || 'require-dual-attestation';
+  const kbsUrl = eData.kbsEndpoint || 'https://kbs.internal.corp:8080';
+  const expectedMeasurement =
+    eData.expectedMeasurement || '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
+
+  return [
+    `#!/usr/bin/env bash`,
+    `# ==============================================================================`,
+    `# ELUVIX ZERO-TRUST CONFIDENTIAL SILICON ATTESTATION & TRUSTEE KBS UNSEAL`,
+    `# Architecture: ${arch} | Policy: ${policy}`,
+    `# Expected Launch Digest (MRTD / MEASUREMENT): ${expectedMeasurement}`,
+    `# ==============================================================================`,
+    `set -euo pipefail`,
+    ``,
+    `KBS_URL="${kbsUrl}"`,
+    `EXPECTED_MEASUREMENT="${expectedMeasurement}"`,
+    `ENCLAVE_MODEL_DIR="/mnt/enclave_ram/models"`,
+    ``,
+    `echo "[1/4] Generating Ephemeral RSA-3072 Wrapping Keypair & Fetching KBS Nonce..."`,
+    `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out /tmp/enclave_wrap.key`,
+    `openssl rsa -in /tmp/enclave_wrap.key -pubout -out /tmp/enclave_wrap.pub`,
+    `KBS_NONCE=$(curl -fsSL "$KBS_URL/kbs/v0/auth" | jq -r '.nonce')`,
+    ``,
+    `# Bind REPORT_DATA = SHA512(nonce || ephemeral_pubkey)`,
+    `python3 -c '`,
+    `import hashlib, sys`,
+    `nonce = open("/dev/stdin").read().strip().encode()`,
+    `pub = open("/tmp/enclave_wrap.pub", "rb").read()`,
+    `open("/tmp/report_data.bin", "wb").write(hashlib.sha512(nonce + pub).digest())`,
+    `' <<< "$KBS_NONCE"`,
+    ``,
+    `echo "[2/4] Requesting Hardware CPU TEE Attestation Report (/dev/sev-guest at VMPL 0)..."`,
+    `snpguest report /tmp/attestation_report.bin /tmp/report_data.bin --vmpl 0`,
+    `snpguest certificates PEM ./certs`,
+    `snpguest verify attestation ./certs /tmp/attestation_report.bin`,
+    ``,
+    `echo "[3/4] Verifying NVIDIA H100 / B200 CC-Mode & SPDM 1.2 Reference Integrity Manifests..."`,
+    `nvidia-smi conf-compute -f`,
+    `python3 - << 'PYEOF'`,
+    `from nv_attestation_sdk import attestation`,
+    `client = attestation.Attestation("eluvix-enclave-worker")`,
+    `client.add_verifier(attestation.Devices.GPU, attestation.Environment.LOCAL, "", "")`,
+    `assert client.attest(), "GPU SPDM 1.2 RIM verification failed!"`,
+    `PYEOF`,
+    `nvidia-smi conf-compute -srs 1`,
+    ``,
+    `echo "[4/4] Unsealing Encrypted Model Weights into Ephemeral Enclave tmpfs..."`,
+    `mkdir -p "$ENCLAVE_MODEL_DIR"`,
+    `mount -t tmpfs -o size=160G tmpfs "$ENCLAVE_MODEL_DIR"`,
+    `kbs-client --url "$KBS_URL" get-resource --path default/llama3-70b/dek \\`,
+    `  | openssl enc -d -aes-256-gcm -in /mnt/encrypted_nvme/llama-70b.enc -out "$ENCLAVE_MODEL_DIR/model.safetensors"`,
+    `echo "✓ Confidential Enclave unsealed and ready for zero-trust inference."`
+  ].join('\n');
 }
 

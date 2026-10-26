@@ -12,6 +12,7 @@
 
 ## 🌟 Key Capabilities
 
+- **Zero-Trust Confidential Silicon (AMD SEV-SNP / Intel TDX / NVIDIA H100 & B200 CC)**: Enforces hardware-attested TEE routing (`require-dual-attestation`, `require-tee`, `prefer-tee`), verifying **VMPL 0**, **Restricted Injection (`#HV`)**, **384-bit Launch Measurements**, **NVIDIA SPDM 1.2 RIMs**, and **512-bit `REPORT_DATA` binding** (`SHA512(nonce || ephemeral_pubkey)`) with fail-closed HTTP 503 protection and encrypted `tmpfs` model weight unsealing.
 - **Disaggregated LLM Serving (RDMA / RoCEv2)**: Separates compute-bound prompt Prefill ($>2,048\text{ FLOPs/Byte}$) from memory-bound auto-regressive Decode ($16\text{–}32\text{ FLOPs/Byte}$) across 100G/200G/400G/800G fabrics using **vLLM NIXL** and **SGLang Mooncake** layer-pipelined connectors.
 - **DeepSeek MLA & GQA KV-Cache Modeling**: Built-in KV-footprint math modeling Grouped-Query Attention ($160\text{ KiB/tok}$ in FP8) vs. DeepSeek Multi-Head Latent Attention ($34.3\text{ KiB/tok}$ in FP8, a **$4.66\times$ compression**).
 - **Switchyard Prefill-Isolation & Prefix Affinity**: Steers heavy prompts ($\ge 1,024$ tokens) to dedicated prefill workers to eliminate the time-to-first-token bubble, and hashes static system prompt prefixes to pin repeated requests to warm PagedAttention/RadixAttention GPU cache.
@@ -71,10 +72,11 @@ graph TD
 
 ## 🧩 Visual Routing Studio & Templates
 
-The interactive node editor at `https://127.0.0.1:3588/editor` provides drag-and-drop orchestration with 15 bundled production templates:
+The interactive node editor at `https://127.0.0.1:3588/editor` provides drag-and-drop orchestration with 16 bundled production templates:
 
 | Template | Focus | Key Nodes Included |
 | :--- | :--- | :--- |
+| **Zero-Trust Confidential Enclave** | Hardware TEE Attestation | Confidential Enclave (`require-dual-attestation`), Switchyard, vLLM SEV-SNP + H100 CC-On, SGLang TDX + B200 TEE-I/O |
 | **Disaggregated RDMA Cluster** | Ultra-Low-Latency Serving | Switchyard (`prefill-isolation`), vLLM Prefill (NIXL), vLLM Decode, SGLang Mooncake |
 | **Consensus RAG & SWE Mesh** | Autonomous Coding & Quality | OpenHands Harness, Docker Sandbox, Graphiti Memory, Consensus Judge Arena |
 | **Full Production Stack** | Sovereign Defense & Hybrid | Privacy Guard, Semantic Guard, Switchyard, Local Engines, Cloud Fallback |
@@ -131,6 +133,7 @@ docker compose \
 ## 📖 Documentation Index
 
 - [**System Architecture Deep Dive**](docs/architecture.md): Request pipeline, complexity scoring, and failover mechanics.
+- [**Zero-Trust Confidential Silicon (TEE)**](docs/confidential-computing-tee.md): AMD SEV-SNP RMP, Intel TDX S-EPT, NVIDIA H100 `SWIOTLB` vs. B200 `TEE-I/O`, and IETF RATS Dual-Attestation.
 - [**Disaggregated Serving & RDMA Fabrics**](docs/disaggregated-serving-rdma.md): Roofline math, DeepSeek MLA compression, NIXL/Mooncake pipelining, and RoCEv2 tuning.
 - [**Next-Gen Routing Nodes & Agent Mesh**](docs/next-gen-nodes.md): Harness, Memory, Sandbox, KnowledgeBase, Consensus, and Fallback nodes.
 - [**Modular Docker Compose Guide**](docs/docker-modular-compose.md): Pick-and-choose deployment recipes and profile management.

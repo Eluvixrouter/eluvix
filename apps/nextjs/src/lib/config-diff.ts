@@ -24,6 +24,7 @@ export interface ConfigDiff {
   sandboxChanged?: boolean;
   consensusChanged?: boolean;
   fallbackChainsChanged?: boolean;
+  confidentialPolicyChanged?: boolean;
   isEmpty: boolean;
 }
 
@@ -40,7 +41,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'apiKey',
   'harness',
   'antigravity',
-  'disaggregation'
+  'disaggregation',
+  'confidential'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -126,6 +128,11 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
   const sandboxChanged = fieldDiffers((current as any)?.sandbox, (next as any).sandbox) || undefined;
   const consensusChanged = fieldDiffers((current as any)?.consensusGroups, (next as any).consensusGroups) || undefined;
   const fallbackChainsChanged = fieldDiffers((current as any)?.fallbackChains, (next as any).fallbackChains) || undefined;
+  const confidentialPolicyChanged =
+    fieldDiffers(
+      (current as any)?.confidentialPolicy ?? current?.switchyard?.confidentialPolicy,
+      (next as any).confidentialPolicy ?? next.switchyard?.confidentialPolicy
+    ) || undefined;
 
   return {
     added,
@@ -138,6 +145,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     sandboxChanged,
     consensusChanged,
     fallbackChainsChanged,
+    confidentialPolicyChanged,
     isEmpty:
       added.length === 0 &&
       removed.length === 0 &&
@@ -148,6 +156,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !cacheChanged &&
       !sandboxChanged &&
       !consensusChanged &&
-      !fallbackChainsChanged
+      !fallbackChainsChanged &&
+      !confidentialPolicyChanged
   };
 }

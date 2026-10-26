@@ -25,16 +25,37 @@ interface ProviderStatus {
   lastHeartbeatAt?: string;
   errorMessage?: string;
   rdma?: {
-    available: boolean;
-    driverLoaded: boolean;
-    ibDevices: string[];
+    available?: boolean;
+    supported?: boolean;
+    driverLoaded?: boolean;
+    nvidiaPeermemLoaded?: boolean;
+    ibDevices?: string[];
     hasLosslessRoce: boolean;
-    pciP2pSupported: boolean;
+    pciP2pSupported?: boolean;
     tuningChecklist: {
-      item: string;
-      status: 'pass' | 'warn' | 'fail';
-      detail: string;
+      item?: string;
+      title?: string;
+      status: 'pass' | 'warn' | 'fail' | 'action_needed';
+      detail?: string;
+      description?: string;
       remediation?: string;
+      command?: string;
+    }[];
+  };
+  confidential?: {
+    supported: boolean;
+    cpuTeeType: string;
+    sevGuestDevicePresent: boolean;
+    tdxGuestDevicePresent: boolean;
+    hostSevSnpEnabled: boolean;
+    gpuCcMode: 'CC-On' | 'PPCIE' | 'TEE-I/O' | 'Off';
+    gpuReadyState: boolean;
+    swiotlbBounceActive: boolean;
+    attestationChecklist: {
+      title: string;
+      description: string;
+      command: string;
+      status: 'pass' | 'warn' | 'action_needed';
     }[];
   };
 }
@@ -78,6 +99,240 @@ export default function ProviderPage() {
   const [simBandwidthGbps, setSimBandwidthGbps] = useState<100 | 200 | 400 | 800>(400);
   const [simTokens, setSimTokens] = useState<number>(4096);
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+
+  // Confidential Computing Enclave Lab state
+  const [enclaveArch, setEnclaveArch] = useState<
+    'sev-snp-h100-cc' | 'tdx-b200-tee-io' | 'sev-es-passthrough' | 'standard-kvm'
+  >('sev-snp-h100-cc');
+  const [enclaveWeightGb, setEnclaveWeightGb] = useState<8 | 40 | 70 | 140>(70);
+  const [enclaveAttacks, setEnclaveAttacks] = useState<string[]>([
+    'host_dram_dump',
+    'npt_aliasing',
+    'wesee_vc_spoof',
+    'pcie_bar1_snoop'
+  ]);
+
+  const toggleEnclaveAttack = (attackId: string) => {
+    setEnclaveAttacks((prev) =>
+      prev.includes(attackId) ? prev.filter((a) => a !== attackId) : [...prev, attackId]
+    );
+  };
+
+  const enclaveSimResult = useMemo(() => {
+    const profiles = {
+      'sev-snp-h100-cc': {
+        label: 'AMD SEV-SNP + NVIDIA H100 CC-On',
+        cpuTee: 'AMD SEV-SNP (AES-128 XEX + RMP)',
+        gpuTee: 'NVIDIA H100 CC-On (SWIOTLB + CE AES-GCM-256)',
+        pcieMode: 'SWIOTLB Bounce Buffer + Copy Engine AES-GCM',
+        effectiveH2dBandwidthGbps: 8.64,
+        singleGpuTokPerSec: 74.1,
+        ttft16kMs: 1495,
+        allReduceEfficiencyPct: 81.4
+      },
+      'tdx-b200-tee-io': {
+        label: 'Intel TDX + Blackwell B200 TEE-I/O',
+        cpuTee: 'Intel TDX (AES-XTS-256 + 28-bit MAC + S-EPT)',
+        gpuTee: 'NVIDIA Blackwell B200 TEE-I/O (PCIe IDE + TDISP + Encrypted NVLink 5)',
+        pcieMode: 'Hardware PCIe Gen6 IDE Line-Rate TLP Encryption',
+        effectiveH2dBandwidthGbps: 24.1,
+        singleGpuTokPerSec: 77.5,
+        ttft16kMs: 1435,
+        allReduceEfficiencyPct: 98.6
+      },
+      'sev-es-passthrough': {
+        label: 'Legacy AMD SEV-ES + Unprotected GPU Passthrough',
+        cpuTee: 'AMD SEV-ES (AES-128, No Reverse Map Table)',
+        gpuTee: 'Unprotected VFIO GPU Passthrough (BAR1 Open)',
+        pcieMode: 'Plaintext PCIe DMA via Shared Unencrypted SWIOTLB',
+        effectiveH2dBandwidthGbps: 26.8,
+        singleGpuTokPerSec: 78.0,
+        ttft16kMs: 1425,
+        allReduceEfficiencyPct: 99.5
+      },
+      'standard-kvm': {
+        label: 'Standard Unencrypted KVM Host',
+        cpuTee: 'None (Plaintext DDR5 & VMCB)',
+        gpuTee: 'Standard GPU (CC-Off)',
+        pcieMode: 'Direct Pinned DMA (Plaintext)',
+        effectiveH2dBandwidthGbps: 28.0,
+        singleGpuTokPerSec: 78.4,
+        ttft16kMs: 1420,
+        allReduceEfficiencyPct: 100.0
+      }
+    } as const;
+
+    const p = profiles[enclaveArch];
+    const baselineTokPerSec = 78.4;
+    const coldLoadTimeSec = Number((enclaveWeightGb / p.effectiveH2dBandwidthGbps).toFixed(1));
+    const singleGpuOverheadPct = Number(
+      (((p.singleGpuTokPerSec - baselineTokPerSec) / baselineTokPerSec) * 100).toFixed(1)
+    );
+
+    const attackDefs = [
+      {
+        id: 'host_dram_dump',
+        title: 'Host Root DRAM Cold-Boot / /dev/mem Dump',
+        Evaluate: () => {
+          if (enclaveArch === 'standard-kvm') {
+            return {
+              blocked: false,
+              mechanism: 'Plaintext DDR5',
+              detail: 'EXPOSED: Host root dumps plaintext model weights and KV-cache directly from /dev/mem.'
+            };
+          }
+          return {
+            blocked: true,
+            mechanism:
+              enclaveArch === 'tdx-b200-tee-io'
+                ? 'Per-TD Ephemeral AES-XTS-256 + 28-bit SHA-3 MAC'
+                : 'Per-VM ASID Ephemeral AES-128 XEX Engine',
+            detail:
+              'MITIGATED: Host reads only ciphertext randomized with physical-address tweak.'
+          };
+        }
+      },
+      {
+        id: 'npt_aliasing',
+        title: 'Hypervisor NPT / EPT Page Remapping & Aliasing',
+        Evaluate: () => {
+          if (enclaveArch === 'sev-snp-h100-cc') {
+            return {
+              blocked: true,
+              mechanism: 'Reverse Map Table (RMP) + PVALIDATE',
+              detail:
+                'MITIGATED: Hardware MMU checks RMP (SPA -> ASID, GPA) on every memory access and raises #PF on remapped pages.'
+            };
+          }
+          if (enclaveArch === 'tdx-b200-tee-io') {
+            return {
+              blocked: true,
+              mechanism: 'SEAM Secure EPT (S-EPT) + TDG.MEM.PAGE.ACCEPT',
+              detail:
+                'MITIGATED: S-EPT lives inside CPU-protected SEAM range; hypervisor cannot alias guest pages.'
+            };
+          }
+          return {
+            blocked: false,
+            mechanism: 'Unchecked Nested Page Tables (NPT)',
+            detail:
+              'COMPROMISED: Without RMP/S-EPT, hypervisor remaps two GPAs to one SPA to corrupt control flow and leak ciphertexts.'
+          };
+        }
+      },
+      {
+        id: 'wesee_vc_spoof',
+        title: 'WeSee / Ahoi Fake #VC / #VE Interrupt Spoofing',
+        Evaluate: () => {
+          if (enclaveArch === 'sev-snp-h100-cc') {
+            return {
+              blocked: true,
+              mechanism: 'Restricted Injection (#HV Doorbell, Vector 28)',
+              detail:
+                'MITIGATED: Hypervisor is forbidden from injecting #VC (vector 29); fake CPUID/MMIO returns cannot coerce guest register disclosure.'
+            };
+          }
+          if (enclaveArch === 'tdx-b200-tee-io') {
+            return {
+              blocked: true,
+              mechanism: 'SEPT_VE_DISABLE + TDX Module Filtering',
+              detail:
+                'MITIGATED: Unsolicited #VE virtualization exceptions from host VMM are rejected by CPU.'
+            };
+          }
+          return {
+            blocked: false,
+            mechanism: 'Unauthenticated Exception Injection',
+            detail:
+              'COMPROMISED: Hypervisor injects forged #VC (vector 29), tricking guest handler into copying registers into shared GHCB.'
+          };
+        }
+      },
+      {
+        id: 'pcie_bar1_snoop',
+        title: 'PCIe Bus Interposer & BAR1 VRAM Mapping Snoop',
+        Evaluate: () => {
+          if (enclaveArch === 'sev-snp-h100-cc') {
+            return {
+              blocked: true,
+              mechanism: 'GSP MMU BAR1 Firewall + CE AES-GCM-256 DMA',
+              detail:
+                'MITIGATED: H100 GSP blocks host BAR0/BAR1 MMIO reads and encrypts all PCIe DMA with 96-bit IV + 128-bit GMAC.'
+            };
+          }
+          if (enclaveArch === 'tdx-b200-tee-io') {
+            return {
+              blocked: true,
+              mechanism: 'PCIe Gen6 IDE + TDISP Hardware Link Encryption',
+              detail:
+                'MITIGATED: Root port and GPU encrypt PCIe TLPs inline at wire speed; physical bus interposer sees only AES-GCM.'
+            };
+          }
+          return {
+            blocked: false,
+            mechanism: 'Plaintext PCIe TLPs & Host BAR1 Aperture',
+            detail:
+              'COMPROMISED: Prompts cross shared SWIOTLB in plaintext and host root maps GPU BAR1 to read HBM3 KV-cache directly.'
+          };
+        }
+      },
+      {
+        id: 'rim_firmware_tamper',
+        title: 'Tampered GPU VBIOS / GSP Firmware Injection',
+        Evaluate: () => {
+          if (enclaveArch === 'sev-snp-h100-cc' || enclaveArch === 'tdx-b200-tee-io') {
+            return {
+              blocked: true,
+              mechanism: 'DMTF SPDM 1.2 ECDSA P-384 + Golden RIM Verification',
+              detail:
+                'ATTESTATION BLOCKED: SPDM PCR hash mismatches NVIDIA Golden RIM; GPU stays locked out of Ready State and Trustee KBS denies model DEK.'
+            };
+          }
+          return {
+            blocked: false,
+            mechanism: 'No SPDM Device Attestation',
+            detail:
+              'COMPROMISED: Modified GPU firmware executes undetected without SPDM measurement verification.'
+          };
+        }
+      }
+    ];
+
+    const evaluatedAttacks = attackDefs
+      .filter((d) => enclaveAttacks.includes(d.id))
+      .map((d) => {
+        const res = d.Evaluate();
+        return {
+          id: d.id,
+          title: d.title,
+          ...res
+        };
+      });
+
+    const anyUnblocked = evaluatedAttacks.some((a) => !a.blocked);
+    const rimTampered = enclaveAttacks.includes('rim_firmware_tamper');
+    const isFullDualTee =
+      enclaveArch === 'sev-snp-h100-cc' || enclaveArch === 'tdx-b200-tee-io';
+
+    const enclavePosture = anyUnblocked
+      ? 'COMPROMISED'
+      : rimTampered && isFullDualTee
+      ? 'ATTESTATION_BLOCKED'
+      : isFullDualTee
+      ? 'ISOLATED'
+      : 'COMPROMISED';
+
+    const kbsKeyRelease = enclavePosture === 'ISOLATED' ? 'GRANTED' : 'DENIED';
+
+    return {
+      ...p,
+      coldLoadTimeSec,
+      singleGpuOverheadPct,
+      evaluatedAttacks,
+      enclavePosture,
+      kbsKeyRelease
+    };
+  }, [enclaveArch, enclaveWeightGb, enclaveAttacks]);
 
   const copyToClipboard = (cmd: string) => {
     navigator.clipboard.writeText(cmd);
@@ -635,39 +890,44 @@ export default function ProviderPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850">
-                  {status.rdma.tuningChecklist.map((check, idx) => (
-                    <tr key={idx} className="hover:bg-slate-900/40">
-                      <td className="p-2.5">
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
-                          check.status === 'pass'
-                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                            : check.status === 'warn'
-                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                            : 'bg-rose-950 text-rose-400 border border-rose-800'
-                        }`}>
-                          {check.status.toUpperCase()}
-                        </span>
-                      </td>
-                      <td className="p-2.5 font-semibold text-slate-200">{check.item}</td>
-                      <td className="p-2.5 text-slate-400 text-[11px] leading-relaxed">
-                        {check.detail}
-                      </td>
-                      <td className="p-2.5 text-right">
-                        {check.remediation ? (
-                          <button
-                            type="button"
-                            onClick={() => copyToClipboard(check.remediation!)}
-                            className="bg-slate-800 hover:bg-slate-700 text-sky-300 text-[11px] font-mono px-2 py-1 rounded border border-slate-700 transition"
-                            title={check.remediation}
-                          >
-                            {copiedCmd === check.remediation ? 'Copied!' : 'Copy Fix'}
-                          </button>
-                        ) : (
-                          <span className="text-slate-600 text-[11px]">-</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {status.rdma.tuningChecklist.map((check, idx) => {
+                    const label = check.item || check.title || 'Check';
+                    const desc = check.detail || check.description || '';
+                    const cmd = check.remediation || check.command;
+                    return (
+                      <tr key={idx} className="hover:bg-slate-900/40">
+                        <td className="p-2.5">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                            check.status === 'pass'
+                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                              : check.status === 'warn'
+                              ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                              : 'bg-rose-950 text-rose-400 border border-rose-800'
+                          }`}>
+                            {check.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="p-2.5 font-semibold text-slate-200">{label}</td>
+                        <td className="p-2.5 text-slate-400 text-[11px] leading-relaxed">
+                          {desc}
+                        </td>
+                        <td className="p-2.5 text-right">
+                          {cmd ? (
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(cmd)}
+                              className="bg-slate-800 hover:bg-slate-700 text-sky-300 text-[11px] font-mono px-2 py-1 rounded border border-slate-700 transition"
+                              title={cmd}
+                            >
+                              {copiedCmd === cmd ? 'Copied!' : 'Copy Fix'}
+                            </button>
+                          ) : (
+                            <span className="text-slate-600 text-[11px]">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -830,6 +1090,350 @@ export default function ProviderPage() {
               <div className="text-[11px] text-slate-400 mt-1">
                 Prefill: <span className="text-purple-300 font-mono font-semibold">Compute-Bound</span> &bull; Decode: <span className="text-amber-300 font-mono font-semibold">Memory-Bound</span>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Zero-Trust Confidential Silicon Readiness (SEV-SNP / TDX / H100 CC) */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl space-y-4">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-3 border-b border-slate-800 gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Zero-Trust Silicon Probe</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold border ${
+                  status?.confidential?.supported
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-800'
+                    : 'bg-slate-850 text-slate-400 border-slate-700'
+                }`}>
+                  {status?.confidential?.supported ? 'Confidential TEE Active' : 'Standard Unencrypted Host'}
+                </span>
+              </div>
+              <h2 className="text-base font-bold text-slate-100 mt-1">
+                AMD SEV-SNP, Intel TDX &amp; NVIDIA H100 CC-Mode Attestation Readiness
+              </h2>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              RMP / S-EPT Memory Integrity &bull; DMTF SPDM 1.2 &bull; IETF RATS / Trustee KBS
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">CPU Enclave (/dev/sev-guest | tdx)</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${
+                  status?.confidential?.sevGuestDevicePresent || status?.confidential?.tdxGuestDevicePresent
+                    ? 'bg-emerald-400'
+                    : status?.confidential?.hostSevSnpEnabled
+                    ? 'bg-sky-400'
+                    : 'bg-amber-400'
+                }`} />
+                <span className="text-slate-200 truncate">
+                  {status?.confidential?.cpuTeeType || 'Standard Host (Unencrypted)'}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">NVIDIA GPU CC-Mode</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${
+                  status?.confidential?.gpuCcMode && status.confidential.gpuCcMode !== 'Off'
+                    ? 'bg-emerald-400'
+                    : 'bg-slate-500'
+                }`} />
+                <span className={
+                  status?.confidential?.gpuCcMode && status.confidential.gpuCcMode !== 'Off'
+                    ? 'text-emerald-300'
+                    : 'text-slate-400'
+                }>
+                  {status?.confidential?.gpuCcMode || 'Off'} ({status?.confidential?.gpuReadyState ? 'Ready' : 'Unattested'})
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">PCIe DMA Bounce Buffer</span>
+              <div className="mt-1 font-mono text-xs font-bold text-slate-200 truncate">
+                {status?.confidential?.swiotlbBounceActive
+                  ? 'SWIOTLB + CE AES-GCM-256'
+                  : 'Direct DMA (Unbounced)'}
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+              <span className="text-[11px] text-slate-400">GSP BAR0/BAR1 Firewall</span>
+              <div className="mt-1 font-mono text-xs font-bold flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${
+                  status?.confidential?.gpuCcMode && status.confidential.gpuCcMode !== 'Off'
+                    ? 'bg-emerald-400'
+                    : 'bg-slate-500'
+                }`} />
+                <span className="text-slate-300">
+                  {status?.confidential?.gpuCcMode && status.confidential.gpuCcMode !== 'Off'
+                    ? 'Locked (DevTools Blocked)'
+                    : 'Open Host MMIO'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {status?.confidential?.attestationChecklist && status.confidential.attestationChecklist.length > 0 && (
+            <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60 mt-3">
+              <table className="w-full text-left text-xs font-sans">
+                <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="p-2.5 w-20">Status</th>
+                    <th className="p-2.5 w-64">Attestation Step</th>
+                    <th className="p-2.5">Cryptographic Verification &amp; Unseal Workflow</th>
+                    <th className="p-2.5 w-24 text-right">CLI</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {status.confidential.attestationChecklist.map((step, idx) => (
+                    <tr key={idx} className="hover:bg-slate-900/40">
+                      <td className="p-2.5">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                          step.status === 'pass'
+                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            : step.status === 'warn'
+                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                            : 'bg-rose-950 text-rose-400 border border-rose-800'
+                        }`}>
+                          {step.status === 'action_needed' ? 'ACTION' : step.status.toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="p-2.5 font-semibold text-slate-200">{step.title}</td>
+                      <td className="p-2.5 text-slate-400 text-[11px] leading-relaxed">
+                        {step.description}
+                      </td>
+                      <td className="p-2.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(step.command)}
+                          className="bg-slate-800 hover:bg-slate-700 text-emerald-300 text-[11px] font-mono px-2 py-1 rounded border border-slate-700 transition"
+                          title={step.command}
+                        >
+                          {copiedCmd === step.command ? 'Copied!' : 'Copy Cmd'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Interactive Confidential Silicon Enclave Lab */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl space-y-5">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-3 border-b border-slate-800 gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Confidential Silicon Enclave Lab</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded border font-mono font-bold ${
+                  enclaveSimResult.enclavePosture === 'ISOLATED'
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                    : enclaveSimResult.enclavePosture === 'ATTESTATION_BLOCKED'
+                    ? 'bg-amber-950 text-amber-300 border-amber-700'
+                    : 'bg-rose-950 text-rose-300 border-rose-700'
+                }`}>
+                  Posture: {enclaveSimResult.enclavePosture}
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded border font-mono font-bold ${
+                  enclaveSimResult.kbsKeyRelease === 'GRANTED'
+                    ? 'bg-sky-950 text-sky-300 border-sky-700'
+                    : 'bg-rose-950 text-rose-300 border-rose-700'
+                }`}>
+                  Trustee KBS DEK: {enclaveSimResult.kbsKeyRelease}
+                </span>
+              </div>
+              <h2 className="text-base font-bold text-slate-100 mt-1">
+                Hypervisor Attack Surface, SWIOTLB AES-GCM Overhead &amp; Dual Attestation Simulator
+              </h2>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              AMD SEV-SNP RMP &bull; Intel TDX S-EPT &bull; H100 CC-On vs. Blackwell B200 TEE-I/O
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+            <div className="lg:col-span-2">
+              <label className="block text-slate-400 font-medium mb-1">Enclave Hardware Architecture</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {([
+                  { id: 'sev-snp-h100-cc', name: 'AMD SEV-SNP + H100 CC-On', sub: 'RMP + SWIOTLB CE AES-GCM-256' },
+                  { id: 'tdx-b200-tee-io', name: 'Intel TDX + Blackwell B200 TEE-I/O', sub: 'S-EPT + PCIe Gen6 IDE + NVLink 5' },
+                  { id: 'sev-es-passthrough', name: 'Legacy SEV-ES + VFIO GPU', sub: 'No RMP (Vulnerable to NPT/WeSee)' },
+                  { id: 'standard-kvm', name: 'Standard Unencrypted KVM', sub: 'Plaintext DRAM, VMCB & PCIe BAR1' }
+                ] as const).map((arch) => (
+                  <button
+                    key={arch.id}
+                    type="button"
+                    onClick={() => setEnclaveArch(arch.id)}
+                    className={`p-2.5 rounded-lg border text-left transition ${
+                      enclaveArch === arch.id
+                        ? 'bg-emerald-950/60 border-emerald-500 text-slate-100'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <div className="font-bold text-xs">{arch.name}</div>
+                    <div className="text-[10px] font-mono text-slate-400 mt-0.5">{arch.sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-slate-400 font-medium mb-1">Encrypted Model Checkpoint Size (FP8)</label>
+              <div className="grid grid-cols-2 gap-2">
+                {([8, 40, 70, 140] as const).map((gb) => (
+                  <button
+                    key={gb}
+                    type="button"
+                    onClick={() => setEnclaveWeightGb(gb)}
+                    className={`py-2.5 px-3 rounded-lg border font-mono text-xs transition ${
+                      enclaveWeightGb === gb
+                        ? 'bg-emerald-600 border-emerald-400 text-slate-950 font-bold'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {gb} GB {gb === 70 ? '(70B)' : gb === 8 ? '(8B)' : gb === 140 ? '(405B/MoE)' : '(34B)'}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-2 text-[11px] text-slate-400 font-mono">
+                PCIe Mode: <span className="text-slate-200">{enclaveSimResult.pcieMode}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Telemetry Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Cold H2D Weight Load</span>
+                <span className="text-[10px] font-mono text-emerald-400">{enclaveSimResult.effectiveH2dBandwidthGbps} GB/s</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-amber-400 font-mono">
+                {enclaveSimResult.coldLoadTimeSec} <span className="text-xs text-slate-400 font-normal">sec</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                {enclaveWeightGb} GB tmpfs &rarr; GPU HBM3
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>Single-GPU Decode (70B)</span>
+                <span className="text-[10px] font-mono text-sky-400">Batch 32</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-sky-400 font-mono">
+                {enclaveSimResult.singleGpuTokPerSec} <span className="text-xs text-slate-400 font-normal">tok/s</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                Encryption tax: <span className="text-slate-200 font-semibold">{enclaveSimResult.singleGpuOverheadPct}%</span> (16K TTFT: {enclaveSimResult.ttft16kMs}ms)
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>8x GPU TP AllReduce</span>
+                <span className="text-[10px] font-mono text-indigo-400">Multi-GPU</span>
+              </div>
+              <div className="mt-2 text-2xl font-bold text-indigo-400 font-mono">
+                {enclaveSimResult.allReduceEfficiencyPct}%
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                {enclaveArch === 'tdx-b200-tee-io'
+                  ? 'Inline Encrypted NVLink 5 (1.8 TB/s)'
+                  : enclaveArch === 'sev-snp-h100-cc'
+                  ? 'CPU Bounce-Buffer Encrypted AllReduce'
+                  : 'Unencrypted NVLink'}
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-4">
+              <div className="flex justify-between items-center text-xs text-slate-400">
+                <span>RATS Dual Attestation</span>
+                <span className="text-[10px] font-mono text-emerald-400">SHA-512 Bound</span>
+              </div>
+              <div className={`mt-2 text-lg font-bold font-mono ${
+                enclaveSimResult.kbsKeyRelease === 'GRANTED' ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
+                {enclaveSimResult.kbsKeyRelease === 'GRANTED' ? 'UNSEAL GRANTED' : 'KEY DENIED'}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                REPORT_DATA = SHA512(nonce || pubkey)
+              </div>
+            </div>
+          </div>
+
+          {/* Interactive Host / Bus Attack Matrix */}
+          <div className="space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-200">
+                Simulate Untrusted Hypervisor &amp; Physical PCIe Bus Attack Vectors (Click to Toggle):
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { id: 'host_dram_dump', label: '/dev/mem DRAM Dump' },
+                  { id: 'npt_aliasing', label: 'NPT Page Aliasing' },
+                  { id: 'wesee_vc_spoof', label: 'WeSee #VC Spoof' },
+                  { id: 'pcie_bar1_snoop', label: 'PCIe BAR1 Snoop' },
+                  { id: 'rim_firmware_tamper', label: 'Tamper GPU Firmware RIM' }
+                ].map((atk) => {
+                  const active = enclaveAttacks.includes(atk.id);
+                  return (
+                    <button
+                      key={atk.id}
+                      type="button"
+                      onClick={() => toggleEnclaveAttack(atk.id)}
+                      className={`text-[11px] font-mono px-2.5 py-1 rounded border transition ${
+                        active
+                          ? 'bg-rose-950/80 border-rose-600 text-rose-200 font-semibold'
+                          : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      {active ? '⚡ ' : '+ '}
+                      {atk.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {enclaveSimResult.evaluatedAttacks.map((atk) => (
+                <div
+                  key={atk.id}
+                  className={`p-3 rounded-lg border text-xs ${
+                    atk.blocked
+                      ? 'bg-emerald-950/20 border-emerald-800/70'
+                      : 'bg-rose-950/30 border-rose-800'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-slate-200">{atk.title}</span>
+                    <span
+                      className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                        atk.blocked
+                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                          : 'bg-rose-950 text-rose-300 border border-rose-700'
+                      }`}
+                    >
+                      {atk.blocked ? 'HARDWARE BLOCKED' : 'EXPLOITED'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-sky-300 mt-1">
+                    Defense: {atk.mechanism}
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    {atk.detail}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

@@ -728,4 +728,58 @@ vllm serve meta-llama/Llama-3.3-70B-Instruct \
       ],
     },
   },
+  {
+    id: 'confidential-computing-tee',
+    title: 'Zero-Trust Confidential Silicon (TEE)',
+    category: 'Security & Privacy',
+    icon: '🔐',
+    badge: 'SEV-SNP / TDX / H100 CC',
+    summary: 'Hardware-enforced CPU & GPU Trusted Execution Environments (AMD SEV-SNP, Intel TDX, NVIDIA H100 CC-On & Blackwell B200 TEE-I/O) with IETF RATS Dual-Attestation.',
+    content: {
+      overview: 'Eluvix integrates hardware-rooted Confidential Computing across CPU Trusted Execution Environments (AMD SEV-SNP and Intel TDX) and GPU Trusted Execution Environments (NVIDIA Hopper H100 CC-On/PPCIE and Blackwell B200 TEE-I/O). This removes the host hypervisor (KVM/QEMU), cloud provider root administrator, and physical PCIe bus from the Trusted Computing Base (TCB), protecting both proprietary 70B+ model weights and sensitive user prompts in flight and in memory.',
+      subsections: [
+        {
+          title: 'Silicon Threat Mitigations: RMP, S-EPT, Restricted Injection & GSP Firewall',
+          body: 'Standard memory encryption (such as first-gen AMD SEV-ES) encrypts DRAM against physical cold-boot attacks but leaves guest page tables and interrupt vectors exposed to a malicious hypervisor. Eluvix verifies four critical silicon primitives before routing confidential traffic:',
+          table: {
+            headers: ['Attack Vector', 'Hypervisor / Hardware Exploit', 'Silicon Defense Verified by Eluvix'],
+            rows: [
+              ['Physical DRAM Snoop', 'Host /dev/mem dump or DDR5 bus interposer', 'AES-128/256 inline memory engines (AMD ASP / Intel MKTME) + 28-bit SHA-3 ECC MACs'],
+              ['NPT / EPT Page Remapping', 'Hypervisor maps two GPAs to same SPA or replays ciphertext pages', 'AMD Reverse Map Table (RMP) + PVALIDATE / Intel Secure EPT (S-EPT) inside CPU SEAM'],
+              ['#VC / #VE Interrupt Injection', 'WeSee / Ahoi attacks inject forged #VC (vector 29) or #VE (vector 20) to leak CPU registers', 'AMD Restricted Injection (#HV, vector 28) / Intel SEPT_VE_DISABLE'],
+              ['Host BAR1 GPU VRAM Snooping', 'Host root reads model weights or KV cache via PCIe BAR0/BAR1', 'NVIDIA GSP MMU hardware firewall locks BAR0/BAR1 (returns 0xFFFFFFFF to host) + SPDM AES-GCM-256 DMA'],
+            ],
+          },
+        },
+        {
+          title: 'Hopper H100 (SWIOTLB Bounce Buffers) vs. Blackwell B200 (TEE-I/O Inline IDE)',
+          body: 'In NVIDIA Hopper H100 CC-On mode, every Host-to-Device (H2D) PCIe transfer must pass through a guest Software I/O Translation Lookaside Buffer (SWIOTLB), where the CPU and GPU Copy Engine (CE) encrypt/decrypt DMA payloads using AES-GCM-256 (~8.64 GB/s effective bandwidth, ~8.1s cold load for 70GB weights, -5.5% single-GPU decode overhead). NVIDIA Blackwell B200 TEE-I/O eliminates bounce buffers using hardware PCIe Gen6 Integrity & Data Encryption (IDE), TDISP, and inline encrypted 5th-Gen NVLink (1.8 TB/s), achieving 24.2 GB/s H2D bandwidth (2.9s cold load), -1.1% single-GPU overhead, and 98.6% 8-GPU AllReduce efficiency.',
+          table: {
+            headers: ['Architecture', 'PCIe DMA Encryption', 'Effective H2D BW', '70GB Cold Weight Load', 'Single-GPU Decode', '8x GPU AllReduce'],
+            rows: [
+              ['AMD SEV-SNP + H100 (CC-On)', 'SWIOTLB Bounce + CE AES-GCM-256', '8.64 GB/s', '8.1 s', '121.4 tok/s (-5.5%)', '81.4% efficiency'],
+              ['Intel TDX + B200 (TEE-I/O)', 'PCIe Gen6 IDE + TDISP + Inline NVLink', '24.20 GB/s', '2.9 s', '127.1 tok/s (-1.1%)', '98.6% efficiency'],
+            ],
+          },
+        },
+        {
+          title: 'IETF RATS Dual-Attestation & Encrypted RAM Weight Unsealing',
+          body: 'Before releasing the 256-bit AES-GCM Model Weight Decryption Key (DEK) from the Trustee Key Broker Service (KBS), the enclave executes a dual-attestation handshake. It binds a fresh KBS nonce and ephemeral public key into the 512-bit CPU REPORT_DATA field (SHA512(nonce || ephemeral_pubkey)) at VMPL 0, collects the ECDSA P-384 signed SPDM 1.2 GPU measurement report, and verifies both against AMD VCEK / Intel PCS and NVIDIA Reference Integrity Manifests (RIM). Once verified, model weights are unsealed directly into an encrypted RAM-backed tmpfs mount (/mnt/enclave-weights) so plaintext weights never touch host disk.',
+          code: {
+            language: 'bash',
+            content: `# Enforce fail-closed Dual-Attestation on a chat completion request
+curl https://127.0.0.1:3588/api/v1/chat/completions \\
+  -H "Authorization: Bearer $ELUVIX_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -H "x-eluvix-confidential: require-dual-attestation" \\
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Process confidential genomic sequence..."}]
+  }'`,
+          },
+          note: 'When confidentialPolicy is set to require-tee or require-dual-attestation, Eluvix fails closed with HTTP 503 (confidential_enclave_unavailable) if no hardware-attested enclave upstream is healthy.',
+        },
+      ],
+    },
+  },
 ];

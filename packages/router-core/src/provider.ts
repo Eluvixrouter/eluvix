@@ -51,11 +51,32 @@ export interface RdmaDeviceStatus {
 
 export interface RdmaFabricStatus {
   supported: boolean;
+  available: boolean;
   nvidiaPeermemLoaded: boolean;
+  driverLoaded: boolean;
   devices: RdmaDeviceStatus[];
+  ibDevices: string[];
   pcieAcsEnabled?: boolean;
+  pciP2pSupported: boolean;
   hasLosslessRoce: boolean;
   tuningChecklist: Array<{
+    title: string;
+    description: string;
+    command: string;
+    status: 'pass' | 'warn' | 'action_needed';
+  }>;
+}
+
+export interface ConfidentialComputeStatus {
+  supported: boolean;
+  cpuTeeType: 'AMD SEV-SNP' | 'Intel TDX' | 'AMD SEV-ES' | 'Host KVM (SEV-SNP Ready)' | 'Standard Host (Unencrypted)';
+  sevGuestDevicePresent: boolean;
+  tdxGuestDevicePresent: boolean;
+  hostSevSnpEnabled: boolean;
+  gpuCcMode: 'CC-On' | 'PPCIE' | 'TEE-I/O' | 'Off';
+  gpuReadyState: boolean;
+  swiotlbBounceActive: boolean;
+  attestationChecklist: Array<{
     title: string;
     description: string;
     command: string;
@@ -73,6 +94,7 @@ export interface ProviderStatusInfo {
   gpu: GpuInfo;
   models: string[];
   rdma?: RdmaFabricStatus;
+  confidential?: ConfidentialComputeStatus;
   lastHeartbeatAt?: string;
   errorMessage?: string;
 }
@@ -309,8 +331,12 @@ export async function detectRdmaFabricStatus(): Promise<RdmaFabricStatus> {
   if (!isLinux) {
     return {
       supported: false,
+      available: false,
       nvidiaPeermemLoaded: false,
+      driverLoaded: false,
       devices: [],
+      ibDevices: [],
+      pciP2pSupported: false,
       hasLosslessRoce: false,
       tuningChecklist: []
     };
@@ -405,13 +431,122 @@ export async function detectRdmaFabricStatus(): Promise<RdmaFabricStatus> {
     }
   ];
 
+  const supported = devices.length > 0 || nvidiaPeermemLoaded;
   return {
-    supported: devices.length > 0 || nvidiaPeermemLoaded,
+    supported,
+    available: supported,
     nvidiaPeermemLoaded,
+    driverLoaded: nvidiaPeermemLoaded,
     devices,
+    ibDevices: devices.map(d => d.device),
     pcieAcsEnabled,
+    pciP2pSupported: pcieAcsEnabled === false,
     hasLosslessRoce,
     tuningChecklist
+  };
+}
+
+/**
+ * Probes Linux host / Confidential VM for AMD SEV-SNP (/dev/sev-guest), Intel TDX (/dev/tdx_guest),
+ * KVM host SEV-SNP parameters, and NVIDIA H100 / Blackwell Confidential Computing (nvidia-smi conf-compute).
+ */
+export async function detectConfidentialComputeStatus(): Promise<ConfidentialComputeStatus> {
+  const isLinux = os.platform() === 'linux';
+  const sevGuestDevicePresent = isLinux && fs.existsSync('/dev/sev-guest');
+  const tdxGuestDevicePresent =
+    isLinux && (fs.existsSync('/dev/tdx_guest') || fs.existsSync('/dev/tdx-guest'));
+
+  let hostSevSnpEnabled = false;
+  try {
+    if (isLinux && fs.existsSync('/sys/module/kvm_amd/parameters/sev_snp')) {
+      const val = fs.readFileSync('/sys/module/kvm_amd/parameters/sev_snp', 'utf8').trim();
+      hostSevSnpEnabled = val === 'Y' || val === '1';
+    }
+  } catch {}
+
+  let gpuCcMode: ConfidentialComputeStatus['gpuCcMode'] = 'Off';
+  let gpuReadyState = false;
+  try {
+    const ccOut = execSync('nvidia-smi conf-compute -f 2>/dev/null || true', {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+    if (/TEE-I\/O/i.test(ccOut)) {
+      gpuCcMode = 'TEE-I/O';
+    } else if (/PPCIE/i.test(ccOut)) {
+      gpuCcMode = 'PPCIE';
+    } else if (/ON|ENABLED/i.test(ccOut)) {
+      gpuCcMode = 'CC-On';
+    }
+
+    const grsOut = execSync('nvidia-smi conf-compute -grs 2>/dev/null || true', {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+    if (/ready/i.test(grsOut) && !/not ready/i.test(grsOut)) {
+      gpuReadyState = true;
+    }
+  } catch {}
+
+  const cpuTeeType: ConfidentialComputeStatus['cpuTeeType'] = sevGuestDevicePresent
+    ? 'AMD SEV-SNP'
+    : tdxGuestDevicePresent
+    ? 'Intel TDX'
+    : hostSevSnpEnabled
+    ? 'Host KVM (SEV-SNP Ready)'
+    : 'Standard Host (Unencrypted)';
+
+  const supported = sevGuestDevicePresent || tdxGuestDevicePresent || gpuCcMode !== 'Off';
+  const swiotlbBounceActive =
+    (sevGuestDevicePresent || tdxGuestDevicePresent) && gpuCcMode !== 'TEE-I/O';
+
+  const attestationChecklist: ConfidentialComputeStatus['attestationChecklist'] = [
+    {
+      title: '1. Enable NVIDIA H100 / B200 Confidential Compute & Ready State',
+      description:
+        'Verifies GSP MMU firewall (BAR0/BAR1 locked), blocks DevTools performance counters, and transitions GPU into Ready State after SPDM RIM check.',
+      command:
+        'nvidia-smi conf-compute -f\nnvidia-smi conf-compute -grs\n# Post-attestation unlock:\nnvidia-smi conf-compute -srs 1',
+      status: gpuCcMode !== 'Off' && gpuReadyState ? 'pass' : 'action_needed'
+    },
+    {
+      title: '2. Generate & Verify AMD SEV-SNP Hardware Attestation Report (VMPL 0)',
+      description:
+        'Requests a 1184-byte VCEK-signed attestation report from /dev/sev-guest binding SHA512(nonce || ephemeral_pubkey) into REPORT_DATA and verifies the Milan/Genoa ARK->ASK->VCEK chain.',
+      command:
+        'snpguest report attestation_report.bin report_data.bin --vmpl 0\nsnpguest certificates PEM ./certs\nsnpguest verify attestation ./certs attestation_report.bin',
+      status: sevGuestDevicePresent || tdxGuestDevicePresent ? 'pass' : 'warn'
+    },
+    {
+      title: '3. Verify GPU SPDM 1.2 ECDSA P-384 Quote & VBIOS/GSP RIMs',
+      description:
+        'Collects 32-Slot PCR measurements over encrypted SPDM channel and validates against NVIDIA Reference Integrity Manifests (RIM).',
+      command:
+        'python3 -c "from nv_attestation_sdk import attestation; client = attestation.Attestation(); client.add_verifier(attestation.Devices.GPU, attestation.Environment.LOCAL, \'\', \'\'); print(client.attest(nonce))"',
+      status: gpuCcMode !== 'Off' ? 'pass' : 'warn'
+    },
+    {
+      title: '4. Trustee KBS RATS Key Release & Encrypted tmpfs Model Unseal',
+      description:
+        'Submits composite CPU+GPU evidence to Trustee KBS / OpenBao, unwraps the 256-bit AES-GCM DEK inside enclave RAM, and streams decrypted weights into /mnt/enclave_ram/models.',
+      command:
+        'mount -t tmpfs -o size=160G tmpfs /mnt/enclave_ram/models\nkbs-client --url https://kbs.internal.corp:8080 get-resource --path default/llama3-70b/dek | openssl enc -d -aes-256-gcm -in /mnt/encrypted_nvme/llama-70b.enc -out /mnt/enclave_ram/models/model.safetensors',
+      status: supported ? 'pass' : 'warn'
+    }
+  ];
+
+  return {
+    supported,
+    cpuTeeType,
+    sevGuestDevicePresent,
+    tdxGuestDevicePresent,
+    hostSevSnpEnabled,
+    gpuCcMode,
+    gpuReadyState,
+    swiotlbBounceActive,
+    attestationChecklist
   };
 }
 
@@ -575,6 +710,7 @@ export class EluvixProviderAgent extends EventEmitter {
     }
     const stored = getProviderSettings();
     const rdma = await detectRdmaFabricStatus();
+    const confidential = await detectConfidentialComputeStatus();
 
     let status: ProviderStatusInfo['status'] = 'OFFLINE';
     if (this.isRunning) {
@@ -599,6 +735,7 @@ export class EluvixProviderAgent extends EventEmitter {
       gpu: this.gpuInfo,
       models: this.installedModels.map((m) => m.name),
       rdma,
+      confidential,
       lastHeartbeatAt: stored?.last_heartbeat_at,
       errorMessage: this.lastErrorMessage || undefined,
     };

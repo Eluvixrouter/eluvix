@@ -1133,6 +1133,107 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-decode-obs', source: 'vllm-decode-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-sglang-obs', source: 'sglang-cluster-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+  // 16. Zero-Trust Confidential Silicon Enclave (AMD SEV-SNP / Intel TDX + H100 CC-On + Trustee KBS)
+  {
+    id: 'zero-trust-confidential-enclave',
+    name: 'Zero-Trust Confidential Silicon Enclave',
+    description: 'Hardware-attested confidential LLM serving with AMD SEV-SNP / Intel TDX memory encryption, NVIDIA H100 CC-On & Blackwell B200 TEE-I/O SPDM 1.2 attestation, and IETF RATS Trustee KBS model key release.',
+    category: 'security',
+    tags: ['confidential-computing', 'sev-snp', 'intel-tdx', 'h100-cc', 'tee', 'spdm', 'rats', 'zero-trust'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.78 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Client Input' } },
+      {
+        id: 'privacy-guard-1',
+        type: 'privacyGuardNode',
+        position: { x: 280, y: 240 },
+        data: {
+          action: 'anonymize',
+          redactionStyle: 'token',
+          detectPii: { apiKey: true, ssn: true, creditCard: true, email: true, phone: true, ipAddress: true }
+        }
+      },
+      {
+        id: 'confidential-enclave-1',
+        type: 'confidentialEnclaveNode',
+        position: { x: 600, y: 220 },
+        data: {
+          label: 'Confidential Silicon Enclave',
+          architecture: 'sev-snp-h100-cc',
+          confidentialPolicy: 'require-dual-attestation',
+          kbsEndpoint: 'https://kbs.internal.corp:8080',
+          expectedMeasurement: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
+          restrictedInjection: true,
+          spdmAttested: true
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 960, y: 220 },
+        data: {
+          label: 'Zero-Trust Switchyard',
+          strategy: 'cost-complexity',
+          confidentialPolicy: 'require-dual-attestation',
+          kvPrefixAffinity: true,
+          failover: 'enabled'
+        }
+      },
+      {
+        id: 'vllm-enclave-1',
+        type: 'vllmNode',
+        position: { x: 1340, y: 100 },
+        data: {
+          label: 'vLLM Enclave (SEV-SNP + H100 CC)',
+          endpoint: 'http://localhost:8000',
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct-FP8',
+          priority: 30,
+          confidential: {
+            enabled: true,
+            architecture: 'sev-snp-h100-cc'
+          }
+        }
+      },
+      {
+        id: 'sglang-enclave-1',
+        type: 'sglangNode',
+        position: { x: 1340, y: 340 },
+        data: {
+          label: 'SGLang Enclave (TDX + B200 TEE-I/O)',
+          endpoint: 'http://localhost:30000',
+          selectedModel: 'deepseek-ai/DeepSeek-V3',
+          priority: 28,
+          confidential: {
+            enabled: true,
+            architecture: 'tdx-b200-tee-io'
+          }
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1740, y: 220 },
+        data: {
+          projectName: 'zero-trust-confidential-enclave',
+          scrubPii: true,
+          captureInputs: false
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-pg', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-pg-tee', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'confidential-enclave-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-tee-sw', source: 'confidential-enclave-1', target: 'switchyard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-vllm', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'vllm-enclave-1', animated: true, style: { stroke: '#06b6d4' } },
+      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'sglang-enclave-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-vllm-obs', source: 'vllm-enclave-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-sglang-obs', source: 'sglang-enclave-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
 

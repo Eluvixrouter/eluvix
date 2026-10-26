@@ -30,6 +30,9 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [enablePrefillIsolation, setEnablePrefillIsolation] = useState<boolean>(
     data?.prefillIsolationThresholdTokens !== undefined
   );
+  const [confidentialPolicy, setConfidentialPolicy] = useState<string>(
+    data?.confidentialPolicy || 'disabled'
+  );
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -271,6 +274,25 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
               </div>
             </div>
           )}
+
+          <div className="pt-1.5 border-t border-gray-800">
+            <label className="block text-[10px] font-semibold text-emerald-400 mb-1">
+              🔐 Confidential TEE Policy
+            </label>
+            <select
+              className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-emerald-500 rounded p-1 text-white text-[10px] outline-none"
+              value={confidentialPolicy}
+              onChange={(e) => {
+                setConfidentialPolicy(e.target.value);
+                syncData({ confidentialPolicy: e.target.value });
+              }}
+            >
+              <option value="disabled">Standard (Allow Unencrypted)</option>
+              <option value="prefer-tee">⚡ Prefer TEE Enclaves</option>
+              <option value="require-tee">🔒 Require CPU TEE (SEV-SNP/TDX)</option>
+              <option value="require-dual-attestation">🛡️ Require Dual CPU+GPU TEE</option>
+            </select>
+          </div>
         </div>
 
         {/* Complexity Auto-Detection Note */}
