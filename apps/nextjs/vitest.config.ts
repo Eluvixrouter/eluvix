@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@eluvix/router-core': path.resolve(__dirname, '../../packages/router-core/src/index.ts'),
     },
   },
 });

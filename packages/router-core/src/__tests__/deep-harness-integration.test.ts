@@ -8,9 +8,9 @@ import {
   selectSwitchyardStepTier,
   forwardOpencodeHarness,
   forwardTrueForgeHarness,
+  createEluvixOpenCodeServer,
   type UpstreamConfig,
 } from '../index.js';
-import { createEluvixOpenCodeServer } from '../../../opencode-eluvix/src/index.js';
 
 function startMockServer(
   handler: (req: http.IncomingMessage, body: string, res: http.ServerResponse) => void

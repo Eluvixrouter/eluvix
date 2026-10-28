@@ -1,6 +1,6 @@
 {
   "name": "@eluvix/opencode-harness",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Eluvix-forked OpenCode agent harness runtime with native Switchyard per-turn tiering, KV prefix pinning, MCP server mesh, and mid-loop PromptGuard/PrivacyGuard DLP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
