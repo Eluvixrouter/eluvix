@@ -1,6 +1,6 @@
 {
   "name": "eluvix",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "scripts": {
     "build": "pnpm -r run build",

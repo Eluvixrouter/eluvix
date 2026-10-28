@@ -1,6 +1,6 @@
 {
   "name": "nextjs",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "scripts": {
     "predev": "pnpm --filter @eluvix/router-core build",
