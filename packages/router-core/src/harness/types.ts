@@ -12,6 +12,21 @@ export type HarnessApprovalPolicy = 'auto-deny' | 'auto-approve-readonly' | 'rea
 
 export type HarnessSessionMode = 'per-request' | 'per-eluvix-session' | 'per-conversation';
 
+export interface HarnessMcpServerConfig {
+  name: string;
+  endpoint: string;
+  transport?: 'stdio' | 'sse' | 'unix' | 'http';
+  tools?: string[];
+}
+
+export interface HarnessMidLoopGuardConfig {
+  enabled?: boolean;
+  redactPii?: boolean;
+  redactionStyle?: 'token' | 'asterisk' | 'hash';
+  stripInjection?: boolean;
+  blockOnInjection?: boolean;
+}
+
 export interface HarnessConfig {
   kind: HarnessKind;
   agentId?: string;
@@ -41,4 +56,39 @@ export interface HarnessConfig {
    */
   sandboxEndpoint?: string;
   sandboxType?: 'docker-local' | 'daytona' | 'e2b';
+  /**
+   * Run TrueForge or Eluvix-forked OpenCode directly in-process inside @eluvix/router-core
+   * with zero HTTP hop overhead. Also inferred when endpoint uses `trueforge://`,
+   * `inprocess://`, or `opencode-eluvix://`.
+   */
+  embedded?: boolean;
+  /**
+   * Enable Eluvix deep-fork harness extensions (client tool-calling bridge,
+   * mid-loop PromptGuard/PrivacyGuard tool-observation scrubbing, per-turn Switchyard
+   * model tiering, and deterministic KV-cache prefix hash pinning).
+   */
+  deepIntegration?: boolean;
+  /**
+   * Alias for `deepIntegration` when targeting the Eluvix-forked OpenCode runtime.
+   */
+  forked?: boolean;
+  /**
+   * Governed MCP servers injected directly into the harness session.
+   */
+  mcpServers?: HarnessMcpServerConfig[];
+  /**
+   * Mid-loop PromptGuard (indirect prompt injection) & PrivacyGuard (PII/secret DLP)
+   * applied to every tool observation and harness output chunk before context re-ingestion.
+   */
+  midLoopGuard?: HarnessMidLoopGuardConfig;
+  /**
+   * Enable per-step Switchyard model tiering across multi-turn agent loops
+   * (Tier-1 local for mechanical tool calls, Tier-4 frontier for synthesis).
+   */
+  switchyardTiering?: boolean;
+  /**
+   * Compute and attach deterministic KV-cache prefix hashes (`x-eluvix-prefix-hash`)
+   * across multi-turn harness trajectories for DeepSeek MLA FP8 / Mooncake / NIXL reuse.
+   */
+  kvPrefixPinning?: boolean;
 }

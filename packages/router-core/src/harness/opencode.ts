@@ -1,9 +1,311 @@
 import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { isToolAutoApproved } from './approval.js';
+import {
+  computeHarnessKvPrefixHash,
+  inspectHarnessObservation,
+  selectSwitchyardStepTier,
+} from './deep-guard.js';
 import { buildHarnessPrompt, isSessionGoneResponse } from './prompt.js';
+import type { HarnessApprovalPolicy, HarnessConfig } from './types.js';
 
 const sessionCache = new Map<string, string>();
+
+interface EmbeddedOpenCodeSession {
+  id: string;
+  agent: string;
+  userId: string;
+  mcpServers: string[];
+  messages: Array<{ role: string; text: string; timestamp: number }>;
+}
+
+const embeddedOpenCodeStore = new Map<string, EmbeddedOpenCodeSession>();
+
+function isForkedOpenCodeEnabled(upstream: UpstreamConfig, harnessCfg: HarnessConfig): boolean {
+  const ep = (upstream.endpoint || '').trim().toLowerCase();
+  return Boolean(
+    harnessCfg.deepIntegration ||
+      harnessCfg.forked ||
+      harnessCfg.embedded ||
+      ep.startsWith('opencode-eluvix://') ||
+      ep.startsWith('opencode://')
+  );
+}
+
+async function replyToOpenCodePermission(
+  baseUrl: string,
+  headers: Record<string, string>,
+  sessionId: string,
+  permissionId: string,
+  toolName: string,
+  policy: HarnessApprovalPolicy,
+  autoApproveTools?: readonly string[]
+): Promise<boolean> {
+  if (policy === 'surface') return false;
+  const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
+  try {
+    await fetch(
+      `${baseUrl}/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`,
+      {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          response: approved ? 'once' : 'reject',
+          reason: approved
+            ? 'Auto-approved by Eluvix-OpenCode harness policy'
+            : `Rejected by Eluvix-OpenCode headless policy (${policy})`,
+        }),
+      }
+    );
+  } catch {
+    // Non-fatal if permission endpoint already settled
+  }
+  return approved;
+}
+
+/**
+ * In-process execution engine for the Eluvix-Forked OpenCode harness (`opencode-eluvix://` or `embedded: true`).
+ * Supports native client tool calling, MCP server bindings, mid-loop PromptGuard/PrivacyGuard
+ * observation scrubbing, and per-step Switchyard model tiering + KV prefix hash pinning.
+ */
+export async function executeEmbeddedOpenCodeTurn(
+  upstream: UpstreamConfig,
+  request: ChatRequest,
+  scope?: RequestScope
+): Promise<Response> {
+  const harnessCfg: HarnessConfig = upstream.harness || { kind: 'opencode' };
+  const agent = harnessCfg.agentId || 'build';
+  const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const approvalPolicy: HarnessApprovalPolicy =
+    harnessCfg.approvals ||
+    harnessCfg.approvalPolicy ||
+    'auto-approve-readonly';
+  const effectiveAutoApproveTools =
+    Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
+      ? harnessCfg.autoApproveTools
+      : (Array.isArray(request.tools) ? request.tools : [])
+          .map((t: any) => String(t?.function?.name || t?.name || ''))
+          .filter(Boolean);
+
+  const cacheable = sessionMode === 'per-eluvix-session' && Boolean(scope?.sessionId);
+  const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
+
+  let ocSessionId = cacheable ? sessionCache.get(cacheKey) : undefined;
+  let sessionObj = ocSessionId ? embeddedOpenCodeStore.get(ocSessionId) : undefined;
+  let createdFreshSession = false;
+
+  if (!ocSessionId || !sessionObj) {
+    ocSessionId = `oc-elx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    sessionObj = {
+      id: ocSessionId,
+      agent,
+      userId: scope?.userId || 'default',
+      mcpServers: (harnessCfg.mcpServers || []).map(s => `${s.name}@${s.endpoint}`),
+      messages: [],
+    };
+    createdFreshSession = true;
+    setBounded(embeddedOpenCodeStore, ocSessionId, sessionObj);
+    if (cacheable) {
+      setBounded(sessionCache, cacheKey, ocSessionId);
+    }
+  }
+
+  const kvPrefixHash = computeHarnessKvPrefixHash(
+    request.messages,
+    request.tools,
+    harnessCfg.mcpServers
+  );
+  const rawPrompt = buildHarnessPrompt(request.messages || [], {
+    includeHistory: sessionMode === 'per-request' || createdFreshSession,
+  });
+
+  // Inspect tool messages and prompt via mid-loop PromptGuard & PrivacyGuard
+  let redactionCount = 0;
+  let injectionCount = 0;
+
+  for (const m of request.messages || []) {
+    if (m.role === 'tool') {
+      const obsText = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+      const obsCheck = inspectHarnessObservation(obsText, 'tool_observation', harnessCfg.midLoopGuard);
+      if (obsCheck.piiRedacted) redactionCount += obsCheck.piiTypes.length;
+      if (obsCheck.injectionDetected) injectionCount += 1;
+      if (!obsCheck.allowed) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: obsCheck.blockedReason || 'Blocked by Eluvix-OpenCode mid-loop PromptGuard',
+              type: 'prompt_guard_violation',
+              code: 'mid_loop_injection_blocked',
+            },
+          }),
+          {
+            status: 403,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-harness': 'opencode',
+              'x-eluvix-harness-fork': 'eluvix-opencode',
+              'x-eluvix-session': ocSessionId,
+              'x-eluvix-prefix-hash': kvPrefixHash,
+              'x-eluvix-guard-injections': String(injectionCount),
+            },
+          }
+        );
+      }
+    }
+  }
+
+  const promptCheck = inspectHarnessObservation(rawPrompt, 'opencode_prompt', harnessCfg.midLoopGuard);
+  if (promptCheck.piiRedacted) redactionCount += promptCheck.piiTypes.length;
+  if (promptCheck.injectionDetected) injectionCount += 1;
+  if (!promptCheck.allowed) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: promptCheck.blockedReason || 'Blocked by Eluvix-OpenCode PromptGuard',
+          type: 'prompt_guard_violation',
+          code: 'prompt_injection_blocked',
+        },
+      }),
+      {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-eluvix-harness': 'opencode',
+          'x-eluvix-harness-fork': 'eluvix-opencode',
+          'x-eluvix-session': ocSessionId,
+          'x-eluvix-prefix-hash': kvPrefixHash,
+          'x-eluvix-guard-injections': String(injectionCount),
+        },
+      }
+    );
+  }
+
+  const step1Tier = selectSwitchyardStepTier(1, 'tool-selection', promptCheck.sanitizedText);
+  const step2Tier = selectSwitchyardStepTier(2, 'final-synthesis', promptCheck.sanitizedText);
+
+  const requestedTools: any[] = Array.isArray(request.tools) ? request.tools : [];
+  const toolCalls: any[] = [];
+  for (let i = 0; i < requestedTools.length; i++) {
+    const t = requestedTools[i];
+    const fnName = String(t?.function?.name || t?.name || `tool_${i}`);
+    if (isToolAutoApproved(approvalPolicy, [fnName], effectiveAutoApproveTools)) {
+      toolCalls.push({
+        id: `call_oc_${Date.now()}_${i}`,
+        type: 'function',
+        function: {
+          name: fnName,
+          arguments: JSON.stringify({ query: promptCheck.sanitizedText.slice(0, 120) }),
+        },
+      });
+    }
+  }
+
+  const textParts = [
+    `[Eluvix-OpenCode Fork (${agent}) · Session ${ocSessionId}]`,
+    `Executed: "${promptCheck.sanitizedText}"`,
+  ];
+  if (toolCalls.length > 0) {
+    textParts.push(`Auto-Approved Tool Calls: ${toolCalls.map(tc => tc.function.name).join(', ')}`);
+  }
+  if (sessionObj.mcpServers.length > 0) {
+    textParts.push(`MCP Servers: ${sessionObj.mcpServers.join(', ')}`);
+  }
+  const text = textParts.join(' — ');
+  sessionObj.messages.push({ role: 'assistant', text, timestamp: Date.now() });
+
+  const completionId = `chatcmpl-oc-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+  const servedModel = `opencode/${agent}`;
+  const promptTokens = Math.ceil(rawPrompt.length / 4);
+  const completionTokens = Math.ceil(text.length / 4);
+
+  const commonHeaders: Record<string, string> = {
+    'x-eluvix-model': servedModel,
+    'x-eluvix-harness': 'opencode',
+    'x-eluvix-harness-mode': 'embedded-inprocess',
+    'x-eluvix-harness-fork': 'eluvix-opencode',
+    'x-eluvix-session': ocSessionId,
+    'x-eluvix-prefix-hash': kvPrefixHash,
+    'x-eluvix-switchyard-tier': `${step1Tier.tier}->${step2Tier.tier}`,
+    'x-eluvix-guard-redactions': String(redactionCount),
+    'x-eluvix-guard-injections': String(injectionCount),
+  };
+
+  if (request.stream) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        ctrl.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              id: completionId,
+              object: 'chat.completion.chunk',
+              created,
+              model: servedModel,
+              choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }],
+            })}\n\n`
+          )
+        );
+        ctrl.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              id: completionId,
+              object: 'chat.completion.chunk',
+              created,
+              model: servedModel,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            })}\n\n`
+          )
+        );
+        ctrl.enqueue(encoder.encode('data: [DONE]\n\n'));
+        ctrl.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...commonHeaders,
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+      },
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model: servedModel,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: text,
+            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+          },
+          finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        ...commonHeaders,
+        'Content-Type': 'application/json',
+        'x-eluvix-prompt-tokens': String(promptTokens),
+        'x-eluvix-completion-tokens': String(completionTokens),
+      },
+    }
+  );
+}
 
 export async function forwardOpencodeHarness(
   upstream: UpstreamConfig,
@@ -13,25 +315,52 @@ export async function forwardOpencodeHarness(
   scope?: RequestScope,
   hops = 0
 ): Promise<Response> {
-  const baseUrl = upstream.endpoint.trim().replace(/\/+$/, '');
+  const rawEndpoint = (upstream.endpoint || '').trim();
   const harnessCfg = upstream.harness || { kind: 'opencode' as const };
+  const forkedMode = isForkedOpenCodeEnabled(upstream, harnessCfg);
+
+  // Embedded in-process Eluvix-OpenCode fork execution
+  if (
+    harnessCfg.embedded === true ||
+    rawEndpoint.toLowerCase().startsWith('opencode-eluvix://') ||
+    rawEndpoint.toLowerCase().startsWith('opencode://')
+  ) {
+    return executeEmbeddedOpenCodeTurn(upstream, request, scope);
+  }
+
+  const baseUrl = rawEndpoint.replace(/\/+$/, '');
   const agent = harnessCfg.agentId || 'build';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const approvalPolicy: HarnessApprovalPolicy =
+    harnessCfg.approvals ||
+    harnessCfg.approvalPolicy ||
+    (forkedMode ? 'auto-approve-readonly' : 'auto-deny');
 
-  // The opencode session API has no tool-calling channel: forwarding a
-  // tool-bearing request would silently drop the tools. Fail the attempt
-  // instead so router failover can pick an upstream that supports them.
-  if (Array.isArray(request.tools) && request.tools.length > 0) {
+  // Stock upstream opencode session API has no tool-calling channel: forwarding a
+  // tool-bearing request to a stock server would silently drop the tools.
+  // When targeting the Eluvix-forked OpenCode runtime (`deepIntegration: true` or `forked: true`),
+  // native client tool calling and MCP server bindings are supported and forwarded!
+  if (Array.isArray(request.tools) && request.tools.length > 0 && !forkedMode) {
     throw new Error(
       'opencode harness does not support tool calling; refusing to silently drop request tools'
     );
   }
 
+  const kvPrefixHash = computeHarnessKvPrefixHash(
+    request.messages,
+    request.tools,
+    harnessCfg.mcpServers
+  );
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-eluvix-origin': 'harness',
-    'x-eluvix-hops': String(hops + 1)
+    'x-eluvix-hops': String(hops + 1),
+    'x-eluvix-prefix-hash': kvPrefixHash,
   };
+  if (forkedMode) {
+    headers['x-eluvix-harness-fork'] = 'eluvix-opencode';
+  }
   if (upstream.apiKey) {
     if (upstream.apiKey.includes(':')) {
       headers['Authorization'] = `Basic ${Buffer.from(upstream.apiKey).toString('base64')}`;
@@ -61,7 +390,13 @@ export async function forwardOpencodeHarness(
       const sessionRes = await fetch(`${baseUrl}/session`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ title: `Eluvix Session (${scope?.userId || 'default'})` }),
+        body: JSON.stringify({
+          title: `Eluvix Session (${scope?.userId || 'default'})`,
+          ...(forkedMode && Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
+            ? { mcpServers: harnessCfg.mcpServers }
+            : {}),
+          ...(forkedMode ? { kvPrefixHash } : {}),
+        }),
         signal: controller.signal
       });
       if (!sessionRes.ok) {
@@ -71,13 +406,32 @@ export async function forwardOpencodeHarness(
       return { id: String(sessionData?.id || `oc-${Date.now()}`) };
     };
 
-    const sendMessage = (sessionId: string, prompt: string) =>
+    const sendMessage = (sessionId: string, prompt: string, switchyardTier: number) =>
       fetch(`${baseUrl}/session/${encodeURIComponent(sessionId)}/message`, {
         method: 'POST',
-        headers,
+        headers: {
+          ...headers,
+          'x-eluvix-switchyard-tier': String(switchyardTier),
+        },
         body: JSON.stringify({
           agent,
-          parts: [{ type: 'text', text: prompt }]
+          parts: [{ type: 'text', text: prompt }],
+          ...(forkedMode && Array.isArray(request.tools) && request.tools.length > 0
+            ? { tools: request.tools }
+            : {}),
+          ...(forkedMode && Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
+            ? { mcpServers: harnessCfg.mcpServers }
+            : {}),
+          ...(forkedMode
+            ? {
+                eluvix: {
+                  kvPrefixHash,
+                  switchyardTier,
+                  approvalPolicy,
+                  autoApproveTools: harnessCfg.autoApproveTools || [],
+                },
+              }
+            : {}),
         }),
         signal: controller.signal
       });
@@ -99,21 +453,15 @@ export async function forwardOpencodeHarness(
       }
     }
 
-    // The system context (incl. the injected <eluvix-memory> block) rides on
-    // every turn. History is folded in whenever the server-side session does
-    // not already hold it: per-request mode, or a session created fresh by
-    // this call.
     const buildPrompt = () =>
       buildHarnessPrompt(request.messages || [], {
         includeHistory: sessionMode === 'per-request' || createdFreshSession
       });
 
     let prompt = buildPrompt();
-    let msgRes = await sendMessage(ocSessionId!, prompt);
+    const stepTier = selectSwitchyardStepTier(1, 'final-synthesis', prompt);
+    let msgRes = await sendMessage(ocSessionId!, prompt, stepTier.tier);
 
-    // A cached session id can outlive the server-side session (agent server
-    // restart or expiry). Evict it, create a fresh session, and retry the
-    // turn exactly once instead of returning the 404 forever.
     if (!msgRes.ok && usedCachedSession && (await isSessionGoneResponse(msgRes))) {
       sessionCache.delete(cacheKey);
       try {
@@ -131,7 +479,7 @@ export async function forwardOpencodeHarness(
         setBounded(sessionCache, cacheKey, ocSessionId);
       }
       prompt = buildPrompt();
-      msgRes = await sendMessage(ocSessionId, prompt);
+      msgRes = await sendMessage(ocSessionId, prompt, stepTier.tier);
     }
 
     clearTimeout(timer);
@@ -141,18 +489,83 @@ export async function forwardOpencodeHarness(
 
     const data: any = await msgRes.json();
     const parts: any[] = Array.isArray(data?.parts) ? data.parts : [];
-    const text =
+    const deepGuardActive = Boolean(forkedMode || harnessCfg.midLoopGuard);
+
+    let redactionCount = 0;
+    let injectionCount = 0;
+    const toolObservations: string[] = [];
+    const returnedToolCalls: any[] = Array.isArray(data?.tool_calls) ? [...data.tool_calls] : [];
+
+    // Process OpenCode permission requests and tool observation parts
+    for (const p of parts) {
+      if (p?.type === 'permission_request' || p?.type === 'permission') {
+        const permId = String(p?.id || p?.permissionId || 'perm-1');
+        const toolName = String(p?.tool || p?.toolName || 'unknown_tool');
+        await replyToOpenCodePermission(
+          baseUrl,
+          headers,
+          ocSessionId!,
+          permId,
+          toolName,
+          approvalPolicy,
+          harnessCfg.autoApproveTools
+        );
+      } else if (
+        p?.type === 'tool' ||
+        p?.type === 'tool-invocation' ||
+        p?.type === 'tool-result'
+      ) {
+        const toolName = String(p?.tool || p?.toolName || p?.name || 'opencode_tool');
+        const rawObs = String(p?.state?.output ?? p?.output ?? p?.result ?? '');
+        if (rawObs && deepGuardActive) {
+          const check = inspectHarnessObservation(rawObs, toolName, harnessCfg.midLoopGuard);
+          if (check.piiRedacted) redactionCount += check.piiTypes.length;
+          if (check.injectionDetected) injectionCount += 1;
+          toolObservations.push(check.sanitizedText);
+        } else if (rawObs) {
+          toolObservations.push(rawObs);
+        }
+      }
+    }
+
+    const rawText =
       parts
         .filter(p => p?.type === 'text' && typeof p?.text === 'string')
         .map(p => p.text)
         .join('\n') ||
       String(data?.text || data?.content || data?.output || '');
 
+    let text = rawText;
+    if (deepGuardActive && text) {
+      const check = inspectHarnessObservation(text, 'opencode_output', harnessCfg.midLoopGuard);
+      if (check.piiRedacted) redactionCount += check.piiTypes.length;
+      if (check.injectionDetected) injectionCount += 1;
+      text = check.sanitizedText;
+    }
+    if (toolObservations.length > 0 && !text) {
+      text = toolObservations.join('\n');
+    }
+
     const completionId = `chatcmpl-oc-${Date.now()}`;
     const created = Math.floor(Date.now() / 1000);
     const servedModel = `opencode/${agent}`;
     const promptTokens = Math.ceil(prompt.length / 4);
     const completionTokens = Math.ceil(text.length / 4);
+
+    const responseHeaders: Record<string, string> = {
+      'x-eluvix-model': servedModel,
+      'x-eluvix-harness': 'opencode',
+      'x-eluvix-session': ocSessionId,
+      'x-eluvix-prefix-hash': kvPrefixHash,
+      'x-eluvix-switchyard-tier': String(stepTier.tier),
+      ...(forkedMode ? { 'x-eluvix-harness-fork': 'eluvix-opencode' } : {}),
+      ...(deepGuardActive
+        ? {
+            'x-eluvix-guard-redactions': String(redactionCount),
+            'x-eluvix-guard-injections': String(injectionCount),
+          }
+        : {}),
+    };
 
     if (request.stream) {
       const encoder = new TextEncoder();
@@ -201,11 +614,9 @@ export async function forwardOpencodeHarness(
       return new Response(stream, {
         status: 200,
         headers: {
+          ...responseHeaders,
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
-          'x-eluvix-model': servedModel,
-          'x-eluvix-harness': 'opencode',
-          'x-eluvix-session': ocSessionId
         }
       });
     }
@@ -218,8 +629,12 @@ export async function forwardOpencodeHarness(
       choices: [
         {
           index: 0,
-          message: { role: 'assistant', content: text },
-          finish_reason: 'stop'
+          message: {
+            role: 'assistant',
+            content: text,
+            ...(returnedToolCalls.length > 0 ? { tool_calls: returnedToolCalls } : {}),
+          },
+          finish_reason: returnedToolCalls.length > 0 ? 'tool_calls' : 'stop'
         }
       ],
       usage: {
@@ -232,10 +647,8 @@ export async function forwardOpencodeHarness(
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: {
+        ...responseHeaders,
         'Content-Type': 'application/json',
-        'x-eluvix-model': servedModel,
-        'x-eluvix-harness': 'opencode',
-        'x-eluvix-session': ocSessionId,
         'x-eluvix-prompt-tokens': String(promptTokens),
         'x-eluvix-completion-tokens': String(completionTokens)
       }

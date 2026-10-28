@@ -400,6 +400,14 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
     return upstream.harness.providerIsLocal;
   }
   const endpoint = upstream.endpoint || '';
+  if (
+    upstream.harness?.embedded === true ||
+    endpoint.startsWith('trueforge://') ||
+    endpoint.startsWith('inprocess://') ||
+    endpoint.startsWith('opencode-eluvix://')
+  ) {
+    return true;
+  }
   if (endpoint.startsWith('cli://')) return false;
   if (endpoint.startsWith('acp://')) {
     // Process-wrapper endpoint (see above): a harness with no explicit

@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './env.js';
 export * from './approval.js';
+export * from './deep-guard.js';
 export * from './trueforge.js';
 export * from './opencode.js';
 export * from './acp.js';
@@ -36,6 +37,9 @@ export function resolveHarnessKind(upstream: UpstreamConfig): HarnessKind {
   const endpoint = (upstream.endpoint || '').trim().toLowerCase();
   if (endpoint.startsWith('acp://') || endpoint.startsWith('cli://')) {
     return 'acp';
+  }
+  if (endpoint.startsWith('opencode-eluvix://') || endpoint.startsWith('opencode://')) {
+    return 'opencode';
   }
   return 'trueforge';
 }

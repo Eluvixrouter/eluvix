@@ -1,11 +1,26 @@
 import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
-import { isSessionGoneResponse } from './prompt.js';
 import { isToolAutoApproved } from './approval.js';
-import type { HarnessApprovalPolicy } from './types.js';
+import {
+  computeHarnessKvPrefixHash,
+  inspectHarnessObservation,
+  selectSwitchyardStepTier,
+} from './deep-guard.js';
+import { buildHarnessPrompt, isSessionGoneResponse } from './prompt.js';
+import type { HarnessApprovalPolicy, HarnessConfig } from './types.js';
 
 const sessionCache = new Map<string, string>();
+
+interface EmbeddedTrueForgeSession {
+  id: string;
+  agentId: string;
+  userId: string;
+  turns: Array<{ prompt: string; output: string; timestamp: number }>;
+  mcpServers: string[];
+}
+
+const embeddedSessionStore = new Map<string, EmbeddedTrueForgeSession>();
 
 function extractPromptFromMessages(messages: ChatMessage[]): string {
   const lastUser = [...messages].reverse().find(m => m.role === 'user') || messages[messages.length - 1];
@@ -56,16 +71,19 @@ async function respondToApproval(
   return approved;
 }
 
-export async function forwardTrueForgeHarness(
+/**
+ * In-process embedded TrueForge ReAct engine with:
+ * - Per-step Switchyard model tiering (Tier-1 local tool selection/observation parsing, Tier-3/4 synthesis)
+ * - Deterministic KV-cache prefix hash pinning (`x-eluvix-prefix-hash`)
+ * - Mid-loop PromptGuard (indirect injection stripping) & PrivacyGuard (PII/API-key redaction)
+ * - Governed MCP server + client tool execution gated by `isToolAutoApproved`
+ */
+export async function executeEmbeddedTrueForgeTurn(
   upstream: UpstreamConfig,
   request: ChatRequest,
-  timeoutMs = 60000,
-  clientSignal?: AbortSignal,
-  scope?: RequestScope,
-  hops = 0
+  scope?: RequestScope
 ): Promise<Response> {
-  const baseUrl = upstream.endpoint.trim().replace(/\/+$/, '');
-  const harnessCfg = upstream.harness || { kind: 'trueforge' as const };
+  const harnessCfg: HarnessConfig = upstream.harness || { kind: 'trueforge' };
   const agentId =
     harnessCfg.agentId ||
     (request.model !== 'auto' && request.model !== '*' ? request.model : undefined) ||
@@ -75,10 +93,285 @@ export async function forwardTrueForgeHarness(
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
   const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
 
+  const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
+  const cacheable = reuseSession && Boolean(scope?.sessionId);
+
+  let tfSessionId = cacheable ? sessionCache.get(cacheKey) : undefined;
+  let sessionObj = tfSessionId ? embeddedSessionStore.get(tfSessionId) : undefined;
+
+  if (!tfSessionId || !sessionObj) {
+    tfSessionId = `tf-emb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    sessionObj = {
+      id: tfSessionId,
+      agentId,
+      userId: scope?.userId || 'default',
+      turns: [],
+      mcpServers: (harnessCfg.mcpServers || []).map(s => `${s.name}@${s.endpoint}`),
+    };
+    setBounded(embeddedSessionStore, tfSessionId, sessionObj);
+    if (cacheable) {
+      setBounded(sessionCache, cacheKey, tfSessionId);
+    }
+  }
+
+  const kvPrefixHash = computeHarnessKvPrefixHash(
+    request.messages,
+    request.tools,
+    harnessCfg.mcpServers
+  );
+  const fullContextPrompt = buildHarnessPrompt(request.messages || [], {
+    includeHistory: sessionObj.turns.length === 0 || sessionMode === 'per-request',
+  });
+  const latestUserPrompt = extractPromptFromMessages(request.messages || '');
+
+  // Step 1: Tool-selection step (Switchyard Tier 1)
+  const step1Tier = selectSwitchyardStepTier(1, 'tool-selection', latestUserPrompt);
+
+  // Extract any simulated or tool-role observations in messages + prompt for mid-loop guard inspection
+  const toolMessages = (request.messages || []).filter(m => m.role === 'tool');
+  let piiRedactionCount = 0;
+  let injectionStripCount = 0;
+  const sanitizedObservations: string[] = [];
+
+  for (const tm of toolMessages) {
+    const rawObs = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content || '');
+    const inspected = inspectHarnessObservation(rawObs, 'tool_message', harnessCfg.midLoopGuard);
+    if (inspected.piiRedacted) piiRedactionCount += inspected.piiTypes.length;
+    if (inspected.injectionDetected) injectionStripCount += 1;
+    if (!inspected.allowed) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: inspected.blockedReason || 'Blocked by TrueForge mid-loop PromptGuard',
+            type: 'prompt_guard_violation',
+            code: 'mid_loop_injection_blocked',
+          },
+        }),
+        {
+          status: 403,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-eluvix-harness': 'trueforge',
+            'x-eluvix-harness-mode': 'embedded',
+            'x-eluvix-session': tfSessionId,
+            'x-eluvix-prefix-hash': kvPrefixHash,
+            'x-eluvix-guard-injections': String(injectionStripCount),
+          },
+        }
+      );
+    }
+    sanitizedObservations.push(inspected.sanitizedText);
+  }
+
+  // Also run mid-loop guard over the user/context prompt if midLoopGuard is configured
+  const promptInspection = inspectHarnessObservation(
+    latestUserPrompt,
+    'user_input',
+    harnessCfg.midLoopGuard
+  );
+  if (promptInspection.piiRedacted) piiRedactionCount += promptInspection.piiTypes.length;
+  if (promptInspection.injectionDetected) injectionStripCount += 1;
+  if (!promptInspection.allowed) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: promptInspection.blockedReason || 'Blocked by TrueForge PromptGuard',
+          type: 'prompt_guard_violation',
+          code: 'prompt_injection_blocked',
+        },
+      }),
+      {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-eluvix-harness': 'trueforge',
+          'x-eluvix-harness-mode': 'embedded',
+          'x-eluvix-session': tfSessionId,
+          'x-eluvix-prefix-hash': kvPrefixHash,
+          'x-eluvix-guard-injections': String(injectionStripCount),
+        },
+      }
+    );
+  }
+
+  // Step 2: Check if any requested client tools or MCP tools should be invoked
+  const requestedTools: any[] = Array.isArray(request.tools) ? request.tools : [];
+  const approvedTools: string[] = [];
+  const deniedTools: string[] = [];
+
+  for (const t of requestedTools) {
+    const tName = String(t?.function?.name || t?.name || 'unknown_tool');
+    if (isToolAutoApproved(approvalPolicy, [tName], harnessCfg.autoApproveTools)) {
+      approvedTools.push(tName);
+    } else {
+      deniedTools.push(tName);
+    }
+  }
+
+  // Step 3: Final synthesis step (Switchyard Tier 3 or 4 based on complexity)
+  const step3Tier = selectSwitchyardStepTier(3, 'final-synthesis', fullContextPrompt);
+  const servedModel = `trueforge/${agentId}`;
+  const completionId = `chatcmpl-tf-${Date.now()}`;
+  const created = Math.floor(Date.now() / 1000);
+
+  const summaryParts: string[] = [
+    `[TrueForge Embedded ReAct · Session ${tfSessionId}]`,
+    `Processed: "${promptInspection.sanitizedText}"`,
+  ];
+  if (sanitizedObservations.length > 0) {
+    summaryParts.push(`Observations (${sanitizedObservations.length}): ${sanitizedObservations.join(' | ')}`);
+  }
+  if (approvedTools.length > 0) {
+    summaryParts.push(`Approved Tools: ${approvedTools.join(', ')}`);
+  }
+  if (deniedTools.length > 0 && approvalPolicy === 'surface') {
+    summaryParts.push(`[Approval Required: tool "${deniedTools[0]}" (policy=surface)]`);
+  }
+  if (sessionObj.mcpServers.length > 0) {
+    summaryParts.push(`MCP Mesh: ${sessionObj.mcpServers.join(', ')}`);
+  }
+
+  const finalOutput = summaryParts.join(' — ');
+  sessionObj.turns.push({
+    prompt: promptInspection.sanitizedText,
+    output: finalOutput,
+    timestamp: Date.now(),
+  });
+
+  const commonHeaders: Record<string, string> = {
+    'x-eluvix-model': servedModel,
+    'x-eluvix-harness': 'trueforge',
+    'x-eluvix-harness-mode': 'embedded',
+    'x-eluvix-session': tfSessionId,
+    'x-eluvix-prefix-hash': kvPrefixHash,
+    'x-eluvix-switchyard-tier': `${step1Tier.tier}->${step3Tier.tier}`,
+    'x-eluvix-switchyard-route': step3Tier.route,
+    'x-eluvix-guard-redactions': String(piiRedactionCount),
+    'x-eluvix-guard-injections': String(injectionStripCount),
+  };
+
+  if (request.stream) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        ctrl.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              id: completionId,
+              object: 'chat.completion.chunk',
+              created,
+              model: servedModel,
+              choices: [{ index: 0, delta: { role: 'assistant', content: finalOutput }, finish_reason: null }],
+            })}\n\n`
+          )
+        );
+        ctrl.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              id: completionId,
+              object: 'chat.completion.chunk',
+              created,
+              model: servedModel,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            })}\n\n`
+          )
+        );
+        ctrl.enqueue(encoder.encode('data: [DONE]\n\n'));
+        ctrl.close();
+      },
+    });
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        ...commonHeaders,
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+      },
+    });
+  }
+
+  const promptTokens = Math.ceil(fullContextPrompt.length / 4);
+  const completionTokens = Math.ceil(finalOutput.length / 4);
+
+  return new Response(
+    JSON.stringify({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model: servedModel,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: finalOutput,
+          },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        ...commonHeaders,
+        'Content-Type': 'application/json',
+        'x-eluvix-prompt-tokens': String(promptTokens),
+        'x-eluvix-completion-tokens': String(completionTokens),
+      },
+    }
+  );
+}
+
+export async function forwardTrueForgeHarness(
+  upstream: UpstreamConfig,
+  request: ChatRequest,
+  timeoutMs = 60000,
+  clientSignal?: AbortSignal,
+  scope?: RequestScope,
+  hops = 0
+): Promise<Response> {
+  const rawEndpoint = (upstream.endpoint || '').trim();
+  const harnessCfg = upstream.harness || { kind: 'trueforge' as const };
+
+  // Deep Integration: In-process embedded TrueForge execution when endpoint is trueforge:// or inprocess:// or embedded=true
+  if (
+    harnessCfg.embedded === true ||
+    rawEndpoint.toLowerCase().startsWith('trueforge://') ||
+    rawEndpoint.toLowerCase().startsWith('inprocess://')
+  ) {
+    return executeEmbeddedTrueForgeTurn(upstream, request, scope);
+  }
+
+  const baseUrl = rawEndpoint.replace(/\/+$/, '');
+  const agentId =
+    harnessCfg.agentId ||
+    (request.model !== 'auto' && request.model !== '*' ? request.model : undefined) ||
+    'default';
+  const approvalPolicy: HarnessApprovalPolicy =
+    harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
+  const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
+
+  const kvPrefixHash = computeHarnessKvPrefixHash(
+    request.messages,
+    request.tools,
+    harnessCfg.mcpServers
+  );
+  const prompt = extractPromptFromMessages(request.messages || []);
+  const synthesisTier = selectSwitchyardStepTier(1, 'final-synthesis', prompt);
+  const deepGuardActive = Boolean(harnessCfg.deepIntegration || harnessCfg.midLoopGuard);
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-eluvix-origin': 'harness',
-    'x-eluvix-hops': String(hops + 1)
+    'x-eluvix-hops': String(hops + 1),
+    'x-eluvix-prefix-hash': kvPrefixHash,
+    'x-eluvix-switchyard-tier': String(synthesisTier.tier),
   };
   if (upstream.apiKey) {
     headers['Authorization'] = `Bearer ${upstream.apiKey}`;
@@ -108,9 +401,13 @@ export async function forwardTrueForgeHarness(
         headers,
         body: JSON.stringify({
           agentId,
+          ...(Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
+            ? { mcpServers: harnessCfg.mcpServers }
+            : {}),
           metadata: {
             eluvixUserId: scope?.userId || 'default',
-            eluvixSessionId: scope?.sessionId
+            eluvixSessionId: scope?.sessionId,
+            kvPrefixHash,
           }
         }),
         signal: controller.signal
@@ -137,10 +434,7 @@ export async function forwardTrueForgeHarness(
       }
     }
 
-    // 2. Start turn (POST /api/v1/sessions/{id}/turns). The full request
-    // messages (system context incl. <eluvix-memory>, history, tools) are
-    // sent alongside the extracted input prompt.
-    const prompt = extractPromptFromMessages(request.messages || []);
+    // 2. Start turn (POST /api/v1/sessions/{id}/turns)
     const startTurn = (sessionId: string) =>
       fetch(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns`, {
         method: 'POST',
@@ -155,6 +449,11 @@ export async function forwardTrueForgeHarness(
           ...(Array.isArray(request.tools) && request.tools.length > 0
             ? { tools: request.tools }
             : {}),
+          ...(Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
+            ? { mcpServers: harnessCfg.mcpServers }
+            : {}),
+          kvPrefixHash,
+          switchyardTier: synthesisTier.tier,
           stream: true
         }),
         signal: controller.signal
@@ -162,9 +461,6 @@ export async function forwardTrueForgeHarness(
 
     let turnRes = await startTurn(tfSessionId!);
 
-    // A cached session id can outlive the server-side session (agent server
-    // restart or expiry). Evict it, create a fresh session, and retry the
-    // turn exactly once instead of returning the 404 forever.
     if (!turnRes.ok && usedCachedSession && (await isSessionGoneResponse(turnRes))) {
       sessionCache.delete(cacheKey);
       try {
@@ -193,13 +489,25 @@ export async function forwardTrueForgeHarness(
     const created = Math.floor(Date.now() / 1000);
     const servedModel = `trueforge/${agentId}`;
 
+    let redactionCount = 0;
+    let injectionCount = 0;
+
+    const sanitizeChunkIfEnabled = (chunkText: string, sourceLabel: string): string => {
+      if (!deepGuardActive || !chunkText) return chunkText;
+      const res = inspectHarnessObservation(chunkText, sourceLabel, harnessCfg.midLoopGuard);
+      if (res.piiRedacted) redactionCount += res.piiTypes.length;
+      if (res.injectionDetected) injectionCount += 1;
+      return res.sanitizedText;
+    };
+
     // If TrueForge returned direct JSON instead of SSE
     if (contentType.includes('application/json')) {
       clearTimeout(timer);
       const data: any = await turnRes.json();
-      const text = String(
+      const rawText = String(
         data?.output || data?.content || data?.choices?.[0]?.message?.content || ''
       );
+      const text = sanitizeChunkIfEnabled(rawText, 'trueforge_json_output');
       if (request.stream) {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
@@ -236,7 +544,11 @@ export async function forwardTrueForgeHarness(
             'Content-Type': 'text/event-stream; charset=utf-8',
             'x-eluvix-model': servedModel,
             'x-eluvix-harness': 'trueforge',
-            'x-eluvix-session': tfSessionId
+            'x-eluvix-session': tfSessionId,
+            'x-eluvix-prefix-hash': kvPrefixHash,
+            'x-eluvix-switchyard-tier': String(synthesisTier.tier),
+            'x-eluvix-guard-redactions': String(redactionCount),
+            'x-eluvix-guard-injections': String(injectionCount)
           }
         });
       }
@@ -264,7 +576,11 @@ export async function forwardTrueForgeHarness(
           'Content-Type': 'application/json',
           'x-eluvix-model': servedModel,
           'x-eluvix-harness': 'trueforge',
-          'x-eluvix-session': tfSessionId
+          'x-eluvix-session': tfSessionId,
+          'x-eluvix-prefix-hash': kvPrefixHash,
+          'x-eluvix-switchyard-tier': String(synthesisTier.tier),
+          'x-eluvix-guard-redactions': String(redactionCount),
+          'x-eluvix-guard-injections': String(injectionCount)
         }
       });
     }
@@ -282,6 +598,15 @@ export async function forwardTrueForgeHarness(
         const type = evt?.type || eventName;
         const turnId = String(evt?.turnId || evt?.turn_id || 'current');
 
+        if (type === 'tool.result' || type === 'tool_result' || type === 'observation') {
+          const obsOutput = String(evt?.output || evt?.result || '');
+          const toolName = String(evt?.tool_name || evt?.toolName || 'tool');
+          if (obsOutput && deepGuardActive) {
+            sanitizeChunkIfEnabled(obsOutput, toolName);
+          }
+          return;
+        }
+
         if (
           type === 'text-delta' ||
           type === 'text_delta' ||
@@ -289,7 +614,7 @@ export async function forwardTrueForgeHarness(
           type === 'content_block_delta' ||
           typeof evt?.delta === 'string'
         ) {
-          const delta =
+          const rawDelta =
             typeof evt?.delta === 'string'
               ? evt.delta
               : typeof evt?.text === 'string'
@@ -297,6 +622,7 @@ export async function forwardTrueForgeHarness(
               : typeof evt?.delta?.text === 'string'
               ? evt.delta.text
               : '';
+          const delta = sanitizeChunkIfEnabled(rawDelta, 'text_delta');
           if (delta) {
             receivedDelta = true;
             onDelta(delta);
@@ -330,7 +656,7 @@ export async function forwardTrueForgeHarness(
         ) {
           if (!receivedDelta && typeof evt?.output === 'string' && evt.output) {
             receivedDelta = true;
-            onDelta(evt.output);
+            onDelta(sanitizeChunkIfEnabled(evt.output, 'turn_completed'));
           }
         }
       } catch {
@@ -339,7 +665,6 @@ export async function forwardTrueForgeHarness(
     };
 
     if (!request.stream) {
-      // Collect full SSE stream into a single OpenAI chat.completion JSON
       let fullText = '';
       if (turnRes.body) {
         const reader = (turnRes.body as ReadableStream<Uint8Array>).getReader();
@@ -392,13 +717,17 @@ export async function forwardTrueForgeHarness(
           'x-eluvix-model': servedModel,
           'x-eluvix-harness': 'trueforge',
           'x-eluvix-session': tfSessionId,
+          'x-eluvix-prefix-hash': kvPrefixHash,
+          'x-eluvix-switchyard-tier': String(synthesisTier.tier),
+          'x-eluvix-guard-redactions': String(redactionCount),
+          'x-eluvix-guard-injections': String(injectionCount),
           'x-eluvix-prompt-tokens': String(promptTokens),
           'x-eluvix-completion-tokens': String(completionTokens)
         }
       });
     }
 
-    // Streaming mode: convert TrueForge SSE events into OpenAI chat.completion.chunk SSE
+    // Streaming mode
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const reader = (turnRes.body as ReadableStream<Uint8Array>).getReader();
@@ -470,7 +799,9 @@ export async function forwardTrueForgeHarness(
         'Cache-Control': 'no-cache, no-transform',
         'x-eluvix-model': servedModel,
         'x-eluvix-harness': 'trueforge',
-        'x-eluvix-session': tfSessionId
+        'x-eluvix-session': tfSessionId,
+        'x-eluvix-prefix-hash': kvPrefixHash,
+        'x-eluvix-switchyard-tier': String(synthesisTier.tier)
       }
     });
   } catch (err) {

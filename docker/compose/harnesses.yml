@@ -18,6 +18,23 @@ services:
       timeout: 3s
       retries: 3
 
+  opencode:
+    build:
+      context: ../opencode
+      dockerfile: Dockerfile
+    container_name: eluvix-opencode
+    profiles: ["harnesses", "all"]
+    ports:
+      - "127.0.0.1:${OPENCODE_PORT:-4096}:4096"
+    restart: unless-stopped
+    networks:
+      - eluvix-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4096/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   sandbox:
     build:
       context: ../sandbox
