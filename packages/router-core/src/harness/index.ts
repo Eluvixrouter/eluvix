@@ -4,6 +4,10 @@ export * from './approval.js';
 export * from './deep-guard.js';
 export * from './trueforge.js';
 export * from './opencode.js';
+export * from './aider.js';
+export * from './swe-agent.js';
+export * from './cline.js';
+export * from './plandex.js';
 export * from './acp.js';
 export * from './openhands.js';
 export * from './mastra.js';
@@ -14,10 +18,14 @@ import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { forwardA2aHarness } from './a2a.js';
 import { forwardAcpHarness } from './acp.js';
+import { forwardAiderHarness } from './aider.js';
+import { forwardClineHarness } from './cline.js';
 import { forwardLettaHarness } from './letta.js';
 import { forwardMastraHarness } from './mastra.js';
 import { forwardOpencodeHarness } from './opencode.js';
 import { forwardOpenHandsHarness } from './openhands.js';
+import { forwardPlandexHarness } from './plandex.js';
+import { forwardSweAgentHarness } from './swe-agent.js';
 import { forwardTrueForgeHarness } from './trueforge.js';
 import type { HarnessKind } from './types.js';
 
@@ -41,6 +49,18 @@ export function resolveHarnessKind(upstream: UpstreamConfig): HarnessKind {
   if (endpoint.startsWith('opencode-eluvix://') || endpoint.startsWith('opencode://')) {
     return 'opencode';
   }
+  if (endpoint.startsWith('aider://')) {
+    return 'aider';
+  }
+  if (endpoint.startsWith('swe-agent://')) {
+    return 'swe-agent';
+  }
+  if (endpoint.startsWith('cline://')) {
+    return 'cline';
+  }
+  if (endpoint.startsWith('plandex://')) {
+    return 'plandex';
+  }
   return 'trueforge';
 }
 
@@ -58,6 +78,18 @@ export async function forwardHarnessRequest(
   }
   if (kind === 'opencode') {
     return forwardOpencodeHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'aider') {
+    return forwardAiderHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'swe-agent') {
+    return forwardSweAgentHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'cline') {
+    return forwardClineHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'plandex') {
+    return forwardPlandexHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
   }
   if (kind === 'acp') {
     return forwardAcpHarness(upstream, request, timeoutMs, clientSignal, scope, hops);

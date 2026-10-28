@@ -529,6 +529,14 @@ function generateEluvixConfig(
         ? 'http://localhost:8790'
         : kind === 'opencode'
         ? 'http://localhost:4096'
+        : kind === 'aider'
+        ? 'aider://embedded'
+        : kind === 'swe-agent'
+        ? 'swe-agent://embedded'
+        : kind === 'cline'
+        ? 'cline://embedded'
+        : kind === 'plandex'
+        ? 'plandex://embedded'
         : kind === 'acp'
         ? 'acp://goose'
         : kind === 'openhands'
@@ -607,6 +615,14 @@ function generateEluvixConfig(
           ? { autoApproveTools: node.data.autoApproveTools.map((t: any) => String(t)) }
           : {}),
         ...(node.data?.cwd ? { cwd: String(node.data.cwd) } : {}),
+        ...(typeof node.data?.embedded === 'boolean' ? { embedded: node.data.embedded } : {}),
+        ...(typeof node.data?.forked === 'boolean' ? { forked: node.data.forked } : {}),
+        ...(typeof node.data?.deepIntegration === 'boolean' ? { deepIntegration: node.data.deepIntegration } : {}),
+        ...(node.data?.architectModel ? { architectModel: String(node.data.architectModel) } : {}),
+        ...(node.data?.editorModel ? { editorModel: String(node.data.editorModel) } : {}),
+        ...(node.data?.repoMapTokens !== undefined ? { repoMapTokens: Number(node.data.repoMapTokens) } : {}),
+        ...(node.data?.editFormat ? { editFormat: String(node.data.editFormat) } : {}),
+        ...(node.data?.aciProfile ? { aciProfile: String(node.data.aciProfile) } : {}),
         ...(linkedSandbox
           ? {
               sandboxEndpoint: String(linkedSandbox.data?.endpoint || 'http://localhost:8910'),

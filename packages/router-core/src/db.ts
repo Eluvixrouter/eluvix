@@ -105,6 +105,25 @@ function initSchema(db: SqliteDb) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_memory_items_user ON memory_items(user_id, id DESC);
+
+    CREATE TABLE IF NOT EXISTS harness_sessions (
+      session_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      title TEXT NOT NULL DEFAULT 'Untitled Harness Session',
+      harness_kind TEXT NOT NULL DEFAULT 'opencode',
+      agent_id TEXT DEFAULT 'build',
+      node_id TEXT,
+      endpoint TEXT,
+      kv_prefix_hash TEXT,
+      last_tier TEXT,
+      redaction_count INTEGER DEFAULT 0,
+      injection_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, session_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_harness_sessions_user_updated ON harness_sessions(user_id, updated_at DESC);
   `);
 
   // Migration for databases created before chat_history carried a user
@@ -114,6 +133,9 @@ function initSchema(db: SqliteDb) {
   const chatCols = db.prepare('PRAGMA table_info(chat_history)').all() as Array<{ name: string }>;
   if (!chatCols.some(c => c.name === 'user_id')) {
     db.exec("ALTER TABLE chat_history ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+  }
+  if (!chatCols.some(c => c.name === 'metadata')) {
+    db.exec('ALTER TABLE chat_history ADD COLUMN metadata TEXT');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_chat_history_user_session ON chat_history(user_id, session_id, id)');
 
@@ -203,15 +225,22 @@ export function getRequestLogs(limit = 50): RequestLog[] {
   }
 }
 
-export function saveChatMessage(sessionId: string, role: string, content: any, userId: string = 'default') {
+export function saveChatMessage(
+  sessionId: string,
+  role: string,
+  content: any,
+  userId: string = 'default',
+  metadata?: Record<string, any> | null
+) {
   try {
     const db = getDb();
     const textContent = typeof content === 'string' ? content : JSON.stringify(content);
+    const metaJson = metadata && Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
     const stmt = db.prepare(`
-      INSERT INTO chat_history (session_id, user_id, role, content)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO chat_history (session_id, user_id, role, content, metadata)
+      VALUES (?, ?, ?, ?, ?)
     `);
-    stmt.run(sessionId, userId, role, textContent);
+    stmt.run(sessionId, userId, role, textContent, metaJson);
   } catch (err: any) {
     console.error('Failed to log chat message:', err.message);
   }
@@ -220,7 +249,20 @@ export function saveChatMessage(sessionId: string, role: string, content: any, u
 export function getChatHistory(sessionId: string, userId: string = 'default'): any[] {
   try {
     const db = getDb();
-    return db.prepare('SELECT role, content, timestamp FROM chat_history WHERE session_id = ? AND user_id = ? ORDER BY id ASC').all(sessionId, userId);
+    const rows = db
+      .prepare('SELECT role, content, timestamp, metadata FROM chat_history WHERE session_id = ? AND user_id = ? ORDER BY id ASC')
+      .all(sessionId, userId) as Array<{ role: string; content: string; timestamp: string; metadata?: string | null }>;
+    return rows.map((row) => {
+      let parsedMeta: any = undefined;
+      if (row.metadata) {
+        try {
+          parsedMeta = JSON.parse(row.metadata);
+        } catch {}
+      }
+      return parsedMeta !== undefined
+        ? { role: row.role, content: row.content, timestamp: row.timestamp, metadata: parsedMeta }
+        : { role: row.role, content: row.content, timestamp: row.timestamp };
+    });
   } catch (err: any) {
     console.error('Failed to get chat history:', err.message);
     return [];
@@ -234,6 +276,205 @@ export function getChatSessions(userId: string = 'default'): any[] {
   } catch (err: any) {
     console.error('Failed to get chat sessions:', err.message);
     return [];
+  }
+}
+
+export interface HarnessSessionRecord {
+  session_id: string;
+  user_id: string;
+  title: string;
+  harness_kind: string;
+  agent_id: string;
+  node_id?: string | null;
+  endpoint?: string | null;
+  kv_prefix_hash?: string | null;
+  last_tier?: string | null;
+  redaction_count: number;
+  injection_count: number;
+  message_count?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HarnessSessionUpsertInput {
+  sessionId: string;
+  userId?: string;
+  title?: string;
+  harnessKind?: string;
+  agentId?: string;
+  nodeId?: string | null;
+  endpoint?: string | null;
+  kvPrefixHash?: string | null;
+  lastTier?: string | null;
+  redactionDelta?: number;
+  injectionDelta?: number;
+}
+
+export function upsertHarnessSession(input: HarnessSessionUpsertInput): HarnessSessionRecord | null {
+  try {
+    const db = getDb();
+    const userId = input.userId || 'default';
+    const existing = db
+      .prepare('SELECT * FROM harness_sessions WHERE user_id = ? AND session_id = ?')
+      .get(userId, input.sessionId) as HarnessSessionRecord | undefined;
+
+    const title =
+      input.title && input.title.trim().length > 0
+        ? input.title.trim().slice(0, 120)
+        : existing?.title || 'Untitled Harness Session';
+    const harnessKind = input.harnessKind || existing?.harness_kind || 'opencode';
+    const agentId = input.agentId || existing?.agent_id || 'build';
+    const nodeId = input.nodeId !== undefined ? input.nodeId : existing?.node_id ?? null;
+    const endpoint = input.endpoint !== undefined ? input.endpoint : existing?.endpoint ?? null;
+    const kvPrefixHash = input.kvPrefixHash || existing?.kv_prefix_hash || null;
+    const lastTier = input.lastTier || existing?.last_tier || null;
+    const redactionCount = (existing?.redaction_count || 0) + (input.redactionDelta || 0);
+    const injectionCount = (existing?.injection_count || 0) + (input.injectionDelta || 0);
+
+    if (existing) {
+      db.prepare(`
+        UPDATE harness_sessions
+        SET title = ?,
+            harness_kind = ?,
+            agent_id = ?,
+            node_id = ?,
+            endpoint = ?,
+            kv_prefix_hash = ?,
+            last_tier = ?,
+            redaction_count = ?,
+            injection_count = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND session_id = ?
+      `).run(
+        title,
+        harnessKind,
+        agentId,
+        nodeId,
+        endpoint,
+        kvPrefixHash,
+        lastTier,
+        redactionCount,
+        injectionCount,
+        userId,
+        input.sessionId
+      );
+    } else {
+      db.prepare(`
+        INSERT INTO harness_sessions (
+          session_id, user_id, title, harness_kind, agent_id,
+          node_id, endpoint, kv_prefix_hash, last_tier, redaction_count, injection_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.sessionId,
+        userId,
+        title,
+        harnessKind,
+        agentId,
+        nodeId,
+        endpoint,
+        kvPrefixHash,
+        lastTier,
+        redactionCount,
+        injectionCount
+      );
+    }
+
+    return getHarnessSession(input.sessionId, userId);
+  } catch (err: any) {
+    console.error('Failed to upsert harness session:', err.message);
+    return null;
+  }
+}
+
+export function getHarnessSession(sessionId: string, userId: string = 'default'): HarnessSessionRecord | null {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare(`
+        SELECT hs.*,
+               (SELECT COUNT(id) FROM chat_history ch WHERE ch.user_id = hs.user_id AND ch.session_id = hs.session_id) AS message_count
+        FROM harness_sessions hs
+        WHERE hs.user_id = ? AND hs.session_id = ?
+      `)
+      .get(userId, sessionId) as HarnessSessionRecord | undefined;
+    return row || null;
+  } catch (err: any) {
+    console.error('Failed to get harness session:', err.message);
+    return null;
+  }
+}
+
+export function listHarnessSessions(
+  userId: string = 'default',
+  filter?: { harnessKind?: string; search?: string; limit?: number }
+): HarnessSessionRecord[] {
+  try {
+    const db = getDb();
+    const limit = Math.max(1, Math.min(200, filter?.limit ?? 60));
+
+    // Also include legacy chat_history sessions that may not yet have a row in harness_sessions
+    const legacySessions = getChatSessions(userId);
+    for (const s of legacySessions) {
+      if (!s?.session_id) continue;
+      const exists = db
+        .prepare('SELECT 1 FROM harness_sessions WHERE user_id = ? AND session_id = ?')
+        .get(userId, s.session_id);
+      if (!exists) {
+        const firstMsg = db
+          .prepare('SELECT content FROM chat_history WHERE user_id = ? AND session_id = ? ORDER BY id ASC LIMIT 1')
+          .get(userId, s.session_id) as { content?: string } | undefined;
+        const autoTitle = firstMsg?.content
+          ? String(firstMsg.content).replace(/\s+/g, ' ').trim().slice(0, 64)
+          : `Session ${String(s.session_id).slice(0, 8)}`;
+        upsertHarnessSession({
+          sessionId: s.session_id,
+          userId,
+          title: autoTitle || `Session ${String(s.session_id).slice(0, 8)}`,
+          harnessKind: 'opencode',
+          agentId: 'build',
+        });
+      }
+    }
+
+    const conditions: string[] = ['hs.user_id = ?'];
+    const params: any[] = [userId];
+
+    if (filter?.harnessKind && filter.harnessKind !== 'all') {
+      conditions.push('hs.harness_kind = ?');
+      params.push(filter.harnessKind);
+    }
+    if (filter?.search && filter.search.trim().length > 0) {
+      const q = `%${filter.search.trim()}%`;
+      conditions.push('(hs.title LIKE ? OR hs.session_id LIKE ? OR hs.agent_id LIKE ?)');
+      params.push(q, q, q);
+    }
+
+    params.push(limit);
+
+    const sql = `
+      SELECT hs.*,
+             (SELECT COUNT(id) FROM chat_history ch WHERE ch.user_id = hs.user_id AND ch.session_id = hs.session_id) AS message_count
+      FROM harness_sessions hs
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY hs.updated_at DESC, hs.created_at DESC
+      LIMIT ?
+    `;
+    return db.prepare(sql).all(...params) as HarnessSessionRecord[];
+  } catch (err: any) {
+    console.error('Failed to list harness sessions:', err.message);
+    return [];
+  }
+}
+
+export function deleteHarnessSession(sessionId: string, userId: string = 'default'): boolean {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM chat_history WHERE user_id = ? AND session_id = ?').run(userId, sessionId);
+    db.prepare('DELETE FROM harness_sessions WHERE user_id = ? AND session_id = ?').run(userId, sessionId);
+    return true;
+  } catch (err: any) {
+    console.error('Failed to delete harness session:', err.message);
+    return false;
   }
 }
 

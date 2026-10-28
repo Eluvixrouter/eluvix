@@ -2,6 +2,10 @@ export type HarnessKind =
   | 'hermes'
   | 'trueforge'
   | 'opencode'
+  | 'aider'
+  | 'swe-agent'
+  | 'cline'
+  | 'plandex'
   | 'acp'
   | 'openhands'
   | 'mastra'
@@ -91,4 +95,24 @@ export interface HarnessConfig {
    * across multi-turn harness trajectories for DeepSeek MLA FP8 / Mooncake / NIXL reuse.
    */
   kvPrefixPinning?: boolean;
+  /**
+   * Dual-model Architect/Plan model override (used by Aider Architect+Editor and Cline Plan/Act).
+   */
+  architectModel?: string;
+  /**
+   * Dual-model Editor/Act model override (used by Aider Architect+Editor and Cline Plan/Act).
+   */
+  editorModel?: string;
+  /**
+   * Tree-sitter repository map token budget for Aider (`default: 1024`).
+   */
+  repoMapTokens?: number;
+  /**
+   * Code edit format for Aider / Cline (`diff` | `udiff` | `whole` | `architect`).
+   */
+  editFormat?: 'diff' | 'udiff' | 'whole' | 'architect';
+  /**
+   * Agent-Computer Interface profile for SWE-agent (`default` | `cve-patch` | `test-repair`).
+   */
+  aciProfile?: 'default' | 'cve-patch' | 'test-repair';
 }

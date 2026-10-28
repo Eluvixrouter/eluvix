@@ -67,9 +67,17 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
                 const next = e.target.value;
                 const defaultEndpoint =
                   next === 'trueforge'
-                    ? 'http://localhost:8790'
+                    ? 'trueforge://embedded'
                     : next === 'opencode'
-                    ? 'http://localhost:4096'
+                    ? 'opencode-eluvix://embedded'
+                    : next === 'aider'
+                    ? 'aider://embedded'
+                    : next === 'swe-agent'
+                    ? 'swe-agent://embedded'
+                    : next === 'cline'
+                    ? 'cline://embedded'
+                    : next === 'plandex'
+                    ? 'plandex://embedded'
                     : next === 'acp'
                     ? 'acp://goose'
                     : next === 'openhands'
@@ -86,12 +94,16 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
                 syncData({ kind: next, endpoint: defaultEndpoint });
               }}
             >
-              <option value="trueforge">TrueForge (:8790)</option>
+              <option value="opencode">Eluvix OpenCode Fork (:4096 / embedded)</option>
+              <option value="trueforge">TrueForge (:8790 / embedded)</option>
+              <option value="aider">Aider Architect+Editor (embedded / :8791)</option>
+              <option value="swe-agent">SWE-agent ACI (embedded / :8792)</option>
+              <option value="cline">Cline / Roo Headless (embedded / :8793)</option>
+              <option value="plandex">Plandex DAG Sandbox (embedded / :8099)</option>
               <option value="openhands">OpenHands (:3000)</option>
               <option value="letta">Letta / MemGPT (:8283)</option>
               <option value="mastra">Mastra Agent (:4111)</option>
               <option value="a2a">A2A Protocol (:8090)</option>
-              <option value="opencode">opencode Server (:4096)</option>
               <option value="acp">ACP Stdio (Goose / opencode)</option>
               <option value="hermes">Hermes Agent (:8642)</option>
             </select>
@@ -176,6 +188,41 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
           <p className="text-[10px] text-gray-500 mt-1">
             Governs local-only egress and memory sharing. Auto treats ACP/CLI wrappers as remote.
           </p>
+        </div>
+
+        <div className="pt-2 border-t border-gray-800 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent('eluvix:open-quick-harness', {
+                    detail: {
+                      nodeId: id,
+                      kind,
+                      endpoint,
+                      agentId,
+                      approvalPolicy: approvals,
+                    },
+                  })
+                );
+              }
+            }}
+            className="nodrag flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-[11px] py-1.5 px-2.5 rounded transition flex items-center justify-center gap-1 shadow"
+          >
+            <span>💬</span>
+            <span>Quick Harness</span>
+          </button>
+          <a
+            href={`/harness?kind=${encodeURIComponent(kind)}&endpoint=${encodeURIComponent(
+              endpoint
+            )}&agent=${encodeURIComponent(agentId)}&node=${encodeURIComponent(id || '')}`}
+            className="nodrag bg-gray-800 hover:bg-gray-700 text-indigo-300 border border-gray-700 font-semibold text-[11px] py-1.5 px-2.5 rounded transition flex items-center justify-center gap-1"
+            title="Open in Full-Screen Deep Conversation Studio (/harness)"
+          >
+            <span>↗</span>
+            <span>Studio</span>
+          </a>
         </div>
       </div>
 

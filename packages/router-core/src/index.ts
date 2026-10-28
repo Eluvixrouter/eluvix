@@ -404,7 +404,11 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
     upstream.harness?.embedded === true ||
     endpoint.startsWith('trueforge://') ||
     endpoint.startsWith('inprocess://') ||
-    endpoint.startsWith('opencode-eluvix://')
+    endpoint.startsWith('opencode-eluvix://') ||
+    endpoint.startsWith('aider://') ||
+    endpoint.startsWith('swe-agent://') ||
+    endpoint.startsWith('cline://') ||
+    endpoint.startsWith('plandex://')
   ) {
     return true;
   }

@@ -126,6 +126,9 @@ export default function PlaygroundPage() {
         </div>
 
         <div className="flex gap-2.5 items-center">
+          <Link href="/harness" className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-3 py-1.5 rounded transition flex items-center gap-1">
+            <span>⚙️</span> Harness Studio
+          </Link>
           <Link href="/docs" className="text-xs bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold px-3 py-1.5 rounded transition flex items-center gap-1 border border-slate-700">
             <span>📖</span> Docs
           </Link>

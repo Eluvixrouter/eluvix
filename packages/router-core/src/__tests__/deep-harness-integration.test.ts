@@ -8,7 +8,15 @@ import {
   selectSwitchyardStepTier,
   forwardOpencodeHarness,
   forwardTrueForgeHarness,
+  forwardAiderHarness,
+  forwardSweAgentHarness,
+  forwardClineHarness,
+  forwardPlandexHarness,
   createEluvixOpenCodeServer,
+  upsertHarnessSession,
+  getHarnessSession,
+  listHarnessSessions,
+  deleteHarnessSession,
   type UpstreamConfig,
 } from '../index.js';
 
@@ -385,5 +393,197 @@ describe('TrueForge & Eluvix-Forked OpenCode Deep Integration', () => {
     expect(res.headers.get('x-eluvix-harness-fork')).toBe('eluvix-opencode');
     const body = await res.json();
     expect(body.choices[0].message.tool_calls[0].function.name).toBe('read_policy');
+  });
+
+  it('executes embedded Aider Architect+Editor (`aider://embedded`) with dual-model tiering (4->2), Tree-sitter repo map pinning, and mid-loop DLP', async () => {
+    const aiderUpstream: UpstreamConfig = {
+      id: 'aider-embedded',
+      name: 'Aider Architect + Editor',
+      type: 'harness',
+      endpoint: 'aider://embedded',
+      priority: 92,
+      models: ['harness/aider', '*'],
+      harness: {
+        kind: 'aider',
+        embedded: true,
+        deepIntegration: true,
+        architectModel: 'claude-3-7-sonnet',
+        editorModel: 'qwen-2.5-coder-32b',
+        repoMapTokens: 2048,
+        editFormat: 'diff',
+        midLoopGuard: {
+          enabled: true,
+          redactPii: true,
+          stripInjection: true,
+        },
+      },
+    };
+
+    expect(isLocalUpstream(aiderUpstream)).toBe(true);
+
+    const res = await forwardAiderHarness(
+      aiderUpstream,
+      {
+        model: 'harness/aider',
+        messages: [
+          { role: 'system', content: 'Aider Tree-sitter RepoMap v1' },
+          {
+            role: 'tool',
+            content: 'git diff shows leaked key sk-proj-11223344556677889900aabbccddeeff',
+          },
+          {
+            role: 'user',
+            content: 'Refactor packages/router-core/src/index.ts to support new harness adapters.',
+          },
+        ],
+      },
+      5000,
+      undefined,
+      { userId: 'dev-1', sessionId: 'aider-sess-1', origin: 'client' }
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-eluvix-harness')).toBe('aider');
+    expect(res.headers.get('x-eluvix-harness-mode')).toBe('embedded');
+    expect(res.headers.get('x-eluvix-switchyard-tier')).toBe('4->2');
+    expect(res.headers.get('x-eluvix-prefix-hash')).toMatch(/^elx-kv-[0-9a-f]{16}$/);
+    expect(Number(res.headers.get('x-eluvix-guard-redactions'))).toBeGreaterThanOrEqual(1);
+
+    const body = await res.json();
+    const content = body.choices[0].message.content as string;
+    expect(content).toContain('claude-3-7-sonnet');
+    expect(content).toContain('qwen-2.5-coder-32b');
+    expect(content).toContain('<<<<<<< SEARCH');
+    expect(content).toContain('[REDACTED_API_KEY]');
+    expect(content).not.toContain('sk-proj-11223344556677889900aabbccddeeff');
+  });
+
+  it('executes SWE-agent ACI (`swe-agent://embedded`), Cline (`cline://embedded`), and Plandex (`plandex://embedded`) with step tiering and DLP', async () => {
+    const sweUpstream: UpstreamConfig = {
+      id: 'swe-embedded',
+      name: 'SWE-agent ACI',
+      type: 'harness',
+      endpoint: 'swe-agent://embedded',
+      priority: 90,
+      models: ['harness/swe-agent'],
+      harness: {
+        kind: 'swe-agent',
+        embedded: true,
+        aciProfile: 'cve-patch',
+        autoApproveTools: ['find_file'],
+      },
+    };
+    const clineUpstream: UpstreamConfig = {
+      id: 'cline-embedded',
+      name: 'Cline Plan & Act',
+      type: 'harness',
+      endpoint: 'cline://embedded',
+      priority: 89,
+      models: ['harness/cline'],
+      harness: {
+        kind: 'cline',
+        embedded: true,
+        mcpServers: [{ name: 'axonwall-mcp', endpoint: 'unix:///var/run/axonwalld.sock' }],
+      },
+    };
+    const plandexUpstream: UpstreamConfig = {
+      id: 'plandex-embedded',
+      name: 'Plandex DAG Engine',
+      type: 'harness',
+      endpoint: 'plandex://embedded',
+      priority: 88,
+      models: ['harness/plandex'],
+      harness: {
+        kind: 'plandex',
+        embedded: true,
+      },
+    };
+
+    expect(isLocalUpstream(sweUpstream)).toBe(true);
+    expect(isLocalUpstream(clineUpstream)).toBe(true);
+    expect(isLocalUpstream(plandexUpstream)).toBe(true);
+
+    const sweRes = await forwardSweAgentHarness(
+      sweUpstream,
+      {
+        model: 'harness/swe-agent',
+        messages: [{ role: 'user', content: 'Patch CVE-2026-1024 in auth handler.' }],
+        tools: [{ type: 'function', function: { name: 'find_file' } }],
+      },
+      5000
+    );
+    expect(sweRes.status).toBe(200);
+    expect(sweRes.headers.get('x-eluvix-harness')).toBe('swe-agent');
+    expect(sweRes.headers.get('x-eluvix-switchyard-tier')).toBe('1->2->4');
+    const sweBody = await sweRes.json();
+    expect(sweBody.choices[0].message.tool_calls[0].function.name).toBe('find_file');
+
+    const clineRes = await forwardClineHarness(
+      clineUpstream,
+      {
+        model: 'harness/cline',
+        messages: [{ role: 'user', content: 'Inspect and update the routing table.' }],
+      },
+      5000
+    );
+    expect(clineRes.status).toBe(200);
+    expect(clineRes.headers.get('x-eluvix-harness')).toBe('cline');
+    const clineBody = await clineRes.json();
+    expect(clineBody.choices[0].message.content).toContain('axonwall-mcp@unix:///var/run/axonwalld.sock');
+
+    const plandexRes = await forwardPlandexHarness(
+      plandexUpstream,
+      {
+        model: 'harness/plandex',
+        messages: [{ role: 'user', content: 'Stage a 3-file migration across packages/router-core.' }],
+      },
+      5000
+    );
+    expect(plandexRes.status).toBe(200);
+    expect(plandexRes.headers.get('x-eluvix-harness')).toBe('plandex');
+    const plandexBody = await plandexRes.json();
+    expect(plandexBody.choices[0].message.content).toContain('Stage 1 — Subtask Decomposition');
+  });
+
+  it('persists and queries multi-harness sessions in SQLite via upsertHarnessSession / listHarnessSessions / deleteHarnessSession', () => {
+    const testId = `test-harness-session-${Date.now()}`;
+    const created = upsertHarnessSession({
+      sessionId: testId,
+      userId: 'default',
+      title: 'Audit BGP & OpenCode Fork',
+      harnessKind: 'opencode',
+      agentId: 'build',
+      nodeId: 'harness-node-1',
+      endpoint: 'opencode-eluvix://embedded',
+      kvPrefixHash: 'elx-kv-0123456789abcdef',
+      lastTier: '1->2',
+      redactionDelta: 2,
+      injectionDelta: 1,
+    });
+
+    expect(created).not.toBeNull();
+    expect(created!.session_id).toBe(testId);
+    expect(created!.harness_kind).toBe('opencode');
+    expect(created!.redaction_count).toBe(2);
+    expect(created!.injection_count).toBe(1);
+
+    // Increment counters on second turn
+    const updated = upsertHarnessSession({
+      sessionId: testId,
+      userId: 'default',
+      harnessKind: 'opencode',
+      lastTier: '1->4',
+      redactionDelta: 3,
+    });
+    expect(updated).not.toBeNull();
+    expect(updated!.redaction_count).toBe(5);
+    expect(updated!.last_tier).toBe('1->4');
+
+    const listed = listHarnessSessions('default', { harnessKind: 'opencode', search: 'BGP' });
+    expect(listed.some((s) => s.session_id === testId)).toBe(true);
+
+    const deleted = deleteHarnessSession(testId, 'default');
+    expect(deleted).toBe(true);
+    expect(getHarnessSession(testId, 'default')).toBeNull();
   });
 });
