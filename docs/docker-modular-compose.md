@@ -43,6 +43,7 @@ GPU-accelerated local inference containers:
 Autonomous coding agent runtimes:
 - **Services**:
   - `trueforge`: Native sovereign coding agent container (`:8790`).
+  - `opencode`: Eluvix-forked OpenCode coding agent server (`:4096`).
   - `openhands`: OpenHands software engineering harness (`:3000`).
 - **Profile**: `--profile harness`.
 
