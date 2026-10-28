@@ -30,7 +30,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   const [kvConnector, setKvConnector] = useState<'NixlConnector' | 'LMCacheConnectorV1' | 'none'>(
     data?.disaggregation?.kvConnector || (data?.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
   );
-  const [kvCacheDtype, setKvCacheDtype] = useState<'auto' | 'fp8_e4m3' | 'bf16'>(
+  const [kvCacheDtype, setKvCacheDtype] = useState<'auto' | 'fp8_e4m3' | 'bf16' | 'nvfp4' | 'mxfp4'>(
     data?.disaggregation?.kvCacheDtype || 'fp8_e4m3'
   );
   const [tensorParallelSize, setTensorParallelSize] = useState<number>(
@@ -47,6 +47,12 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   );
   const [confidentialArch, setConfidentialArch] = useState<string>(
     data?.confidential?.architecture || 'sev-snp-h100-cc'
+  );
+  const [quantFormat, setQuantFormat] = useState<string>(
+    data?.quantization?.format || 'fp8_e4m3'
+  );
+  const [outlierMitigation, setOutlierMitigation] = useState<string>(
+    data?.quantization?.outlierMitigation || 'hadamard-quarot'
   );
 
   const dataRef = useRef(data);
@@ -372,6 +378,8 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                         }}
                       >
                         <option value="fp8_e4m3">fp8_e4m3 (50% BW)</option>
+                        <option value="nvfp4">nvfp4 (E2M1+E4M3 28% BW)</option>
+                        <option value="mxfp4">mxfp4 (OCP E2M1+E8M0)</option>
                         <option value="bf16">bf16 (Standard)</option>
                         <option value="auto">auto</option>
                       </select>
@@ -534,6 +542,61 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
               <option value="tdx-b200-tee-io">Intel TDX + B200 TEE-I/O</option>
             </select>
           )}
+        </div>
+
+        {/* Sub-4-Bit Microscaling & Hadamard Rotation (NVFP4 / MXFP4) */}
+        <div className="bg-gray-900/60 p-2 rounded border border-gray-800 space-y-1.5">
+          <div className="flex justify-between items-center">
+            <label className="text-[10px] font-semibold text-amber-400 flex items-center gap-1">
+              <span>🧮</span> Precision &amp; Microscaling
+            </label>
+            <span className="text-[9px] font-mono text-amber-300/80">
+              {quantFormat === 'nvfp4' ? '4.50b W4A4' : quantFormat === 'mxfp4' ? '4.25b W4A4' : quantFormat}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <select
+              className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-amber-500 rounded p-1 text-white text-[10px] font-mono outline-none"
+              value={quantFormat}
+              onChange={(e) => {
+                const next = e.target.value;
+                setQuantFormat(next);
+                syncData({
+                  quantization: {
+                    enabled: true,
+                    format: next,
+                    outlierMitigation
+                  }
+                });
+              }}
+            >
+              <option value="fp8_e4m3">FP8 (E4M3 W8A8)</option>
+              <option value="nvfp4">NVFP4 (16-el E2M1+E4M3)</option>
+              <option value="mxfp4">OCP MXFP4 (32-el E8M0)</option>
+              <option value="int4_awq">INT4-AWQ (W4A16)</option>
+              <option value="bf16">BF16 (16-bit)</option>
+            </select>
+            <select
+              className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-amber-500 rounded p-1 text-white text-[10px] font-mono outline-none"
+              value={outlierMitigation}
+              onChange={(e) => {
+                const next = e.target.value;
+                setOutlierMitigation(next);
+                syncData({
+                  quantization: {
+                    enabled: true,
+                    format: quantFormat,
+                    outlierMitigation: next
+                  }
+                });
+              }}
+            >
+              <option value="hadamard-quarot">QuaRot FWHT (R1-R4)</option>
+              <option value="spinquant">SpinQuant Learned H</option>
+              <option value="svdquant">SVDQuant (Rank-16)</option>
+              <option value="none">No Rotation (Naive)</option>
+            </select>
+          </div>
         </div>
       </div>
 

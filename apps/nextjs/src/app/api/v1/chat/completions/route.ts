@@ -116,6 +116,16 @@ export async function POST(req: Request) {
         confidentialPolicy: confidentialHeader
       };
     }
+    const quantHeader = req.headers.get('x-eluvix-quantization');
+    if (
+      quantHeader === 'prefer-nvfp4-hadamard' ||
+      quantHeader === 'lossless-reasoning'
+    ) {
+      body.metadata = {
+        ...(body.metadata || {}),
+        quantizationPolicy: quantHeader
+      };
+    }
 
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {
@@ -137,6 +147,9 @@ export async function POST(req: Request) {
     const teePostureHeader = response.headers.get('x-eluvix-tee-posture') || '';
     const teeArchHeader = response.headers.get('x-eluvix-tee-arch') || '';
     const ratsKbsHeader = response.headers.get('x-eluvix-rats-kbs') || '';
+    const quantFormatHeader = response.headers.get('x-eluvix-quantization-format') || '';
+    const outlierRotHeader = response.headers.get('x-eluvix-outlier-rotation') || '';
+    const tensorPtxHeader = response.headers.get('x-eluvix-tensor-core-ptx') || '';
     const ttftHeader = response.headers.get('x-eluvix-ttft-ms') || '';
     const itlHeader = response.headers.get('x-eluvix-itl-ms') || '';
     const kvCacheKbHeader = response.headers.get('x-eluvix-kv-cache-kb') || '';
@@ -156,6 +169,9 @@ export async function POST(req: Request) {
     if (teePostureHeader) traceHeaders['x-eluvix-tee-posture'] = teePostureHeader;
     if (teeArchHeader) traceHeaders['x-eluvix-tee-arch'] = teeArchHeader;
     if (ratsKbsHeader) traceHeaders['x-eluvix-rats-kbs'] = ratsKbsHeader;
+    if (quantFormatHeader) traceHeaders['x-eluvix-quantization-format'] = quantFormatHeader;
+    if (outlierRotHeader) traceHeaders['x-eluvix-outlier-rotation'] = outlierRotHeader;
+    if (tensorPtxHeader) traceHeaders['x-eluvix-tensor-core-ptx'] = tensorPtxHeader;
     if (ttftHeader) traceHeaders['x-eluvix-ttft-ms'] = ttftHeader;
     if (itlHeader) traceHeaders['x-eluvix-itl-ms'] = itlHeader;
     if (kvCacheKbHeader) traceHeaders['x-eluvix-kv-cache-kb'] = kvCacheKbHeader;

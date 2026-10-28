@@ -782,4 +782,63 @@ curl https://127.0.0.1:3588/api/v1/chat/completions \\
       ],
     },
   },
+  {
+    id: 'nvfp4-microscaling-quantization',
+    title: 'Sub-4-Bit Microscaling (NVFP4 / MXFP4 & Hadamard)',
+    category: 'Orchestration & Routing',
+    icon: '🧮',
+    badge: 'NVFP4 / MXFP4 / QuaRot',
+    summary: 'Lossless W4A4 LLM inference using OCP MXFP4, NVIDIA Blackwell NVFP4 (E2M1) two-level microscaling, and Walsh-Hadamard outlier rotation (QuaRot / SpinQuant / SVDQuant).',
+    content: {
+      overview: 'When dropping from 8-bit (FP8 E4M3) to 4-bit (W4A4) Tensor Core execution, standard integer quantization (INT4-AWQ / GPTQ) hits a severe accuracy wall on reasoning models due to Emergent Activation Outliers (50x-100x channel spikes after SiLU_and_Mul preceding down_proj). Eluvix integrates hardware-accelerated OCP MXFP4 and NVIDIA Blackwell NVFP4 (E2M1) microscaling paired with orthogonal Walsh-Hadamard outlier rotation (QuaRot / SpinQuant) and Quantization-Aware Switchyard routing.',
+      subsections: [
+        {
+          title: 'OCP MXFP4 vs. NVIDIA Blackwell NVFP4 (E2M1) Two-Level Microscaling',
+          body: 'Both OCP MXFP4 and NVIDIA NVFP4 standardize on E2M1 (1 sign bit, 2 exponent bits, 1 mantissa bit, bias b=1), wasting zero bit patterns on Inf/NaN so all 16 bit patterns represent exact magnitudes (±0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0). Standard OCP MXFP4 shares an 8-bit power-of-2 E8M0 scale across 32 elements (4.25 bits/weight), which suffers from a "sawtooth" quantization error whenever a block maximum slightly exceeds 6.0 * 2^k. NVIDIA Blackwell NVFP4 solves this with a 16-element micro-block, a fractional FP8 E4M3 Level-1 scale (3 mantissa bits), and a per-tensor FP32 Level-2 global scale (4.50 bits/weight), cutting quantization MSE by ~2.4x inside the SM100 tcgen05.mma.kind::mxf4nvf4 instruction (20 PFLOPS dense).',
+          table: {
+            headers: ['Specification', 'INT4-AWQ (W4A16)', 'OCP MXFP4 (Standard)', 'NVIDIA NVFP4 (Blackwell SM100)'],
+            rows: [
+              ['Element Format', '4-bit Signed Int ([-8..7])', 'E2M1 (1s, 2e, 1m)', 'E2M1 (1s, 2e, 1m)'],
+              ['Micro-Block Size (k)', '128 elements', '32 elements', '16 elements'],
+              ['Level-1 Block Scale', 'FP16 (16-bit)', 'E8M0 (8-bit power-of-2)', 'FP8 E4M3 (8-bit fractional)'],
+              ['Level-2 Global Scale', 'None', 'None', 'Per-Tensor FP32 (S_tensor)'],
+              ['Effective Bits / Weight', '4.125 bits', '4.25 bits', '4.50 bits (39.4 GB for 70B)'],
+              ['Hardware PTX Instruction', 'Dequantizes to FP16', 'tcgen05.mma.kind::mxf4', 'tcgen05.mma.kind::mxf4nvf4 (20 PFLOPS)'],
+            ],
+          },
+        },
+        {
+          title: 'Walsh-Hadamard Outlier Rotation (R1..R4) & SVDQuant',
+          body: 'By exploiting orthogonal invariance (Y = X * W^T = (X * Q)(W * Q)^T where Q * Q^T = I), QuaRot and SpinQuant apply Fast Walsh-Hadamard Transforms (FWHT) across four strategic transformer boundaries: R1 (offline residual stream rotation via RMSNorm invariance), R2 (offline per-head Value/Output H_128 folding), R3 (online post-RoPE Query/Key rotation for 4-bit KV cache), and R4 (online fused O(d log2 d) FWHT in the SiLU_and_Mul epilogue before down_proj). Across d=8,192 channels, a 120.0 outlier spike is damped by sqrt(8192) ≈ 90.5x in <8 microseconds, recovering 99.6% of BF16 MATH-500 reasoning accuracy at 3.42x throughput.',
+          table: {
+            headers: ['Precision Format (Llama-3.3-70B)', 'Weight RAM', 'MMLU-Pro', 'MATH-500 (Reasoning)', 'LiveCodeBench', 'Relative Throughput'],
+            rows: [
+              ['BF16 (Baseline)', '140.0 GB (TP=2+)', '68.9%', '76.4%', '54.2%', '1.00x'],
+              ['FP8 (W8A8 E4M3)', '70.0 GB', '68.7%', '76.1%', '54.0%', '1.85x'],
+              ['Weight-Only INT4-AWQ (W4A16)', '36.2 GB', '67.1%', '71.2% (-5.2%)', '50.8%', '2.10x (BW Only)'],
+              ['Naive OCP MXFP4 (No Rotation)', '37.2 GB', '66.4%', '68.9% (-7.5%)', '49.1%', '3.35x'],
+              ['NVIDIA NVFP4 + Hadamard (W4A4)', '39.4 GB (Single GPU TP=1)', '68.6%', '76.1% (99.6% Rec)', '53.9%', '3.42x (Compute + BW)'],
+            ],
+          },
+        },
+        {
+          title: 'Quantization-Aware Switchyard Routing & Telemetry Headers',
+          body: 'When Switchyard is configured with quantizationPolicy: "lossless-reasoning" (or per-request via the x-eluvix-quantization header), Eluvix blocks naive/unrotated 4-bit upstreams (INT4-AWQ, INT4-GPTQ, or unrotated MXFP4) from serving complex reasoning and coding prompts, routing exclusively to NVFP4+Hadamard, FP8 E4M3, or BF16 workers.',
+          code: {
+            language: 'bash',
+            content: `# Route a math/reasoning prompt with lossless quantization enforcement
+curl https://127.0.0.1:3588/api/v1/chat/completions \\
+  -H "Authorization: Bearer $ELUVIX_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -H "x-eluvix-quantization: lossless-reasoning" \\
+  -d '{
+    "model": "auto",
+    "messages": [{"role": "user", "content": "Prove that every orthogonal Walsh-Hadamard matrix preserves the L2 norm..."}]
+  }'`,
+          },
+          note: 'Responses from quantized upstreams include x-eluvix-quantization-format, x-eluvix-outlier-rotation, and x-eluvix-tensor-core-ptx telemetry headers.',
+        },
+      ],
+    },
+  },
 ];

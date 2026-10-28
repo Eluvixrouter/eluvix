@@ -258,6 +258,9 @@ function generateEluvixConfig(
       disaggregationConfig.role = 'pd-disaggregated';
     }
 
+    const quantRaw = (node.data as any)?.quantization;
+    const quantizationConfig = quantRaw ? { ...quantRaw } : undefined;
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
@@ -271,7 +274,8 @@ function generateEluvixConfig(
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(disaggregationConfig ? { disaggregation: disaggregationConfig } : {}),
-      ...(confidentialCfg ? { confidential: confidentialCfg } : {})
+      ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
+      ...(quantizationConfig ? { quantization: quantizationConfig } : {})
     });
   });
 
@@ -622,6 +626,10 @@ function generateEluvixConfig(
       : enclaveNodeData.confidentialPolicy
       ? String(enclaveNodeData.confidentialPolicy)
       : undefined;
+  const resolvedQuantizationPolicy =
+    swData.quantizationPolicy && swData.quantizationPolicy !== 'disabled'
+      ? String(swData.quantizationPolicy)
+      : undefined;
 
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
@@ -635,6 +643,7 @@ function generateEluvixConfig(
       : undefined,
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
+    ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
       heavy: Number(thresholds.heavy ?? 1500),
@@ -818,6 +827,7 @@ function generateEluvixConfig(
     upstreams,
     egressPolicy: hasExternalUpstream ? 'allow-egress' : 'local-only',
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
+    ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
@@ -1590,15 +1600,39 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
   if (vllmNodes.length > 0) {
     vllmNodes.forEach((node, i) => {
       const d = (node.data as any)?.disaggregation || {};
+      const q = (node.data as any)?.quantization || {};
       const model = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
         ? (node.data as any).selectedModel
         : 'meta-llama/Llama-3.3-70B-Instruct-FP8';
-      const tp = d.tensorParallelSize || 4;
+      const tp = d.tensorParallelSize || (q.format === 'nvfp4' || q.format === 'mxfp4' ? 1 : 4);
       const dev = d.rdmaDevice || 'mlx5_0:1';
       const port = d.sideChannelPort || 5557;
       const dtype = d.kvCacheDtype || 'fp8_e4m3';
 
       parts.push(`### [vLLM v1 NIXL Instance ${i + 1}: ${node.data?.label || node.id}]`);
+      if (q.format === 'nvfp4' || q.format === 'mxfp4') {
+        const exportDir = `/models/${String(model).split('/').pop() || 'Llama-3.3-70B'}-${String(q.format).toUpperCase()}-QuaRot`;
+        parts.push(`# TensorRT ModelOpt PTQ: ${q.format.toUpperCase()} (E2M1) + Walsh-Hadamard (${q.outlierMitigation || 'hadamard-quarot'})`);
+        parts.push(`cat << 'EOF' > quantize-and-serve-${q.format}-${node.id}.sh`);
+        parts.push(`#!/usr/bin/env bash`);
+        parts.push(`set -euo pipefail`);
+        parts.push(`MODEL_IN="${model}"`);
+        parts.push(`EXPORT_DIR="${exportDir}"`);
+        parts.push(`python3 -m modelopt.torch.quantization.examples.llm_ptq \\`);
+        parts.push(`  --model "$MODEL_IN" \\`);
+        parts.push(`  --qformat ${q.format} \\`);
+        parts.push(`  --kv_cache_dtype fp8 \\`);
+        parts.push(`  --calib_size ${q.calibSize ?? 512} \\`);
+        parts.push(`  --auto_quantize_bits ${q.format === 'nvfp4' ? 4.5 : 4.25} \\`);
+        parts.push(`  --export_path "$EXPORT_DIR"`);
+        parts.push(`vllm serve "$EXPORT_DIR" \\`);
+        parts.push(`  --quantization modelopt \\`);
+        parts.push(`  --kv-cache-dtype ${dtype} \\`);
+        parts.push(`  --tensor-parallel-size ${tp} \\`);
+        parts.push(`  --gpu-memory-utilization 0.92 \\`);
+        parts.push(`  --port 8000`);
+        parts.push(`EOF\n`);
+      }
       parts.push(`cat << 'EOF' > launch-vllm-nixl-nodeA.sh`);
       parts.push(`#!/usr/bin/env bash`);
       parts.push(`# NODE A (10.200.1.10) — PREFILL POOL`);

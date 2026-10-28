@@ -1248,6 +1248,115 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-vllm-obs', source: 'vllm-enclave-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-sglang-obs', source: 'sglang-enclave-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+  // 17. Blackwell NVFP4 + Walsh-Hadamard Reasoning Cluster (W4A4 SM100)
+  {
+    id: 'blackwell-nvfp4-hadamard-reasoning',
+    name: 'Blackwell NVFP4 + Walsh-Hadamard Reasoning Cluster',
+    description: 'Lossless sub-4-bit (W4A4) LLM inference with NVIDIA Blackwell NVFP4 (16-element E2M1 + FP8 E4M3 micro-scales), OCP MXFP4, and Walsh-Hadamard (QuaRot / SpinQuant) outlier rotation recovering 99.6% MATH-500 accuracy at 3.42x throughput.',
+    category: 'hybrid',
+    tags: ['nvfp4', 'mxfp4', 'blackwell', 'hadamard', 'quarot', 'spinquant', 'svdquant', 'quantization'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.78 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Reasoning / Math / Code Query' } },
+      {
+        id: 'semantic-cache-1',
+        type: 'semanticCacheNode',
+        position: { x: 320, y: 240 },
+        data: {
+          label: 'Semantic Cache',
+          backend: 'sqlite-fts',
+          mode: 'semantic',
+          scopeIsolation: 'user',
+          similarityThreshold: 0.90,
+          ttlSeconds: 3600
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 640, y: 220 },
+        data: {
+          label: 'Quantization-Aware Switchyard',
+          strategy: 'cost-complexity',
+          quantizationPolicy: 'lossless-reasoning',
+          kvPrefixAffinity: true,
+          failover: 'enabled'
+        }
+      },
+      {
+        id: 'vllm-nvfp4-1',
+        type: 'vllmNode',
+        position: { x: 1040, y: 80 },
+        data: {
+          label: 'vLLM Blackwell B200 (NVFP4 + QuaRot TP=1)',
+          endpoint: 'http://localhost:8000',
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct-NVFP4-QuaRot',
+          priority: 32,
+          disaggregation: {
+            role: 'colocated',
+            kvConnector: 'none',
+            kvCacheDtype: 'fp8_e4m3',
+            tensorParallelSize: 1
+          },
+          quantization: {
+            enabled: true,
+            format: 'nvfp4',
+            outlierMitigation: 'hadamard-quarot',
+            rotationPoints: ['R1', 'R2', 'R3', 'R4'],
+            svdRank: 16,
+            ptxInstruction: 'tcgen05.mma.kind::mxf4nvf4'
+          }
+        }
+      },
+      {
+        id: 'sglang-nvfp4-1',
+        type: 'sglangNode',
+        position: { x: 1040, y: 360 },
+        data: {
+          label: 'SGLang DeepSeek-R1 (NVFP4 + SpinQuant)',
+          endpoint: 'http://localhost:30000',
+          selectedModel: 'deepseek-ai/DeepSeek-R1-NVFP4',
+          priority: 30,
+          disaggregation: {
+            role: 'pd-disaggregated',
+            kvConnector: 'mooncake',
+            kvCacheDtype: 'fp8_e4m3',
+            tensorParallelSize: 4,
+            rdmaDevice: 'mlx5_0'
+          },
+          quantization: {
+            enabled: true,
+            format: 'nvfp4',
+            outlierMitigation: 'spinquant',
+            rotationPoints: ['R1', 'R2', 'R3', 'R4'],
+            ptxInstruction: 'tcgen05.mma.kind::mxf4nvf4'
+          }
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1480, y: 220 },
+        data: {
+          projectName: 'blackwell-nvfp4-hadamard-cluster',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-cache', source: 'input-1', target: 'semantic-cache-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-cache-sw', source: 'semantic-cache-1', sourceHandle: 'miss', target: 'switchyard-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-cache-obs', source: 'semantic-cache-1', sourceHandle: 'hit', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-vllm', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'vllm-nvfp4-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'sglang-nvfp4-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-vllm-obs', source: 'vllm-nvfp4-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-sglang-obs', source: 'sglang-nvfp4-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
 

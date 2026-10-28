@@ -58,7 +58,7 @@ export const MODEL_KV_PROFILES: Record<string, ModelKvProfile> = {
   }
 };
 
-export type KvCacheDtype = 'fp8_e4m3' | 'fp8' | 'bf16' | 'fp16';
+export type KvCacheDtype = 'fp8_e4m3' | 'fp8' | 'bf16' | 'fp16' | 'nvfp4' | 'mxfp4';
 
 export interface KvFootprintEstimate {
   modelKey: string;
@@ -124,7 +124,13 @@ export function estimateKvCacheFootprint(
   }
 
   const is16Bit = dtype === 'bf16' || dtype === 'fp16';
-  const bytesPerElement = is16Bit ? 2 : 1;
+  const bytesPerElement = is16Bit
+    ? 2
+    : dtype === 'nvfp4'
+    ? 0.5625 // 4.50 bits/element (16 x E2M1 + 1 x E4M3 scale)
+    : dtype === 'mxfp4'
+    ? 0.53125 // 4.25 bits/element (32 x E2M1 + 1 x E8M0 scale)
+    : 1;
 
   let bytesPerToken = 0;
   if (profile.architecture === 'MLA') {
@@ -199,7 +205,7 @@ export interface SimulateDisaggregatedRdmaOptions {
   kvPrecision?: KvCacheDtype;
   fabricBandwidthGbps?: number;
   contextTokens?: number;
-  gpuType?: 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090';
+  gpuType?: 'b200-sxm6' | 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090';
 }
 
 export function estimateRawNetworkTransferMs(totalBytes: number, bandwidthGbps: number): number {
@@ -208,20 +214,28 @@ export function estimateRawNetworkTransferMs(totalBytes: number, bandwidthGbps: 
 }
 
 export function calculateRooflineRidgePoint(
-  gpu: 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090' = 'h100-sxm5',
-  precision: 'fp8' | 'fp16' | 'bf16' = 'fp8'
+  gpu: 'b200-sxm6' | 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090' = 'h100-sxm5',
+  precision: 'nvfp4' | 'mxfp4' | 'fp8' | 'fp16' | 'bf16' = 'fp8'
 ): { peakTflops: number; memoryBandwidthTBps: number; ridgePointFlopsPerByte: number } {
   let peakTflops = 989.4;
   let memoryBandwidthTBps = 3.35;
 
-  if (gpu === 'h100-sxm5') {
-    peakTflops = precision === 'fp8' ? 989.4 : 494.7;
+  if (gpu === 'b200-sxm6') {
+    peakTflops =
+      precision === 'nvfp4' || precision === 'mxfp4'
+        ? 20000.0 // 20 PFLOPS dense on SM100 tcgen05.mma.kind::mxf4nvf4
+        : precision === 'fp8'
+        ? 9000.0
+        : 4500.0;
+    memoryBandwidthTBps = 8.0;
+  } else if (gpu === 'h100-sxm5') {
+    peakTflops = precision === 'fp8' || precision === 'nvfp4' || precision === 'mxfp4' ? 989.4 : 494.7;
     memoryBandwidthTBps = 3.35;
   } else if (gpu === 'a100-sxm4') {
     peakTflops = 312.0;
     memoryBandwidthTBps = 2.0;
   } else if (gpu === 'rtx-4090') {
-    peakTflops = precision === 'fp8' ? 330.0 : 165.0;
+    peakTflops = precision === 'fp8' || precision === 'nvfp4' || precision === 'mxfp4' ? 330.0 : 165.0;
     memoryBandwidthTBps = 1.008;
   }
 
@@ -245,7 +259,7 @@ export function simulateDisaggregatedRdma(
   let fabricKey = fabricKeyArg;
   let dtype = dtypeArg;
 
-  let gpuType: 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090' = 'h100-sxm5';
+  let gpuType: 'b200-sxm6' | 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090' = 'h100-sxm5';
 
   if (typeof modelKeyOrOptions === 'object' && modelKeyOrOptions !== null) {
     modelKey = modelKeyOrOptions.modelArch || 'llama-3.3-70b';
@@ -268,8 +282,16 @@ export function simulateDisaggregatedRdma(
   const fabric = NETWORK_FABRICS[fabricKey] || NETWORK_FABRICS['400g-roce'];
 
   // Roofline ridge point calculated for the target GPU architecture and precision:
-  const rooflinePrecision: 'fp8' | 'fp16' | 'bf16' =
-    dtype.startsWith('fp8') ? 'fp8' : dtype === 'bf16' ? 'bf16' : 'fp16';
+  const rooflinePrecision: 'nvfp4' | 'mxfp4' | 'fp8' | 'fp16' | 'bf16' =
+    dtype === 'nvfp4'
+      ? 'nvfp4'
+      : dtype === 'mxfp4'
+      ? 'mxfp4'
+      : dtype.startsWith('fp8')
+      ? 'fp8'
+      : dtype === 'bf16'
+      ? 'bf16'
+      : 'fp16';
   const roofline = calculateRooflineRidgePoint(gpuType, rooflinePrecision);
   const h100RooflineRidgeFlopsPerByte = roofline.ridgePointFlopsPerByte;
   const matchedProfile = Object.values(MODEL_KV_PROFILES).find(p => p.name === footprint.modelName) || MODEL_KV_PROFILES['llama-3.3-70b'];

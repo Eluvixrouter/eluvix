@@ -73,9 +73,11 @@ export async function POST(req: Request) {
     const defaultModel = routerConfig.modelGateway?.primaryModel || routerConfig.defaultModel || 'auto';
 
     const confidentialPolicyHeader = req?.headers?.get('x-eluvix-confidential');
+    const quantizationPolicyHeader = req?.headers?.get('x-eluvix-quantization');
     const metadata = {
       ...(body.metadata || {}),
-      ...(confidentialPolicyHeader ? { confidentialPolicy: confidentialPolicyHeader } : {})
+      ...(confidentialPolicyHeader ? { confidentialPolicy: confidentialPolicyHeader } : {}),
+      ...(quantizationPolicyHeader ? { quantizationPolicy: quantizationPolicyHeader } : {})
     };
 
     const explanation = router.explainRoute(
