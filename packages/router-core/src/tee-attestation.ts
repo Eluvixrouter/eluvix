@@ -339,8 +339,12 @@ export function simulateConfidentialEnclave(params: {
  *   REPORT_DATA = SHA512(nonce || ephemeral_pubkey)
  */
 export function computeReportDataBinding(kbsNonceHex: string, ephemeralPubkeyPem: string): string {
+  const cleanHex = (kbsNonceHex || '').trim().replace(/^0x/i, '');
+  if (!cleanHex || !/^[0-9a-fA-F]+$/.test(cleanHex) || cleanHex.length % 2 !== 0) {
+    throw new Error(`Invalid KBS challenge nonce hex: ${kbsNonceHex}`);
+  }
   const hash = crypto.createHash('sha512');
-  hash.update(Buffer.from(kbsNonceHex, 'hex'));
+  hash.update(Buffer.from(cleanHex, 'hex'));
   hash.update(Buffer.from(ephemeralPubkeyPem, 'utf8'));
   return hash.digest('hex');
 }

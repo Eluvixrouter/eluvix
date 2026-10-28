@@ -26,7 +26,7 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
   // Disaggregation & Mooncake RDMA controls
   const [showDisagg, setShowDisagg] = useState<boolean>(Boolean(data?.disaggregation?.role && data.disaggregation.role !== 'colocated'));
   const [disaggregationMode, setDisaggregationMode] = useState<'colocated' | 'prefill' | 'decode' | 'pd-router'>(
-    data?.disaggregation?.role || 'colocated'
+    data?.disaggregation?.role === 'pd-disaggregated' ? 'pd-router' : (data?.disaggregation?.role || 'colocated')
   );
   const [transferBackend, setTransferBackend] = useState<'mooncake' | 'nixl'>(
     data?.disaggregation?.kvConnector || 'mooncake'

@@ -220,12 +220,21 @@ function generateEluvixConfig(
     const enclaveData = (primaryEnclave?.data || {}) as Record<string, any>;
     const nodeConfidential = (node.data as any)?.confidential;
     const connectedToEnclave =
-      Boolean(primaryEnclave) &&
-      edges.some(
-        (e) =>
-          (e.source === primaryEnclave.id && e.target === node.id) ||
-          (e.target === primaryEnclave.id && e.source === node.id)
-      );
+      confidentialEnclaveNodes.some(enclave => {
+        const direct = edges.some(
+          e => (e.source === enclave.id && e.target === node.id) || (e.target === enclave.id && e.source === node.id)
+        );
+        if (direct) return true;
+        const enclaveToSwitchyard = edges.some(
+          e => (e.source === enclave.id && switchyardNodes.some(s => s.id === e.target)) ||
+               (e.target === enclave.id && switchyardNodes.some(s => s.id === e.source))
+        );
+        const switchyardToNode = edges.some(
+          e => (switchyardNodes.some(s => s.id === e.source) && e.target === node.id) ||
+               (switchyardNodes.some(s => s.id === e.target) && e.source === node.id)
+        );
+        return enclaveToSwitchyard && switchyardToNode;
+      });
 
     const confidentialCfg =
       nodeConfidential?.enabled || connectedToEnclave
@@ -243,6 +252,12 @@ function generateEluvixConfig(
           }
         : undefined;
 
+    const disaggRaw = (node.data as any)?.disaggregation;
+    const disaggregationConfig = disaggRaw ? { ...disaggRaw } : undefined;
+    if (disaggregationConfig && disaggregationConfig.role === 'pd-pair') {
+      disaggregationConfig.role = 'pd-disaggregated';
+    }
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
@@ -255,7 +270,7 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
-      ...(node.data?.disaggregation ? { disaggregation: node.data.disaggregation } : {}),
+      ...(disaggregationConfig ? { disaggregation: disaggregationConfig } : {}),
       ...(confidentialCfg ? { confidential: confidentialCfg } : {})
     });
   });
@@ -691,6 +706,7 @@ function generateEluvixConfig(
         endpoint: kbData.endpoint ? String(kbData.endpoint) : undefined,
         collectionUri: String(kbData.collectionUri || 'viking://resources/docs'),
         retrievalMode: String(kbData.retrievalMode || 'hybrid'),
+        citationMode: String(kbData.citationMode || 'bracket'),
         topK: Number(kbData.topK ?? 5),
         maxTokens: Number(kbData.maxTokens ?? 1200),
         minScore: Number(kbData.minScore ?? 0.65)
@@ -704,9 +720,11 @@ function generateEluvixConfig(
         enabled: true,
         backend: String(scData.backend || 'sqlite-fts'),
         endpoint: scData.endpoint ? String(scData.endpoint) : undefined,
+        mode: String(scData.mode || 'exact'),
         similarityThreshold: Number(scData.similarityThreshold ?? 0.94),
         ttlSeconds: Number(scData.ttlSeconds ?? 3600),
         scopeByUser: scData.scopeByUser !== false,
+        scopeIsolation: String(scData.scopeIsolation || (scData.scopeByUser === false ? 'global' : 'user')),
         bypassOnTools: scData.bypassOnTools !== false
       }
     : undefined;
@@ -716,8 +734,11 @@ function generateEluvixConfig(
   const sandboxConfig = sbNode
     ? {
         enabled: true,
+        runtime: String(sbData.runtime || 'docker'),
+        image: sbData.image ? String(sbData.image) : undefined,
+        timeoutSec: Number(sbData.timeoutSec ?? 30),
         sandboxType: String(sbData.sandboxType || 'docker-exec'),
-        endpoint: String(sbData.endpoint || 'http://localhost:8910'),
+        endpoint: String(sbData.endpoint || 'http://localhost:3986'),
         timeoutMs: Number(sbData.timeoutMs ?? 30000),
         memoryLimitMb: Number(sbData.memoryLimitMb ?? 512),
         networkPolicy: String(sbData.networkPolicy || 'none'),
@@ -731,9 +752,12 @@ function generateEluvixConfig(
       e => e.source === node.id && (!e.sourceHandle || e.sourceHandle.startsWith('candidate-'))
     );
     const judgeEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'judge');
+    const strategy = String(cData.strategy || (cData.mode === 'judge' ? 'parallel-judge' : cData.mode || 'parallel-judge'));
     return {
       id: String(node.id),
       mode: String(cData.mode || 'judge'),
+      strategy,
+      minQuorum: Number(cData.minQuorum ?? 2),
       candidateCount: Number(cData.candidateCount ?? 3),
       candidateUpstreamIds: candidateEdges.map(e => e.target),
       judgeUpstreamId: judgeEdge?.target,
@@ -745,17 +769,26 @@ function generateEluvixConfig(
 
   const fallbackChains = fallbackChainNodes.map(node => {
     const fData = (node.data || {}) as Record<string, any>;
-    const primaryEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'primary');
-    const secondaryEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'secondary');
-    const emergencyEdge = edges.find(e => e.source === node.id && e.sourceHandle === 'emergency');
+    const primaryEdge = edges.find(e => e.source === node.id && (e.sourceHandle === 'primary' || e.sourceHandle === 'tier-1'));
+    const secondaryEdge = edges.find(e => e.source === node.id && (e.sourceHandle === 'secondary' || e.sourceHandle === 'tier-2'));
+    const tertiaryEdge = edges.find(e => e.source === node.id && (e.sourceHandle === 'tertiary' || e.sourceHandle === 'emergency' || e.sourceHandle === 'tier-3'));
     const genericEdges = edges.filter(e => e.source === node.id && !e.sourceHandle);
+
+    const orderedUpstreamIds = [
+      primaryEdge?.target || genericEdges[0]?.target,
+      secondaryEdge?.target || genericEdges[1]?.target,
+      tertiaryEdge?.target || genericEdges[2]?.target,
+      ...genericEdges.slice(3).map(e => e.target)
+    ].filter(Boolean) as string[];
+
     return {
       id: String(node.id),
-      primaryUpstreamId: primaryEdge?.target || genericEdges[0]?.target,
-      secondaryUpstreamId: secondaryEdge?.target || genericEdges[1]?.target,
-      emergencyUpstreamId: emergencyEdge?.target || genericEdges[2]?.target,
+      primaryUpstreamId: orderedUpstreamIds[0],
+      secondaryUpstreamId: orderedUpstreamIds[1],
+      tertiaryUpstreamId: orderedUpstreamIds[2],
+      orderedUpstreamIds,
       failureThreshold: Number(fData.failureThreshold ?? 3),
-      cooldownSeconds: Number(fData.cooldownSeconds ?? 30),
+      cooldownSeconds: Number(fData.cooldownSeconds ?? 60),
       hedgeDelayMs: Number(fData.hedgeDelayMs ?? 0),
       retryOn429: fData.retryOn429 !== false,
       retryOn5xx: fData.retryOn5xx !== false
@@ -889,8 +922,19 @@ function generateBifrostYaml(
   
   localEngines.forEach(node => {
     const data = (node.data || {}) as Record<string, any>;
-    const type = node.type === 'lemonadeNode' ? 'lemonade' : node.type === 'vllmNode' ? 'vllm' : 'ollama';
-    const endpoint = data.endpoint || (type === 'lemonade' ? 'http://localhost:13305' : type === 'vllm' ? 'http://localhost:8000' : 'http://localhost:11434');
+    const type = node.type === 'lemonadeNode'
+      ? 'lemonade'
+      : node.type === 'vllmNode'
+      ? 'vllm'
+      : node.type === 'sglangNode'
+      ? 'sglang'
+      : 'ollama';
+    const endpoint = data.endpoint || (
+      type === 'lemonade' ? 'http://localhost:13305' :
+      type === 'vllm' ? 'http://localhost:8000' :
+      type === 'sglang' ? 'http://localhost:30000' :
+      'http://localhost:11434'
+    );
     const selected = data.selectedModel || '*';
     yaml += `  - id: ${node.id}\n`;
     yaml += `    type: ${type}\n`;

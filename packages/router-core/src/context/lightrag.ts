@@ -1,25 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
 
-function isLocalEndpoint(endpoint: string): boolean {
-  try {
-    const u = new URL(endpoint);
-    const h = u.hostname.toLowerCase();
-    return (
-      h === 'localhost' ||
-      h === '127.0.0.1' ||
-      h === '::1' ||
-      h.endsWith('.local') ||
-      h.endsWith('.internal') ||
-      h.startsWith('eluvix-') ||
-      h === 'lightrag' ||
-      /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    );
-  } catch {
-    return false;
-  }
-}
-
 export class LightRagContextProvider implements ContextProvider {
   public readonly id = 'lightrag';
   private endpoint: string;
@@ -28,10 +9,6 @@ export class LightRagContextProvider implements ContextProvider {
   constructor(config?: MemoryConfig) {
     this.endpoint = (config?.endpoint || 'http://localhost:9621').replace(/\/+$/, '');
     this.apiKey = config?.apiKey;
-  }
-
-  public isLocal(): boolean {
-    return isLocalEndpoint(this.endpoint);
   }
 
   private headers(): Record<string, string> {
@@ -77,17 +54,23 @@ export class LightRagContextProvider implements ContextProvider {
 
       if (Array.isArray(data?.results) && data.results.length > 0) {
         for (const r of data.results) {
-          const text = String(r.text || r.content || '').trim();
+          let text = String(r.text || r.content || '').trim();
           if (!text) continue;
           const est = Math.ceil(text.length / 4);
-          if (usedTokens + est > budgetTokens && blocks.length > 0) break;
-          usedTokens += est;
+          if (usedTokens + est > budgetTokens) {
+            const remainingTokens = Math.max(0, budgetTokens - usedTokens);
+            if (remainingTokens <= 10 && blocks.length > 0) break;
+            text = text.slice(0, Math.max(100, remainingTokens * 4));
+          }
+          const finalEst = Math.ceil(text.length / 4);
+          usedTokens += finalEst;
           blocks.push({
             uri: r.source || `lightrag://${scope.userId}/chunk`,
             text,
             score: typeof r.score === 'number' ? r.score : 0.8,
             level: 'L1'
           });
+          if (usedTokens >= budgetTokens) break;
         }
       } else if (typeof data?.response === 'string' && data.response.trim()) {
         const maxChars = budgetTokens * 4;

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
-import { getRouter } from '@/lib/router';
+import { getRouter, getConfig } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,11 +68,22 @@ export async function POST(req: Request) {
         : parseInt(req?.headers?.get('x-eluvix-hops') || '0', 10) || 0
     );
 
-    const explanation = getRouter().explainRoute(
+    const router = getRouter();
+    const routerConfig = getConfig();
+    const defaultModel = routerConfig.modelGateway?.primaryModel || routerConfig.defaultModel || 'auto';
+
+    const confidentialPolicyHeader = req?.headers?.get('x-eluvix-confidential');
+    const metadata = {
+      ...(body.metadata || {}),
+      ...(confidentialPolicyHeader ? { confidentialPolicy: confidentialPolicyHeader } : {})
+    };
+
+    const explanation = router.explainRoute(
       {
-        model: body.model || 'auto',
+        model: body.model || defaultModel,
         messages: body.messages,
         tools: body.tools,
+        metadata,
         stream: false
       },
       {

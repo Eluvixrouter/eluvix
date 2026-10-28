@@ -111,10 +111,12 @@ export function estimateKvCacheFootprint(
   const normalized = (modelIdentifier || '').toLowerCase();
   let profile = MODEL_KV_PROFILES['llama-3.3-70b'];
 
-  if (normalized.includes('deepseek') || normalized.includes('r1') || normalized.includes('mla')) {
-    profile = MODEL_KV_PROFILES['deepseek-v3'];
-  } else if (normalized.includes('405b')) {
+  if (normalized.includes('405b')) {
     profile = MODEL_KV_PROFILES['llama-3.1-405b'];
+  } else if (normalized.includes('8b') && (normalized.includes('llama') || normalized.includes('distill'))) {
+    profile = MODEL_KV_PROFILES['llama-3.1-8b'];
+  } else if (normalized.includes('deepseek') || normalized.includes('r1') || normalized.includes('mla')) {
+    profile = MODEL_KV_PROFILES['deepseek-v3'];
   } else if (normalized.includes('8b')) {
     profile = MODEL_KV_PROFILES['llama-3.1-8b'];
   } else if (normalized.includes('qwen')) {
@@ -243,10 +245,15 @@ export function simulateDisaggregatedRdma(
   let fabricKey = fabricKeyArg;
   let dtype = dtypeArg;
 
+  let gpuType: 'h100-sxm5' | 'a100-sxm4' | 'rtx-4090' = 'h100-sxm5';
+
   if (typeof modelKeyOrOptions === 'object' && modelKeyOrOptions !== null) {
     modelKey = modelKeyOrOptions.modelArch || 'llama-3.3-70b';
     promptTokens = modelKeyOrOptions.contextTokens ?? 2048;
     dtype = modelKeyOrOptions.kvPrecision || 'fp8_e4m3';
+    if (modelKeyOrOptions.gpuType) {
+      gpuType = modelKeyOrOptions.gpuType;
+    }
     if (modelKeyOrOptions.fabricBandwidthGbps) {
       if (modelKeyOrOptions.fabricBandwidthGbps >= 800) fabricKey = '800g-roce';
       else if (modelKeyOrOptions.fabricBandwidthGbps >= 400) fabricKey = '400g-roce';
@@ -260,10 +267,14 @@ export function simulateDisaggregatedRdma(
   const footprint = estimateKvCacheFootprint(modelKey, promptTokens, dtype);
   const fabric = NETWORK_FABRICS[fabricKey] || NETWORK_FABRICS['400g-roce'];
 
-  // H100 SXM5 dense FP8 Roofline math:
-  // 989.4 TFLOPS dense FP8 / 3.35 TB/s HBM3 = 295.3 FLOPs/Byte
-  const h100RooflineRidgeFlopsPerByte = 295.3;
-  const hiddenDim = 8192;
+  // Roofline ridge point calculated for the target GPU architecture and precision:
+  const rooflinePrecision: 'fp8' | 'fp16' | 'bf16' =
+    dtype.startsWith('fp8') ? 'fp8' : dtype === 'bf16' ? 'bf16' : 'fp16';
+  const roofline = calculateRooflineRidgePoint(gpuType, rooflinePrecision);
+  const h100RooflineRidgeFlopsPerByte = roofline.ridgePointFlopsPerByte;
+  const matchedProfile = Object.values(MODEL_KV_PROFILES).find(p => p.name === footprint.modelName) || MODEL_KV_PROFILES['llama-3.3-70b'];
+  const hiddenDim = matchedProfile.hiddenDim || 8192;
+  const layers = matchedProfile.layers || 80;
   const arithmeticIntensityFlopsPerByte =
     (2 * promptTokens) / (1 + (2 * promptTokens) / hiddenDim);
   const isComputeBoundPrefill = arithmeticIntensityFlopsPerByte > h100RooflineRidgeFlopsPerByte;
@@ -283,11 +294,12 @@ export function simulateDisaggregatedRdma(
     // TCP CPU bounce cannot pipeline without host memory stall
     pipelinedExposedTransferMs = Number((rawWireTransferMs * 0.45).toFixed(1));
   } else {
-    pipelinedExposedTransferMs = Number(Math.max(0.8, (rawWireTransferMs * (1 / 80)) + 0.5).toFixed(1));
+    const rdmaSyncOverheadMs = rawWireTransferMs < 5 ? 0.2 : 0.5;
+    pipelinedExposedTransferMs = Number(Math.max(0.1, (rawWireTransferMs * (1 / layers)) + rdmaSyncOverheadMs).toFixed(1));
   }
 
   const exposedLatencyMs = pipelinedExposedTransferMs;
-  const overlapPercentage = Number((Math.min(99.4, Math.max(80.0, ((rawWireTransferMs - pipelinedExposedTransferMs) / Math.max(1, rawWireTransferMs)) * 100))).toFixed(1));
+  const overlapPercentage = Number((Math.min(99.4, Math.max(0.0, ((rawWireTransferMs - pipelinedExposedTransferMs) / Math.max(1, rawWireTransferMs)) * 100))).toFixed(1));
   const totalKvCacheMebibytes = footprint.totalMiB;
 
   // Co-located chunked prefill ITL stall:
@@ -298,7 +310,7 @@ export function simulateDisaggregatedRdma(
 
   // Disaggregated ITL:
   // The Decode pool runs pure GEMV without SM contention from prompt prefill.
-  const disaggregatedP99ItlMs = Number((18.5 + Math.random() * 4.5).toFixed(1));
+  const disaggregatedP99ItlMs = Number((18.5 + ((promptTokens % 10) * 0.45)).toFixed(1));
 
   const slaTargetItlMs = 30.0;
   return {

@@ -87,6 +87,7 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     endpoint: 'http://localhost:9621',
     collectionUri: 'viking://resources/docs',
     retrievalMode: 'hybrid',
+    citationMode: 'bracket',
     topK: 5,
     maxTokens: 1200,
     minScore: 0.65
@@ -95,6 +96,8 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     label: 'Semantic Cache',
     backend: 'sqlite-fts',
     endpoint: 'http://localhost:6333',
+    mode: 'exact',
+    scopeIsolation: 'user',
     similarityThreshold: 0.94,
     ttlSeconds: 3600,
     scopeByUser: true,
@@ -103,6 +106,8 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
   consensusNode: {
     label: 'Consensus Judge / Arena',
     mode: 'judge',
+    strategy: 'parallel-judge',
+    minQuorum: 2,
     candidateCount: 3,
     judgeModel: 'auto',
     timeoutMs: 45000,
@@ -1069,7 +1074,7 @@ export default function RoutingEditor() {
 
       // Define valid target types for each source type
       const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
-      const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
+      const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
 
       const rules: Record<string, string[]> = {
         inputNode: preRouteTargets,
@@ -1078,7 +1083,8 @@ export default function RoutingEditor() {
         memoryNode: [...preRouteTargets, 'observabilityNode'],
         knowledgeBaseNode: [...preRouteTargets, 'observabilityNode'],
         semanticCacheNode: [...preRouteTargets, 'observabilityNode'],
-        taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'switchyardNode', ...allUpstreamTargets],
+        confidentialEnclaveNode: ['switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'switchyardNode', ...allUpstreamTargets],
         agentNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         antigravityNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         codexNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
@@ -2095,6 +2101,7 @@ export default function RoutingEditor() {
                  if (n.type === 'semanticCacheNode') return '#14b8a6';
                  if (n.type === 'consensusNode') return '#8b5cf6';
                  if (n.type === 'fallbackChainNode') return '#0ea5e9';
+                 if (n.type === 'confidentialEnclaveNode') return '#10b981';
                  return '#94a3b8';
                }}
                maskColor="rgba(2, 6, 23, 0.75)"
@@ -3443,6 +3450,7 @@ export default function RoutingEditor() {
                           <option value="lowest-cost">🪙 Lowest Cost First ($0 Local First)</option>
                           <option value="lowest-latency">⚡ Lowest Latency</option>
                           <option value="round-robin">🔄 Round Robin Multi-Provider</option>
+                          <option value="priority">🎯 Priority / Manual Weighting</option>
                         </select>
                       </div>
 
@@ -3620,18 +3628,18 @@ export default function RoutingEditor() {
                             updateData('provider', next);
                             if (next === 'openviking') updateData('endpoint', 'http://localhost:1933');
                             else if (next === 'mem0') updateData('endpoint', 'http://localhost:8888');
-                            else if (next === 'graphiti') updateData('endpoint', 'http://localhost:8003');
+                            else if (next === 'graphiti') updateData('endpoint', 'http://localhost:8004');
                             else if (next === 'lightrag') updateData('endpoint', 'http://localhost:9621');
-                            else if (next === 'cognee') updateData('endpoint', 'http://localhost:8004');
+                            else if (next === 'cognee') updateData('endpoint', 'http://localhost:8005');
                             else if (next === 'supermemory') updateData('endpoint', 'https://api.supermemory.ai');
                           }}
                         >
                           <option value="openviking">OpenViking (:1933)</option>
                           <option value="builtin">Built-in SQLite FTS5</option>
                           <option value="mem0">Mem0 (:8888)</option>
-                          <option value="graphiti">Graphiti Temporal KG (:8003)</option>
+                          <option value="graphiti">Graphiti Temporal KG (:8004)</option>
                           <option value="lightrag">LightRAG Hybrid Graph (:9621)</option>
-                          <option value="cognee">Cognee ECL Graph (:8004)</option>
+                          <option value="cognee">Cognee ECL Graph (:8005)</option>
                           <option value="supermemory">Supermemory Cloud</option>
                         </select>
                       </div>
@@ -3743,10 +3751,22 @@ export default function RoutingEditor() {
                         <label className="block text-xs font-semibold text-rose-300 mb-1">Sandbox Runtime</label>
                         <select
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.runtime || 'docker')}
+                          onChange={(e) => updateData('runtime', e.target.value)}
+                        >
+                          <option value="docker">Docker Container</option>
+                          <option value="gvisor">gVisor Sandbox (runsc)</option>
+                          <option value="wasm">WebAssembly (WasmEdge)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Execution Mode</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
                           value={String(node.data.sandboxType || 'docker-exec')}
                           onChange={(e) => updateData('sandboxType', e.target.value)}
                         >
-                          <option value="docker-exec">Docker Ephemeral Exec (:8910)</option>
+                          <option value="docker-exec">Docker Ephemeral Exec (:3986)</option>
                           <option value="opensandbox">OpenSandbox MicroVM</option>
                           <option value="e2b">E2B Firecracker Cloud</option>
                         </select>
@@ -3756,8 +3776,19 @@ export default function RoutingEditor() {
                         <input
                           type="text"
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
-                          value={String(node.data.endpoint || 'http://localhost:8910')}
+                          value={String(node.data.endpoint || 'http://localhost:3986')}
                           onChange={(e) => updateData('endpoint', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Timeout (Seconds)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={300}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.timeoutSec ?? 30)}
+                          onChange={(e) => updateData('timeoutSec', parseInt(e.target.value, 10) || 30)}
                         />
                       </div>
                       <div>
@@ -3817,7 +3848,18 @@ export default function RoutingEditor() {
                   {node.type === 'semanticCacheNode' && (
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-xs font-semibold text-teal-300 mb-1">Cache Backend</label>
+                        <label className="block text-xs font-semibold text-teal-300 mb-1">Cache Mode</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.mode || 'exact')}
+                          onChange={(e) => updateData('mode', e.target.value)}
+                        >
+                          <option value="exact">Exact Hash Matching</option>
+                          <option value="semantic">Semantic Jaccard / Embedding Similarity</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Cache Backend</label>
                         <select
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
                           value={String(node.data.backend || 'sqlite-fts')}
@@ -3825,6 +3867,18 @@ export default function RoutingEditor() {
                         >
                           <option value="sqlite-fts">SQLite FTS5 + Memory</option>
                           <option value="qdrant">Qdrant Vector Cache (:6333)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Scope Isolation</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.scopeIsolation || 'user')}
+                          onChange={(e) => updateData('scopeIsolation', e.target.value)}
+                        >
+                          <option value="user">Per-User (Default)</option>
+                          <option value="session">Per-Session</option>
+                          <option value="global">Global Shared</option>
                         </select>
                       </div>
                       <div>
@@ -3860,13 +3914,27 @@ export default function RoutingEditor() {
                         <label className="block text-xs font-semibold text-violet-300 mb-1">Aggregation Mode</label>
                         <select
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
-                          value={String(node.data.mode || 'judge')}
-                          onChange={(e) => updateData('mode', e.target.value)}
+                          value={String(node.data.strategy || (node.data.mode === 'judge' ? 'parallel-judge' : node.data.mode || 'parallel-judge'))}
+                          onChange={(e) => {
+                            updateData('strategy', e.target.value);
+                            updateData('mode', e.target.value === 'parallel-judge' ? 'judge' : e.target.value);
+                          }}
                         >
-                          <option value="judge">LLM-as-a-Judge Synthesis</option>
-                          <option value="majority-vote">Majority Vote / Self-Consistency</option>
+                          <option value="parallel-judge">LLM-as-a-Judge Synthesis</option>
+                          <option value="mixture-of-agents">Mixture-of-Agents (MoA)</option>
                           <option value="fastest-first">Speculative Race (First Valid Wins)</option>
                         </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Minimum Quorum</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={5}
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={Number(node.data.minQuorum ?? 2)}
+                          onChange={(e) => updateData('minQuorum', parseInt(e.target.value, 10) || 1)}
+                        />
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-slate-300 mb-1">Candidate Count (N)</label>
@@ -3916,6 +3984,72 @@ export default function RoutingEditor() {
                           className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
                           value={Number(node.data.hedgeDelayMs ?? 0)}
                           onChange={(e) => updateData('hedgeDelayMs', parseInt(e.target.value, 10) || 0)}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'confidentialEnclaveNode' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-emerald-300 mb-1">Architecture</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.architecture || 'sev-snp-h100-cc')}
+                          onChange={(e) => updateData('architecture', e.target.value)}
+                        >
+                          <option value="sev-snp-h100-cc">Dual AMD SEV-SNP + NVIDIA H100 CC</option>
+                          <option value="tdx-b200-tee-io">Dual Intel TDX + NVIDIA B200 TEE-I/O</option>
+                          <option value="sev-snp-only">AMD SEV-SNP CPU Only (Genoa/Turin)</option>
+                          <option value="intel-tdx-only">Intel TDX CPU Only (Emerald/Granite)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Confidential Policy</label>
+                        <select
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs"
+                          value={String(node.data.confidentialPolicy || 'require-dual-attestation')}
+                          onChange={(e) => updateData('confidentialPolicy', e.target.value)}
+                        >
+                          <option value="require-dual-attestation">Require Dual Attestation (CPU + GPU)</option>
+                          <option value="require-tee">Require TEE (Fail Closed)</option>
+                          <option value="prefer-tee">Prefer TEE (Attested First, Cloud Fallback)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">KBS / Attestation Broker Endpoint</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.kbsEndpoint || 'https://kbs.internal.corp:8080')}
+                          onChange={(e) => updateData('kbsEndpoint', e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-300 mb-1">Golden Launch Measurement</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-xs"
+                          value={String(node.data.expectedMeasurement || '')}
+                          onChange={(e) => updateData('expectedMeasurement', e.target.value)}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between pt-2">
+                        <label className="text-xs text-slate-300">SPDM 1.2 PCIe Link Verified</label>
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded bg-slate-950 border-slate-700"
+                          checked={node.data.spdmAttested !== false}
+                          onChange={(e) => updateData('spdmAttested', e.target.checked)}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="text-xs text-slate-300">Restricted Memory Injection (VMPL0)</label>
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded bg-slate-950 border-slate-700"
+                          checked={node.data.restrictedInjection !== false}
+                          onChange={(e) => updateData('restrictedInjection', e.target.checked)}
                         />
                       </div>
                     </div>

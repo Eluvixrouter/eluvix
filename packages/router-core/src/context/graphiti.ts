@@ -1,25 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
 
-function isLocalEndpoint(endpoint: string): boolean {
-  try {
-    const u = new URL(endpoint);
-    const h = u.hostname.toLowerCase();
-    return (
-      h === 'localhost' ||
-      h === '127.0.0.1' ||
-      h === '::1' ||
-      h.endsWith('.local') ||
-      h.endsWith('.internal') ||
-      h.startsWith('eluvix-') ||
-      h === 'graphiti' ||
-      /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    );
-  } catch {
-    return false;
-  }
-}
-
 export class GraphitiContextProvider implements ContextProvider {
   public readonly id = 'graphiti';
   private endpoint: string;
@@ -28,10 +9,6 @@ export class GraphitiContextProvider implements ContextProvider {
   constructor(config?: MemoryConfig) {
     this.endpoint = (config?.endpoint || 'http://localhost:8004').replace(/\/+$/, '');
     this.apiKey = config?.apiKey;
-  }
-
-  public isLocal(): boolean {
-    return isLocalEndpoint(this.endpoint);
   }
 
   private headers(): Record<string, string> {
@@ -88,16 +65,22 @@ export class GraphitiContextProvider implements ContextProvider {
         const validWindow = item.valid_at
           ? ` [valid: ${item.valid_at}${item.invalid_at ? ` .. ${item.invalid_at}` : ' .. present'}]`
           : '';
-        const formatted = `${factText}${validWindow}`;
+        let formatted = `${factText}${validWindow}`;
         const est = Math.ceil(formatted.length / 4);
-        if (usedTokens + est > budgetTokens && blocks.length > 0) break;
-        usedTokens += est;
+        if (usedTokens + est > budgetTokens) {
+          const remainingTokens = Math.max(0, budgetTokens - usedTokens);
+          if (remainingTokens <= 10 && blocks.length > 0) break;
+          formatted = formatted.slice(0, Math.max(100, remainingTokens * 4));
+        }
+        const finalEst = Math.ceil(formatted.length / 4);
+        usedTokens += finalEst;
         blocks.push({
           uri: item.uuid ? `graphiti://${scope.userId}/${item.uuid}` : `graphiti://${scope.userId}`,
           text: formatted,
           score: typeof item.score === 'number' ? item.score : 0.85,
           level: 'L1'
         });
+        if (usedTokens >= budgetTokens) break;
       }
 
       return {

@@ -1,5 +1,6 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { buildHarnessPrompt } from './prompt.js';
 
 export async function forwardA2aHarness(
   upstream: UpstreamConfig,
@@ -34,11 +35,7 @@ export async function forwardA2aHarness(
     clientSignal.addEventListener('abort', () => controller.abort(clientSignal.reason), { once: true });
   }
 
-  const lastUserMsg =
-    [...request.messages]
-      .reverse()
-      .find((m) => m.role === 'user')?.content || '';
-  const promptText = typeof lastUserMsg === 'string' ? lastUserMsg : JSON.stringify(lastUserMsg);
+  const promptText = buildHarnessPrompt(request.messages, { includeHistory: true });
   const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const sessionId = scope?.sessionId || `sess-${scope?.userId || 'default'}`;
 

@@ -29,60 +29,59 @@ export async function executeInSandbox(
   const endpoint = (config?.endpoint || 'http://localhost:3986').replace(/\/+$/, '');
   const runtime = config?.runtime || 'docker-local';
 
-  // First try remote/sidecar sandbox container if configured
-  if (config?.enabled !== false) {
-    try {
-      const res = await fetch(`${endpoint}/v1/execute`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          code,
-          runtime,
-          image: config?.image || 'node:22-alpine',
-          networkPolicy: config?.networkPolicy || 'none',
-          timeoutMs,
-          memoryLimitMb: config?.memoryLimitMb ?? 512
-        }),
-        signal
-      });
-      if (res.ok) {
-        const data: any = await res.json();
-        return {
-          exitCode: typeof data.exitCode === 'number' ? data.exitCode : 0,
-          stdout: String(data.stdout || ''),
-          stderr: data.stderr ? String(data.stderr) : undefined,
-          result: data.result !== undefined ? String(data.result) : undefined,
-          durationMs: typeof data.durationMs === 'number' ? data.durationMs : Date.now() - start,
-          runtimeUsed: `${runtime}-sidecar`
-        };
-      }
-    } catch {
-      // Fall back to in-process isolated vm.Context when sidecar is not running
-    }
-  }
-
-  const logs: string[] = [];
-  try {
-    const sandboxConsole = {
-      log: (...args: unknown[]) => logs.push(args.map(String).join(' ')),
-      error: (...args: unknown[]) => logs.push(args.map(String).join(' '))
-    };
-    const ctx = vm.createContext({ console: sandboxConsole, Math, JSON, Date });
-    const val = vm.runInContext(code, ctx, { timeout: timeoutMs });
-    return {
-      exitCode: 0,
-      stdout: logs.join('\n'),
-      result: val !== undefined ? String(val) : undefined,
-      durationMs: Date.now() - start,
-      runtimeUsed: 'isolated-vm-fallback'
-    };
-  } catch (err) {
+  // Execute in isolated container/remote sandbox sidecar
+  if (config?.enabled === false) {
     return {
       exitCode: 1,
-      stdout: logs.join('\n'),
-      stderr: err instanceof Error ? err.message : String(err),
+      stdout: '',
+      stderr: 'Sandbox execution is disabled by configuration',
+      durationMs: 0,
+      runtimeUsed: 'disabled'
+    };
+  }
+
+  // Remote or sidecar sandbox execution (docker-local, daytona, e2b)
+  try {
+    const res = await fetch(`${endpoint}/v1/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        runtime,
+        image: config?.image || 'node:22-alpine',
+        networkPolicy: config?.networkPolicy || 'none',
+        timeoutMs,
+        memoryLimitMb: config?.memoryLimitMb ?? 512
+      }),
+      signal
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      return {
+        exitCode: typeof data.exitCode === 'number' ? data.exitCode : 0,
+        stdout: String(data.stdout || ''),
+        stderr: data.stderr ? String(data.stderr) : undefined,
+        result: data.result !== undefined ? String(data.result) : undefined,
+        durationMs: typeof data.durationMs === 'number' ? data.durationMs : Date.now() - start,
+        runtimeUsed: `${runtime}-sidecar`
+      };
+    }
+    const errText = await res.text().catch(() => res.statusText);
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Sandbox container execution failed (HTTP ${res.status}): ${errText}`,
       durationMs: Date.now() - start,
-      runtimeUsed: 'isolated-vm-fallback'
+      runtimeUsed: `${runtime}-sidecar`
+    };
+  } catch (err: any) {
+    // Fail-closed: Never silently fall open to in-process host VM execution for container runtimes
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Sandbox sidecar unavailable at ${endpoint}: ${err instanceof Error ? err.message : String(err)}`,
+      durationMs: Date.now() - start,
+      runtimeUsed: `${runtime}-sidecar`
     };
   }
 }

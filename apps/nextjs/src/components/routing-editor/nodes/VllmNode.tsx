@@ -24,8 +24,8 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   const [status, setStatus] = useState<'idle' | 'checking' | 'online' | 'offline'>('idle');
   const [expanded, setExpanded] = useState<boolean>(false);
   const [showDisagg, setShowDisagg] = useState<boolean>(Boolean(data?.disaggregation?.role && data.disaggregation.role !== 'colocated'));
-  const [disaggregationRole, setDisaggregationRole] = useState<'colocated' | 'prefill' | 'decode' | 'pd-pair'>(
-    data?.disaggregation?.role || 'colocated'
+  const [disaggregationRole, setDisaggregationRole] = useState<'colocated' | 'prefill' | 'decode' | 'pd-disaggregated'>(
+    data?.disaggregation?.role === 'pd-pair' ? 'pd-disaggregated' : (data?.disaggregation?.role || 'colocated')
   );
   const [kvConnector, setKvConnector] = useState<'NixlConnector' | 'LMCacheConnectorV1' | 'none'>(
     data?.disaggregation?.kvConnector || (data?.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
@@ -311,7 +311,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                         kvCacheDtype,
                         tensorParallelSize,
                         rdmaDevice,
-                        decodeEndpoint: next === 'pd-pair' ? decodeEndpoint : undefined
+                        decodeEndpoint: next === 'pd-disaggregated' ? decodeEndpoint : undefined
                       }
                     });
                   }}
@@ -319,7 +319,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                   <option value="colocated">Co-Located (Continuous Batching)</option>
                   <option value="prefill">Prefill Node (Compute-Bound Producer)</option>
                   <option value="decode">Decode Node (Bandwidth-Bound Consumer)</option>
-                  <option value="pd-pair">Coordinated P+D Pair (RDMA)</option>
+                  <option value="pd-disaggregated">Coordinated P+D Pair (RDMA)</option>
                 </select>
               </div>
 
@@ -341,7 +341,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                               kvCacheDtype,
                               tensorParallelSize,
                               rdmaDevice,
-                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                              decodeEndpoint: disaggregationRole === 'pd-disaggregated' ? decodeEndpoint : undefined
                             }
                           });
                         }}
@@ -366,7 +366,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                               kvCacheDtype: next,
                               tensorParallelSize,
                               rdmaDevice,
-                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                              decodeEndpoint: disaggregationRole === 'pd-disaggregated' ? decodeEndpoint : undefined
                             }
                           });
                         }}
@@ -394,7 +394,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                               kvCacheDtype,
                               tensorParallelSize: v,
                               rdmaDevice,
-                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                              decodeEndpoint: disaggregationRole === 'pd-disaggregated' ? decodeEndpoint : undefined
                             }
                           });
                         }}
@@ -422,7 +422,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                               kvCacheDtype,
                               tensorParallelSize,
                               rdmaDevice: next,
-                              decodeEndpoint: disaggregationRole === 'pd-pair' ? decodeEndpoint : undefined
+                              decodeEndpoint: disaggregationRole === 'pd-disaggregated' ? decodeEndpoint : undefined
                             }
                           });
                         }}
@@ -431,7 +431,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                     </div>
                   </div>
 
-                  {disaggregationRole === 'pd-pair' && (
+                  {disaggregationRole === 'pd-disaggregated' && (
                     <div>
                       <label className="block text-[10px] font-semibold text-gray-400 mb-0.5">Decode Endpoint (Node B)</label>
                       <input
@@ -443,7 +443,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
                           setDecodeEndpoint(next);
                           syncData({
                             disaggregation: {
-                              role: disaggregationRole,
+                              role: 'pd-disaggregated',
                               kvConnector,
                               kvCacheDtype,
                               tensorParallelSize,

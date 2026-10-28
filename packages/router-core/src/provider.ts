@@ -728,7 +728,7 @@ export class EluvixProviderAgent extends EventEmitter {
     return {
       status,
       nodeId: this.nodeId || stored?.node_id || undefined,
-      reputationScore: stored?.reputation_score ?? this.reputationScore,
+      reputationScore: this.reputationScore ?? stored?.reputation_score ?? 100.0,
       totalJobsCompleted: stored?.total_jobs_completed ?? 0,
       totalTokensServed: stored?.total_tokens_served ?? 0,
       totalEarnedUsd: stored?.total_earned_usd ?? 0.0,
@@ -909,6 +909,10 @@ export class EluvixProviderAgent extends EventEmitter {
       this.reputationScore = data.node.reputationScore;
     }
 
+    if (data.rawToken) {
+      this.config.nodeToken = data.rawToken;
+    }
+
     saveProviderSettings({
       node_id: this.nodeId || undefined,
       node_token: data.rawToken || this.config.nodeToken,
@@ -964,12 +968,14 @@ export class EluvixProviderAgent extends EventEmitter {
         // Liveness is recorded ONLY on a heartbeat the server accepted.
         // A rejected or undelivered heartbeat must leave last_heartbeat_at
         // untouched so status consumers can see the node is actually stale.
-        saveProviderSettings({ last_heartbeat_at: new Date().toISOString() });
+        const heartbeatUpdates: Record<string, any> = { last_heartbeat_at: new Date().toISOString() };
 
         const data = await res.json();
-        if (data.reputationScore) {
+        if (data.reputationScore !== undefined) {
           this.reputationScore = data.reputationScore;
+          heartbeatUpdates.reputation_score = data.reputationScore;
         }
+        saveProviderSettings(heartbeatUpdates);
         if (data.commands && Array.isArray(data.commands)) {
           for (const cmd of data.commands) {
             await this.handleCommand(cmd);
@@ -1014,12 +1020,15 @@ export class EluvixProviderAgent extends EventEmitter {
     maxTokens?: number;
     pricePerMTok?: number;
   }): Promise<any> {
+    if (!this.isRunning) {
+      throw new Error('Provider agent is currently offline.');
+    }
     if (this.isPaused) {
       throw new Error('Provider is currently paused for local consumer activity or thermal limit.');
     }
 
     const startTime = Date.now();
-    const promptTokens = JSON.stringify(job.messages).length / 4; // rough estimate
+    const promptTokens = Math.ceil(JSON.stringify(job.messages).length / 4); // estimate
     const url = `${this.config.engineUrl.replace(/\/+$/, '')}/v1/chat/completions`;
 
     try {
@@ -1039,18 +1048,23 @@ export class EluvixProviderAgent extends EventEmitter {
       }
 
       const data = await res.json();
-      const completionTokens = data.usage?.completion_tokens || 100;
-      const totalTokens = (data.usage?.prompt_tokens || promptTokens) + completionTokens;
+      const completionTokens = Math.ceil(data.usage?.completion_tokens || 100);
+      const exactPromptTokens = Math.ceil(data.usage?.prompt_tokens || promptTokens);
+      const totalTokens = exactPromptTokens + completionTokens;
       const durationMs = Date.now() - startTime;
 
-      // Calculate earnings: default ~$0.50 per 1M tokens or user floor
-      const ratePerToken = (job.pricePerMTok || 0.50) / 1_000_000;
+      // Calculate earnings: floor price or job bid
+      const userFloor = this.config.pricingMode === 'floor'
+        ? Math.max(this.config.floorPriceIn || 0, this.config.floorPriceOut || 0)
+        : 0;
+      const effectivePricePerMTok = Math.max(job.pricePerMTok || 0.50, userFloor);
+      const ratePerToken = effectivePricePerMTok / 1_000_000;
       const earnedUsd = totalTokens * ratePerToken;
 
       logProviderJob({
         job_id: job.jobId,
         model: job.model,
-        prompt_tokens: data.usage?.prompt_tokens || promptTokens,
+        prompt_tokens: exactPromptTokens,
         completion_tokens: completionTokens,
         duration_ms: durationMs,
         earned_usd: earnedUsd,

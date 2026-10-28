@@ -341,59 +341,86 @@ export async function forwardAcpHarness(
   }
 
   const encoder = new TextEncoder();
-  const outStream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          `data: ${JSON.stringify({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created,
-            model: servedModel,
-            choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }]
-          })}\n\n`
-        )
-      );
-      try {
-        await runAcpSession(delta => {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({
-                id: completionId,
-                object: 'chat.completion.chunk',
-                created,
-                model: servedModel,
-                choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
-              })}\n\n`
-            )
-          );
-        });
-        controller.enqueue(
+  return new Promise<Response>((resolve, reject) => {
+    let resolvedInitial = false;
+    let streamControllerRef: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let streamClosed = false;
+
+    const outStream = new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        streamControllerRef = ctrl;
+      }
+    });
+
+    const ensureInitialResolved = () => {
+      if (!resolvedInitial) {
+        resolvedInitial = true;
+        resolve(
+          new Response(outStream, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              'x-eluvix-model': servedModel,
+              'x-eluvix-harness': 'acp'
+            }
+          })
+        );
+        streamControllerRef?.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({
               id: completionId,
               object: 'chat.completion.chunk',
               created,
               model: servedModel,
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+              choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }]
             })}\n\n`
           )
         );
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-      } catch (err) {
-        controller.error(err);
       }
-    }
-  });
+    };
 
-  return new Response(outStream, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      'x-eluvix-model': servedModel,
-      'x-eluvix-harness': 'acp'
-    }
+    runAcpSession((delta) => {
+      ensureInitialResolved();
+      streamControllerRef?.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({
+            id: completionId,
+            object: 'chat.completion.chunk',
+            created,
+            model: servedModel,
+            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
+          })}\n\n`
+        )
+      );
+    })
+      .then(() => {
+        ensureInitialResolved();
+        if (!streamClosed && streamControllerRef) {
+          streamClosed = true;
+          streamControllerRef.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                id: completionId,
+                object: 'chat.completion.chunk',
+                created,
+                model: servedModel,
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+              })}\n\n`
+            )
+          );
+          streamControllerRef.enqueue(encoder.encode('data: [DONE]\n\n'));
+          streamControllerRef.close();
+        }
+      })
+      .catch((err) => {
+        if (!resolvedInitial) {
+          resolvedInitial = true;
+          reject(err);
+        } else if (!streamClosed && streamControllerRef) {
+          streamClosed = true;
+          streamControllerRef.error(err);
+        }
+      });
   });
 }

@@ -1,25 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
 
-function isLocalEndpoint(endpoint: string): boolean {
-  try {
-    const u = new URL(endpoint);
-    const h = u.hostname.toLowerCase();
-    return (
-      h === 'localhost' ||
-      h === '127.0.0.1' ||
-      h === '::1' ||
-      h.endsWith('.local') ||
-      h.endsWith('.internal') ||
-      h.startsWith('eluvix-') ||
-      h === 'supermemory' ||
-      /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    );
-  } catch {
-    return false;
-  }
-}
-
 export class SupermemoryContextProvider implements ContextProvider {
   public readonly id = 'supermemory';
   private endpoint: string;
@@ -28,10 +9,6 @@ export class SupermemoryContextProvider implements ContextProvider {
   constructor(config?: MemoryConfig) {
     this.endpoint = (config?.endpoint || 'http://localhost:6767').replace(/\/+$/, '');
     this.apiKey = config?.apiKey;
-  }
-
-  public isLocal(): boolean {
-    return isLocalEndpoint(this.endpoint);
   }
 
   private headers(): Record<string, string> {
@@ -78,17 +55,23 @@ export class SupermemoryContextProvider implements ContextProvider {
       for (const item of items) {
         const chunks = Array.isArray(item.chunks) ? item.chunks : [item];
         for (const c of chunks) {
-          const text = String(c.content || c.text || c.memory || item.summary || '').trim();
+          let text = String(c.content || c.text || c.memory || item.summary || '').trim();
           if (!text) continue;
           const est = Math.ceil(text.length / 4);
-          if (usedTokens + est > budgetTokens && blocks.length > 0) break;
-          usedTokens += est;
+          if (usedTokens + est > budgetTokens) {
+            const remainingTokens = Math.max(0, budgetTokens - usedTokens);
+            if (remainingTokens <= 10 && blocks.length > 0) break;
+            text = text.slice(0, Math.max(100, remainingTokens * 4));
+          }
+          const finalEst = Math.ceil(text.length / 4);
+          usedTokens += finalEst;
           blocks.push({
             uri: item.id ? `supermemory://${scope.userId}/${item.id}` : `supermemory://${scope.userId}`,
             text,
             score: typeof c.score === 'number' ? c.score : 0.8,
             level: 'L1'
           });
+          if (usedTokens >= budgetTokens) break;
         }
       }
 

@@ -200,6 +200,46 @@ export async function forwardTrueForgeHarness(
       const text = String(
         data?.output || data?.content || data?.choices?.[0]?.message?.content || ''
       );
+      if (request.stream) {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          start(ctrl) {
+            ctrl.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  id: completionId,
+                  object: 'chat.completion.chunk',
+                  created,
+                  model: servedModel,
+                  choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }]
+                })}\n\n`
+              )
+            );
+            ctrl.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({
+                  id: completionId,
+                  object: 'chat.completion.chunk',
+                  created,
+                  model: servedModel,
+                  choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+                })}\n\n`
+              )
+            );
+            ctrl.enqueue(encoder.encode('data: [DONE]\n\n'));
+            ctrl.close();
+          }
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'x-eluvix-model': servedModel,
+            'x-eluvix-harness': 'trueforge',
+            'x-eluvix-session': tfSessionId
+          }
+        });
+      }
       const payload = {
         id: completionId,
         object: 'chat.completion',

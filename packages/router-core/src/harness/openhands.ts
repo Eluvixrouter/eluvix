@@ -1,5 +1,7 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { setBounded } from '../bounded-map.js';
+import { buildHarnessPrompt } from './prompt.js';
 
 const openHandsSessionMap = new Map<string, string>();
 
@@ -45,11 +47,7 @@ export async function forwardOpenHandsHarness(
     clientSignal.addEventListener('abort', () => controller.abort(clientSignal.reason), { once: true });
   }
 
-  const lastUserMsg =
-    [...request.messages]
-      .reverse()
-      .find((m) => m.role === 'user')?.content || '';
-  const promptText = typeof lastUserMsg === 'string' ? lastUserMsg : JSON.stringify(lastUserMsg);
+  const promptText = buildHarnessPrompt(request.messages, { includeHistory: true });
 
   try {
     let conversationId = reuseSession ? openHandsSessionMap.get(sessionKey) : undefined;
@@ -60,7 +58,6 @@ export async function forwardOpenHandsHarness(
         method: 'POST',
         headers,
         body: JSON.stringify({
-          initial_user_msg: promptText,
           agent_cls: upstream.harness?.agentId || 'CodeActAgent'
         }),
         signal: controller.signal
@@ -71,7 +68,7 @@ export async function forwardOpenHandsHarness(
       const data: any = await res.json();
       const id = String(data.conversation_id || data.id || `oh-${Date.now()}`);
       if (reuseSession) {
-        openHandsSessionMap.set(sessionKey, id);
+        setBounded(openHandsSessionMap, sessionKey, id);
       }
       return id;
     };

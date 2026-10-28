@@ -922,7 +922,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
         data: {
           label: 'Graphiti Temporal KG',
           provider: 'graphiti',
-          endpoint: 'http://localhost:8003',
+          endpoint: 'http://localhost:8004',
           recallBudgetTokens: 600,
           writeBack: true,
           allowCloudEgress: false,
@@ -1046,7 +1046,14 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
         id: 'semantic-cache-1',
         type: 'semanticCacheNode',
         position: { x: 340, y: 260 },
-        data: { label: 'Semantic KV Cache', threshold: 0.92, ttlSeconds: 3600, provider: 'redis' }
+        data: {
+          label: 'Semantic KV Cache',
+          backend: 'sqlite-fts',
+          mode: 'semantic',
+          scopeIsolation: 'user',
+          similarityThreshold: 0.92,
+          ttlSeconds: 3600
+        }
       },
       {
         id: 'switchyard-1',
@@ -1054,7 +1061,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
         position: { x: 680, y: 260 },
         data: {
           label: 'Switchyard Disaggregation Router',
-          strategy: 'prefill-isolation',
+          strategy: 'cost-complexity',
           prefillIsolationThresholdTokens: 1024,
           kvPrefixAffinity: true,
           failover: 'enabled'
@@ -1070,9 +1077,9 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
           selectedModel: 'meta-llama/Llama-3.3-70B-Instruct',
           priority: 30,
           disaggregation: {
-            mode: 'prefill',
-            transferProtocol: 'NixlConnector',
-            kvPrecision: 'fp8_e4m3',
+            role: 'prefill',
+            kvConnector: 'NixlConnector',
+            kvCacheDtype: 'fp8_e4m3',
             tensorParallelSize: 4,
             rdmaDevice: 'mlx5_0',
             decodeEndpoint: 'http://decode-node-1.rdma.local:8001'
@@ -1089,9 +1096,9 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
           selectedModel: 'meta-llama/Llama-3.3-70B-Instruct',
           priority: 30,
           disaggregation: {
-            mode: 'decode',
-            transferProtocol: 'NixlConnector',
-            kvPrecision: 'fp8_e4m3',
+            role: 'decode',
+            kvConnector: 'NixlConnector',
+            kvCacheDtype: 'fp8_e4m3',
             tensorParallelSize: 4,
             rdmaDevice: 'mlx5_0'
           }
@@ -1105,8 +1112,15 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
           label: 'SGLang Mooncake Cluster',
           endpoint: 'http://sglang-router.rdma.local:30000',
           selectedModel: 'deepseek-ai/DeepSeek-V3',
-          disaggregationMode: 'pd-router',
-          mooncakeConnector: true,
+          disaggregation: {
+            role: 'pd-disaggregated',
+            kvConnector: 'mooncake',
+            kvCacheDtype: 'fp8_e4m3',
+            tensorParallelSize: 4,
+            rdmaDevice: 'mlx5_0',
+            prefillEndpoint: 'http://sglang-prefill.rdma.local:30000',
+            decodeEndpoint: 'http://sglang-decode.rdma.local:30001'
+          },
           radixAttention: true,
           memFractionStatic: 0.88,
           priority: 25
@@ -1126,9 +1140,9 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-in-cache', source: 'input-1', target: 'semantic-cache-1', animated: true, style: { stroke: '#14b8a6' } },
       { id: 'e-cache-sw', source: 'semantic-cache-1', sourceHandle: 'miss', target: 'switchyard-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-cache-obs', source: 'semantic-cache-1', sourceHandle: 'hit', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
-      { id: 'e-sw-prefill', source: 'switchyard-1', sourceHandle: 'prefill', target: 'vllm-prefill-1', animated: true, style: { stroke: '#0ea5e9' } },
-      { id: 'e-sw-decode', source: 'switchyard-1', sourceHandle: 'decode', target: 'vllm-decode-1', animated: true, style: { stroke: '#10b981' } },
-      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'mooncake', target: 'sglang-cluster-1', animated: true, style: { stroke: '#a855f7' } },
+      { id: 'e-sw-prefill', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'vllm-prefill-1', animated: true, style: { stroke: '#0ea5e9' } },
+      { id: 'e-sw-decode', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'vllm-decode-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'tier-3', target: 'sglang-cluster-1', animated: true, style: { stroke: '#a855f7' } },
       { id: 'e-prefill-obs', source: 'vllm-prefill-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-decode-obs', source: 'vllm-decode-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-sglang-obs', source: 'sglang-cluster-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }

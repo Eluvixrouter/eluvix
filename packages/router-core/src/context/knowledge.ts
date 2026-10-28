@@ -48,17 +48,23 @@ export async function recallKnowledgeBase(
       const blocks: RecallBlock[] = [];
       let used = 0;
       for (const item of items.slice(0, topK)) {
-        const text = String(item.overview || item.content || item.abstract || item.text || '').trim();
+        let text = String(item.overview || item.content || item.abstract || item.text || '').trim();
         if (!text) continue;
         const est = Math.ceil(text.length / 4);
-        if (used + est > maxTokens && blocks.length > 0) break;
-        used += est;
+        if (used + est > maxTokens) {
+          const remainingTokens = Math.max(0, maxTokens - used);
+          if (remainingTokens <= 10 && blocks.length > 0) break;
+          text = text.slice(0, Math.max(100, remainingTokens * 4));
+        }
+        const finalEst = Math.ceil(text.length / 4);
+        used += finalEst;
         blocks.push({
           uri: item.uri || collectionUri,
           text,
           score: typeof item.score === 'number' ? item.score : 0.85,
           level: 'L1'
         });
+        if (used >= maxTokens) break;
       }
       return { blocks, tokenEstimate: used, provider: backend, latencyMs: Date.now() - start };
     }
@@ -83,17 +89,23 @@ export async function recallKnowledgeBase(
       let used = 0;
       if (Array.isArray(data?.results)) {
         for (const r of data.results.slice(0, topK)) {
-          const text = String(r.text || r.content || '').trim();
+          let text = String(r.text || r.content || '').trim();
           if (!text) continue;
           const est = Math.ceil(text.length / 4);
-          if (used + est > maxTokens && blocks.length > 0) break;
-          used += est;
+          if (used + est > maxTokens) {
+            const remainingTokens = Math.max(0, maxTokens - used);
+            if (remainingTokens <= 10 && blocks.length > 0) break;
+            text = text.slice(0, Math.max(100, remainingTokens * 4));
+          }
+          const finalEst = Math.ceil(text.length / 4);
+          used += finalEst;
           blocks.push({
             uri: r.source || collectionUri,
             text,
             score: typeof r.score === 'number' ? r.score : 0.8,
             level: 'L1'
           });
+          if (used >= maxTokens) break;
         }
       } else if (typeof data?.response === 'string' && data.response.trim()) {
         const sliced = data.response.trim().slice(0, maxTokens * 4);
@@ -122,7 +134,9 @@ export function formatKnowledgeSystemBlock(
     .map((b, idx) => {
       const header =
         includeCitations && b.uri ? `[Doc ${idx + 1}] (${b.uri})` : `[Doc ${idx + 1}]`;
-      return `${header}\n${b.text}`;
+      // Escape delimiter to prevent breakout
+      const safeText = b.text.replace(/<\/eluvix-knowledge>/gi, '<\\/eluvix-knowledge>');
+      return `${header}\n${safeText}`;
     })
     .join('\n\n');
   return `${KNOWLEDGE_BLOCK_START}\nReference knowledge from ${config?.collectionUri || 'Knowledge Base'}:\n${body}\n${KNOWLEDGE_BLOCK_END}`;
@@ -144,3 +158,20 @@ export function injectKnowledgeIntoMessages(
   }
   return [{ role: 'system', content: knowledgeBlock }, ...cloned];
 }
+
+export function stripKnowledgeFromMessages(messages: ChatMessage[]): ChatMessage[] {
+  const regex = new RegExp(`${KNOWLEDGE_BLOCK_START}[\\s\\S]*?${KNOWLEDGE_BLOCK_END}\\s*`, 'g');
+  const result: ChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'system' && typeof m.content === 'string' && m.content.includes(KNOWLEDGE_BLOCK_START)) {
+      const cleaned = m.content.replace(regex, '').trim();
+      if (cleaned.length > 0) {
+        result.push({ ...m, content: cleaned });
+      }
+    } else {
+      result.push(m);
+    }
+  }
+  return result;
+}
+

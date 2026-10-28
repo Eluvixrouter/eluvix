@@ -56,6 +56,50 @@ export async function executeConsensusGroup(
     headers.set('x-eluvix-consensus-strategy', 'fastest-first');
     headers.set('x-eluvix-consensus-winner', winner.upstream.id);
     headers.set('x-eluvix-consensus-candidates', candidates.map((c) => c.id).join(','));
+
+    if (request.stream) {
+      let content = '';
+      try {
+        const parsed = JSON.parse(bodyText);
+        content = parsed?.choices?.[0]?.message?.content || parsed?.content || bodyText;
+      } catch {
+        content = bodyText;
+      }
+      const completionId = `chatcmpl-fastest-${Date.now()}`;
+      const modelId = request.model || winner.upstream.id;
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(ctrl) {
+          ctrl.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                id: completionId,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: modelId,
+                choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }]
+              })}\n\n`
+            )
+          );
+          ctrl.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({
+                id: completionId,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: modelId,
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+              })}\n\n`
+            )
+          );
+          ctrl.enqueue(encoder.encode('data: [DONE]\n\n'));
+          ctrl.close();
+        }
+      });
+      headers.set('Content-Type', 'text/event-stream');
+      return new Response(stream, { status: 200, headers });
+    }
+
     return new Response(bodyText, { status: 200, headers });
   }
 
@@ -76,8 +120,8 @@ export async function executeConsensusGroup(
     .filter((r): r is PromiseFulfilledResult<{ upstream: UpstreamConfig; text: string; raw: any }> => r.status === 'fulfilled' && Boolean(r.value.text))
     .map((r) => r.value);
 
-  if (successes.length < minQuorum && successes.length === 0) {
-    throw new Error(`Consensus group "${group.id}" failed to reach quorum (0/${candidates.length} succeeded)`);
+  if (successes.length < minQuorum) {
+    throw new Error(`Consensus group "${group.id}" failed to reach quorum (${successes.length}/${candidates.length} succeeded, minimum ${minQuorum} required)`);
   }
 
   let finalContent = successes[0].text;
