@@ -134,6 +134,19 @@ importers:
         specifier: ^2.1.9
         version: 2.1.9(@types/node@20.19.43)(supports-color@7.2.0)
 
+  packages/opencode-eluvix:
+    dependencies:
+      '@eluvix/router-core':
+        specifier: workspace:*
+        version: link:../router-core
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.9
+        version: 2.1.9(@types/node@20.19.43)(supports-color@7.2.0)
+
   packages/router-core:
     dependencies:
       better-sqlite3:
