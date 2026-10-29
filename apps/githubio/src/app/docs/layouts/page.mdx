@@ -1,6 +1,6 @@
 # Canvas Layouts & Topology Templates
 
-Eluvix includes a robust **Layout Management System** that allows developers to save, organize, export, and switch between complete routing topologies. It ships with 12 pre-configured, production-grade architectural presets designed for enterprise security, local-first engineering, autonomous coding, and high-throughput evaluation.
+Eluvix includes a robust **Layout Management System** that allows developers to save, organize, export, and switch between complete routing topologies. It ships with 18 pre-configured, production-grade architectural presets designed for enterprise security, local-first engineering, autonomous coding, confidential silicon enclaves, NVFP4 microscaling, disaggregated RDMA clusters, and 400G/800G Rail-Optimized Clos fabrics.
 
 ---
 
@@ -11,14 +11,14 @@ In the Visual Routing Editor (`/editor`), the top toolbar provides direct access
 - **Browse Presets & Layouts (`LayoutBrowserModal`)**: Open the interactive catalog of available topologies, filter by category (`starter`, `privacy`, `performance`, `agent`, `custom`), or search by tags.
 - **Save As (`SaveAsModal`)**: Save your current canvas state under a unique slug, name, category, and descriptive tags.
 - **Set as Active**: Marking a layout active instructs the backend Switchyard engine to immediately compile and hot-reload that configuration for incoming API traffic.
-- **Restore Defaults**: One-click reset that safely repopulates the 12 official starter templates without wiping custom user layouts.
+- **Restore Defaults**: One-click reset that safely repopulates the 18 official starter templates without wiping custom user layouts.
 
 ### Storage & Persistence
 Layout definitions are stored in the XDG user data directory (`~/.local/share/eluvix/layouts/` or `./data/layouts/`) as structured JSON files containing node coordinates, handle connection edges, viewport zoom levels, and custom node properties.
 
 ---
 
-## The 12 Built-In Topology Templates
+## The 18 Built-In Topology Templates
 
 ### 1. Full Production Stack (`default`)
 - **Category**: `starter`
@@ -91,6 +91,36 @@ Layout definitions are stored in the XDG user data directory (`~/.local/share/el
 - **Category**: `performance`
 - **Focus**: Forensic Analysis & Compliance Auditing
 - **Architecture**: Couples the **Observability Node** at 100% trace sampling rate with OpenTelemetry collector exports, Langfuse graph logging, and SLA alert boundaries set to 2,000ms.
+
+### 13. OpenViking Memory + TrueForge Agentic Mesh (`openviking-trueforge-agentic`)
+- **Category**: `agent`
+- **Focus**: Stateful Hierarchical Memory + Autonomous Coding Loop
+- **Architecture**: Combines **OpenViking L0/L1/L2** context recall (`viking://user/{id}/memories`) with **Memory Egress Guard** (`cloudMode: "filter"`), **Switchyard**, and **TrueForge** (`auto-approve-readonly`, `maxHops: 2`).
+
+### 14. Resilient Consensus + Hybrid Graph RAG Mesh (`resilient-consensus-rag-mesh`)
+- **Category**: `agent`
+- **Focus**: Multi-Model Judge + Temporal Knowledge Graph + Code Sandbox
+- **Architecture**: Chains **Semantic Cache**, **LightRAG Knowledge Base**, **Graphiti Bi-Temporal Memory**, **Fallback Chain** circuit breaker, **Consensus Judge Node**, and an isolated **Docker Execution Sandbox**.
+
+### 15. Disaggregated Prefill/Decode RDMA Cluster (`disaggregated-pd-rdma-cluster`)
+- **Category**: `performance`
+- **Focus**: GPUDirect RDMA KV-Cache Streaming (`vLLM NIXL` & `SGLang Mooncake`)
+- **Architecture**: Separates compute-bound Prefill producers from memory-bandwidth-bound Decode consumers over 400GbE RoCEv2 with SHA-256 KV-prefix affinity and split `TTFT`/`ITL` SLA telemetry.
+
+### 16. Zero-Trust Confidential Silicon Enclave (`zero-trust-confidential-tee-enclave`)
+- **Category**: `privacy`
+- **Focus**: Hardware-Rooted CPU+GPU TEE (`AMD SEV-SNP`, `Intel TDX`, `H100 CC-On`, `B200 TEE-I/O`)
+- **Architecture**: Enforces `confidentialPolicy: "require-dual-attestation"`, verifying CPU `REPORT_DATA` and GPU SPDM 1.2 signatures via **Trustee KBS** (`kbs://`) before unsealing weights into encrypted RAM `tmpfs`.
+
+### 17. Blackwell NVFP4 + Walsh-Hadamard Lossless Reasoning (`nvfp4-hadamard-lossless-reasoning`)
+- **Category**: `performance`
+- **Focus**: Sub-4-Bit Two-Level Microscaling (`tcgen05.mma.kind::mxf4nvf4`) & Outlier Rotation
+- **Architecture**: Enforces `quantizationPolicy: "lossless-reasoning"`, blocking naive unrotated 4-bit workers (`INT4-AWQ`/`GPTQ`) on math/coding prompts while prioritizing Blackwell `NVFP4 + Hadamard` (`QuaRot` + `SVDQuant`) for `3.42x` throughput at `99.6%` accuracy recovery.
+
+### 18. Rail-Optimized 400G/800G Clos Fabric: SRv6 uSID & DLB OOO-DDP MoE Cluster (`rail-optimized-srv6-dlb-moe-fabric`)
+- **Category**: `performance`
+- **Focus**: Collision-Free 8-Rail Clos, RFC 8986 SRv6 `uSID` & ConnectX-7/8 `OOO-DDP`
+- **Architecture**: Enforces `fabricPolicy: "require-collision-free-fabric"`, excluding hash-polarized static ECMP ToR switches (`44.6%` bus utilization) and routing MoE `AllToAll` / long-context workloads to **SGLang DLB + OOO-DDP (`97.8%` line-rate)** and **vLLM SRv6 `uSID` (`fcbb:bb00:0202:0104:0040::`)** pods.
 
 ---
 

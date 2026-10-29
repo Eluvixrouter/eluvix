@@ -74,10 +74,12 @@ export async function POST(req: Request) {
 
     const confidentialPolicyHeader = req?.headers?.get('x-eluvix-confidential');
     const quantizationPolicyHeader = req?.headers?.get('x-eluvix-quantization');
+    const fabricPolicyHeader = req?.headers?.get('x-eluvix-fabric');
     const metadata = {
       ...(body.metadata || {}),
       ...(confidentialPolicyHeader ? { confidentialPolicy: confidentialPolicyHeader } : {}),
-      ...(quantizationPolicyHeader ? { quantizationPolicy: quantizationPolicyHeader } : {})
+      ...(quantizationPolicyHeader ? { quantizationPolicy: quantizationPolicyHeader } : {}),
+      ...(fabricPolicyHeader ? { fabricPolicy: fabricPolicyHeader } : {})
     };
 
     const explanation = router.explainRoute(

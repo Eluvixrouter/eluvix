@@ -126,6 +126,16 @@ export async function POST(req: Request) {
         quantizationPolicy: quantHeader
       };
     }
+    const fabricHeader = req.headers.get('x-eluvix-fabric');
+    if (
+      fabricHeader === 'prefer-rail-optimized' ||
+      fabricHeader === 'require-collision-free-fabric'
+    ) {
+      body.metadata = {
+        ...(body.metadata || {}),
+        fabricPolicy: fabricHeader
+      };
+    }
 
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {
@@ -150,6 +160,9 @@ export async function POST(req: Request) {
     const quantFormatHeader = response.headers.get('x-eluvix-quantization-format') || '';
     const outlierRotHeader = response.headers.get('x-eluvix-outlier-rotation') || '';
     const tensorPtxHeader = response.headers.get('x-eluvix-tensor-core-ptx') || '';
+    const fabricTopologyHeader = response.headers.get('x-eluvix-fabric-topology') || '';
+    const rdmaTransportHeader = response.headers.get('x-eluvix-rdma-transport') || '';
+    const srv6UsidHeader = response.headers.get('x-eluvix-srv6-usid-carrier') || '';
     const ttftHeader = response.headers.get('x-eluvix-ttft-ms') || '';
     const itlHeader = response.headers.get('x-eluvix-itl-ms') || '';
     const kvCacheKbHeader = response.headers.get('x-eluvix-kv-cache-kb') || '';
@@ -172,6 +185,9 @@ export async function POST(req: Request) {
     if (quantFormatHeader) traceHeaders['x-eluvix-quantization-format'] = quantFormatHeader;
     if (outlierRotHeader) traceHeaders['x-eluvix-outlier-rotation'] = outlierRotHeader;
     if (tensorPtxHeader) traceHeaders['x-eluvix-tensor-core-ptx'] = tensorPtxHeader;
+    if (fabricTopologyHeader) traceHeaders['x-eluvix-fabric-topology'] = fabricTopologyHeader;
+    if (rdmaTransportHeader) traceHeaders['x-eluvix-rdma-transport'] = rdmaTransportHeader;
+    if (srv6UsidHeader) traceHeaders['x-eluvix-srv6-usid-carrier'] = srv6UsidHeader;
     if (ttftHeader) traceHeaders['x-eluvix-ttft-ms'] = ttftHeader;
     if (itlHeader) traceHeaders['x-eluvix-itl-ms'] = itlHeader;
     if (kvCacheKbHeader) traceHeaders['x-eluvix-kv-cache-kb'] = kvCacheKbHeader;

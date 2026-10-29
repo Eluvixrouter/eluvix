@@ -261,6 +261,9 @@ function generateEluvixConfig(
     const quantRaw = (node.data as any)?.quantization;
     const quantizationConfig = quantRaw ? { ...quantRaw } : undefined;
 
+    const fabricRaw = (node.data as any)?.fabric;
+    const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
@@ -275,7 +278,8 @@ function generateEluvixConfig(
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(disaggregationConfig ? { disaggregation: disaggregationConfig } : {}),
       ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
-      ...(quantizationConfig ? { quantization: quantizationConfig } : {})
+      ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
+      ...(fabricConfig ? { fabric: fabricConfig } : {})
     });
   });
 
@@ -646,6 +650,10 @@ function generateEluvixConfig(
     swData.quantizationPolicy && swData.quantizationPolicy !== 'disabled'
       ? String(swData.quantizationPolicy)
       : undefined;
+  const resolvedFabricPolicy =
+    swData.fabricPolicy && swData.fabricPolicy !== 'disabled'
+      ? String(swData.fabricPolicy)
+      : undefined;
 
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
@@ -660,6 +668,7 @@ function generateEluvixConfig(
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
+    ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
       heavy: Number(thresholds.heavy ?? 1500),
@@ -844,6 +853,7 @@ function generateEluvixConfig(
     egressPolicy: hasExternalUpstream ? 'allow-egress' : 'local-only',
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
+    ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
@@ -1617,6 +1627,7 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
     vllmNodes.forEach((node, i) => {
       const d = (node.data as any)?.disaggregation || {};
       const q = (node.data as any)?.quantization || {};
+      const f = (node.data as any)?.fabric || {};
       const model = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
         ? (node.data as any).selectedModel
         : 'meta-llama/Llama-3.3-70B-Instruct-FP8';
@@ -1626,6 +1637,23 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
       const dtype = d.kvCacheDtype || 'fp8_e4m3';
 
       parts.push(`### [vLLM v1 NIXL Instance ${i + 1}: ${node.data?.label || node.id}]`);
+      if (f.topology && f.topology !== 'tor-static-ecmp') {
+        const carrier = f.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::';
+        parts.push(`# Rail-Optimized Clos Fabric (${f.topology}): NCCL PxN + SRv6 uSID + ConnectX-7/8 OOO-DDP`);
+        parts.push(`export NCCL_CROSS_NIC=1`);
+        parts.push(`export NCCL_PXN_DISABLE=0`);
+        parts.push(`export NCCL_IB_QPS_PER_CONNECTION=${f.qpsPerConnection ?? 4}`);
+        parts.push(`export NCCL_IB_SPLIT_DATA_ON_QPS=1`);
+        parts.push(`export NCCL_IB_TC=106`);
+        if (f.topology === 'rail-srv6-usid') {
+          parts.push(`sysctl -w net.ipv6.conf.all.seg6_enabled=1`);
+          parts.push(`ip route replace 10.100.2.0/24 encap seg6 mode encap.red segs ${carrier} dev eth0`);
+        }
+        if (f.topology === 'rail-dlb-oooddp') {
+          parts.push(`# Enable Out-of-Order Direct Data Placement (OOO-DDP) on ConnectX-7/8`);
+          parts.push(`mlxconfig -d /dev/mst/mt4129_pciconf0 -y set ROCE_NEXT_PROTOCOL=254 ROCE_CC_PRIO_MASK_P1=255 OO_RECV_WR_EN=1`);
+        }
+      }
       if (q.format === 'nvfp4' || q.format === 'mxfp4') {
         const exportDir = `/models/${String(model).split('/').pop() || 'Llama-3.3-70B'}-${String(q.format).toUpperCase()}-QuaRot`;
         parts.push(`# TensorRT ModelOpt PTQ: ${q.format.toUpperCase()} (E2M1) + Walsh-Hadamard (${q.outlierMitigation || 'hadamard-quarot'})`);

@@ -14,10 +14,10 @@ export default function Home() {
         <div className="container px-4 md:px-6 text-center relative z-10">
           
           {/* Top Pill Badge */}
-          <div className="inline-flex items-center gap-2 rounded-full bg-sky-500/10 px-4 py-1.5 text-xs font-bold text-sky-400 border border-sky-500/30 mb-8 shadow-[0_0_20px_rgba(56,189,248,0.2)]">
-            <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
-            <span>Sovereign AI Routing &amp; Privacy Shield • v1.0.0</span>
-          </div>
+          <Link href="/docs/releases" className="inline-flex items-center gap-2 rounded-full bg-sky-500/10 px-4 py-1.5 text-xs font-bold text-sky-400 border border-sky-500/30 mb-8 shadow-[0_0_20px_rgba(56,189,248,0.2)] hover:bg-sky-500/20 transition-colors">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Sovereign AI Routing &amp; Privacy Shield • v1.0.14 Release Notes ➔</span>
+          </Link>
 
           {/* Punchy Hero Headline */}
           <h1 className="text-4xl sm:text-5xl md:text-7xl font-black tracking-tight text-white max-w-5xl mx-auto leading-[1.1] mb-6">
@@ -301,9 +301,9 @@ export default function Home() {
 
             <div className="flex flex-col gap-2 rounded-xl border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl hover:border-sky-500/40 transition-colors">
               <div className="text-3xl mb-2">📐</div>
-              <h3 className="text-base font-bold text-white">12 Topology Presets</h3>
+              <h3 className="text-base font-bold text-white">18 Topology Presets</h3>
               <p className="text-slate-400 text-xs leading-relaxed">
-                Pre-configured architectures for airgapped clusters, Antigravity AGY coding, low-latency edge chat, and cost cascade.
+                Pre-configured architectures for airgapped clusters, Rail-Optimized SRv6/DLB fabrics, NVFP4 Hadamard W4A4, SEV-SNP/TDX enclaves, and RDMA disaggregation.
               </p>
             </div>
 

@@ -26,6 +26,7 @@ export interface ConfigDiff {
   fallbackChainsChanged?: boolean;
   confidentialPolicyChanged?: boolean;
   quantizationPolicyChanged?: boolean;
+  fabricPolicyChanged?: boolean;
   isEmpty: boolean;
 }
 
@@ -44,7 +45,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'antigravity',
   'disaggregation',
   'confidential',
-  'quantization'
+  'quantization',
+  'fabric'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -140,6 +142,11 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       (current as any)?.quantizationPolicy ?? current?.switchyard?.quantizationPolicy,
       (next as any).quantizationPolicy ?? next.switchyard?.quantizationPolicy
     ) || undefined;
+  const fabricPolicyChanged =
+    fieldDiffers(
+      (current as any)?.fabricPolicy ?? current?.switchyard?.fabricPolicy,
+      (next as any).fabricPolicy ?? next.switchyard?.fabricPolicy
+    ) || undefined;
 
   return {
     added,
@@ -154,6 +161,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     fallbackChainsChanged,
     confidentialPolicyChanged,
     quantizationPolicyChanged,
+    fabricPolicyChanged,
     isEmpty:
       added.length === 0 &&
       removed.length === 0 &&
@@ -166,6 +174,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !consensusChanged &&
       !fallbackChainsChanged &&
       !confidentialPolicyChanged &&
-      !quantizationPolicyChanged
+      !quantizationPolicyChanged &&
+      !fabricPolicyChanged
   };
 }

@@ -42,9 +42,9 @@ export default function RootLayout({
               </Link>
               <Link href="/docs/getting-started" className="hover:text-sky-400 transition-colors">Documentation</Link>
               <Link href="/docs/architecture" className="hover:text-sky-400 transition-colors">Architecture</Link>
-              <Link href="/docs/api" className="hover:text-sky-400 transition-colors">API Reference</Link>
-              <Link href="/docs/layouts" className="hover:text-sky-400 transition-colors">Topology Presets</Link>
-              <Link href="/docs/provider" className="hover:text-sky-400 transition-colors">GPU Provider</Link>
+              <Link href="/docs/clos-fabric" className="hover:text-sky-400 transition-colors">Clos Fabrics</Link>
+              <Link href="/docs/quantization" className="hover:text-sky-400 transition-colors">NVFP4</Link>
+              <Link href="/docs/releases" className="text-emerald-400 hover:text-emerald-300 transition-colors font-semibold">Release Notes</Link>
             </nav>
 
             <div className="flex items-center gap-2 sm:gap-3">
@@ -103,11 +103,12 @@ export default function RootLayout({
               <div>
                 <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider mb-4">Documentation</h4>
                 <ul className="space-y-2 text-xs text-slate-400">
-                  <li><Link href="/docs/getting-started" className="hover:text-sky-400 transition-colors">Quickstart & Setup</Link></li>
+                  <li><Link href="/docs/releases" className="text-emerald-400 hover:text-emerald-300 transition-colors font-semibold">Release Notes (v1.0.14)</Link></li>
+                  <li><Link href="/docs/getting-started" className="hover:text-sky-400 transition-colors">Quickstart &amp; Setup</Link></li>
                   <li><Link href="/docs/architecture" className="hover:text-sky-400 transition-colors">Architecture Deep Dive</Link></li>
                   <li><Link href="/docs/switchyard" className="hover:text-sky-400 transition-colors">Switchyard Engine</Link></li>
-                  <li><Link href="/docs/api" className="hover:text-sky-400 transition-colors">OpenAI-Compatible API</Link></li>
-                  <li><Link href="/docs/desktop" className="hover:text-sky-400 transition-colors">Desktop App (Electron)</Link></li>
+                  <li><Link href="/docs/harnesses" className="hover:text-sky-400 transition-colors">Agent Harnesses &amp; Runtimes</Link></li>
+                  <li><Link href="/docs/memory" className="hover:text-sky-400 transition-colors">Memory &amp; Context Engine</Link></li>
                 </ul>
               </div>
 
@@ -115,23 +116,23 @@ export default function RootLayout({
               <div>
                 <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider mb-4">Sovereign Protection</h4>
                 <ul className="space-y-2 text-xs text-slate-400">
+                  <li><Link href="/docs/confidential-computing" className="hover:text-sky-400 transition-colors">Confidential Silicon (SEV-SNP / TDX)</Link></li>
                   <li><Link href="/docs/security" className="hover:text-sky-400 transition-colors">Privacy Guard (PII Masking)</Link></li>
                   <li><Link href="/docs/security" className="hover:text-sky-400 transition-colors">Semantic Threat Firewall</Link></li>
-                  <li><Link href="/docs/multimodal" className="hover:text-sky-400 transition-colors">Multimodal Vision Filter</Link></li>
-                  <li><Link href="/docs/layouts" className="hover:text-sky-400 transition-colors">Airgapped Enclave Layouts</Link></li>
+                  <li><Link href="/docs/layouts" className="hover:text-sky-400 transition-colors">18 Topology Presets</Link></li>
                   <li><Link href="/docs/observability" className="hover:text-sky-400 transition-colors">Local SQLite Telemetry</Link></li>
                 </ul>
               </div>
 
-              {/* Column 4: Cost Optimization & Worker */}
+              {/* Column 4: Silicon & Cluster Scale */}
               <div>
-                <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider mb-4">Cost & Monetization</h4>
+                <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider mb-4">Silicon &amp; Cluster Scale</h4>
                 <ul className="space-y-2 text-xs text-slate-400">
-                  <li><Link href="/docs/switchyard" className="hover:text-sky-400 transition-colors">Cost-Complexity Balancing</Link></li>
-                  <li><Link href="/docs/local-engines" className="hover:text-sky-400 transition-colors">Ollama &amp; vLLM Hardware</Link></li>
-                  <li><Link href="/docs/provider" className="hover:text-sky-400 transition-colors">GPU Compute Provider Mode</Link></li>
-                  <li><Link href="/docs/configurator" className="hover:text-sky-400 transition-colors">Client Auto-Configurator</Link></li>
-                  <li><Link href="/docs/playground" className="hover:text-sky-400 transition-colors">JSONL Fine-Tuning Export</Link></li>
+                  <li><Link href="/docs/clos-fabric" className="hover:text-sky-400 transition-colors">Rail-Optimized Clos &amp; SRv6 uSID</Link></li>
+                  <li><Link href="/docs/quantization" className="hover:text-sky-400 transition-colors">Blackwell NVFP4 &amp; Hadamard W4A4</Link></li>
+                  <li><Link href="/docs/disaggregated-serving" className="hover:text-sky-400 transition-colors">Disaggregated RDMA P/D Serving</Link></li>
+                  <li><Link href="/docs/provider" className="hover:text-sky-400 transition-colors">GPU Compute Provider &amp; Labs</Link></li>
+                  <li><Link href="/docs/desktop" className="hover:text-sky-400 transition-colors">Desktop App (Electron)</Link></li>
                 </ul>
               </div>
 

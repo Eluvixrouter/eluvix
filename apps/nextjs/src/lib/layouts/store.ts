@@ -8,7 +8,7 @@ const MAX_LAYOUT_SIZE_BYTES = 1024 * 1024; // 1MB limit
 const MAX_NODES = 500;
 const MAX_EDGES = 2000;
 /** Bump when EXAMPLE_LAYOUTS gains new templates so they get seeded once. */
-export const EXAMPLES_SEED_VERSION = 4;
+export const EXAMPLES_SEED_VERSION = 5;
 
 export class LayoutError extends Error {
   constructor(message: string, public code: string, public statusCode: number = 400) {

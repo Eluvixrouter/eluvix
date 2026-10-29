@@ -58,6 +58,12 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
   const [outlierMitigation, setOutlierMitigation] = useState<string>(
     data?.quantization?.outlierMitigation || 'hadamard-quarot'
   );
+  const [fabricTopology, setFabricTopology] = useState<string>(
+    data?.fabric?.topology || 'rail-dlb-oooddp'
+  );
+  const [srv6UsidCarrier, setSrv6UsidCarrier] = useState<string>(
+    data?.fabric?.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::'
+  );
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -583,6 +589,68 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
               <option value="none">No Rotation (Naive)</option>
             </select>
           </div>
+        </div>
+
+        {/* Rail-Optimized Clos Fabric (BGP EVPN / SRv6 uSID / DLB + OOO-DDP) */}
+        <div className="bg-gray-900/60 p-2 rounded border border-gray-800 space-y-1.5">
+          <div className="flex justify-between items-center">
+            <label className="text-[10px] font-semibold text-indigo-400 flex items-center gap-1">
+              <span>🕸️</span> Clos Fabric &amp; RoCEv2 Routing
+            </label>
+            <span className="text-[9px] font-mono text-indigo-300/80">
+              {fabricTopology === 'rail-dlb-oooddp'
+                ? '97.8% BusBW'
+                : fabricTopology === 'rail-srv6-usid'
+                ? '94.8% uSID'
+                : fabricTopology === 'rail-pxn-ecmp'
+                ? '82.1% PxN'
+                : '44.6% ECMP'}
+            </span>
+          </div>
+          <select
+            className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-indigo-500 rounded p-1 text-white text-[10px] font-mono outline-none"
+            value={fabricTopology}
+            onChange={(e) => {
+              const next = e.target.value;
+              setFabricTopology(next);
+              syncData({
+                fabric: {
+                  enabled: true,
+                  topology: next,
+                  ncclPxn: next !== 'tor-static-ecmp',
+                  bgpUnnumberedEvpn: next !== 'tor-static-ecmp',
+                  srv6UsidCarrier: next === 'rail-srv6-usid' ? srv6UsidCarrier : undefined,
+                  dlbPacketSpraying: next === 'rail-dlb-oooddp',
+                  oooDdpEnabled: next === 'rail-dlb-oooddp'
+                }
+              });
+            }}
+          >
+            <option value="rail-dlb-oooddp">Rail-Optimized + DLB Spraying (OOO-DDP)</option>
+            <option value="rail-srv6-usid">Rail-Optimized + SRv6 uSID Spine Pinning</option>
+            <option value="rail-pxn-ecmp">Rail-Optimized + NCCL PxN (4 QPs)</option>
+            <option value="tor-static-ecmp">Standard ToR + Static 5-Tuple ECMP (1 QP)</option>
+          </select>
+          {fabricTopology === 'rail-srv6-usid' && (
+            <input
+              className="nodrag w-full bg-gray-950 border border-indigo-700/60 rounded p-1 text-indigo-200 text-[10px] font-mono outline-none"
+              value={srv6UsidCarrier}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSrv6UsidCarrier(next);
+                syncData({
+                  fabric: {
+                    enabled: true,
+                    topology: fabricTopology,
+                    ncclPxn: true,
+                    bgpUnnumberedEvpn: true,
+                    srv6UsidCarrier: next
+                  }
+                });
+              }}
+              placeholder="fcbb:bb00:0202:0104:0040::"
+            />
+          )}
         </div>
       </div>
 

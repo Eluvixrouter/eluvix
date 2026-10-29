@@ -1,0 +1,71 @@
+# Disaggregated LLM Serving & GPUDirect RDMA Fabrics
+
+Modern LLM inference consists of two fundamentally opposite computational regimes:
+1. **Prefill (Prompt Processing)**: Compute-bound (`>2,048 FLOPs/Byte`), saturating Tensor Core matrix units across all prompt tokens in parallel.
+2. **Decode (Token Generation)**: Memory-bandwidth-bound (`16–32 FLOPs/Byte`), reading the entire model weight matrix from HBM3/HBM3e once for every generated token step.
+
+In traditional colocated serving, a single incoming 16K-token prompt prefill monopolizes Tensor Cores and injects a massive **Time-to-First-Token (TTFT) bubble** that stalls interactive token generation (**Inter-Token Latency, ITL**) for every concurrent user in the batch. Eluvix disaggregates Prefill and Decode onto dedicated hardware pools interconnected by **GPUDirect RDMA (`RoCEv2` / `InfiniBand`)** using **vLLM NIXL (`NixlConnector`)** and **SGLang Mooncake**.
+
+---
+
+## 1. The Roofline Model: Compute-Bound Prefill vs. Memory-Bound Decode
+
+On an **NVIDIA H100 SXM5 GPU** (`989.4 TFLOPS` dense FP8, `3.35 TB/s` HBM3 bandwidth), the Roofline operational ridge point occurs at:
+
+```text
+Ridge Operational Intensity = 989.4 TFLOPS / 3.35 TB/s ≈ 295.3 FLOPs/Byte
+```
+
+| Inference Phase | Primary Hardware Bottleneck | Arithmetic Intensity | Optimal Worker Topology |
+| :--- | :--- | :--- | :--- |
+| **Prefill (`prefill` role)** | Compute (Tensor Core FLOPS) | `>2,048 FLOPs/Byte` | High Tensor Parallelism (`TP4`/`TP8`), FP8 / NVFP4 Matrix Units |
+| **Decode (`decode` role)** | Memory Bandwidth (HBM3/HBM3e) | `16–32 FLOPs/Byte` | High Pipeline/Expert Parallelism (`PP`/`EP`), Low Per-Rank Batch Size |
+
+---
+
+## 2. KV-Cache Footprints: Standard GQA-8 vs. DeepSeek MLA
+
+Disaggregating Prefill and Decode requires streaming the prompt's computed **KV-Cache** from the Prefill node's GPU HBM directly into the Decode node's GPU HBM over RDMA.
+
+While standard **Grouped-Query Attention (`GQA-8`, e.g., Llama-3.3-70B)** requires `160 KiB/token` in `FP8` (`320 KiB/token` in `BF16`), **DeepSeek Multi-Head Latent Attention (`MLA`)** projects Keys and Values into a shared low-rank compressed latent vector (`d_c = 512` + `d_rope = 64`), shrinking the KV cache by **4.66x**:
+
+| Model Architecture | KV Bytes / Token (`FP8`) | 4,096-Token KV Footprint | Wire Transfer (`400GbE RoCEv2`) |
+| :--- | :--- | :--- | :--- |
+| **Llama-3.3-70B (`GQA-8`)** | `163,840 bytes/tok` (`160 KiB`) | `625.0 MB` | `12.50 ms` |
+| **DeepSeek-V3 / R1 (`MLA`)** | `35,136 bytes/tok` (`34.3 KiB`) | `134.0 MB` | **`2.68 ms` (4.66x faster)** |
+| **Llama-3.1-8B (`GQA-8`)** | `65,536 bytes/tok` (`64 KiB`) | `250.0 MB` | `5.00 ms` |
+
+---
+
+## 3. Layer-Wise Pipelined KV-Transfer (`vLLM NIXL` & `SGLang Mooncake`)
+
+Rather than waiting for all 80 transformer layers to finish prefill before starting the network transfer, Eluvix models **layer-by-layer pipelined GPUDirect RDMA**:
+- As soon as Layer `l` finishes its forward pass on the Prefill worker, an asynchronous `RDMA WRITE` streams Layer `l`'s KV tensors over `mlx5` / ConnectX-7 directly into the Decode worker's pre-allocated PagedAttention / RadixAttention buffer while Layer `l + 1` is computing.
+- This overlaps **96%–98%** of the wire transfer time with forward computation, exposing **less than 1–2ms** of unhidden network overhead.
+
+```bash
+# 1. Launch vLLM Prefill Producer Node with NIXL Connector
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_producer","kv_buffer_device":"mlx5_0"}' \
+  --tensor-parallel-size 4 --port 8000
+
+# 2. Launch vLLM Decode Consumer Node with NIXL Connector
+vllm serve meta-llama/Llama-3.3-70B-Instruct \
+  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_consumer","kv_buffer_device":"mlx5_0"}' \
+  --tensor-parallel-size 4 --port 8001
+```
+
+---
+
+## 4. Switchyard Prefill-Isolation & KV-Prefix Affinity
+
+Eluvix's Switchyard engine includes two dedicated disaggregation stages:
+1. **Prefill-Isolation (`prefillIsolationThresholdTokens`)**: Automatically steers heavy prompts (`>= 4,096 tokens` by default) to dedicated `prefill` or `disaggregated-conductor` nodes so interactive `decode` workers never experience TTFT stalls.
+2. **SHA-256 KV-Prefix Affinity (`kvPrefixAffinity`)**: Hashes shared system prompts and multi-turn conversation prefixes (`x-eluvix-kv-prefix-hash`), pinning follow-up turns to the worker already holding the warm KV cache in GPU HBM.
+
+Every response includes separated streaming latency and KV footprint headers:
+- `x-eluvix-ttft-ms`: Time to First Token (Prefill duration in milliseconds)
+- `x-eluvix-itl-ms`: Inter-Token Latency (Decode step duration in milliseconds per token)
+- `x-eluvix-kv-cache-kb`: Estimated KV-cache footprint in kilobytes
+- `x-eluvix-pd-role`: `prefill` | `decode` | `disaggregated-conductor` | `colocated`
+- `x-eluvix-kv-prefix-hash`: SHA-256 prefix affinity key

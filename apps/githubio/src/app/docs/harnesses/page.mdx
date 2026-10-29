@@ -18,14 +18,18 @@ Eluvix acts as both an **intelligent LLM upstream provider** to external harness
 
 ## Supported Harness Backends
 
-Eluvix natively integrates four primary harness paradigms:
+Eluvix natively integrates 8 self-hosted and federated agent harness paradigms:
 
 | Harness | Protocol | Default Port / Transport | Best Suited For |
 | :--- | :--- | :--- | :--- |
-| **TrueForge** | REST + SSE | `http://127.0.0.1:8790` | Headless enterprise agent workflows, CI/CD, sandboxed tool approvals |
-| **opencode** | REST | `http://127.0.0.1:4096` | Autonomous repository coding, refactoring, patch generation |
-| **ACP (Agent Client Protocol)** | stdio JSON-RPC 2.0 | Process Stdio | IDE integration, Zed/VSCode editor protocols, desktop agents |
-| **Hermes** | OpenAI-Compatible | `http://127.0.0.1:8080` | Generalized agent proxying, function calling loops |
+| **TrueForge** | REST + SSE / In-Process | `http://127.0.0.1:8790` (or built-in) | Headless enterprise agent workflows, CI/CD, sandboxed tool approvals |
+| **opencode (`@eluvix/opencode-harness`)** | REST + Mid-Loop Proxy | `http://127.0.0.1:4096` (or built-in) | Autonomous repository coding with mid-loop DLP, PromptGuard, step tiering & KV pinning |
+| **OpenHands** | REST Conversation Loop | `http://127.0.0.1:3000` | Autonomous SWE / CodeAct engineering agent with isolated workspace conversations |
+| **Mastra** | REST Agent Server | `http://127.0.0.1:4111` | TypeScript-native workflow & agent server (`/api/agents/{id}/generate`) |
+| **Letta (MemGPT)** | REST Stateful Agent | `http://127.0.0.1:8283` | Stateful agents with self-editing core & archival memory blocks |
+| **A2A (Agent2Agent)** | JSON-RPC 2.0 HTTP | `http://127.0.0.1:8900` | Linux Foundation / Google Agent2Agent federated peer task delegation |
+| **ACP (Agent Client Protocol)** | stdio JSON-RPC 2.0 | Process Stdio | IDE integration, Zed/VSCode/Goose editor protocols, desktop agents |
+| **Hermes** | OpenAI-Compatible | `http://127.0.0.1:8642` | Generalized agent proxying, function calling loops |
 
 ---
 
@@ -80,12 +84,15 @@ TrueForge binds to port `8790` and is immediately discoverable by Eluvix.
 
 ---
 
-## 2. opencode Integration
+## 2. Eluvix-Forked OpenCode (`@eluvix/opencode-harness`) & In-Process TrueForge
 
-[opencode](https://github.com/sst/opencode) is an autonomous software development agent engine. Eluvix communicates with opencode in server mode:
+In addition to connecting to external OpenCode (`:4096`) and TrueForge (`:8790`) servers, Eluvix ships with an embedded in-process TrueForge loop and **`@eluvix/opencode-harness`** (`packages/opencode-eluvix`), which intercepts every intermediate agent step inside the execution loop:
 
-- **Session Initialization**: `POST /session` binds an active local repository or workspace.
-- **Message Execution**: `POST /session/{id}/message` streams file modifications, syntax tree analyses, and bash command outputs back through Eluvix's unified gateway.
+- **Mid-Loop DLP (Privacy Guard on Tool Outputs)**: Before raw `bash` or `read_file` outputs re-enter the LLM context window, Eluvix scrubs leaked secrets, `.env` keys, and PII so private tokens never reach cloud models on subsequent turns.
+- **Indirect Prompt Injection Scanning**: Scans external files and web tool outputs through `PromptGuard` before the agent's next reasoning step.
+- **Switchyard Dynamic Step Tiering**: Automatically routes architectural planning steps (`step 0`) to frontier reasoning models, routine file inspection / `grep` steps to `$0` local coding models, and final patch synthesis to high-capability coders.
+- **KV-Cache Prefix Pinning**: Computes a deterministic SHA-256 prefix hash across the session's system instructions and tool definitions so vLLM and SGLang workers keep the session's PagedAttention / RadixAttention KV blocks warm across all turns.
+- **Unified Agent Harness Studio (`/harness`)**: Inspect live multi-turn trajectories, approve or reject suspended tool calls, and switch between all 8 harness adapters in real time.
 
 ---
 

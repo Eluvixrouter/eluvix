@@ -36,6 +36,9 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [quantizationPolicy, setQuantizationPolicy] = useState<string>(
     data?.quantizationPolicy || 'disabled'
   );
+  const [fabricPolicy, setFabricPolicy] = useState<string>(
+    data?.fabricPolicy || 'disabled'
+  );
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -312,6 +315,24 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
               <option value="disabled">Standard (Allow Any Quantization)</option>
               <option value="prefer-nvfp4-hadamard">🚀 Prefer NVFP4 + Hadamard (3.42x W4A4)</option>
               <option value="lossless-reasoning">🛡️ Lossless Reasoning (Block Naive INT4/MXFP4)</option>
+            </select>
+          </div>
+
+          <div className="pt-1.5 border-t border-gray-800">
+            <label className="block text-[10px] font-semibold text-indigo-400 mb-1">
+              🕸️ AI Cluster Clos Fabric Policy
+            </label>
+            <select
+              className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-indigo-500 rounded p-1 text-white text-[10px] outline-none"
+              value={fabricPolicy}
+              onChange={(e) => {
+                setFabricPolicy(e.target.value);
+                syncData({ fabricPolicy: e.target.value });
+              }}
+            >
+              <option value="disabled">Standard (Any Underlay Fabric)</option>
+              <option value="prefer-rail-optimized">⚡ Prefer Rail-Optimized (DLB / SRv6 / PxN)</option>
+              <option value="require-collision-free-fabric">🛡️ Require Collision-Free Fabric (Block Static ECMP)</option>
             </select>
           </div>
         </div>

@@ -16,7 +16,7 @@ export default function DocsLayout({
             <span className="text-xl">🛡️</span>
             <div>
               <div className="text-xs font-bold text-white">Sovereign Gateway</div>
-              <div className="text-[10px] text-sky-400 font-mono">v1.0.0 • eluvix.com</div>
+              <div className="text-[10px] text-sky-400 font-mono">v1.0.14 • eluvix.com</div>
             </div>
           </div>
 
@@ -31,6 +31,12 @@ export default function DocsLayout({
               <li>
                 <Link href="/docs/architecture" className="text-slate-400 hover:text-sky-400 transition-colors">
                   Architecture & Core
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/releases" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Release Notes</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">v1.0.14</span>
                 </Link>
               </li>
             </ul>
@@ -84,6 +90,35 @@ export default function DocsLayout({
               <li>
                 <Link href="/docs/playground" className="text-slate-400 hover:text-sky-400 transition-colors">
                   Trace Playground &amp; Datasets
+                </Link>
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h3 className="font-bold text-slate-100 mb-3 uppercase tracking-wider text-xs">Silicon &amp; Cluster Fabrics</h3>
+            <ul className="space-y-2 text-sm">
+              <li>
+                <Link href="/docs/clos-fabric" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Rail-Optimized Clos &amp; SRv6</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">New</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/quantization" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>NVFP4 &amp; Hadamard W4A4</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">New</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/confidential-computing" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Confidential Silicon (TEE)</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">New</span>
+                </Link>
+              </li>
+              <li>
+                <Link href="/docs/disaggregated-serving" className="text-slate-400 hover:text-sky-400 transition-colors">
+                  <span>Disaggregated RDMA P/D</span>
                 </Link>
               </li>
             </ul>

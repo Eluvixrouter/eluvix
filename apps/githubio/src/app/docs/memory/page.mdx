@@ -39,13 +39,17 @@ Upstream Model Output ──► Execution Finalized
 
 ---
 
-## Supported Context Providers
+## Supported Context & Knowledge Graph Providers
 
 | Provider | Type | Transport / Port | Storage Paradigm |
 | :--- | :--- | :--- | :--- |
-| **OpenViking** | External Service | REST `http://127.0.0.1:1933` | L0/L1/L2 Hierarchical context database by Volcengine |
+| **OpenViking** | External Service | REST `http://127.0.0.1:1933` | L0/L1/L2 Hierarchical context database by Volcengine (`viking://`) |
+| **Graphiti** | External Service | REST `http://127.0.0.1:8003` | Bi-temporal knowledge graph tracking time-stamped episodes and evolving facts |
+| **LightRAG** | External Service | REST `http://127.0.0.1:9621` | Dual-level entity/relation graph + vector RAG for technical documentation |
+| **Cognee** | External Service | REST `http://127.0.0.1:8004` | Extract-Cognify-Load (ECL) graph pipeline turning unstructured docs into graphs |
+| **Supermemory** | Cloud / Self-Hosted | REST `https://api.supermemory.ai` | Low-latency universal memory API |
 | **Mem0** | External Service | REST `http://127.0.0.1:8888` | Entity and graph-based episodic memory store |
-| **Built-in SQLite** | Embedded Engine | Direct SQLite (`~/.config/eluvix/memory.db`) | Local zero-dependency keyword & phrase matching |
+| **Built-in SQLite** | Embedded Engine | Direct SQLite (`~/.config/eluvix/memory.db`) | Local zero-dependency BM25 FTS5 keyword & phrase matching |
 
 ---
 

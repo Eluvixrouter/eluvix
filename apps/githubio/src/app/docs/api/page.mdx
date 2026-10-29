@@ -68,10 +68,15 @@ Content-Type: application/json
 Authorization: Bearer <ADMIN_PASSWORD_OR_NAMED_KEY>
 ```
 
-#### Optional Context & Session Headers
+#### Optional Context, Silicon & Fabric Policy Headers
 - `X-Eluvix-User`: Override user identifier for memory recall (if not using a named key).
 - `X-Eluvix-Session`: Session identifier for multi-turn conversational memory tracking.
 - `X-Eluvix-Hops`: Current hop count when chained through agent harnesses (used by Loop Guard).
+- `X-Eluvix-Confidential`: Per-request confidential silicon policy override (`prefer-tee`, `require-tee`, `require-dual-attestation`).
+- `X-Eluvix-Quantization`: Per-request quantization policy override (`prefer-nvfp4-hadamard`, `lossless-reasoning`).
+- `X-Eluvix-Fabric`: Per-request Clos fabric policy override (`prefer-rail-optimized`, `require-collision-free-fabric`).
+- `X-Eluvix-PD-Role`: Per-request disaggregation role preference (`prefill`, `decode`, `disaggregated-conductor`).
+- `X-Eluvix-Effort`: Reasoning effort hint (`low`, `medium`, `high`).
 
 #### Request Parameters
 
@@ -84,12 +89,23 @@ Authorization: Bearer <ADMIN_PASSWORD_OR_NAMED_KEY>
 | `max_tokens` | `number` | No | — | Maximum token limit for generated output. |
 
 #### Response Headers
-- `X-Eluvix-Selected-Upstream`: The upstream ID and backend that executed the request (e.g. `ollama-local`, `antigravity-cli`, `openai-cloud`).
-- `X-Eluvix-Complexity-Tier`: The complexity grade assigned by Switchyard (`simple`, `moderate`, `heavy`, `frontier`).
+- `X-Eluvix-Upstream`: The upstream ID that executed the request (e.g. `ollama-local`, `vllm-dlb-oooddp-moe`, `openai-cloud`).
+- `X-Eluvix-Complexity`: Numeric complexity score assigned by Switchyard (`1`–`4`).
 - `X-Eluvix-Cache`: Returns `HIT` if served from the semantic response cache, or `MISS` if executed upstream.
-- `X-Eluvix-Memory`: Active context memory provider (e.g. `openviking`, `mem0`, `sqlite`, or `none`).
+- `X-Eluvix-Memory`: Active context memory provider (e.g. `openviking`, `graphiti`, `lightrag`, `mem0`, `sqlite`, or `none`).
 - `X-Eluvix-Memory-Tokens`: Number of memory context tokens prepended to the prompt.
-- `X-Eluvix-Harness`: Agent harness identifier if routed to an agent engine (`trueforge`, `opencode`, `acp`, `hermes`).
+- `X-Eluvix-Knowledge`: Active static knowledge base RAG status (`injected`, `empty`, `disabled`).
+- `X-Eluvix-TTFT-Ms`: Time to First Token (Prefill latency in milliseconds).
+- `X-Eluvix-ITL-Ms`: Inter-Token Latency (Decode step duration in milliseconds per token).
+- `X-Eluvix-KV-Cache-KB`: Estimated KV-cache footprint in kilobytes (`GQA-8` vs `DeepSeek MLA`).
+- `X-Eluvix-PD-Role`: Disaggregated serving role (`prefill`, `decode`, `disaggregated-conductor`, `colocated`).
+- `X-Eluvix-TEE-Posture`: Confidential computing posture (`ATTESTED_DUAL_ENCLAVE`, `ATTESTED_CPU_ONLY`, `PLAINTEXT`).
+- `X-Eluvix-Quantization-Format`: Upstream weight/activation precision (`nvfp4`, `mxfp4`, `fp8_e4m3`, `int4_awq`, `bf16`).
+- `X-Eluvix-Outlier-Rotation`: Active outlier mitigation (`quarot_hadamard`, `spinquant_hadamard`, `svdquant_hadamard_lora`, `none`).
+- `X-Eluvix-Tensor-Core-PTX`: Executed Tensor Core instruction (`tcgen05.mma.kind::mxf4nvf4`, `tcgen05.mma.kind::mxf4`, `wgmma.mma_async`).
+- `X-Eluvix-Fabric-Topology`: Active GPU cluster fabric (`rail-dlb-oooddp`, `rail-srv6-usid`, `rail-pxn-ecmp`, `tor-static-ecmp`).
+- `X-Eluvix-RDMA-Transport`: Active RoCEv2 transport mode (`rocev2-dlb-oooddp`, `rocev2-srv6-usid`, `rocev2-pxn-4qp`, `rocev2-static-ecmp`).
+- `X-Eluvix-SRv6-uSID-Carrier`: 128-bit SRv6 Micro-SID carrier address (e.g. `fcbb:bb00:0202:0104:0040::`).
 - `X-Eluvix-Hops`: Incremented hop count returned to the caller.
 
 #### Request Example (cURL)

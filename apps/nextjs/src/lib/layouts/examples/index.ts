@@ -1357,6 +1357,108 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-vllm-obs', source: 'vllm-nvfp4-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-sglang-obs', source: 'sglang-nvfp4-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+
+  // 18. Rail-Optimized 800G Clos Fabric (BGP EVPN + SRv6 uSID + DLB OOO-DDP MoE Cluster)
+  {
+    id: 'rail-optimized-srv6-dlb-moe-fabric',
+    name: 'Rail-Optimized 800G Clos Fabric (SRv6 uSID + DLB OOO-DDP)',
+    description:
+      'Plane-separated 8-Rail Leaf-Spine AI GPU fabric with RFC 8950 BGP Unnumbered + EVPN, 128-bit SRv6 Micro-SID (uSID) deterministic Spine pinning, and Switch DLB packet spraying with ConnectX-8 Out-of-Order Direct Data Placement (97.8% AllToAll MoE utilization, zero PFC pause storms).',
+    isExample: true,
+    version: 1,
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.78 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Distributed MoE / Long-Context Request' } },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 420, y: 220 },
+        data: {
+          label: 'Fabric-Aware Clos Switchyard',
+          strategy: 'cost-complexity',
+          fabricPolicy: 'require-collision-free-fabric',
+          quantizationPolicy: 'prefer-nvfp4-hadamard',
+          kvPrefixAffinity: true,
+          prefillIsolationThresholdTokens: 4096
+        }
+      },
+      {
+        id: 'sglang-rail-dlb-1',
+        type: 'sglangNode',
+        position: { x: 880, y: 80 },
+        data: {
+          label: 'SGLang DeepSeek-V3 MoE (Rail-0 DLB + ConnectX-8 OOO-DDP)',
+          endpoint: 'http://localhost:30000',
+          selectedModel: 'deepseek-ai/DeepSeek-V3',
+          priority: 34,
+          disaggregation: {
+            role: 'pd-disaggregated',
+            kvConnector: 'mooncake',
+            kvCacheDtype: 'fp8_e4m3',
+            tensorParallelSize: 8,
+            rdmaDevice: 'mlx5_0'
+          },
+          fabric: {
+            enabled: true,
+            topology: 'rail-dlb-oooddp',
+            railId: 0,
+            ncclPxn: true,
+            qpsPerConnection: 4,
+            bgpUnnumberedEvpn: true,
+            dlbPacketSpraying: true,
+            oooDdpEnabled: true,
+            linkSpeedGbps: 800
+          }
+        }
+      },
+      {
+        id: 'vllm-rail-srv6-1',
+        type: 'vllmNode',
+        position: { x: 880, y: 380 },
+        data: {
+          label: 'vLLM NIXL Prefill/Decode (Rail-1 SRv6 uSID Pinning)',
+          endpoint: 'http://localhost:8000',
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct-NVFP4-QuaRot',
+          priority: 31,
+          disaggregation: {
+            role: 'pd-disaggregated',
+            kvConnector: 'NixlConnector',
+            kvCacheDtype: 'fp8_e4m3',
+            tensorParallelSize: 4,
+            rdmaDevice: 'mlx5_0:1'
+          },
+          fabric: {
+            enabled: true,
+            topology: 'rail-srv6-usid',
+            railId: 1,
+            ncclPxn: true,
+            qpsPerConnection: 4,
+            bgpUnnumberedEvpn: true,
+            srv6UsidCarrier: 'fcbb:bb00:0202:0104:0040::',
+            linkSpeedGbps: 800
+          }
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1360, y: 220 },
+        data: {
+          projectName: 'rail-clos-srv6-dlb-fabric',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-sw', source: 'input-1', target: 'switchyard-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-sw-sglang', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'sglang-rail-dlb-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-vllm', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'vllm-rail-srv6-1', animated: true, style: { stroke: '#06b6d4' } },
+      { id: 'e-sglang-obs', source: 'sglang-rail-dlb-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-vllm-obs', source: 'vllm-rail-srv6-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
 

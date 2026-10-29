@@ -1,6 +1,7 @@
 import type { PromptGuardConfig, PrivacyGuardConfig } from './guard.js';
 import type { EnclaveArchitectureId } from './tee-attestation.js';
 import type { QuantizationConfig, QuantizationPolicy } from './microscaling-quantization.js';
+import type { FabricOverlayConfig, FabricRoutingPolicy } from './clos-fabric-routing.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -69,6 +70,10 @@ export interface SwitchyardConfig {
    * Sub-4-Bit Quantization-Aware routing policy (OCP MXFP4 / NVIDIA Blackwell NVFP4 + Walsh-Hadamard outlier rotation).
    */
   quantizationPolicy?: QuantizationPolicy;
+  /**
+   * Rail-Optimized Clos Fabric routing policy (NCCL PxN, BGP Unnumbered EVPN, SRv6 uSID, DLB + OOO-DDP).
+   */
+  fabricPolicy?: FabricRoutingPolicy;
 }
 
 export interface ModelGatewayConfig {
@@ -108,6 +113,7 @@ export interface RouterConfig {
   egressPolicy?: EgressPolicy;
   confidentialPolicy?: ConfidentialPolicy;
   quantizationPolicy?: QuantizationPolicy;
+  fabricPolicy?: FabricRoutingPolicy;
   fallbackStrategy?: 'round-robin' | 'priority';
   switchyard?: SwitchyardConfig;
   modelGateway?: ModelGatewayConfig;
@@ -136,6 +142,7 @@ export * from './consensus.js';
 export * from './kv-math.js';
 export * from './tee-attestation.js';
 export * from './microscaling-quantization.js';
+export * from './clos-fabric-routing.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -187,6 +194,7 @@ export interface RouteTraceStep {
     | 'confidential-enclave'
     | 'quantization-aware-guard'
     | 'quantization-microscaling'
+    | 'clos-fabric-routing'
     | 'memory'
     | 'memory-egress'
     | 'knowledge-rag'
@@ -293,6 +301,35 @@ export interface UpstreamConfig {
   disaggregation?: DisaggregationConfig;
   confidential?: ConfidentialComputeConfig;
   quantization?: QuantizationConfig;
+  fabric?: FabricOverlayConfig;
+}
+
+/**
+ * Evaluates whether an upstream is deployed on a collision-free Rail-Optimized
+ * Leaf-Spine Clos fabric (NCCL PxN, SRv6 uSID deterministic spine pinning, or
+ * Switch DLB packet spraying with ConnectX-7/8 OOO-DDP).
+ */
+export function isCollisionFreeRailFabricUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  if (upstream.capabilities?.includes('rail-srv6-dlb')) return true;
+  const f = upstream.fabric;
+  if (!f || f.enabled === false) return false;
+  return (
+    f.topology === 'rail-dlb-oooddp' ||
+    f.topology === 'rail-srv6-usid' ||
+    (f.topology === 'rail-pxn-ecmp' && f.ncclPxn !== false)
+  );
+}
+
+/**
+ * Evaluates whether an upstream is deployed on a legacy Top-of-Rack (ToR) static
+ * 5-tuple ECMP fabric subject to 99.76% spine hash collision probability and PFC pause storms.
+ */
+export function isLegacyEcmpFabricUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  const f = upstream.fabric;
+  if (!f || f.enabled === false) return false;
+  return f.topology === 'tor-static-ecmp';
 }
 
 /**
@@ -1908,6 +1945,24 @@ export class Eluvix {
                 upstream.quantization.ptxInstruction || defaultPtx
               );
             }
+            if (upstream.fabric?.topology) {
+              newResponse.headers.set('x-eluvix-fabric-topology', upstream.fabric.topology);
+              const rdmaTransport =
+                upstream.fabric.topology === 'rail-dlb-oooddp'
+                  ? 'rocev2-dlb-oooddp'
+                  : upstream.fabric.topology === 'rail-srv6-usid'
+                  ? 'rocev2-srv6-usid'
+                  : upstream.fabric.topology === 'rail-pxn-ecmp'
+                  ? 'rocev2-pxn-4qp'
+                  : 'rocev2-static-ecmp';
+              newResponse.headers.set('x-eluvix-rdma-transport', rdmaTransport);
+              if (upstream.fabric.srv6UsidCarrier || upstream.fabric.topology === 'rail-srv6-usid') {
+                newResponse.headers.set(
+                  'x-eluvix-srv6-usid-carrier',
+                  upstream.fabric.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::'
+                );
+              }
+            }
             const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
             if (reqPrefixHash !== 'empty') {
               newResponse.headers.set('x-eluvix-kv-prefix-hash', reqPrefixHash);
@@ -2427,6 +2482,65 @@ export class Eluvix {
           kept: nvfp4Hadamard.map(u => u.id)
         });
         targetUpstreams = [...nvfp4Hadamard, ...nonNaiveRest, ...naiveRest];
+      }
+    }
+
+    // Rail-Optimized Leaf-Spine Clos Fabric Routing Policy (NCCL PxN, SRv6 uSID, DLB + OOO-DDP)
+    const FABRIC_RANKS: Record<FabricRoutingPolicy, number> = {
+      'disabled': 0,
+      'prefer-rail-optimized': 1,
+      'require-collision-free-fabric': 2
+    };
+    const serverFabricPolicy: FabricRoutingPolicy =
+      switchyardConfig.fabricPolicy ||
+      this.config.fabricPolicy ||
+      'disabled';
+    const clientFabricPolicy = effectiveRequest.metadata?.fabricPolicy as FabricRoutingPolicy | undefined;
+    const fabricPolicy: FabricRoutingPolicy =
+      clientFabricPolicy && FABRIC_RANKS[clientFabricPolicy] != null
+        ? (FABRIC_RANKS[clientFabricPolicy] > FABRIC_RANKS[serverFabricPolicy] ? clientFabricPolicy : serverFabricPolicy)
+        : serverFabricPolicy;
+
+    if (fabricPolicy === 'require-collision-free-fabric') {
+      const collisionFree = targetUpstreams.filter(u => !isLegacyEcmpFabricUpstream(u));
+      const excludedEcmp = targetUpstreams.filter(u => isLegacyEcmpFabricUpstream(u));
+      if (excludedEcmp.length > 0 || collisionFree.length === 0) {
+        steps.push({
+          stage: 'clos-fabric-routing',
+          detail: 'fabricPolicy=require-collision-free-fabric: excluding legacy ToR static 5-tuple ECMP upstreams to prevent 99.76% spine elephant-flow hash collisions and PFC pause storms',
+          kept: collisionFree.map(u => u.id),
+          removed: excludedEcmp.map(u => u.id)
+        });
+      }
+      if (collisionFree.length === 0) {
+        const err: any = new Error(
+          `No collision-free Rail-Optimized fabric upstream (DLB+OOO-DDP, SRv6 uSID, or NCCL PxN) available for model: ${effectiveRequest.model} (fabricPolicy: require-collision-free-fabric)`
+        );
+        err.routeSteps = steps;
+        err.fabricUnavailable = true;
+        throw err;
+      }
+      targetUpstreams = collisionFree;
+    }
+
+    if (fabricPolicy === 'prefer-rail-optimized' || fabricPolicy === 'require-collision-free-fabric') {
+      const railUpstreams = targetUpstreams.filter(u => isCollisionFreeRailFabricUpstream(u));
+      if (railUpstreams.length > 0) {
+        const fabricTierScore = (u: UpstreamConfig): number => {
+          const t = u.fabric?.topology;
+          if (t === 'rail-dlb-oooddp') return 3;
+          if (t === 'rail-srv6-usid') return 2;
+          if (t === 'rail-pxn-ecmp') return 1;
+          return 0;
+        };
+        const sortedRail = [...railUpstreams].sort((a, b) => fabricTierScore(b) - fabricTierScore(a));
+        const rest = targetUpstreams.filter(u => !railUpstreams.includes(u));
+        steps.push({
+          stage: 'clos-fabric-routing',
+          detail: `fabricPolicy=${fabricPolicy}: prioritizing Rail-Optimized Clos upstreams (DLB Packet Spraying + OOO-DDP / SRv6 uSID / NCCL PxN) for 94.8%-97.8% effective bus bandwidth`,
+          kept: sortedRail.map(u => u.id)
+        });
+        targetUpstreams = [...sortedRail, ...rest];
       }
     }
 
