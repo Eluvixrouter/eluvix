@@ -2,6 +2,12 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
+import {
+  calculateEcmpHashPolarization,
+  generateFrrBgpUnnumberedConfig,
+  generateHostFabricTuningScript
+} from '@eluvix/router-core/clos-fabric';
+import { generateModelOptNvfp4Script } from '@eluvix/router-core/microscaling';
 
 interface GpuInfo {
   vendor: string;
@@ -136,17 +142,10 @@ export default function ProviderPage() {
   const closFabricSim = useMemo(() => {
     const K = fabricSpinesK;
     const M = fabricFlowsM;
-    let zeroCollisionProb = 0;
-    if (M <= K) {
-      let p = 1.0;
-      for (let i = 0; i < M; i++) {
-        p *= (K - i) / K;
-      }
-      zeroCollisionProb = p;
-    }
-    const collisionPct = ((1 - zeroCollisionProb) * 100).toFixed(2);
-    const zeroCollisionPct = (zeroCollisionProb * 100).toFixed(2);
-    const idleLinksPct = (Math.pow(1 - 1 / K, M) * 100).toFixed(2);
+    const ecmp = calculateEcmpHashPolarization(K, M);
+    const zeroCollisionPct = (ecmp.zeroCollisionProbability * 100).toFixed(2);
+    const collisionPct = ecmp.collisionProbabilityPct.toFixed(2);
+    const idleLinksPct = ecmp.expectedIdleUplinksPct.toFixed(2);
     const speedScale = fabricLinkGbps === 800 ? 2 : 1;
 
     const hop0Da = `fcbb:bb00:${fabricSpineUsid}:${fabricLeafUsid}:0040::`;
@@ -157,9 +156,9 @@ export default function ProviderPage() {
       {
         id: 'tor-static-ecmp',
         name: 'Standard ToR + Static 5-Tuple ECMP (1 QP)',
-        allReduceBw: `${Math.round(214 * speedScale)} GB/s`,
-        allToAllBw: `${Math.round(168 * speedScale)} GB/s`,
-        util: '44.6%',
+        allReduceBw: `${Math.round(214 * speedScale * (ecmp.effectiveStaticEcmpUtilizationPct / 41.0))} GB/s`,
+        allToAllBw: `${Math.round(168 * speedScale * (ecmp.effectiveStaticEcmpUtilizationPct / 41.0))} GB/s`,
+        util: `${ecmp.effectiveStaticEcmpUtilizationPct}%`,
         pfc: 'Frequent (Tail stalls)',
         status: 'degraded'
       },
@@ -192,75 +191,24 @@ export default function ProviderPage() {
       }
     ];
 
-    const frrConf = [
-      'frr defaults datacenter',
-      'hostname rail0-leaf01',
-      'service integrated-vtysh-config',
-      '!',
-      'interface lo',
-      ' ip address 10.255.0.11/32',
-      ' ipv6 address fd00:255:0::11/128',
-      '!',
-      'segment-routing',
-      ' srv6',
-      '  locators',
-      '   locator RAIL0_LOC1',
-      '    prefix fcbb:bb00:0101::/48 block-len 32 node-len 16 func-bits 16',
-      '    behavior usid',
-      '   exit',
-      '  exit',
-      ' exit',
-      'exit',
-      '!',
-      'router bgp 65101',
-      ' bgp router-id 10.255.0.11',
-      ' bgp bestpath as-path multipath-relax',
-      ' maximum-paths 64',
-      ' neighbor SPINE_FABRIC peer-group',
-      ' neighbor SPINE_FABRIC remote-as external',
-      ' neighbor SPINE_FABRIC capability extended-nexthop',
-      ' neighbor SPINE_FABRIC bfd 3 100 100',
-      ' ! Zero /31 point-to-point IPs needed — eBGP Unnumbered (RFC 8950) over fe80::/64',
-      ' neighbor Ethernet0 interface peer-group SPINE_FABRIC',
-      ' neighbor Ethernet4 interface peer-group SPINE_FABRIC',
-      ' neighbor Ethernet8 interface peer-group SPINE_FABRIC',
-      ' neighbor Ethernet12 interface peer-group SPINE_FABRIC',
-      ' address-family l2vpn evpn',
-      '  neighbor SPINE_FABRIC activate',
-      '  advertise-all-vni',
-      ' exit-address-family',
-      ' segment-routing srv6',
-      '  locator RAIL0_LOC1',
-      ' exit',
-      '!'
-    ].join('\n');
+    const frrConf = generateFrrBgpUnnumberedConfig({
+      railIndex: 0,
+      leafIndex: 1,
+      srv6BlockPrefix: 'fcbb:bb00'
+    });
 
-    const hostCmd = [
-      '# 1. Enable NCCL PxN (NVLink + 1-Hop ~380ns Rail Switch routing) and 4-QP spraying',
-      'export NCCL_CROSS_NIC=1',
-      'export NCCL_PXN_DISABLE=0',
-      'export NCCL_IB_QPS_PER_CONNECTION=4',
-      'export NCCL_IB_SPLIT_DATA_ON_QPS=1',
-      'export NCCL_IB_GID_INDEX=3',
-      'export NCCL_IB_TC=106',
-      'export NCCL_NET_GDR_LEVEL=SYS',
-      '',
-      '# 2. Deterministic SRv6 Micro-SID (uSID) Spine path pinning via iproute2 (Zero SRH bytes)',
-      'sysctl -w net.ipv6.conf.all.seg6_enabled=1',
-      'ip route replace 10.100.2.0/24 encap seg6 mode encap.red \\',
-      `  segs ${hop0Da} dev eth0`,
-      `ip -6 route replace fcbb:bb00:${fabricLeafUsid}:0040::/64 \\`,
-      '  encap seg6local action End.DT4 vrftable 100 dev lo',
-      '',
-      '# 3. Enable Out-of-Order RDMA Direct Data Placement (OOO-DDP) on ConnectX-7 / ConnectX-8',
-      'mlxconfig -d /dev/mst/mt4129_pciconf0 -y set \\',
-      '  ROCE_NEXT_PROTOCOL=254 ROCE_CC_PRIO_MASK_P1=255 OO_RECV_WR_EN=1'
-    ].join('\n');
+    const hostCmd = generateHostFabricTuningScript({
+      srv6Carrier: hop0Da,
+      destSubnet: '10.100.2.0/24',
+      enableOooDdp: fabricEnableDlb
+    });
 
     return {
       collisionPct,
       zeroCollisionPct,
       idleLinksPct,
+      maxFlows: ecmp.expectedMaxFlowsPerUplink,
+      derivationMethod: ecmp.derivationMethod,
       hop0Da,
       hop1Da,
       hop2Da,
@@ -268,7 +216,7 @@ export default function ProviderPage() {
       frrConf,
       hostCmd
     };
-  }, [fabricSpinesK, fabricFlowsM, fabricLinkGbps, fabricSpineUsid, fabricLeafUsid]);
+  }, [fabricSpinesK, fabricFlowsM, fabricLinkGbps, fabricSpineUsid, fabricLeafUsid, fabricEnableDlb]);
 
   const fp4SimResult = useMemo(() => {
     const hiddenDim = fp4ModelParamsB === 405 ? 16384 : fp4ModelParamsB === 671 ? 7168 : 8192;
@@ -351,22 +299,17 @@ export default function ProviderPage() {
         : 'meta-llama/Llama-3.3-70B-Instruct';
     const exportDir = `/models/${modelName.split('/')[1]}-NVFP4-QuaRot`;
     const tpSize = fp4ModelParamsB === 70 ? 1 : 4;
-    const modelOptCmd = [
-      `python3 -m modelopt.torch.quantization.examples.llm_ptq \\`,
-      `  --model "${modelName}" \\`,
-      `  --qformat nvfp4 \\`,
-      `  --kv_cache_dtype fp8 \\`,
-      `  --calib_size 512 \\`,
-      `  --auto_quantize_bits 4.5 \\`,
-      `  --export_path "${exportDir}"`,
-      ``,
-      `vllm serve "${exportDir}" \\`,
-      `  --quantization modelopt \\`,
-      `  --kv-cache-dtype fp8_e4m3 \\`,
-      `  --tensor-parallel-size ${tpSize} \\`,
-      `  --gpu-memory-utilization 0.92 \\`,
-      `  --port 8000`
-    ].join('\n');
+    const modelOptCmd = generateModelOptNvfp4Script({
+      modelIn: modelName,
+      exportDir,
+      qformat: 'nvfp4',
+      kvCacheDtype: 'fp8_e4m3',
+      calibSize: 512,
+      autoQuantizeBits: 4.5,
+      tensorParallelSize: tpSize,
+      port: 8000,
+      engine: 'vllm'
+    });
 
     return {
       hiddenDim,
@@ -1879,6 +1822,12 @@ export default function ProviderPage() {
 
           {/* Benchmark Comparison Table */}
           <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60">
+            <div className="px-3 py-1.5 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span className="font-semibold text-slate-300">Format Benchmarks &amp; SVD Residuals</span>
+              <span className="text-[10px] text-amber-300/90 bg-amber-950/40 border border-amber-800/60 px-2 py-0.5 rounded">
+                Reference Benchmark Profile: ModelOpt Llama-3.3-70B
+              </span>
+            </div>
             <table className="w-full text-left text-xs font-mono">
               <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800">
                 <tr>
@@ -2127,6 +2076,12 @@ export default function ProviderPage() {
 
           {/* 4-Architecture Fabric Benchmark Table */}
           <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60">
+            <div className="px-3 py-1.5 bg-slate-900/60 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span className="font-semibold text-slate-300">Fabric Architecture Comparison</span>
+              <span className="text-[10px] text-indigo-300 bg-indigo-950/40 border border-indigo-800/60 px-2 py-0.5 rounded">
+                Derived: Exact Multinomial DP
+              </span>
+            </div>
             <table className="w-full text-left text-xs font-mono">
               <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800">
                 <tr>

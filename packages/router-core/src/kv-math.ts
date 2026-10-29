@@ -297,8 +297,9 @@ export function simulateDisaggregatedRdma(
   const matchedProfile = Object.values(MODEL_KV_PROFILES).find(p => p.name === footprint.modelName) || MODEL_KV_PROFILES['llama-3.3-70b'];
   const hiddenDim = matchedProfile.hiddenDim || 8192;
   const layers = matchedProfile.layers || 80;
+  const bytesPerElement = footprint.bytesPerElement || 2;
   const arithmeticIntensityFlopsPerByte =
-    (2 * promptTokens) / (1 + (2 * promptTokens) / hiddenDim);
+    (2 * promptTokens) / (bytesPerElement * (1 + (2 * promptTokens) / hiddenDim));
   const isComputeBoundPrefill = arithmeticIntensityFlopsPerByte > h100RooflineRidgeFlopsPerByte;
 
   // Compute time estimate on 4x H100 (TP=4): ~35-45 TFLOPS achieved per GPU on prefill
@@ -331,8 +332,9 @@ export function simulateDisaggregatedRdma(
   const colocatedP99ItlStallMs = Number((18 + (chunkFactor * 0.048)).toFixed(1));
 
   // Disaggregated ITL:
-  // The Decode pool runs pure GEMV without SM contention from prompt prefill.
-  const disaggregatedP99ItlMs = Number((18.5 + ((promptTokens % 10) * 0.45)).toFixed(1));
+  // Pure GEMV decode step without SM prefill contention. Step latency is bounded
+  // by HBM bandwidth reading active weights and KV cache, scaling smoothly with context size.
+  const disaggregatedP99ItlMs = Number((18.2 + (footprint.totalMiB * 0.0015)).toFixed(1));
 
   const slaTargetItlMs = 30.0;
   return {

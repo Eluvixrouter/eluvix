@@ -9,6 +9,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./clos-fabric": {
+      "types": "./dist/clos-fabric-routing.d.ts",
+      "import": "./dist/clos-fabric-routing.js",
+      "default": "./dist/clos-fabric-routing.js"
+    },
+    "./microscaling": {
+      "types": "./dist/microscaling-quantization.d.ts",
+      "import": "./dist/microscaling-quantization.js",
+      "default": "./dist/microscaling-quantization.js"
+    },
+    "./shell-utils": {
+      "types": "./dist/shell-utils.d.ts",
+      "import": "./dist/shell-utils.js",
+      "default": "./dist/shell-utils.js"
     }
   },
   "type": "module",

@@ -72,15 +72,34 @@ export async function POST(req: Request) {
     const routerConfig = getConfig();
     const defaultModel = routerConfig.modelGateway?.primaryModel || routerConfig.defaultModel || 'auto';
 
+    const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);
+    const VALID_QUANT = new Set(['disabled', 'prefer-nvfp4-hadamard', 'lossless-reasoning']);
+    const VALID_FABRIC = new Set(['disabled', 'prefer-rail-optimized', 'require-collision-free-fabric']);
+
     const confidentialPolicyHeader = req?.headers?.get('x-eluvix-confidential');
     const quantizationPolicyHeader = req?.headers?.get('x-eluvix-quantization');
     const fabricPolicyHeader = req?.headers?.get('x-eluvix-fabric');
-    const metadata = {
-      ...(body.metadata || {}),
-      ...(confidentialPolicyHeader ? { confidentialPolicy: confidentialPolicyHeader } : {}),
-      ...(quantizationPolicyHeader ? { quantizationPolicy: quantizationPolicyHeader } : {}),
-      ...(fabricPolicyHeader ? { fabricPolicy: fabricPolicyHeader } : {})
-    };
+
+    const metadata: Record<string, any> = { ...(body.metadata || {}) };
+    if (metadata.confidentialPolicy && !VALID_CONFIDENTIAL.has(String(metadata.confidentialPolicy))) {
+      delete metadata.confidentialPolicy;
+    }
+    if (metadata.quantizationPolicy && !VALID_QUANT.has(String(metadata.quantizationPolicy))) {
+      delete metadata.quantizationPolicy;
+    }
+    if (metadata.fabricPolicy && !VALID_FABRIC.has(String(metadata.fabricPolicy))) {
+      delete metadata.fabricPolicy;
+    }
+
+    if (confidentialPolicyHeader && VALID_CONFIDENTIAL.has(confidentialPolicyHeader)) {
+      metadata.confidentialPolicy = confidentialPolicyHeader;
+    }
+    if (quantizationPolicyHeader && VALID_QUANT.has(quantizationPolicyHeader)) {
+      metadata.quantizationPolicy = quantizationPolicyHeader;
+    }
+    if (fabricPolicyHeader && VALID_FABRIC.has(fabricPolicyHeader)) {
+      metadata.fabricPolicy = fabricPolicyHeader;
+    }
 
     const explanation = router.explainRoute(
       {

@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
 
+// Cached ephemeral P-384 keypair used for signing simulated Entity Attestation Tokens (EAT)
+const ephemeralP384Key = crypto.generateKeyPairSync('ec', { namedCurve: 'secp384r1' });
+
 /**
  * Zero-Trust Silicon: Confidential Computing with AMD SEV-SNP, Intel TDX,
  * and NVIDIA H100 CC-Mode / Blackwell B200 TEE-I/O Attestation (IETF RATS & Trustee KBS).
@@ -34,6 +37,7 @@ export interface EnclaveArchitectureProfile {
   singleGpuThroughputPct: number;
   longContextTtftOverheadPct: number;
   multiGpuAllReducePct: number;
+  spdmSessionInitSeconds: number;
   hasCpuMemoryEncryption: boolean;
   hasRmpOrSeptIntegrity: boolean;
   hasRestrictedInjection: boolean;
@@ -58,6 +62,7 @@ export const ENCLAVE_ARCHITECTURES: Record<EnclaveArchitectureId, EnclaveArchite
     singleGpuThroughputPct: 94.5,
     longContextTtftOverheadPct: 5.2,
     multiGpuAllReducePct: 81.4,
+    spdmSessionInitSeconds: 0.0,
     hasCpuMemoryEncryption: true,
     hasRmpOrSeptIntegrity: true,
     hasRestrictedInjection: true,
@@ -80,6 +85,7 @@ export const ENCLAVE_ARCHITECTURES: Record<EnclaveArchitectureId, EnclaveArchite
     singleGpuThroughputPct: 98.9,
     longContextTtftOverheadPct: 1.0,
     multiGpuAllReducePct: 98.6,
+    spdmSessionInitSeconds: 1.55,
     hasCpuMemoryEncryption: true,
     hasRmpOrSeptIntegrity: true,
     hasRestrictedInjection: true,
@@ -102,6 +108,7 @@ export const ENCLAVE_ARCHITECTURES: Record<EnclaveArchitectureId, EnclaveArchite
     singleGpuThroughputPct: 98.0,
     longContextTtftOverheadPct: 1.5,
     multiGpuAllReducePct: 99.0,
+    spdmSessionInitSeconds: 0.0,
     hasCpuMemoryEncryption: true,
     hasRmpOrSeptIntegrity: false,
     hasRestrictedInjection: false,
@@ -124,6 +131,7 @@ export const ENCLAVE_ARCHITECTURES: Record<EnclaveArchitectureId, EnclaveArchite
     singleGpuThroughputPct: 100.0,
     longContextTtftOverheadPct: 0.0,
     multiGpuAllReducePct: 100.0,
+    spdmSessionInitSeconds: 0.0,
     hasCpuMemoryEncryption: false,
     hasRmpOrSeptIntegrity: false,
     hasRestrictedInjection: false,
@@ -172,7 +180,7 @@ export function simulateConfidentialEnclave(params: {
   // H100 CC-On: 74.1 tok/s (-5.5%), 1495ms 16K TTFT (+5.2%), 6.8s 70GB load
   // B200 TEE-I/O: 77.5 tok/s (-1.1%), 1435ms 16K TTFT (+1.0%), 2.9s 70GB load
   const coldH2dTransferSeconds = Number(
-    (checkpointSizeGb / arch.effectiveH2dBandwidthGBps + (arch.gpuTee === 'b200-tee-io' ? 1.55 : 0)).toFixed(1)
+    (checkpointSizeGb / arch.effectiveH2dBandwidthGBps + arch.spdmSessionInitSeconds).toFixed(1)
   );
   const shortPromptTokPerSec = Number(((78.4 * arch.singleGpuThroughputPct) / 100).toFixed(1));
   const longContext16kTtftMs = Math.round(1420 * (1 + arch.longContextTtftOverheadPct / 100));
@@ -436,6 +444,9 @@ export function verifyDualAttestationReport(
   let eatTokenIssued: string | null = null;
 
   if (affirming) {
+    const header = Buffer.from(
+      JSON.stringify({ alg: 'ES384', typ: 'EAT' })
+    ).toString('base64url');
     const payload = Buffer.from(
       JSON.stringify({
         iss: 'eluvix-rats-verifier',
@@ -444,10 +455,14 @@ export function verifyDualAttestationReport(
         vmpl: evidence.vmpl,
         meas: evidence.launchMeasurementSha384.slice(0, 32),
         gpu_rim: true,
+        simulatedSiliconRoot: true,
+        attestationMode: 'simulated-ephemeral-p384',
         iat: Math.floor(Date.now() / 1000),
       })
     ).toString('base64url');
-    eatTokenIssued = `eyJhbGciOiJFUzM4NCIsInR5cCI6IkVBVCJ9.${payload}.silicon_ecdsa_p384_sig`;
+    const signable = `${header}.${payload}`;
+    const sig = crypto.sign('sha384', Buffer.from(signable), ephemeralP384Key.privateKey);
+    eatTokenIssued = `${signable}.${sig.toString('base64url')}`;
   }
 
   return {

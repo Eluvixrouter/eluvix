@@ -26,7 +26,9 @@ describe('Rail-Optimized Leaf-Spine Clos Fabric: BGP EVPN, SRv6 uSID & DLB OOO-D
       expect(stats.collisionProbabilityPct).toBeCloseTo(99.76, 2);
       // (7/8)^8 = 0.3436089...
       expect(stats.expectedIdleUplinksPct).toBeCloseTo(34.36, 2);
-      expect(stats.effectiveStaticEcmpUtilizationPct).toBe(44.6);
+      expect(stats.effectiveStaticEcmpUtilizationPct).toBe(41);
+      expect(stats.expectedMaxFlowsPerUplink).toBe(2.6);
+      expect(stats.derivationMethod).toBe('exact-multinomial-dp');
     });
 
     it('returns 0 zero-collision probability when M > K (pigeonhole principle)', () => {

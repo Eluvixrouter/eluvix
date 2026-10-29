@@ -132,20 +132,23 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
   const sandboxChanged = fieldDiffers((current as any)?.sandbox, (next as any).sandbox) || undefined;
   const consensusChanged = fieldDiffers((current as any)?.consensusGroups, (next as any).consensusGroups) || undefined;
   const fallbackChainsChanged = fieldDiffers((current as any)?.fallbackChains, (next as any).fallbackChains) || undefined;
+  const normalizePolicy = (val: unknown): string => {
+    return typeof val === 'string' && val.trim() && val !== 'disabled' ? val.trim() : 'disabled';
+  };
   const confidentialPolicyChanged =
     fieldDiffers(
-      (current as any)?.confidentialPolicy ?? current?.switchyard?.confidentialPolicy,
-      (next as any).confidentialPolicy ?? next.switchyard?.confidentialPolicy
+      normalizePolicy(current?.switchyard?.confidentialPolicy || (current as any)?.confidentialPolicy),
+      normalizePolicy(next.switchyard?.confidentialPolicy || (next as any).confidentialPolicy)
     ) || undefined;
   const quantizationPolicyChanged =
     fieldDiffers(
-      (current as any)?.quantizationPolicy ?? current?.switchyard?.quantizationPolicy,
-      (next as any).quantizationPolicy ?? next.switchyard?.quantizationPolicy
+      normalizePolicy(current?.switchyard?.quantizationPolicy || (current as any)?.quantizationPolicy),
+      normalizePolicy(next.switchyard?.quantizationPolicy || (next as any).quantizationPolicy)
     ) || undefined;
   const fabricPolicyChanged =
     fieldDiffers(
-      (current as any)?.fabricPolicy ?? current?.switchyard?.fabricPolicy,
-      (next as any).fabricPolicy ?? next.switchyard?.fabricPolicy
+      normalizePolicy(current?.switchyard?.fabricPolicy || (current as any)?.fabricPolicy),
+      normalizePolicy(next.switchyard?.fabricPolicy || (next as any).fabricPolicy)
     ) || undefined;
 
   return {

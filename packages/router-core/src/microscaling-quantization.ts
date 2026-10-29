@@ -4,6 +4,12 @@
  * Quantization-Aware LLM Inference.
  */
 
+import {
+  escapeShellArg,
+  sanitizeSafeIdentifier,
+  sanitizePositiveInt
+} from './shell-utils.js';
+
 export type QuantizationFormat =
   | 'bf16'
   | 'fp16'
@@ -162,14 +168,77 @@ export function quantizeScaleToE8M0(maxAbsInBlock: number): number {
   return Math.pow(2, exp);
 }
 
+/**
+ * Quantizes an arbitrary scalar to IEEE-style FP8 E4M3 (1 sign, 4 exp, 3 mantissa, bias=7, max=448).
+ */
+export function quantizeScalarToFp8E4M3(value: number): number {
+  if (!Number.isFinite(value) || value === 0) return 0.0;
+  const sign = value < 0 ? -1 : 1;
+  const abs = Math.abs(value);
+
+  // FP8 E4M3 subnormal threshold: 2^-9 (smallest subnormal = 2^-9 ≈ 0.001953125)
+  if (abs < 2 ** -9 * 0.5) return 0.0;
+  if (abs >= 448.0) return sign * 448.0;
+
+  // Subnormal range: [2^-9 .. 2^-6)
+  if (abs < 2 ** -6) {
+    const subnormalStep = 2 ** -9;
+    return sign * Math.round(abs / subnormalStep) * subnormalStep;
+  }
+
+  // Normal range: 3 mantissa bits (8 steps per octave)
+  const exp = Math.floor(Math.log2(abs));
+  const mantissa = abs / Math.pow(2, exp) - 1.0;
+  const quantizedMantissa = Math.round(mantissa * 8) / 8;
+  return sign * Math.min(448.0, Math.pow(2, exp) * (1.0 + quantizedMantissa));
+}
+
 export interface MicroblockQuantizationResult {
-  format: 'mxfp4' | 'nvfp4' | 'int4_awq';
+  format: 'mxfp4' | 'nvfp4' | 'int4_awq' | 'fp8_e4m3';
   blockSize: number;
   effectiveBitsPerWeight: number;
   reconstructed: number[];
   mse: number;
   sqnrDb: number;
   dynamicRangeUtilizationPct: number;
+}
+
+/**
+ * Simulates per-channel / per-tensor scaled FP8 E4M3 quantization.
+ * Effective bitwidth: 8.0 bits/element.
+ */
+export function quantizeBlockFp8E4M3(values: number[]): MicroblockQuantizationResult {
+  const reconstructed: number[] = new Array(values.length);
+  let maxAbs = 0;
+  for (let i = 0; i < values.length; i++) {
+    const a = Math.abs(values[i]);
+    if (a > maxAbs) maxAbs = a;
+  }
+
+  const scale = maxAbs > 0 ? maxAbs / 448.0 : 1.0;
+  let totalSqSignal = 0;
+  let totalSqError = 0;
+
+  for (let i = 0; i < values.length; i++) {
+    const x = values[i];
+    const q = quantizeScalarToFp8E4M3(x / scale);
+    const xHat = q * scale;
+    reconstructed[i] = xHat;
+    totalSqSignal += x * x;
+    totalSqError += (x - xHat) * (x - xHat);
+  }
+
+  const mse = values.length > 0 ? totalSqError / values.length : 0;
+  const sqnrDb = totalSqError > 1e-12 ? 10 * Math.log10(totalSqSignal / totalSqError) : 60.0;
+  return {
+    format: 'fp8_e4m3',
+    blockSize: values.length,
+    effectiveBitsPerWeight: 8.0,
+    reconstructed,
+    mse: Number(mse.toFixed(6)),
+    sqnrDb: Number(sqnrDb.toFixed(2)),
+    dynamicRangeUtilizationPct: 100.0
+  };
 }
 
 /**
@@ -379,6 +448,8 @@ export interface MicroscalingBenchmarkRow {
   ptxInstruction: string;
   mse: number;
   sqnrDb: number;
+  accuracyDataSource: 'reference-modelopt-benchmark-profile';
+  metricSource: 'derived-numerical';
 }
 
 export interface MicroscalingSimulationSummary {
@@ -391,6 +462,7 @@ export interface MicroscalingSimulationSummary {
   l2NormPreserved: boolean;
   mxfp4ToNvfp4MseReductionRatio: number;
   hadamardMseImprovementRatio: number;
+  accuracyDataSource: 'reference-modelopt-benchmark-profile';
   formats: MicroscalingBenchmarkRow[];
 }
 
@@ -438,12 +510,15 @@ export function simulateMicroscalingQuantization(
   const rotatedMaxOutlier = Math.max(...rotatedVector.map(Math.abs));
   const theoreticalDampingFactor = Number(Math.sqrt(hiddenDim).toFixed(1));
 
-  // Unrotated baselines vs rotated NVFP4
+  // Numerically evaluate unrotated baselines vs rotated formats
   const unrotatedMxfp4 = quantizeBlockMxfp4(rawVector);
   const unrotatedNvfp4 = quantizeBlockNvfp4(rawVector);
   const unrotatedInt4 = quantizeBlockInt4Awq(rawVector);
+  const unrotatedFp8 = quantizeBlockFp8E4M3(rawVector);
+
   const activeNvfp4 = quantizeBlockNvfp4(activeVector);
   const activeMxfp4 = quantizeBlockMxfp4(activeVector);
+  const activeFp8 = quantizeBlockFp8E4M3(activeVector);
 
   const mxfp4ToNvfp4MseReductionRatio = Number(
     (unrotatedMxfp4.mse / Math.max(1e-9, unrotatedNvfp4.mse)).toFixed(2)
@@ -452,9 +527,14 @@ export function simulateMicroscalingQuantization(
     (unrotatedNvfp4.mse / Math.max(1e-9, activeNvfp4.mse)).toFixed(2)
   );
 
-  // Weight footprint scaling relative to 70B baseline
+  // Derive model weight footprint from first-principles bitwidths:
+  // (P * bitsPerWeight) / 8 + svdOverhead
   const scale70B = modelParamsBillions / 70.0;
   const svdOverheadGb = svdRank > 0 ? Number((0.8 * (svdRank / 16) * scale70B).toFixed(1)) : 0;
+
+  function deriveWeightMemoryGb(bitsPerWeight: number, svdGb = 0): number {
+    return Number(((modelParamsBillions * bitsPerWeight) / 8 + svdGb).toFixed(1));
+  }
 
   // Spike penalty on unrotated 4-bit formats
   const spikeFactor = Math.max(0, (outlierSpikeMagnitude - 40) / 80);
@@ -463,77 +543,87 @@ export function simulateMicroscalingQuantization(
     {
       id: 'bf16',
       label: 'BF16 (Baseline)',
-      weightMemoryGb: Number((140.0 * scale70B).toFixed(1)),
+      weightMemoryGb: deriveWeightMemoryGb(16.0, 0),
       effectiveBitsPerWeight: 16.0,
-      fitsSingleB200Gpu: 140.0 * scale70B <= 165,
-      fitsSingleH200Gpu: 140.0 * scale70B <= 128,
+      fitsSingleB200Gpu: deriveWeightMemoryGb(16.0, 0) <= 165,
+      fitsSingleH200Gpu: deriveWeightMemoryGb(16.0, 0) <= 128,
       mmluProPct: 68.9,
       math500Pct: 76.4,
       liveCodeBenchPct: 54.2,
       relativeThroughput: 1.0,
       ptxInstruction: 'wgmma.mma_async (BF16)',
       mse: 0.0,
-      sqnrDb: 96.0
+      sqnrDb: 96.0,
+      accuracyDataSource: 'reference-modelopt-benchmark-profile',
+      metricSource: 'derived-numerical'
     },
     {
       id: 'fp8_e4m3',
       label: 'FP8 (W8A8 E4M3)',
-      weightMemoryGb: Number((70.0 * scale70B).toFixed(1)),
+      weightMemoryGb: deriveWeightMemoryGb(8.0, 0),
       effectiveBitsPerWeight: 8.0,
-      fitsSingleB200Gpu: 70.0 * scale70B <= 165,
-      fitsSingleH200Gpu: 70.0 * scale70B <= 128,
+      fitsSingleB200Gpu: deriveWeightMemoryGb(8.0, 0) <= 165,
+      fitsSingleH200Gpu: deriveWeightMemoryGb(8.0, 0) <= 128,
       mmluProPct: 68.7,
       math500Pct: 76.1,
       liveCodeBenchPct: 54.0,
       relativeThroughput: 1.85,
       ptxInstruction: 'wgmma.mma_async (E4M3)',
-      mse: 0.0004,
-      sqnrDb: 42.5
+      mse: enableHadamard ? activeFp8.mse : unrotatedFp8.mse,
+      sqnrDb: enableHadamard ? activeFp8.sqnrDb : unrotatedFp8.sqnrDb,
+      accuracyDataSource: 'reference-modelopt-benchmark-profile',
+      metricSource: 'derived-numerical'
     },
     {
       id: 'int4_awq',
       label: 'Weight-Only INT4-AWQ (W4A16)',
-      weightMemoryGb: Number((36.2 * scale70B).toFixed(1)),
+      weightMemoryGb: deriveWeightMemoryGb(4.125, 0),
       effectiveBitsPerWeight: 4.125,
-      fitsSingleB200Gpu: 36.2 * scale70B <= 165,
-      fitsSingleH200Gpu: 36.2 * scale70B <= 128,
+      fitsSingleB200Gpu: deriveWeightMemoryGb(4.125, 0) <= 165,
+      fitsSingleH200Gpu: deriveWeightMemoryGb(4.125, 0) <= 128,
       mmluProPct: Number((67.1 - spikeFactor * 0.4).toFixed(1)),
       math500Pct: Number((71.2 - spikeFactor * 1.1).toFixed(1)),
       liveCodeBenchPct: Number((50.8 - spikeFactor * 0.8).toFixed(1)),
       relativeThroughput: 2.1,
       ptxInstruction: 'dequant-fp16 (Memory-Bound Only)',
       mse: unrotatedInt4.mse,
-      sqnrDb: unrotatedInt4.sqnrDb
+      sqnrDb: unrotatedInt4.sqnrDb,
+      accuracyDataSource: 'reference-modelopt-benchmark-profile',
+      metricSource: 'derived-numerical'
     },
     {
       id: 'mxfp4',
       label: enableHadamard ? 'OCP MXFP4 + Hadamard (32-elem E8M0)' : 'Naive OCP MXFP4 (32-elem E8M0, No Rotation)',
-      weightMemoryGb: Number((37.2 * scale70B + svdOverheadGb).toFixed(1)),
+      weightMemoryGb: deriveWeightMemoryGb(4.25, svdOverheadGb),
       effectiveBitsPerWeight: 4.25,
-      fitsSingleB200Gpu: 37.2 * scale70B <= 165,
-      fitsSingleH200Gpu: 37.2 * scale70B <= 128,
+      fitsSingleB200Gpu: deriveWeightMemoryGb(4.25, svdOverheadGb) <= 165,
+      fitsSingleH200Gpu: deriveWeightMemoryGb(4.25, svdOverheadGb) <= 128,
       mmluProPct: enableHadamard ? 67.9 : Number((66.4 - spikeFactor * 0.6).toFixed(1)),
       math500Pct: enableHadamard ? 74.3 : Number((68.9 - spikeFactor * 1.5).toFixed(1)),
       liveCodeBenchPct: enableHadamard ? 52.6 : Number((49.1 - spikeFactor * 1.1).toFixed(1)),
       relativeThroughput: 3.35,
       ptxInstruction: 'tcgen05.mma.kind::mxf4',
       mse: enableHadamard ? activeMxfp4.mse : unrotatedMxfp4.mse,
-      sqnrDb: enableHadamard ? activeMxfp4.sqnrDb : unrotatedMxfp4.sqnrDb
+      sqnrDb: enableHadamard ? activeMxfp4.sqnrDb : unrotatedMxfp4.sqnrDb,
+      accuracyDataSource: 'reference-modelopt-benchmark-profile',
+      metricSource: 'derived-numerical'
     },
     {
       id: 'nvfp4',
       label: enableHadamard ? 'NVIDIA NVFP4 + Hadamard (W4A4 SM100)' : 'NVIDIA NVFP4 (Unrotated 16-elem E4M3)',
-      weightMemoryGb: Number((39.4 * scale70B + svdOverheadGb).toFixed(1)),
+      weightMemoryGb: deriveWeightMemoryGb(4.5, svdOverheadGb),
       effectiveBitsPerWeight: 4.5,
-      fitsSingleB200Gpu: 39.4 * scale70B <= 165,
-      fitsSingleH200Gpu: 39.4 * scale70B <= 128,
+      fitsSingleB200Gpu: deriveWeightMemoryGb(4.5, svdOverheadGb) <= 165,
+      fitsSingleH200Gpu: deriveWeightMemoryGb(4.5, svdOverheadGb) <= 128,
       mmluProPct: enableHadamard ? 68.6 : 67.5,
       math500Pct: enableHadamard ? (svdRank >= 16 ? 76.3 : 76.1) : 72.4,
       liveCodeBenchPct: enableHadamard ? (svdRank >= 16 ? 54.0 : 53.9) : 51.5,
       relativeThroughput: 3.42,
       ptxInstruction: 'tcgen05.mma.kind::mxf4nvf4',
       mse: activeNvfp4.mse,
-      sqnrDb: activeNvfp4.sqnrDb
+      sqnrDb: activeNvfp4.sqnrDb,
+      accuracyDataSource: 'reference-modelopt-benchmark-profile',
+      metricSource: 'derived-numerical'
     }
   ];
 
@@ -547,6 +637,7 @@ export function simulateMicroscalingQuantization(
     l2NormPreserved,
     mxfp4ToNvfp4MseReductionRatio,
     hadamardMseImprovementRatio,
+    accuracyDataSource: 'reference-modelopt-benchmark-profile',
     formats
   };
 }
@@ -566,22 +657,24 @@ export function generateModelOptNvfp4Script(options: {
   port?: number;
   engine?: 'vllm' | 'sglang';
 }): string {
-  const modelIn = options.modelIn || 'meta-llama/Llama-3.3-70B-Instruct';
-  const exportDir = options.exportDir || '/models/Llama-3.3-70B-Instruct-NVFP4-QuaRot';
-  const qformat = options.qformat || 'nvfp4';
-  const kvDtype = options.kvCacheDtype || 'fp8_e4m3';
-  const calibSize = options.calibSize ?? 512;
-  const autoBits = options.autoQuantizeBits ?? 4.5;
-  const tp = options.tensorParallelSize ?? 1;
-  const port = options.port ?? 8000;
-  const engine = options.engine || 'vllm';
+  const modelIn = escapeShellArg(options.modelIn, 'meta-llama/Llama-3.3-70B-Instruct');
+  const exportDir = escapeShellArg(options.exportDir, '/models/Llama-3.3-70B-Instruct-NVFP4-QuaRot');
+  const qformat = sanitizeSafeIdentifier(options.qformat, 'nvfp4');
+  const kvDtype = sanitizeSafeIdentifier(options.kvCacheDtype, 'fp8_e4m3');
+  const calibSize = sanitizePositiveInt(options.calibSize, 512, 1, 65536);
+  const autoBits = typeof options.autoQuantizeBits === 'number' && Number.isFinite(options.autoQuantizeBits)
+    ? options.autoQuantizeBits
+    : 4.5;
+  const tp = sanitizePositiveInt(options.tensorParallelSize, 1, 1, 64);
+  const port = sanitizePositiveInt(options.port, 8000, 1024, 65535);
+  const engine = options.engine === 'sglang' ? 'sglang' : 'vllm';
 
   const lines = [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
     '',
-    `MODEL_IN="${modelIn}"`,
-    `EXPORT_DIR="${exportDir}"`,
+    `MODEL_IN=${modelIn}`,
+    `EXPORT_DIR=${exportDir}`,
     '',
     '# 1. Run TensorRT ModelOpt PTQ with NVFP4 (16-element E2M1 + FP8 E4M3 scales)',
     '#    and Hadamard rotation (QuaRot / SpinQuant R1..R4) on high-outlier down_proj layers',

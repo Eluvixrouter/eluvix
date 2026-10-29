@@ -105,32 +105,39 @@ export async function POST(req: Request) {
       origin
     };
     const hops = Math.max(0, parseInt(req.headers.get('x-eluvix-hops') || '0', 10) || 0);
+
+    const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);
+    const VALID_QUANT = new Set(['disabled', 'prefer-nvfp4-hadamard', 'lossless-reasoning']);
+    const VALID_FABRIC = new Set(['disabled', 'prefer-rail-optimized', 'require-collision-free-fabric']);
+
+    if (body.metadata && typeof body.metadata === 'object') {
+      if (body.metadata.confidentialPolicy && !VALID_CONFIDENTIAL.has(String(body.metadata.confidentialPolicy))) {
+        delete body.metadata.confidentialPolicy;
+      }
+      if (body.metadata.quantizationPolicy && !VALID_QUANT.has(String(body.metadata.quantizationPolicy))) {
+        delete body.metadata.quantizationPolicy;
+      }
+      if (body.metadata.fabricPolicy && !VALID_FABRIC.has(String(body.metadata.fabricPolicy))) {
+        delete body.metadata.fabricPolicy;
+      }
+    }
+
     const confidentialHeader = req.headers.get('x-eluvix-confidential');
-    if (
-      confidentialHeader === 'prefer-tee' ||
-      confidentialHeader === 'require-tee' ||
-      confidentialHeader === 'require-dual-attestation'
-    ) {
+    if (confidentialHeader && VALID_CONFIDENTIAL.has(confidentialHeader)) {
       body.metadata = {
         ...(body.metadata || {}),
         confidentialPolicy: confidentialHeader
       };
     }
     const quantHeader = req.headers.get('x-eluvix-quantization');
-    if (
-      quantHeader === 'prefer-nvfp4-hadamard' ||
-      quantHeader === 'lossless-reasoning'
-    ) {
+    if (quantHeader && VALID_QUANT.has(quantHeader)) {
       body.metadata = {
         ...(body.metadata || {}),
         quantizationPolicy: quantHeader
       };
     }
     const fabricHeader = req.headers.get('x-eluvix-fabric');
-    if (
-      fabricHeader === 'prefer-rail-optimized' ||
-      fabricHeader === 'require-collision-free-fabric'
-    ) {
+    if (fabricHeader && VALID_FABRIC.has(fabricHeader)) {
       body.metadata = {
         ...(body.metadata || {}),
         fabricPolicy: fabricHeader

@@ -1,4 +1,10 @@
 import { Node, Edge } from '@xyflow/react';
+import {
+  escapeShellArg,
+  sanitizeSafeIdentifier,
+  sanitizeIpv6SegmentList,
+  sanitizePositiveInt
+} from '@eluvix/router-core/shell-utils';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -259,7 +265,9 @@ function generateEluvixConfig(
     }
 
     const quantRaw = (node.data as any)?.quantization;
-    const quantizationConfig = quantRaw ? { ...quantRaw } : undefined;
+    const quantizationConfig = quantRaw && quantRaw.enabled !== false && quantRaw.format !== 'bf16'
+      ? { ...quantRaw }
+      : undefined;
 
     const fabricRaw = (node.data as any)?.fabric;
     const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
@@ -1574,13 +1582,16 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
   if (sglangNodes.length > 0) {
     sglangNodes.forEach((node, i) => {
       const d = (node.data as any)?.disaggregation || {};
-      const model = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
+      const rawModel = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
         ? (node.data as any).selectedModel
         : 'meta-llama/Llama-3.3-70B-Instruct-FP8';
-      const tp = d.tensorParallelSize || 4;
-      const ibDev = d.rdmaDevice || 'mlx5_0';
-      const backend = d.kvConnector || 'mooncake';
-      const dtype = d.kvCacheDtype || 'fp8_e4m3';
+      const model = escapeShellArg(rawModel, 'meta-llama/Llama-3.3-70B-Instruct-FP8');
+      const tp = sanitizePositiveInt(d.tensorParallelSize, 4, 1, 64);
+      const ibDev = sanitizeSafeIdentifier(d.rdmaDevice, 'mlx5_0');
+      const backend = sanitizeSafeIdentifier(d.kvConnector, 'mooncake');
+      const dtype = sanitizeSafeIdentifier(d.kvCacheDtype, 'fp8_e4m3');
+      const prefillEndpoint = escapeShellArg(d.prefillEndpoint, 'http://10.200.1.10:30000');
+      const decodeEndpoint = escapeShellArg(d.decodeEndpoint, 'http://10.200.1.20:30001');
 
       parts.push(`### [SGLang Instance ${i + 1}: ${node.data?.label || node.id}]`);
       parts.push(`# Mode: ${d.role || 'pd-router'} | Transfer: ${backend} over ${ibDev} | TP=${tp} | KV=${dtype}\n`);
@@ -1616,8 +1627,8 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
       parts.push(`# Disaggregated Load Balancer Router`);
       parts.push(`python3 -m sglang_router.launch_router \\`);
       parts.push(`  --pd-disaggregation \\`);
-      parts.push(`  --prefill ${d.prefillEndpoint || 'http://10.200.1.10:30000'} \\`);
-      parts.push(`  --decode ${d.decodeEndpoint || 'http://10.200.1.20:30001'} \\`);
+      parts.push(`  --prefill ${prefillEndpoint} \\`);
+      parts.push(`  --decode ${decodeEndpoint} \\`);
       parts.push(`  --host 0.0.0.0 --port 8000`);
       parts.push(`EOF\n`);
     });
@@ -1628,21 +1639,27 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
       const d = (node.data as any)?.disaggregation || {};
       const q = (node.data as any)?.quantization || {};
       const f = (node.data as any)?.fabric || {};
-      const model = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
+      const rawModel = (node.data as any)?.selectedModel && (node.data as any).selectedModel !== '*'
         ? (node.data as any).selectedModel
         : 'meta-llama/Llama-3.3-70B-Instruct-FP8';
-      const tp = d.tensorParallelSize || (q.format === 'nvfp4' || q.format === 'mxfp4' ? 1 : 4);
-      const dev = d.rdmaDevice || 'mlx5_0:1';
-      const port = d.sideChannelPort || 5557;
-      const dtype = d.kvCacheDtype || 'fp8_e4m3';
+      const model = escapeShellArg(rawModel, 'meta-llama/Llama-3.3-70B-Instruct-FP8');
+      const defaultTp = (q.format === 'nvfp4' || q.format === 'mxfp4') ? 1 : 4;
+      const tp = sanitizePositiveInt(d.tensorParallelSize, defaultTp, 1, 64);
+      const dev = sanitizeSafeIdentifier(d.rdmaDevice, 'mlx5_0:1');
+      const port = sanitizePositiveInt(d.sideChannelPort, 5557, 1024, 65535);
+      const dtype = sanitizeSafeIdentifier(d.kvCacheDtype, 'fp8_e4m3');
+      const safeNodeId = sanitizeSafeIdentifier(node.id, 'node');
+      const qformat = sanitizeSafeIdentifier(q.format, 'nvfp4');
+      const calibSize = sanitizePositiveInt(q.calibSize, 512, 1, 65536);
+      const qps = sanitizePositiveInt(f.qpsPerConnection, 4, 1, 64);
+      const carrier = sanitizeIpv6SegmentList(f.srv6UsidCarrier, 'fcbb:bb00:0202:0104:0040::');
 
       parts.push(`### [vLLM v1 NIXL Instance ${i + 1}: ${node.data?.label || node.id}]`);
       if (f.topology && f.topology !== 'tor-static-ecmp') {
-        const carrier = f.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::';
         parts.push(`# Rail-Optimized Clos Fabric (${f.topology}): NCCL PxN + SRv6 uSID + ConnectX-7/8 OOO-DDP`);
         parts.push(`export NCCL_CROSS_NIC=1`);
         parts.push(`export NCCL_PXN_DISABLE=0`);
-        parts.push(`export NCCL_IB_QPS_PER_CONNECTION=${f.qpsPerConnection ?? 4}`);
+        parts.push(`export NCCL_IB_QPS_PER_CONNECTION=${qps}`);
         parts.push(`export NCCL_IB_SPLIT_DATA_ON_QPS=1`);
         parts.push(`export NCCL_IB_TC=106`);
         if (f.topology === 'rail-srv6-usid') {
@@ -1655,19 +1672,20 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
         }
       }
       if (q.format === 'nvfp4' || q.format === 'mxfp4') {
-        const exportDir = `/models/${String(model).split('/').pop() || 'Llama-3.3-70B'}-${String(q.format).toUpperCase()}-QuaRot`;
-        parts.push(`# TensorRT ModelOpt PTQ: ${q.format.toUpperCase()} (E2M1) + Walsh-Hadamard (${q.outlierMitigation || 'hadamard-quarot'})`);
-        parts.push(`cat << 'EOF' > quantize-and-serve-${q.format}-${node.id}.sh`);
+        const rawExportDir = `/models/${String(rawModel).split('/').pop() || 'Llama-3.3-70B'}-${String(qformat).toUpperCase()}-QuaRot`;
+        const exportDir = escapeShellArg(rawExportDir, '/models/Llama-3.3-70B-NVFP4-QuaRot');
+        parts.push(`# TensorRT ModelOpt PTQ: ${qformat.toUpperCase()} (E2M1) + Walsh-Hadamard (${q.outlierMitigation || 'hadamard-quarot'})`);
+        parts.push(`cat << 'EOF' > quantize-and-serve-${qformat}-${safeNodeId}.sh`);
         parts.push(`#!/usr/bin/env bash`);
         parts.push(`set -euo pipefail`);
-        parts.push(`MODEL_IN="${model}"`);
-        parts.push(`EXPORT_DIR="${exportDir}"`);
+        parts.push(`MODEL_IN=${model}`);
+        parts.push(`EXPORT_DIR=${exportDir}`);
         parts.push(`python3 -m modelopt.torch.quantization.examples.llm_ptq \\`);
         parts.push(`  --model "$MODEL_IN" \\`);
-        parts.push(`  --qformat ${q.format} \\`);
+        parts.push(`  --qformat ${qformat} \\`);
         parts.push(`  --kv_cache_dtype fp8 \\`);
-        parts.push(`  --calib_size ${q.calibSize ?? 512} \\`);
-        parts.push(`  --auto_quantize_bits ${q.format === 'nvfp4' ? 4.5 : 4.25} \\`);
+        parts.push(`  --calib_size ${calibSize} \\`);
+        parts.push(`  --auto_quantize_bits ${qformat === 'nvfp4' ? 4.5 : 4.25} \\`);
         parts.push(`  --export_path "$EXPORT_DIR"`);
         parts.push(`vllm serve "$EXPORT_DIR" \\`);
         parts.push(`  --quantization modelopt \\`);

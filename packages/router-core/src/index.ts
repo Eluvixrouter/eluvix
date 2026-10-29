@@ -143,6 +143,7 @@ export * from './kv-math.js';
 export * from './tee-attestation.js';
 export * from './microscaling-quantization.js';
 export * from './clos-fabric-routing.js';
+export * from './shell-utils.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -2162,7 +2163,7 @@ export class Eluvix {
       'disabled';
     const clientPolicy = effectiveRequest.metadata?.confidentialPolicy as ConfidentialPolicy | undefined;
     const confidentialPolicy: ConfidentialPolicy =
-      clientPolicy && POLICY_RANKS[clientPolicy] != null
+      clientPolicy && Object.prototype.hasOwnProperty.call(POLICY_RANKS, clientPolicy)
         ? (POLICY_RANKS[clientPolicy] > POLICY_RANKS[serverPolicy] ? clientPolicy : serverPolicy)
         : serverPolicy;
 
@@ -2444,7 +2445,7 @@ export class Eluvix {
       'disabled';
     const clientQuantPolicy = effectiveRequest.metadata?.quantizationPolicy as QuantizationPolicy | undefined;
     const quantizationPolicy: QuantizationPolicy =
-      clientQuantPolicy && QUANT_RANKS[clientQuantPolicy] != null
+      clientQuantPolicy && Object.prototype.hasOwnProperty.call(QUANT_RANKS, clientQuantPolicy)
         ? (QUANT_RANKS[clientQuantPolicy] > QUANT_RANKS[serverQuantPolicy] ? clientQuantPolicy : serverQuantPolicy)
         : serverQuantPolicy;
 
@@ -2497,7 +2498,7 @@ export class Eluvix {
       'disabled';
     const clientFabricPolicy = effectiveRequest.metadata?.fabricPolicy as FabricRoutingPolicy | undefined;
     const fabricPolicy: FabricRoutingPolicy =
-      clientFabricPolicy && FABRIC_RANKS[clientFabricPolicy] != null
+      clientFabricPolicy && Object.prototype.hasOwnProperty.call(FABRIC_RANKS, clientFabricPolicy)
         ? (FABRIC_RANKS[clientFabricPolicy] > FABRIC_RANKS[serverFabricPolicy] ? clientFabricPolicy : serverFabricPolicy)
         : serverFabricPolicy;
 
@@ -2554,15 +2555,17 @@ export class Eluvix {
         u.disaggregation?.role === 'prefill'
       );
       if (disaggPrefill.length > 0) {
+        const colocated = targetUpstreams.filter(u => !disaggPrefill.includes(u) && u.disaggregation?.role !== 'decode');
+        const decodeWorkers = targetUpstreams.filter(u => !disaggPrefill.includes(u) && u.disaggregation?.role === 'decode');
         steps.push({
           stage: 'prefill-isolation',
           detail: `tokenEstimate=${complexity.tokenEstimate} >= ${prefillThreshold}: heavy-prefill burst routed to dedicated disaggregated/prefill upstreams to protect decode streams from head-of-line SM stalls`,
-          kept: disaggPrefill.map(u => u.id),
-          removed: targetUpstreams.filter(u => !disaggPrefill.includes(u)).map(u => u.id)
+          kept: disaggPrefill.map(u => u.id)
         });
         targetUpstreams = [
           ...disaggPrefill,
-          ...targetUpstreams.filter(u => !disaggPrefill.includes(u) && u.disaggregation?.role !== 'decode')
+          ...colocated,
+          ...decodeWorkers
         ];
       }
     } else {
@@ -2594,7 +2597,15 @@ export class Eluvix {
           const hasPrioritizedTee = confidentialPolicy === 'prefer-tee' && isConfidentialEnclaveUpstream(targetUpstreams[0], 'require-tee');
           const cannotPromoteDueToTee = hasPrioritizedTee && !isPreferredTee;
 
-          if (!cannotPromoteDueToPrefill && !cannotPromoteDueToTee) {
+          const isTopLossless = isLosslessSub4BitUpstream(targetUpstreams[0]);
+          const isPreferredLossless = isLosslessSub4BitUpstream(preferred);
+          const cannotPromoteDueToQuant = (quantizationPolicy === 'prefer-nvfp4-hadamard' || quantizationPolicy === 'lossless-reasoning') && isTopLossless && !isPreferredLossless;
+
+          const isTopRailOptimized = isCollisionFreeRailFabricUpstream(targetUpstreams[0]);
+          const isPreferredRailOptimized = isCollisionFreeRailFabricUpstream(preferred);
+          const cannotPromoteDueToFabric = (fabricPolicy === 'prefer-rail-optimized') && isTopRailOptimized && !isPreferredRailOptimized;
+
+          if (!cannotPromoteDueToPrefill && !cannotPromoteDueToTee && !cannotPromoteDueToQuant && !cannotPromoteDueToFabric) {
             targetUpstreams = [preferred, ...targetUpstreams.filter(u => u.id !== cachedUpstreamId)];
             steps.push({
               stage: 'kv-prefix-affinity',
@@ -2615,7 +2626,19 @@ export class Eluvix {
       if (explicitOrder.length > 0) {
         const orderMap = new Map<string, number>();
         explicitOrder.forEach((id, idx) => orderMap.set(id, idx));
+
+        const getPolicyTier = (u: UpstreamConfig): number => {
+          let tier = 0;
+          if (confidentialPolicy === 'prefer-tee' && !isConfidentialEnclaveUpstream(u, 'require-tee')) tier += 100;
+          if ((quantizationPolicy === 'prefer-nvfp4-hadamard' || quantizationPolicy === 'lossless-reasoning') && !isLosslessSub4BitUpstream(u)) tier += 10;
+          if (fabricPolicy === 'prefer-rail-optimized' && !isCollisionFreeRailFabricUpstream(u)) tier += 1;
+          return tier;
+        };
+
         targetUpstreams.sort((a, b) => {
+          const tierA = getPolicyTier(a);
+          const tierB = getPolicyTier(b);
+          if (tierA !== tierB) return tierA - tierB;
           const idxA = orderMap.has(a.id) ? orderMap.get(a.id)! : 999;
           const idxB = orderMap.has(b.id) ? orderMap.get(b.id)! : 999;
           return idxA - idxB;

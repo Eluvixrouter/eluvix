@@ -555,7 +555,8 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
                 setQuantFormat(next);
                 syncData({
                   quantization: {
-                    enabled: true,
+                    ...(dataRef.current?.quantization || {}),
+                    enabled: next !== 'bf16',
                     format: next,
                     outlierMitigation
                   }
@@ -576,7 +577,8 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
                 setOutlierMitigation(next);
                 syncData({
                   quantization: {
-                    enabled: true,
+                    ...(dataRef.current?.quantization || {}),
+                    enabled: quantFormat !== 'bf16',
                     format: quantFormat,
                     outlierMitigation: next
                   }
@@ -604,7 +606,7 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
                 ? '94.8% uSID'
                 : fabricTopology === 'rail-pxn-ecmp'
                 ? '82.1% PxN'
-                : '44.6% ECMP'}
+                : '41.0% ECMP'}
             </span>
           </div>
           <select
@@ -615,13 +617,15 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
               setFabricTopology(next);
               syncData({
                 fabric: {
+                  ...(dataRef.current?.fabric || {}),
                   enabled: true,
                   topology: next,
                   ncclPxn: next !== 'tor-static-ecmp',
                   bgpUnnumberedEvpn: next !== 'tor-static-ecmp',
                   srv6UsidCarrier: next === 'rail-srv6-usid' ? srv6UsidCarrier : undefined,
                   dlbPacketSpraying: next === 'rail-dlb-oooddp',
-                  oooDdpEnabled: next === 'rail-dlb-oooddp'
+                  oooDdpEnabled: next === 'rail-dlb-oooddp',
+                  qpsPerConnection: dataRef.current?.fabric?.qpsPerConnection ?? 4
                 }
               });
             }}
@@ -640,11 +644,13 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
                 setSrv6UsidCarrier(next);
                 syncData({
                   fabric: {
+                    ...(dataRef.current?.fabric || {}),
                     enabled: true,
                     topology: fabricTopology,
                     ncclPxn: true,
                     bgpUnnumberedEvpn: true,
-                    srv6UsidCarrier: next
+                    srv6UsidCarrier: next,
+                    qpsPerConnection: dataRef.current?.fabric?.qpsPerConnection ?? 4
                   }
                 });
               }}

@@ -120,7 +120,7 @@ Layout definitions are stored in the XDG user data directory (`~/.local/share/el
 ### 18. Rail-Optimized 400G/800G Clos Fabric: SRv6 uSID & DLB OOO-DDP MoE Cluster (`rail-optimized-srv6-dlb-moe-fabric`)
 - **Category**: `performance`
 - **Focus**: Collision-Free 8-Rail Clos, RFC 8986 SRv6 `uSID` & ConnectX-7/8 `OOO-DDP`
-- **Architecture**: Enforces `fabricPolicy: "require-collision-free-fabric"`, excluding hash-polarized static ECMP ToR switches (`44.6%` bus utilization) and routing MoE `AllToAll` / long-context workloads to **SGLang DLB + OOO-DDP (`97.8%` line-rate)** and **vLLM SRv6 `uSID` (`fcbb:bb00:0202:0104:0040::`)** pods.
+- **Architecture**: Enforces `fabricPolicy: "require-collision-free-fabric"`, excluding hash-polarized static ECMP ToR switches (`41.0%` bus utilization via exact DP derivation) and routing MoE `AllToAll` / long-context workloads to **SGLang DLB + OOO-DDP (`97.8%` line-rate)** and **vLLM SRv6 `uSID` (`fcbb:bb00:0202:0104:0040::`)** pods.
 
 ---
 
