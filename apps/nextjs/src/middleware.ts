@@ -100,6 +100,26 @@ export async function middleware(req: NextRequest) {
     const secret = process.env.NEXTAUTH_SECRET;
     const sessionToken = await getToken({ req, secret });
     if (sessionToken) {
+      // RBAC check: read-only directory auditors cannot execute state-mutating requests on secrets or router orchestration
+      const userRole = (sessionToken.role as string) || 'admin';
+      if (
+        userRole === 'readonly' &&
+        (pathname.startsWith('/api/secrets') || pathname.startsWith('/api/orchestrator')) &&
+        req.method !== 'GET' &&
+        req.method !== 'HEAD' &&
+        req.method !== 'OPTIONS'
+      ) {
+        return NextResponse.json(
+          {
+            error: {
+              message: 'Forbidden: read-only directory auditors cannot modify router secrets or configuration.',
+              type: 'insufficient_role',
+              code: 'forbidden_readonly_user',
+            },
+          },
+          { status: 403 }
+        );
+      }
       return NextResponse.next();
     }
 

@@ -132,6 +132,7 @@ export * from './db.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
+export * from './ldap.js';
 export * from './cli-exec.js';
 export * from './local-request-guard.js';
 export * from './context/index.js';

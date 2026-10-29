@@ -7,6 +7,7 @@ import {
   type UpstreamConfig,
 } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,9 @@ export async function POST(req: Request) {
   }
 
   try {
+    const caller = await resolveCallerIdentity(req);
+    const userId = caller.ok ? caller.userId : 'default';
+
     const { session_id, session_title, harnessOverride, ...forwardBody } = body;
 
     let res: Response;
@@ -89,7 +93,7 @@ export async function POST(req: Request) {
         60000,
         undefined,
         {
-          userId: 'default',
+          userId,
           sessionId: typeof session_id === 'string' ? session_id : undefined,
           origin: 'playground',
         },
@@ -100,7 +104,7 @@ export async function POST(req: Request) {
       const router = getRouter();
       res = await router.routeChatCompletion(forwardBody, {
         scope: {
-          userId: 'default',
+          userId,
           sessionId: typeof session_id === 'string' ? session_id : undefined,
           origin: 'playground',
         },
@@ -168,7 +172,7 @@ export async function POST(req: Request) {
     if (session_id && forwardBody.messages) {
       const userMsg = forwardBody.messages[forwardBody.messages.length - 1];
       if (userMsg) {
-        saveChatMessage(session_id, userMsg.role, userMsg.content, 'default');
+        saveChatMessage(session_id, userMsg.role, userMsg.content, userId);
       }
 
       const assistantMsg = data.choices?.[0]?.message;
@@ -180,14 +184,14 @@ export async function POST(req: Request) {
                 trace,
               }
             : undefined;
-        saveChatMessage(session_id, assistantMsg.role, assistantMsg.content, 'default', msgMeta);
+        saveChatMessage(session_id, assistantMsg.role, assistantMsg.content, userId, msgMeta);
       }
 
       const firstUserText =
         typeof userMsg?.content === 'string' ? userMsg.content.trim().slice(0, 72) : undefined;
       upsertHarnessSession({
         sessionId: session_id,
-        userId: 'default',
+        userId,
         title: session_title || firstUserText || undefined,
         harnessKind: harness || harnessOverride?.kind || 'opencode',
         agentId: harnessOverride?.agentId || 'build',

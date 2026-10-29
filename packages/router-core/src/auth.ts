@@ -2,6 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getAppPaths } from './paths.js';
+import {
+  authenticateLdapUser,
+  resolveLdapConfig,
+  type EluvixRole,
+  type LdapAuthResult,
+} from './ldap.js';
+
+export type { EluvixRole, LdapAuthConfig, LdapUserRecord, LdapAuthResult } from './ldap.js';
+export { authenticateLdapUser, resolveLdapConfig, getLdapStatus } from './ldap.js';
 
 export interface AuthConfig {
   adminPassword?: string;
@@ -98,6 +107,7 @@ export interface NamedApiKey {
   label: string;
   origin: 'client' | 'harness' | 'playground';
   userId: string;
+  role?: EluvixRole;
   memoryProfile?: string;
   createdAt: string;
 }
@@ -127,6 +137,7 @@ export function createNamedApiKey(
     name?: string;
     origin?: 'client' | 'harness' | 'playground';
     userId?: string;
+    role?: EluvixRole;
     memoryProfile?: string;
   },
   appName = 'eluvix'
@@ -140,6 +151,7 @@ export function createNamedApiKey(
     label: rawLabel,
     origin: input.origin || 'client',
     userId: input.userId?.trim() || 'default',
+    role: input.role || 'operator',
     memoryProfile: input.memoryProfile,
     createdAt: new Date().toISOString()
   };
@@ -165,6 +177,7 @@ export function resolveBearerToken(
   valid: boolean;
   isAdmin?: boolean;
   userId: string;
+  role?: EluvixRole;
   origin: 'client' | 'harness' | 'playground';
   keyLabel?: string;
 } {
@@ -181,7 +194,14 @@ export function resolveBearerToken(
     if (!cand) continue;
     const b = Buffer.from(cand);
     if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
-      return { valid: true, isAdmin: true, userId: 'default', origin: 'client', keyLabel: 'admin' };
+      return {
+        valid: true,
+        isAdmin: true,
+        userId: 'default',
+        role: 'admin',
+        origin: 'client',
+        keyLabel: 'admin'
+      };
     }
   }
 
@@ -191,8 +211,9 @@ export function resolveBearerToken(
     if (a.length === kb.length && crypto.timingSafeEqual(a, kb)) {
       return {
         valid: true,
-        isAdmin: false,
+        isAdmin: entry.role === 'admin',
         userId: entry.userId || 'default',
+        role: entry.role || 'operator',
         origin: entry.origin || 'client',
         keyLabel: entry.label
       };
@@ -200,6 +221,97 @@ export function resolveBearerToken(
   }
 
   return { valid: false, userId: 'default', origin: 'client' };
+}
+
+/**
+ * Unified credential authenticator supporting both LDAP and local break-glass admin.
+ */
+export async function authenticateEluvixCredentials(
+  username?: string,
+  password?: string,
+  appName = 'eluvix'
+): Promise<LdapAuthResult> {
+  const trimmedUser = (username || '').trim();
+  const trimmedPass = password || '';
+
+  if (!trimmedPass) {
+    return { authenticated: false, error: 'Password is required' };
+  }
+
+  const { adminPassword: storedAdminPassword } = getOrCreateAuthConfig(appName);
+  const candidateAdmins = [storedAdminPassword];
+  if (process.env.ADMIN_PASSWORD) candidateAdmins.push(process.env.ADMIN_PASSWORD);
+  if (process.env.LEGACY_ADMIN_PASSWORD) candidateAdmins.push(process.env.LEGACY_ADMIN_PASSWORD);
+
+  const isLocalAdminPass = candidateAdmins.some((cand) => {
+    if (!cand) return false;
+    const a = Buffer.from(trimmedPass);
+    const b = Buffer.from(cand);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  });
+
+  const ldapConfig = resolveLdapConfig(undefined, appName);
+
+  // 1. Local admin check if username is blank or explicitly admin/local
+  if (!trimmedUser || trimmedUser.toLowerCase() === 'admin' || trimmedUser.toLowerCase() === 'local') {
+    if (isLocalAdminPass) {
+      if (ldapConfig.enabled && !ldapConfig.allowLocalBreakGlass) {
+        return {
+          authenticated: false,
+          error: 'Local break-glass administrator login is disabled by policy',
+        };
+      }
+      return {
+        authenticated: true,
+        userId: 'default',
+        username: 'admin',
+        displayName: 'Local Administrator',
+        role: 'admin',
+        groups: ['local-admin', 'break-glass'],
+        authSource: 'local',
+      };
+    }
+  }
+
+  // 2. If LDAP is enabled and a username was provided, attempt LDAP authentication
+  if (ldapConfig.enabled && trimmedUser) {
+    const ldapRes = await authenticateLdapUser(trimmedUser, trimmedPass, ldapConfig, appName);
+    if (ldapRes.authenticated) {
+      return ldapRes;
+    }
+    // If LDAP failed, but caller used admin/local with local admin pass and break-glass is allowed
+    if (
+      isLocalAdminPass &&
+      ldapConfig.allowLocalBreakGlass &&
+      (trimmedUser.toLowerCase() === 'admin' || trimmedUser.toLowerCase() === 'local')
+    ) {
+      return {
+        authenticated: true,
+        userId: 'default',
+        username: 'admin',
+        displayName: 'Local Administrator (Break-Glass)',
+        role: 'admin',
+        groups: ['local-admin', 'break-glass'],
+        authSource: 'local',
+      };
+    }
+    return ldapRes;
+  }
+
+  // 3. Fallback when LDAP is disabled: verify local admin password
+  if (isLocalAdminPass) {
+    return {
+      authenticated: true,
+      userId: 'default',
+      username: trimmedUser || 'admin',
+      displayName: 'Local Administrator',
+      role: 'admin',
+      groups: ['local-admin'],
+      authSource: 'local',
+    };
+  }
+
+  return { authenticated: false, error: 'Invalid username or password' };
 }
 
 

@@ -11,7 +11,15 @@ import { resolveBearerToken } from '@eluvix/router-core';
 export const ADMIN_MEMORY_USER_ID = 'default';
 
 export type CallerIdentityResult =
-  | { ok: true; userId: string; via: 'api-key' | 'admin' | 'session' }
+  | {
+      ok: true;
+      userId: string;
+      username?: string;
+      role: 'admin' | 'operator' | 'readonly';
+      groups?: string[];
+      authSource?: 'ldap' | 'local';
+      via: 'api-key' | 'admin' | 'session';
+    }
   | { ok: false; reason: 'invalid-key' | 'no-identity' };
 
 async function secureCompare(provided: string, expected: string): Promise<boolean> {
@@ -30,35 +38,48 @@ async function secureCompare(provided: string, expected: string): Promise<boolea
 }
 
 /**
- * The caller's identity when they arrive with the browser session cookie,
- * or null. Used to scope memory recall/write-back to the signed-in user
- * instead of a self-asserted header.
+ * Resolves the full session identity from the NextAuth signed JWT token.
  */
-export async function resolveSessionUserId(req: Request): Promise<string | null> {
+export async function resolveSessionIdentity(req: Request): Promise<{
+  userId: string;
+  username: string;
+  role: 'admin' | 'operator' | 'readonly';
+  groups: string[];
+  authSource: 'ldap' | 'local';
+} | null> {
   try {
     const tokenParams: Record<string, unknown> = { req: req as any };
     tokenParams['secret'] = process.env.NEXTAUTH_SECRET;
     const token = await getToken(tokenParams as any);
-    return token ? ADMIN_MEMORY_USER_ID : null;
+    if (!token) return null;
+    const rawUserId = (token.userId as string) || (token.sub as string);
+    const userId = rawUserId && rawUserId !== '1' ? rawUserId : ADMIN_MEMORY_USER_ID;
+    const username = (token.username as string) || (userId.startsWith('ldap:') ? userId.slice(5) : 'admin');
+    const role = ((token.role as string) || 'admin') as 'admin' | 'operator' | 'readonly';
+    const groups = Array.isArray(token.groups) ? (token.groups as string[]) : [];
+    const authSource = (token.authSource as 'ldap' | 'local') || 'local';
+    return { userId, username, role, groups, authSource };
   } catch {
     return null;
   }
 }
 
 /**
+ * The caller's identity when they arrive with the browser session cookie,
+ * or null. Used to scope memory recall/write-back to the signed-in user.
+ */
+export async function resolveSessionUserId(req: Request): Promise<string | null> {
+  const session = await resolveSessionIdentity(req);
+  return session ? session.userId : null;
+}
+
+/**
  * Resolve WHO is calling, for per-user data scoping. The identity comes
  * only from credentials the caller actually proved:
  *
- *   - a named `elx_` API key → the userId bound to that key
- *     (resolveBearerToken); an invalid key is an error, never a fallback;
- *   - the admin password as a Bearer token (env ADMIN_PASSWORD /
- *     LEGACY_ADMIN_PASSWORD, or the stored auth-config password) → the
- *     admin's 'default' store;
- *   - the NextAuth session cookie → the admin's 'default' store.
- *
- * Anything else yields no identity. A userId supplied via query string,
- * body, or header is NEVER consulted here — it must not widen access
- * beyond the caller's own data.
+ *   - a named `elx_` API key → the userId bound to that key;
+ *   - the admin password as a Bearer token → the admin's 'default' store;
+ *   - the NextAuth session cookie → the proved user's store (ldap:<uid> or 'default').
  */
 export async function resolveCallerIdentity(req: Request): Promise<CallerIdentityResult> {
   const authHeader = req.headers.get('authorization');
@@ -67,26 +88,51 @@ export async function resolveCallerIdentity(req: Request): Promise<CallerIdentit
     if (token.startsWith('elx_')) {
       const resolved = resolveBearerToken(token);
       return resolved.valid
-        ? { ok: true, userId: resolved.userId, via: 'api-key' }
+        ? {
+            ok: true,
+            userId: resolved.userId,
+            role: resolved.role || 'operator',
+            via: 'api-key',
+          }
         : { ok: false, reason: 'invalid-key' };
     }
     if (token.length > 0) {
       const resolved = resolveBearerToken(token);
       if (resolved.valid && resolved.isAdmin) {
-        return { ok: true, userId: resolved.userId, via: 'admin' };
+        return {
+          ok: true,
+          userId: resolved.userId,
+          username: 'admin',
+          role: 'admin',
+          via: 'admin',
+        };
       }
       for (const expected of [process.env.ADMIN_PASSWORD, process.env.LEGACY_ADMIN_PASSWORD]) {
         if (expected && (await secureCompare(token, expected))) {
-          return { ok: true, userId: ADMIN_MEMORY_USER_ID, via: 'admin' };
+          return {
+            ok: true,
+            userId: ADMIN_MEMORY_USER_ID,
+            username: 'admin',
+            role: 'admin',
+            via: 'admin',
+          };
         }
       }
       return { ok: false, reason: 'invalid-key' };
     }
   }
 
-  const sessionUserId = await resolveSessionUserId(req);
-  if (sessionUserId) {
-    return { ok: true, userId: sessionUserId, via: 'session' };
+  const session = await resolveSessionIdentity(req);
+  if (session) {
+    return {
+      ok: true,
+      userId: session.userId,
+      username: session.username,
+      role: session.role,
+      groups: session.groups,
+      authSource: session.authSource,
+      via: 'session',
+    };
   }
 
   return { ok: false, reason: 'no-identity' };

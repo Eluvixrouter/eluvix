@@ -1,8 +1,14 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
+
+interface AuthStatus {
+  ldapEnabled: boolean;
+  baseDn?: string;
+  allowLocalBreakGlass?: boolean;
+}
 
 function LoginForm() {
   const router = useRouter();
@@ -13,9 +19,25 @@ function LoginForm() {
     ? "/"
     : rawCallbackUrl;
 
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.success && d?.data) {
+          setStatus(d.data);
+        }
+      })
+      .catch(() => {
+        // Fallback default
+        setStatus({ ldapEnabled: false, allowLocalBreakGlass: true });
+      });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,13 +46,14 @@ function LoginForm() {
 
     try {
       const res = await signIn("credentials", {
+        username: username.trim(),
         password,
         redirect: false,
         callbackUrl,
       });
 
       if (res?.error) {
-        setError("Invalid admin password. Please try again.");
+        setError("Invalid username or password. Please verify your directory credentials.");
         setLoading(false);
       } else {
         router.push(callbackUrl);
@@ -43,18 +66,29 @@ function LoginForm() {
     }
   };
 
+  const isLdap = Boolean(status?.ldapEnabled);
+
   return (
     <div className="w-full max-w-md p-8 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl">
-      <div className="flex flex-col items-center mb-8">
+      <div className="flex flex-col items-center mb-6">
         <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-2xl mb-3 shadow-inner">
           🔒
         </div>
         <h1 className="text-2xl font-bold tracking-tight text-white">
-          Enclav<span className="text-sky-400">ix</span>
+          Eluv<span className="text-sky-400">ix</span>
         </h1>
         <p className="text-xs text-slate-400 mt-1">
-          Enter admin credentials to access the console
+          {isLdap
+            ? "Sign in with your Axonwall OpenLDAP credentials"
+            : "Enter administrator credentials to access the console"}
         </p>
+
+        {isLdap && (
+          <div className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 text-[11px] font-medium text-emerald-400">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            Axonwall OpenLDAP Active {status?.baseDn ? `(${status.baseDn})` : ""}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -64,9 +98,25 @@ function LoginForm() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        {isLdap && (
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
+              Username
+            </label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="e.g. alice (or leave blank for admin)"
+              autoFocus
+              className="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-slate-600 outline-none transition"
+            />
+          </div>
+        )}
+
         <div>
           <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
-            Admin Password
+            {isLdap ? "Password" : "Admin Password"}
           </label>
           <input
             type="password"
@@ -74,12 +124,18 @@ function LoginForm() {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••••••"
             required
-            autoFocus
+            autoFocus={!isLdap}
             className="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 rounded-lg px-3.5 py-2.5 text-sm text-white placeholder-slate-600 outline-none transition"
           />
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            Auto-generated in <code className="text-sky-400 bg-sky-500/10 px-1 py-0.5 rounded font-mono">~/.config/eluvix/auth.json</code> (or check console logs)
-          </p>
+          {!isLdap ? (
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              Configured in <code className="text-sky-400 bg-sky-500/10 px-1 py-0.5 rounded font-mono">~/.config/eluvix/auth.json</code> or <code className="text-sky-400 bg-sky-500/10 px-1 py-0.5 rounded font-mono">ADMIN_PASSWORD</code>
+            </p>
+          ) : (
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              Local break-glass login remains available with username <code className="text-sky-400 font-mono">admin</code> and appliance admin password
+            </p>
+          )}
         </div>
 
         <button
