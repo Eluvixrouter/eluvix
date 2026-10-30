@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getOrCreateAuthConfig, getAppPaths, getCachedAntigravityModels } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,8 +28,10 @@ function resolveHostname(): string {
   return raw;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const identity = await resolveCallerIdentity(req);
+    const isAdmin = identity.ok && identity.role === 'admin';
     const auth = getOrCreateAuthConfig();
     const hostname = resolveHostname();
     const httpsPort = parseInt(process.env.PORT || '3588', 10);
@@ -146,7 +149,7 @@ export async function GET() {
           rootCaPath
         },
         auth: {
-          adminPassword: auth.adminPassword,
+          adminPassword: isAdmin ? auth.adminPassword : '[REDACTED]',
           authFile: auth.authFile
         },
         clients: {

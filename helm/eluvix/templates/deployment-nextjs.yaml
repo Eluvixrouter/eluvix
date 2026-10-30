@@ -31,11 +31,16 @@ spec:
               value: {{ .Values.nextjs.env.NODE_ENV | quote }}
             - name: PORT
               value: "{{ .Values.nextjs.port }}"
-          {{- if .Values.nextjs.persistence.enabled }}
+            - name: ELUVIX_CONFIG_PATH
+              value: /config/eluvix.json
           volumeMounts:
+            {{- if .Values.nextjs.persistence.enabled }}
             - name: data-storage
               mountPath: /app/apps/nextjs/data
-          {{- end }}
+            {{- end }}
+            - name: routing-config-volume
+              mountPath: /config/eluvix.json
+              subPath: eluvix.json
           livenessProbe:
             httpGet:
               path: /api/health
@@ -50,10 +55,13 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.nextjs.resources | nindent 12 }}
-      {{- if .Values.nextjs.persistence.enabled }}
       volumes:
+        {{- if .Values.nextjs.persistence.enabled }}
         - name: data-storage
           persistentVolumeClaim:
             claimName: {{ include "eluvix.fullname" . }}-nextjs-data
-      {{- end }}
+        {{- end }}
+        - name: routing-config-volume
+          configMap:
+            name: {{ include "eluvix.fullname" . }}-routing-config
 {{- end }}

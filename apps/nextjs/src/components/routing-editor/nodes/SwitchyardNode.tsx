@@ -72,7 +72,14 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   };
 
   const handleAddRoute = () => {
-    const newIdx = routes.length + 1;
+    let maxIdx = 0;
+    for (const r of routes) {
+      const match = r.id.match(/^tier-(\d+)$/);
+      if (match) {
+        maxIdx = Math.max(maxIdx, parseInt(match[1], 10));
+      }
+    }
+    const newIdx = maxIdx + 1;
     const newRoute: SwitchyardRoute = {
       id: `tier-${newIdx}`,
       name: `Tier ${newIdx}: Custom Route`,

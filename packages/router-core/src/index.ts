@@ -438,11 +438,12 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (upstream.type === 'harness' && upstream.harness?.providerIsLocal !== undefined) {
     return upstream.harness.providerIsLocal;
   }
-  const endpoint = upstream.endpoint || '';
+  const endpoint = (upstream.endpoint || '').trim().toLowerCase();
   if (
     upstream.harness?.embedded === true ||
     endpoint.startsWith('trueforge://') ||
     endpoint.startsWith('inprocess://') ||
+    endpoint.startsWith('opencode://') ||
     endpoint.startsWith('opencode-eluvix://') ||
     endpoint.startsWith('aider://') ||
     endpoint.startsWith('swe-agent://') ||
@@ -1230,13 +1231,35 @@ export class Eluvix {
       effectiveRequest = {
         ...effectiveRequest,
         messages: effectiveRequest.messages.map(m => {
-          if (typeof m.content === 'string' && (m.content.includes('<eluvix-memory') || m.content.includes('<eluvix-knowledge'))) {
-            return {
-              ...m,
-              content: m.content
-                .replace(/<(\/)?eluvix-memory([^>]*)>/gi, '&lt;$1eluvix-memory$2&gt;')
-                .replace(/<(\/)?eluvix-knowledge([^>]*)>/gi, '&lt;$1eluvix-knowledge$2&gt;')
-            };
+          if (typeof m.content === 'string') {
+            if (/<\/?eluvix-(?:memory|knowledge)/i.test(m.content)) {
+              return {
+                ...m,
+                content: m.content
+                  .replace(/<(\/)?eluvix-memory([^>]*)>/gi, '&lt;$1eluvix-memory$2&gt;')
+                  .replace(/<(\/)?eluvix-knowledge([^>]*)>/gi, '&lt;$1eluvix-knowledge$2&gt;')
+              };
+            }
+          } else if (Array.isArray(m.content)) {
+            const hasTag = m.content.some(
+              (p: any) => p?.type === 'text' && typeof p?.text === 'string' && /<\/?eluvix-(?:memory|knowledge)/i.test(p.text)
+            );
+            if (hasTag) {
+              return {
+                ...m,
+                content: m.content.map((p: any) => {
+                  if (p?.type === 'text' && typeof p?.text === 'string') {
+                    return {
+                      ...p,
+                      text: p.text
+                        .replace(/<(\/)?eluvix-memory([^>]*)>/gi, '&lt;$1eluvix-memory$2&gt;')
+                        .replace(/<(\/)?eluvix-knowledge([^>]*)>/gi, '&lt;$1eluvix-knowledge$2&gt;')
+                    };
+                  }
+                  return p;
+                })
+              };
+            }
           }
           return m;
         })
@@ -1515,6 +1538,42 @@ export class Eluvix {
             headers: {
               'Content-Type': 'application/json',
               'x-eluvix-tee-posture': 'DENIED_UNATTESTED'
+            }
+          }
+        );
+      }
+      if (err?.quantizationUnavailable) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'quantization_unavailable',
+              code: 'microscaling_quantization_required'
+            }
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-quantization-guard': 'DENIED_QUANTIZATION_MISMATCH'
+            }
+          }
+        );
+      }
+      if (err?.fabricUnavailable) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'fabric_unavailable',
+              code: 'clos_fabric_required'
+            }
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-fabric-guard': 'DENIED_FABRIC_COLLISION'
             }
           }
         );

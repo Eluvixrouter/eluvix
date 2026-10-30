@@ -12,6 +12,9 @@ export class ConfigValidationError extends Error {
 }
 
 export function getConfigPath(): string {
+  if (process.env.ELUVIX_CONFIG_PATH) {
+    return process.env.ELUVIX_CONFIG_PATH;
+  }
   const { configDir } = getAppPaths('eluvix');
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
@@ -255,7 +258,20 @@ function upstreamProblem(upstream: any): string | null {
   // block validates as ACP and must not be silently treated as TrueForge.
   if (upstream.type === 'harness' && upstream.harness?.kind) {
     if (
-      !['hermes', 'trueforge', 'opencode', 'acp', 'openhands', 'mastra', 'letta', 'a2a'].includes(upstream.harness.kind)
+      ![
+        'hermes',
+        'trueforge',
+        'opencode',
+        'acp',
+        'openhands',
+        'mastra',
+        'letta',
+        'a2a',
+        'aider',
+        'swe-agent',
+        'cline',
+        'plandex'
+      ].includes(upstream.harness.kind)
     ) {
       return `invalid harness.kind "${upstream.harness.kind}"`;
     }

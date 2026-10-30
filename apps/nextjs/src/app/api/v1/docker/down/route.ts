@@ -31,19 +31,31 @@ export async function POST(req: Request) {
 
     let requestedServices: string[] = [];
     let requestedProfile: string | undefined;
+    let hadServiceField = false;
     try {
       const body = await req.json();
       if (body && typeof body.profile === 'string') {
         requestedProfile = body.profile.trim().toLowerCase();
       }
       if (body && Array.isArray(body.services)) {
+        hadServiceField = true;
         requestedServices = body.services
           .filter((s: unknown): s is string => typeof s === 'string' && isValidContainerName(s));
-      } else if (body && typeof body.service === 'string' && isValidContainerName(body.service)) {
-        requestedServices = [body.service];
+      } else if (body && typeof body.service === 'string') {
+        hadServiceField = true;
+        if (isValidContainerName(body.service)) {
+          requestedServices = [body.service];
+        }
       }
     } catch {
       // Body empty or not JSON
+    }
+
+    if (hadServiceField && requestedServices.length === 0) {
+      return NextResponse.json(
+        { error: 'Invalid or unsupported service requested' },
+        { status: 400 }
+      );
     }
 
     if (

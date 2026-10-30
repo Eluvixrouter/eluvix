@@ -112,13 +112,13 @@ function computeExactMaxBinDistribution(K: number, M: number): {
 
   let expectedMaxLoad = 0.0;
   let expectedBarrierUtilization = 0.0;
-  const loadRatio = Math.min(1.0, M / K);
+  const idealLoad = Math.max(1.0, M / K);
 
   for (let b = 1; b <= M; b++) {
     const prob = P_cum[b] - P_cum[b - 1];
     if (prob > 1e-12) {
       expectedMaxLoad += b * prob;
-      expectedBarrierUtilization += (loadRatio / b) * prob;
+      expectedBarrierUtilization += Math.min(1.0, idealLoad / b) * prob;
     }
   }
 
@@ -171,8 +171,9 @@ export function calculateEcmpHashPolarization(
     expectedBarrierUtil = exact.expectedBarrierUtilization;
   } else {
     derivationMethod = 'raab-steger-asymptotic';
-    expectedMaxLoad = M === 1 ? 1.0 : 1.0 + 1.24 * Math.sqrt((M / K) * Math.max(1, Math.log(K)));
-    expectedBarrierUtil = Math.min(1.0, (M / K) / expectedMaxLoad);
+    const avgLoad = M / K;
+    expectedMaxLoad = M === 1 ? 1.0 : Math.max(1.0, avgLoad) + 1.24 * Math.sqrt(avgLoad * Math.max(1, Math.log(K)));
+    expectedBarrierUtil = Math.min(1.0, Math.max(1.0, avgLoad) / expectedMaxLoad);
   }
 
   return {
@@ -397,12 +398,14 @@ export function simulateOooDdpBitmapWindow(
 
   for (let i = 0; i < arrivalPsns.length; i++) {
     const psn = arrivalPsns[i];
-    const offset = (psn - basePsn + 0x1000000) & BTH_PSN_MASK;
+    const offset = Math.min((psn - basePsn + 0x1000000) & BTH_PSN_MASK, 65535);
     const wasOutOfOrder = offset < maxSeenOffset || psn > expectedInOrderPsn;
-    if (wasOutOfOrder) {
+    if (psn > expectedInOrderPsn) {
       outOfOrderCount++;
       const gap = (psn - expectedInOrderPsn + 0x1000000) & BTH_PSN_MASK;
       legacyRetransmits += Math.max(1, gap);
+    } else if (wasOutOfOrder) {
+      outOfOrderCount++;
     }
     if (offset > maxSeenOffset) {
       maxSeenOffset = offset;
@@ -601,7 +604,9 @@ export function generateFrrBgpUnnumberedConfig(options: {
   const hostname = sanitizeSafeIdentifier(options.hostname, `rail${railIdx}-leaf0${leafIdx}`);
   const asn = sanitizePositiveInt(options.asn, 65100 + leafIdx, 1, 4294967295);
   const blockPrefix = sanitizeIpv6SegmentList(options.srv6BlockPrefix, 'fcbb:bb00');
-  const nodeHex = `0${railIdx + 1}0${leafIdx}`;
+  const railPart = (railIdx + 1).toString(16).padStart(2, '0');
+  const leafPart = leafIdx.toString(16).padStart(2, '0');
+  const nodeHex = `${railPart}${leafPart}`;
   const spinePorts = sanitizePositiveInt(options.spinePortCount, 4, 1, 64);
 
   const portLines: string[] = [];

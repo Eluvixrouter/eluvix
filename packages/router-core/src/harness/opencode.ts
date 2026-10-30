@@ -87,12 +87,13 @@ export async function executeEmbeddedOpenCodeTurn(
     harnessCfg.approvals ||
     harnessCfg.approvalPolicy ||
     'auto-approve-readonly';
+  const READ_ONLY_TOOL_PATTERN = /^(?:read|get|list|fetch|describe|inspect|view|search|check|query)_/i;
   const effectiveAutoApproveTools =
-    Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
+    Array.isArray(harnessCfg.autoApproveTools)
       ? harnessCfg.autoApproveTools
       : (Array.isArray(request.tools) ? request.tools : [])
           .map((t: any) => String(t?.function?.name || t?.name || ''))
-          .filter(Boolean);
+          .filter(name => READ_ONLY_TOOL_PATTERN.test(name));
 
   const cacheable = sessionMode === 'per-eluvix-session' && Boolean(scope?.sessionId);
   const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
@@ -525,6 +526,26 @@ export async function forwardOpencodeHarness(
         const rawObs = String(p?.state?.output ?? p?.output ?? p?.result ?? '');
         if (rawObs && deepGuardActive) {
           const check = inspectHarnessObservation(rawObs, toolName, harnessCfg.midLoopGuard);
+          if (!check.allowed) {
+            clearTimeout(timer);
+            return new Response(
+              JSON.stringify({
+                error: {
+                  message: check.blockedReason || `Observation from tool "${toolName}" blocked by PromptGuard`,
+                  type: 'prompt_guard_violation',
+                  code: 'mid_loop_injection_blocked',
+                },
+              }),
+              {
+                status: 403,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-eluvix-harness': 'opencode',
+                  'x-eluvix-guard-injections': String(injectionCount + 1),
+                },
+              }
+            );
+          }
           if (check.piiRedacted) redactionCount += check.piiTypes.length;
           if (check.injectionDetected) injectionCount += 1;
           toolObservations.push(check.sanitizedText);
@@ -544,6 +565,26 @@ export async function forwardOpencodeHarness(
     let text = rawText;
     if (deepGuardActive && text) {
       const check = inspectHarnessObservation(text, 'opencode_output', harnessCfg.midLoopGuard);
+      if (!check.allowed) {
+        clearTimeout(timer);
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: check.blockedReason || 'Response text blocked by PromptGuard',
+              type: 'prompt_guard_violation',
+              code: 'mid_loop_injection_blocked',
+            },
+          }),
+          {
+            status: 403,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-harness': 'opencode',
+              'x-eluvix-guard-injections': String(injectionCount + 1),
+            },
+          }
+        );
+      }
       if (check.piiRedacted) redactionCount += check.piiTypes.length;
       if (check.injectionDetected) injectionCount += 1;
       text = check.sanitizedText;
@@ -859,17 +900,27 @@ export function createEluvixOpenCodeServer(
         .map(p => p.text)
         .join('\n');
 
-      const policy: HarnessApprovalPolicy =
-        body?.eluvix?.approvalPolicy || defaultPolicy;
-      const autoApproveList: string[] = Array.isArray(body?.eluvix?.autoApproveTools)
-        ? body.eluvix.autoApproveTools
-        : defaultAutoApprove;
+      const policy: HarnessApprovalPolicy = defaultPolicy;
+      const autoApproveList: string[] = defaultAutoApprove;
 
       const promptGuardCheck = inspectHarnessObservation(
         promptText,
         'opencode_user_message',
         options.midLoopGuard
       );
+      if (!promptGuardCheck.allowed) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: promptGuardCheck.blockedReason || 'Blocked by Eluvix-OpenCode PromptGuard',
+              type: 'prompt_guard_violation',
+              code: 'prompt_injection_blocked',
+            },
+          })
+        );
+        return;
+      }
 
       const step1Decision = selectSwitchyardStepTier(1, 'tool-selection', promptGuardCheck.sanitizedText);
       const step2Decision = selectSwitchyardStepTier(2, 'final-synthesis', promptGuardCheck.sanitizedText);
@@ -905,6 +956,19 @@ export function createEluvixOpenCodeServer(
           toolName,
           options.midLoopGuard
         );
+        if (!obsCheck.allowed) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: {
+                message: obsCheck.blockedReason || `Observation from tool "${toolName}" blocked by PromptGuard`,
+                type: 'prompt_guard_violation',
+                code: 'mid_loop_injection_blocked',
+              },
+            })
+          );
+          return;
+        }
 
         outParts.push({
           type: 'tool',

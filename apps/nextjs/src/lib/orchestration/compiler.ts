@@ -637,7 +637,7 @@ function generateEluvixConfig(
         ...(node.data?.aciProfile ? { aciProfile: String(node.data.aciProfile) } : {}),
         ...(linkedSandbox
           ? {
-              sandboxEndpoint: String(linkedSandbox.data?.endpoint || 'http://localhost:8910'),
+              sandboxEndpoint: String(linkedSandbox.data?.endpoint || 'http://localhost:3986'),
               sandboxType: String(linkedSandbox.data?.sandboxType || 'docker-exec')
             }
           : {})
@@ -1762,8 +1762,8 @@ function generateConfidentialAttestationSetup(
     `# ==============================================================================`,
     `set -euo pipefail`,
     ``,
-    `KBS_URL="${kbsUrl}"`,
-    `EXPECTED_MEASUREMENT="${expectedMeasurement}"`,
+    `KBS_URL=${escapeShellArg(kbsUrl)}`,
+    `EXPECTED_MEASUREMENT=${escapeShellArg(expectedMeasurement)}`,
     `ENCLAVE_MODEL_DIR="/mnt/enclave_ram/models"`,
     ``,
     `echo "[1/4] Generating Ephemeral RSA-3072 Wrapping Keypair & Fetching KBS Nonce..."`,

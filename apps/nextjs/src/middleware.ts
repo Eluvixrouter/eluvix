@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 
-const PROTECTED_PAGES = ['/', '/editor', '/playground', '/observability', '/configurator', '/provider'];
+const PROTECTED_PAGES = ['/', '/editor', '/playground', '/observability', '/configurator', '/provider', '/harness'];
 
 function isLocalOrigin(origin: string): boolean {
   try {
@@ -77,10 +77,12 @@ export async function middleware(req: NextRequest) {
       // Named API keys (elx_<32 letters>) are verified against keys.json inside Node route handlers
       if (
         /^elx_[A-Za-z]{24,64}$/.test(token) &&
-        (pathname.startsWith('/api/v1/chat/completions') ||
+        (pathname.startsWith('/api/v1/chat') ||
           pathname.startsWith('/api/v1/memory') ||
           pathname.startsWith('/api/v1/models') ||
-          pathname.startsWith('/api/v1/route-explain'))
+          pathname.startsWith('/api/v1/route-explain') ||
+          pathname.startsWith('/api/v1/export') ||
+          pathname.startsWith('/api/v1/harness/sessions'))
       ) {
         return NextResponse.next();
       }
@@ -100,25 +102,38 @@ export async function middleware(req: NextRequest) {
     const secret = process.env.NEXTAUTH_SECRET;
     const sessionToken = await getToken({ req, secret });
     if (sessionToken) {
-      // RBAC check: read-only directory auditors cannot execute state-mutating requests on secrets or router orchestration
+      // RBAC check: read-only directory auditors cannot execute state-mutating requests
       const userRole = (sessionToken.role as string) || 'admin';
       if (
         userRole === 'readonly' &&
-        (pathname.startsWith('/api/secrets') || pathname.startsWith('/api/orchestrator')) &&
         req.method !== 'GET' &&
         req.method !== 'HEAD' &&
         req.method !== 'OPTIONS'
       ) {
-        return NextResponse.json(
-          {
-            error: {
-              message: 'Forbidden: read-only directory auditors cannot modify router secrets or configuration.',
-              type: 'insufficient_role',
-              code: 'forbidden_readonly_user',
+        const isProtectedMutation =
+          pathname.startsWith('/api/secrets') ||
+          pathname.startsWith('/api/orchestrator') ||
+          pathname.startsWith('/api/v1/config') ||
+          pathname.startsWith('/api/v1/configurator') ||
+          pathname.startsWith('/api/v1/docker') ||
+          pathname.startsWith('/api/v1/layouts') ||
+          pathname.startsWith('/api/v1/provider') ||
+          pathname.startsWith('/api/v1/observability') ||
+          pathname.startsWith('/api/v1/memory') ||
+          pathname.startsWith('/api/v1/harness/sessions');
+
+        if (isProtectedMutation) {
+          return NextResponse.json(
+            {
+              error: {
+                message: 'Forbidden: read-only users cannot modify router configuration, state, or secrets.',
+                type: 'insufficient_role',
+                code: 'forbidden_readonly_user',
+              },
             },
-          },
-          { status: 403 }
-        );
+            { status: 403 }
+          );
+        }
       }
       return NextResponse.next();
     }
@@ -162,6 +177,7 @@ export const config = {
     '/observability/:path*',
     '/configurator/:path*',
     '/provider/:path*',
+    '/harness/:path*',
     '/api/v1/:path*',
     '/api/secrets/:path*',
     '/api/orchestrator/:path*'

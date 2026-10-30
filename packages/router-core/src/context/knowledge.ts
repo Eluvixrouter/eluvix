@@ -132,8 +132,9 @@ export function formatKnowledgeSystemBlock(
   const includeCitations = config?.citationMode !== 'silent';
   const body = blocks
     .map((b, idx) => {
+      const safeUri = b.uri ? b.uri.replace(/<\/eluvix-knowledge>/gi, '<\\/eluvix-knowledge>') : '';
       const header =
-        includeCitations && b.uri ? `[Doc ${idx + 1}] (${b.uri})` : `[Doc ${idx + 1}]`;
+        includeCitations && safeUri ? `[Doc ${idx + 1}] (${safeUri})` : `[Doc ${idx + 1}]`;
       // Escape delimiter to prevent breakout
       const safeText = b.text.replace(/<\/eluvix-knowledge>/gi, '<\\/eluvix-knowledge>');
       return `${header}\n${safeText}`;

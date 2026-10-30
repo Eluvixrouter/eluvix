@@ -13,7 +13,10 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   try {
     const identity = await resolveCallerIdentity(req);
-    const userId = identity.ok ? identity.userId : 'default';
+    if (!identity.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const userId = identity.userId;
 
     const { searchParams } = new URL(req.url);
     const sessionId = searchParams.get('session_id');
@@ -48,7 +51,13 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const identity = await resolveCallerIdentity(req);
-    const userId = identity.ok ? identity.userId : 'default';
+    if (!identity.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    if (identity.role === 'readonly') {
+      return NextResponse.json({ success: false, error: 'Forbidden: read-only users cannot modify sessions' }, { status: 403 });
+    }
+    const userId = identity.userId;
     const body = await req.json();
     if (!body?.sessionId) {
       return NextResponse.json({ success: false, error: 'Missing sessionId' }, { status: 400 });
@@ -71,7 +80,13 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const identity = await resolveCallerIdentity(req);
-    const userId = identity.ok ? identity.userId : 'default';
+    if (!identity.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    if (identity.role === 'readonly') {
+      return NextResponse.json({ success: false, error: 'Forbidden: read-only users cannot modify sessions' }, { status: 403 });
+    }
+    const userId = identity.userId;
     const { searchParams } = new URL(req.url);
     const sessionId = searchParams.get('session_id');
     if (!sessionId) {

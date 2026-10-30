@@ -222,11 +222,14 @@ export default function HarnessWorkbench({
   useEffect(() => {
     const startId = initialSessionId || uuidv4();
     setCurrentSessionId(startId);
-    fetchSessions();
     if (initialSessionId) {
       loadSession(initialSessionId);
     }
-  }, [initialSessionId, fetchSessions, loadSession]);
+  }, [initialSessionId, loadSession]);
+
+  useEffect(() => {
+    fetchSessions();
+  }, [fetchSessions]);
 
   const handleSelectHarnessKind = (nextKind: string) => {
     const entry = HARNESS_CATALOG.find(h => h.kind === nextKind) || HARNESS_CATALOG[0];
@@ -302,7 +305,16 @@ export default function HarnessWorkbench({
             approvalPolicy,
             autoApproveTools: activeTools,
             mcpServers: mcpServerUri.trim()
-              ? [{ name: 'axonwall-mcp', endpoint: mcpServerUri.trim(), transport: 'unix' }]
+              ? [{
+                  name: 'axonwall-mcp',
+                  endpoint: mcpServerUri.trim(),
+                  transport:
+                    mcpServerUri.trim().startsWith('http://') || mcpServerUri.trim().startsWith('https://')
+                      ? 'sse'
+                      : mcpServerUri.trim().startsWith('stdio:')
+                      ? 'stdio'
+                      : 'unix',
+                }]
               : [],
             midLoopGuard: {
               enabled: true,

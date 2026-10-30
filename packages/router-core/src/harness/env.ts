@@ -27,6 +27,14 @@ export const CHILD_ENV_DENYLIST: readonly string[] = [
   'OPENVIKING_API_KEY'
 ];
 
+export const SENSITIVE_CREDENTIALS_DENYLIST: readonly string[] = [
+  'ELUVIX_ADMIN_PASSWORD',
+  'LEGACY_ADMIN_PASSWORD',
+  'ELUVIX_DB_PATH',
+  'ELUVIX_AUTH_FILE',
+  'ELUVIX_LDAP_BIND_PASSWORD'
+];
+
 /**
  * Build the environment for a child process: a copy of process.env with
  * every denylisted key removed, overlaid with `extra` (e.g. HOME,
@@ -44,6 +52,9 @@ export function buildChildEnv(extra?: Record<string, string>): Record<string, st
     Object.assign(env, extra);
   }
   for (const key of CHILD_ENV_DENYLIST) {
+    delete env[key];
+  }
+  for (const key of SENSITIVE_CREDENTIALS_DENYLIST) {
     delete env[key];
   }
   return env;

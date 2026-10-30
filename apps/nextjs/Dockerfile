@@ -28,6 +28,7 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED 1
 
 # Build project
+RUN mkdir -p /app/apps/nextjs/public
 RUN pnpm -r run build
 
 # Production image, copy all the files and run next

@@ -75,7 +75,7 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
   sandboxNode: {
     label: 'Execution Sandbox',
     sandboxType: 'docker-exec',
-    endpoint: 'http://localhost:8910',
+    endpoint: 'http://localhost:3986',
     timeoutMs: 30000,
     memoryLimitMb: 512,
     networkPolicy: 'none',
@@ -1108,12 +1108,7 @@ export default function RoutingEditor() {
       };
 
       const allowedTargets = rules[sourceNode.type || ''] || [];
-      const isValid = allowedTargets.includes(targetNode.type || '');
-      
-      if (!isValid) {
-        alert(`Invalid connection: Cannot connect ${sourceNode.type} to ${targetNode.type}`);
-      }
-      return isValid;
+      return allowedTargets.includes(targetNode.type || '');
     },
     [nodes]
   );

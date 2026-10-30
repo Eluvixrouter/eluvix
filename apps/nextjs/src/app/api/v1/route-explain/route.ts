@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getConfig } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,12 +53,16 @@ export async function POST(req: Request) {
       body.scope?.origin ||
       body.origin ||
       (headerOrigin === 'harness' || headerOrigin === 'playground' ? headerOrigin : 'client');
+    const identity = await resolveCallerIdentity(req);
+    const resolvedUserId = keyUserId || (identity.ok ? identity.userId : undefined);
+    const isAdmin = identity.ok && identity.role === 'admin';
+    const effectiveUserId =
+      isAdmin && body.scope?.userId
+        ? body.scope.userId
+        : resolvedUserId || 'default';
+
     const scope: Partial<RequestScope> = {
-      userId:
-        keyUserId ||
-        body.scope?.userId ||
-        req?.headers?.get('x-eluvix-user') ||
-        (typeof body.user === 'string' && body.user.trim() ? body.user.trim() : 'default'),
+      userId: effectiveUserId,
       sessionId: body.scope?.sessionId || req?.headers?.get('x-eluvix-session') || undefined,
       origin
     };

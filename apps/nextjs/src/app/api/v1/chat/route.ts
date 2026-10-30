@@ -3,6 +3,7 @@ import {
   forwardHarnessRequest,
   saveChatMessage,
   upsertHarnessSession,
+  getHarnessSession,
   type HarnessKind,
   type UpstreamConfig,
 } from '@eluvix/router-core';
@@ -28,9 +29,13 @@ export async function POST(req: Request) {
 
   try {
     const caller = await resolveCallerIdentity(req);
-    const userId = caller.ok ? caller.userId : 'default';
+    if (!caller.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    const userId = caller.userId;
 
-    const { session_id, session_title, harnessOverride, ...forwardBody } = body;
+    const { session_id, session_title, harnessOverride, ...rawForwardBody } = body;
+    const forwardBody = { ...rawForwardBody, stream: false };
 
     let res: Response;
     if (harnessOverride && typeof harnessOverride === 'object' && harnessOverride.kind) {
@@ -187,12 +192,20 @@ export async function POST(req: Request) {
         saveChatMessage(session_id, assistantMsg.role, assistantMsg.content, userId, msgMeta);
       }
 
-      const firstUserText =
-        typeof userMsg?.content === 'string' ? userMsg.content.trim().slice(0, 72) : undefined;
+      let sessionTitle = session_title;
+      if (!sessionTitle) {
+        const existingSession = getHarnessSession(session_id, userId);
+        if (existingSession?.title) {
+          sessionTitle = existingSession.title;
+        } else {
+          const firstUserMsg = forwardBody.messages.find((m: any) => m.role === 'user');
+          sessionTitle = typeof firstUserMsg?.content === 'string' ? firstUserMsg.content.trim().slice(0, 72) : undefined;
+        }
+      }
       upsertHarnessSession({
         sessionId: session_id,
         userId,
-        title: session_title || firstUserText || undefined,
+        title: sessionTitle || undefined,
         harnessKind: harness || harnessOverride?.kind || 'opencode',
         agentId: harnessOverride?.agentId || 'build',
         nodeId: harnessOverride?.nodeId || null,

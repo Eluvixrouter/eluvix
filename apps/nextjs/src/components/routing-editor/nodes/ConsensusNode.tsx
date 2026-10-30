@@ -58,7 +58,7 @@ export default function ConsensusNode({ id, data }: { id: string; data: any }) {
             value={strategy}
             onChange={(e) => {
               setStrategy(e.target.value);
-              syncData({ strategy: e.target.value });
+              syncData({ strategy: e.target.value, mode: e.target.value });
             }}
           >
             <option value="judge-synthesize">⚖️ Judge Synthesis (MoA)</option>
@@ -98,7 +98,10 @@ export default function ConsensusNode({ id, data }: { id: string; data: any }) {
         </div>
       </div>
 
-      <Handle type="source" position={Position.Right} className="w-3.5 h-3.5 bg-amber-500 -right-2" />
+      <Handle type="source" position={Position.Right} id="judge" className="w-3.5 h-3.5 bg-amber-400 -right-2 top-8" title="Judge / Synthesizer" />
+      <Handle type="source" position={Position.Right} id="candidate-1" className="w-3.5 h-3.5 bg-amber-600 -right-2 top-16" title="Candidate 1" />
+      <Handle type="source" position={Position.Right} id="candidate-2" className="w-3.5 h-3.5 bg-amber-600 -right-2 top-24" title="Candidate 2" />
+      <Handle type="source" position={Position.Right} id="candidate-3" className="w-3.5 h-3.5 bg-amber-600 -right-2 top-32" title="Candidate 3" />
     </div>
   );
 }

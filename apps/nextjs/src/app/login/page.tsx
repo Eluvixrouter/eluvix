@@ -14,10 +14,14 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const rawCallbackUrl = searchParams.get("callbackUrl") || "/";
-  // Avoid redirection loops back to /login or /api/auth
-  const callbackUrl = rawCallbackUrl.includes("/login") || rawCallbackUrl.includes("/api/auth")
-    ? "/"
-    : rawCallbackUrl;
+  // Avoid redirection loops back to /login or /api/auth and protect against open redirect attacks
+  const callbackUrl =
+    rawCallbackUrl.startsWith("/") &&
+    !rawCallbackUrl.startsWith("//") &&
+    !rawCallbackUrl.includes("/login") &&
+    !rawCallbackUrl.includes("/api/auth")
+      ? rawCallbackUrl
+      : "/";
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");

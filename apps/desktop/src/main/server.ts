@@ -394,6 +394,7 @@ export class DesktopRouterServer extends EventEmitter {
               u.models = detectedMap[u.id];
             }
           });
+          this.router = new Eluvix(this.config);
           this.emit('config-updated', this.config);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true, detected: detectedMap, config: this.config }));
@@ -422,6 +423,7 @@ export class DesktopRouterServer extends EventEmitter {
         const detected = await detectUpstreamModels(targetUpstream, 5000);
         if (detected.length > 0 && targetUpstream.id !== 'custom-detect') {
           targetUpstream.models = detected;
+          this.router = new Eluvix(this.config);
           this.emit('config-updated', this.config);
         }
 

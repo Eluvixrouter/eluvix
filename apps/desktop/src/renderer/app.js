@@ -563,7 +563,7 @@ ${keyLine}`;
     }
 
     if (providerToggleBtn) {
-      if (status.status === 'ONLINE' || status.status === 'SERVING' || status.status === 'PAUSED') {
+      if (status.status === 'ONLINE' || status.status === 'SERVING' || status.status === 'PAUSED' || status.status === 'STANDBY') {
         providerToggleBtn.className = 'btn-stop-sharing';
         providerToggleBtn.textContent = '⏹ Stop Sharing';
       } else {

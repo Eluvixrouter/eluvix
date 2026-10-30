@@ -620,8 +620,8 @@ export function simulateMicroscalingQuantization(
       liveCodeBenchPct: enableHadamard ? (svdRank >= 16 ? 54.0 : 53.9) : 51.5,
       relativeThroughput: 3.42,
       ptxInstruction: 'tcgen05.mma.kind::mxf4nvf4',
-      mse: activeNvfp4.mse,
-      sqnrDb: activeNvfp4.sqnrDb,
+      mse: enableHadamard ? activeNvfp4.mse : unrotatedNvfp4.mse,
+      sqnrDb: enableHadamard ? activeNvfp4.sqnrDb : unrotatedNvfp4.sqnrDb,
       accuracyDataSource: 'reference-modelopt-benchmark-profile',
       metricSource: 'derived-numerical'
     }

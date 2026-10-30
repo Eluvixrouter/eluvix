@@ -273,7 +273,7 @@ export async function authenticateLdapUser(
 
     // Step 2: Search for user entry
     const safeUser = escapeLdapFilter(trimmedUser);
-    const searchFilter = (config.userSearchFilter || '(uid={username})').replace('{username}', safeUser);
+    const searchFilter = (config.userSearchFilter || '(uid={username})').replaceAll('{username}', () => safeUser);
 
     const searchRes = await client.search(config.userSearchBase || config.baseDn, {
       filter: searchFilter,
@@ -327,18 +327,21 @@ export async function authenticateLdapUser(
     if (userEntry.memberOf) {
       const raw = Array.isArray(userEntry.memberOf) ? userEntry.memberOf : [userEntry.memberOf];
       for (const m of raw) {
-        const match = /cn=([^,]+)/i.exec(String(m));
+        const trimmed = String(m).trim();
+        const match = /^cn=([^,]+)/i.exec(trimmed);
         if (match && match[1]) {
           resolvedGroups.push(match[1]);
         } else {
-          resolvedGroups.push(String(m));
+          resolvedGroups.push(trimmed);
         }
       }
     }
 
     // Query POSIX groups (posixGroup: memberUid=<uid>) and groupOfNames (member=<dn>)
+    const resolvedUid = userEntry.uid ? String(userEntry.uid) : trimmedUser;
+    const safeUid = escapeLdapFilter(resolvedUid);
     const safeUserDn = escapeLdapFilter(userDn);
-    const groupFilter = `(|(&(objectClass=posixGroup)(memberUid=${safeUser}))(&(objectClass=groupOfNames)(member=${safeUserDn})))`;
+    const groupFilter = `(|(&(objectClass=posixGroup)(memberUid=${safeUid}))(&(objectClass=groupOfNames)(member=${safeUserDn})))`;
 
     try {
       const groupRes = await client.search(config.groupSearchBase || config.baseDn, {

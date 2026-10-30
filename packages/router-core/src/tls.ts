@@ -60,13 +60,24 @@ export function getOrCreateLocalCert(
   try {
     console.log(`[TLS] Generating TLS certificate using mkcert for: ${domains.join(', ')}...`);
     // Ensure local CA is installed (safe to call multiple times)
-    execSync('mkcert -install', { stdio: 'ignore' });
+    spawnSync('mkcert', ['-install'], { stdio: 'ignore' });
 
-    // Generate certificates
-    execSync(
-      `mkcert -cert-file "${certPath}" -key-file "${keyPath}" ${domains.map(d => `"${d}"`).join(' ')}`,
+    // Generate certificates using spawnSync to avoid shell injection
+    const mkcertRes = spawnSync(
+      'mkcert',
+      ['-cert-file', certPath, '-key-file', keyPath, ...domains],
       { stdio: 'inherit' }
     );
+    if (mkcertRes.status !== 0) {
+      console.error('[TLS] mkcert failed with exit status', mkcertRes.status);
+      return null;
+    }
+
+    try {
+      fs.chmodSync(keyPath, 0o600);
+    } catch {
+      // Best effort chmod for systems that do not support POSIX modes
+    }
 
     const cert = fs.readFileSync(certPath);
     const key = fs.readFileSync(keyPath);

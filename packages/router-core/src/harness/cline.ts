@@ -107,12 +107,13 @@ export async function executeEmbeddedClineTurn(
   const step2 = selectSwitchyardStepTier(2, mode === 'plan' ? 'final-synthesis' : 'code-edit', promptCheck.sanitizedText);
   const tierProgression = `${step1.tier}->${step2.tier}`;
 
+  const READ_ONLY_TOOL_PATTERN = /^(?:read|get|list|fetch|describe|inspect|view|search|check|query)_/i;
   const effectiveAutoApprove =
-    Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
+    Array.isArray(harnessCfg.autoApproveTools)
       ? harnessCfg.autoApproveTools
       : (Array.isArray(request.tools) ? request.tools : [])
           .map((t: any) => String(t?.function?.name || t?.name || ''))
-          .filter(Boolean);
+          .filter(name => READ_ONLY_TOOL_PATTERN.test(name));
 
   const toolCalls: any[] = [];
   for (let i = 0; i < (request.tools || []).length; i++) {
@@ -220,6 +221,25 @@ export async function forwardClineHarness(
   );
   const prompt = buildHarnessPrompt(request.messages || [], { includeHistory: true });
   const promptCheck = inspectHarnessObservation(prompt, 'cline_http_prompt', harnessCfg.midLoopGuard);
+  if (!promptCheck.allowed) {
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: promptCheck.blockedReason || 'Blocked by Cline PromptGuard',
+          type: 'PromptGuardBlocked',
+          code: 'prompt_guard_violation'
+        }
+      }),
+      {
+        status: 403,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-eluvix-harness': 'cline',
+          'x-eluvix-guard-injections': '1'
+        }
+      }
+    );
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(

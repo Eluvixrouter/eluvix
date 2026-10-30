@@ -27,6 +27,12 @@ export interface ConfigDiff {
   confidentialPolicyChanged?: boolean;
   quantizationPolicyChanged?: boolean;
   fabricPolicyChanged?: boolean;
+  strategyChanged?: boolean;
+  fallbackStrategyChanged?: boolean;
+  promptGuardChanged?: boolean;
+  privacyGuardChanged?: boolean;
+  switchyardChanged?: boolean;
+  modelGatewayChanged?: boolean;
   isEmpty: boolean;
 }
 
@@ -151,6 +157,13 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       normalizePolicy(next.switchyard?.fabricPolicy || (next as any).fabricPolicy)
     ) || undefined;
 
+  const strategyChanged = fieldDiffers((current as any)?.strategy, (next as any).strategy) || undefined;
+  const fallbackStrategyChanged = fieldDiffers((current as any)?.fallbackStrategy, (next as any).fallbackStrategy) || undefined;
+  const promptGuardChanged = fieldDiffers((current as any)?.promptGuard, (next as any).promptGuard) || undefined;
+  const privacyGuardChanged = fieldDiffers((current as any)?.privacyGuard, (next as any).privacyGuard) || undefined;
+  const switchyardChanged = fieldDiffers((current as any)?.switchyard, (next as any).switchyard) || undefined;
+  const modelGatewayChanged = fieldDiffers((current as any)?.modelGateway, (next as any).modelGateway) || undefined;
+
   return {
     added,
     removed,
@@ -165,6 +178,12 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     confidentialPolicyChanged,
     quantizationPolicyChanged,
     fabricPolicyChanged,
+    strategyChanged,
+    fallbackStrategyChanged,
+    promptGuardChanged,
+    privacyGuardChanged,
+    switchyardChanged,
+    modelGatewayChanged,
     isEmpty:
       added.length === 0 &&
       removed.length === 0 &&
@@ -178,6 +197,12 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !fallbackChainsChanged &&
       !confidentialPolicyChanged &&
       !quantizationPolicyChanged &&
-      !fabricPolicyChanged
+      !fabricPolicyChanged &&
+      !strategyChanged &&
+      !fallbackStrategyChanged &&
+      !promptGuardChanged &&
+      !privacyGuardChanged &&
+      !switchyardChanged &&
+      !modelGatewayChanged
   };
 }

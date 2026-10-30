@@ -98,6 +98,7 @@ PACKAGES=(
   "package.json"
   "apps/desktop/package.json"
   "packages/router-core/package.json"
+  "packages/opencode-eluvix/package.json"
   "apps/nextjs/package.json"
   "apps/githubio/package.json"
 )

@@ -7,30 +7,23 @@ servers: 1
 agents: 1
 image: docker.io/rancher/k3s:v1.31.5-k3s1
 ports:
-  # App ports land on the cluster nodes, where the chart's NodePort
-  # Services (helm/eluvix/values-local.yaml) listen. Mappings aimed at
-  # the loadbalancer only reach Traefik on 80/443 — the ClusterIP-era
-  # config sent 3588/8080/11434/8002/8003 nowhere.
+  # App ports land on the cluster node where the chart's NodePort
+  # Services (helm/eluvix/values-local.yaml) listen.
   - port: 3588:3588
     nodeFilters:
       - server:0
-      - agent:0
   - port: 8080:8080
     nodeFilters:
       - server:0
-      - agent:0
   - port: 11434:11434
     nodeFilters:
       - server:0
-      - agent:0
   - port: 8002:8002
     nodeFilters:
       - server:0
-      - agent:0
   - port: 8003:8003
     nodeFilters:
       - server:0
-      - agent:0
   - port: 80:80
     nodeFilters:
       - loadbalancer
@@ -46,3 +39,8 @@ options:
   k3d:
     wait: true
     timeout: "120s"
+  k3s:
+    extraArgs:
+      - arg: --kube-apiserver-arg=service-node-port-range=1-65535
+        nodeFilters:
+          - server:*

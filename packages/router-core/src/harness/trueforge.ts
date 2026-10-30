@@ -507,6 +507,28 @@ export async function forwardTrueForgeHarness(
       const rawText = String(
         data?.output || data?.content || data?.choices?.[0]?.message?.content || ''
       );
+      if (deepGuardActive && rawText) {
+        const check = inspectHarnessObservation(rawText, 'trueforge_json_output', harnessCfg.midLoopGuard);
+        if (!check.allowed) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: check.blockedReason || 'Blocked by TrueForge PromptGuard',
+                type: 'PromptGuardBlocked',
+                code: 'prompt_guard_violation'
+              }
+            }),
+            {
+              status: 403,
+              headers: {
+                'Content-Type': 'application/json',
+                'x-eluvix-harness': 'trueforge',
+                'x-eluvix-guard-injections': '1'
+              }
+            }
+          );
+        }
+      }
       const text = sanitizeChunkIfEnabled(rawText, 'trueforge_json_output');
       if (request.stream) {
         const encoder = new TextEncoder();

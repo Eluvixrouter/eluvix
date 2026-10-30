@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-import { isBlockedHost } from '../api-helpers';
+import { isBlockedHost, ALLOWED_DOCKER_SERVICES } from '../api-helpers';
+import { diffRouterConfigs } from '../config-diff';
+import { classifyChatError } from '../chat-error';
+import { saveConfig, getConfigPath } from '../router';
 import {
   Eluvix,
   isLocalUpstream,
@@ -269,6 +272,85 @@ describe('Bug Hunt Fixes Regression Suite', () => {
           process.env.XDG_CONFIG_HOME = saved;
         } else {
           delete process.env.XDG_CONFIG_HOME;
+        }
+      }
+    });
+  });
+
+  describe('Deep Dive Bug Hunt: Next.js API, Router & Services Regressions', () => {
+    it('ALLOWED_DOCKER_SERVICES: includes sglang, opencode and other harnesses', () => {
+      expect(ALLOWED_DOCKER_SERVICES.has('sglang')).toBe(true);
+      expect(ALLOWED_DOCKER_SERVICES.has('opencode')).toBe(true);
+      expect(ALLOWED_DOCKER_SERVICES.has('aider')).toBe(true);
+      expect(ALLOWED_DOCKER_SERVICES.has('swe-agent')).toBe(true);
+      expect(ALLOWED_DOCKER_SERVICES.has('cline')).toBe(true);
+      expect(ALLOWED_DOCKER_SERVICES.has('plandex')).toBe(true);
+    });
+
+    it('router.ts: saves configs with aider, swe-agent, cline, and plandex harnesses', () => {
+      const aiderConfig = {
+        upstreams: [
+          {
+            id: 'aider-node',
+            name: 'Aider Harness',
+            type: 'harness' as const,
+            endpoint: 'http://localhost:8790',
+            priority: 20,
+            models: ['harness/aider'],
+            harness: {
+              kind: 'aider' as const,
+              agentId: 'architect'
+            }
+          }
+        ]
+      };
+      // Must not throw validation error
+      expect(() => saveConfig(aiderConfig as any)).not.toThrow();
+    });
+
+    it('chat-error.ts: classifies all "No ... upstream available" errors as no-upstream (503)', () => {
+      expect(classifyChatError(new Error('No local upstream available for model: llama3 (egressPolicy: local-only)'))).toBe('no-upstream');
+      expect(classifyChatError(new Error('No non-harness upstream available for model: llama3 (loop-guard)'))).toBe('no-upstream');
+      expect(classifyChatError(new Error('No attested confidential enclave upstream available'))).toBe('no-upstream');
+      expect(classifyChatError(new Error('No collision-free Rail-Optimized fabric upstream available'))).toBe('no-upstream');
+    });
+
+    it('config-diff.ts: detects strategy, guard, and switchyard changes', () => {
+      const base = {
+        upstreams: [
+          {
+            id: 'u1',
+            name: 'Upstream 1',
+            type: 'lemonade' as const,
+            endpoint: 'http://localhost:13305',
+            models: ['m1'],
+            priority: 10
+          }
+        ],
+        strategy: 'lowest-cost' as const
+      };
+      const modified = {
+        ...base,
+        strategy: 'cost-complexity' as const,
+        promptGuard: { enabled: true, threshold: 0.9 }
+      };
+
+      const diff = diffRouterConfigs(base as any, modified as any);
+      expect(diff.isEmpty).toBe(false);
+      expect(diff.strategyChanged).toBe(true);
+      expect(diff.promptGuardChanged).toBe(true);
+    });
+
+    it('getConfigPath: respects ELUVIX_CONFIG_PATH override', () => {
+      const saved = process.env.ELUVIX_CONFIG_PATH;
+      try {
+        process.env.ELUVIX_CONFIG_PATH = '/tmp/custom-config.json';
+        expect(getConfigPath()).toBe('/tmp/custom-config.json');
+      } finally {
+        if (saved !== undefined) {
+          process.env.ELUVIX_CONFIG_PATH = saved;
+        } else {
+          delete process.env.ELUVIX_CONFIG_PATH;
         }
       }
     });

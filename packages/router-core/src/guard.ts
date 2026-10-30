@@ -24,6 +24,8 @@ export interface PromptGuardConfig {
     danJailbreak?: boolean;
     systemPromptLeak?: boolean;
     obfuscation?: boolean;
+    fake_system_token_injection?: boolean;
+    unconditional_compliance?: boolean;
   };
   bannedPhrases?: string[];
 }
@@ -188,6 +190,8 @@ export function checkPromptHeuristics(content: string, configOrThreshold: number
       if (pattern.label === 'dan_jailbreak_persona' && config.threatVectors.danJailbreak === false) continue;
       if (pattern.label === 'system_prompt_leakage' && config.threatVectors.systemPromptLeak === false) continue;
       if (pattern.label === 'obfuscated_instruction_bypass' && config.threatVectors.obfuscation === false) continue;
+      if (pattern.label === 'fake_system_token_injection' && config.threatVectors.fake_system_token_injection === false) continue;
+      if (pattern.label === 'unconditional_compliance' && config.threatVectors.unconditional_compliance === false) continue;
     }
 
     if (pattern.regex.test(content)) {
@@ -220,12 +224,12 @@ export interface ChatMessageLike {
 export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshold: number | PromptGuardConfig = 0.80): GuardCheckResult {
   noteUnimplementedGuardMode(typeof configOrThreshold === 'object' ? configOrThreshold : undefined);
   for (const msg of messages) {
-    if (msg.role === 'user' || msg.role === 'system') {
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.filter(p => p.type === 'text').map((p: any) => p.text).join('\n')
-          : '';
+    const text = typeof msg.content === 'string'
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.filter(p => p.type === 'text').map((p: any) => p.text).join('\n')
+        : '';
+    if (text) {
       const result = checkPromptHeuristics(text, configOrThreshold);
       if (!result.passed) {
         return result;
@@ -244,27 +248,38 @@ export function stripPromptThreats(content: string, configOrThreshold: number | 
   const config = typeof configOrThreshold === 'object' ? configOrThreshold : undefined;
 
   let cleaned = content;
+  const maxPasses = 5;
 
-  // 1. Strip custom banned phrases
-  if (config?.bannedPhrases && config.bannedPhrases.length > 0) {
-    for (const phrase of config.bannedPhrases) {
-      if (phrase.trim()) {
-        const esc = phrase.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        cleaned = cleaned.replace(new RegExp(esc, 'gi'), '');
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const prev = cleaned;
+
+    // 1. Strip custom banned phrases
+    if (config?.bannedPhrases && config.bannedPhrases.length > 0) {
+      for (const phrase of config.bannedPhrases) {
+        if (phrase.trim()) {
+          const esc = phrase.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          cleaned = cleaned.replace(new RegExp(esc, 'gi'), '');
+        }
       }
     }
-  }
 
-  // 2. Strip injection patterns with threat vector gating
-  for (const pattern of INJECTION_PATTERNS) {
-    if (config?.threatVectors) {
-      if (pattern.label === 'instruction_override' && config.threatVectors.instructionOverride === false) continue;
-      if (pattern.label === 'dan_jailbreak_persona' && config.threatVectors.danJailbreak === false) continue;
-      if (pattern.label === 'system_prompt_leakage' && config.threatVectors.systemPromptLeak === false) continue;
-      if (pattern.label === 'obfuscated_instruction_bypass' && config.threatVectors.obfuscation === false) continue;
+    // 2. Strip injection patterns with threat vector gating
+    for (const pattern of INJECTION_PATTERNS) {
+      if (config?.threatVectors) {
+        if (pattern.label === 'instruction_override' && config.threatVectors.instructionOverride === false) continue;
+        if (pattern.label === 'dan_jailbreak_persona' && config.threatVectors.danJailbreak === false) continue;
+        if (pattern.label === 'system_prompt_leakage' && config.threatVectors.systemPromptLeak === false) continue;
+        if (pattern.label === 'obfuscated_instruction_bypass' && config.threatVectors.obfuscation === false) continue;
+        if (pattern.label === 'fake_system_token_injection' && config.threatVectors.fake_system_token_injection === false) continue;
+        if (pattern.label === 'unconditional_compliance' && config.threatVectors.unconditional_compliance === false) continue;
+      }
+      if (pattern.weight >= threshold) {
+        cleaned = cleaned.replace(new RegExp(pattern.regex.source, 'gi'), '');
+      }
     }
-    if (pattern.weight >= threshold) {
-      cleaned = cleaned.replace(new RegExp(pattern.regex.source, 'gi'), '');
+
+    if (cleaned === prev) {
+      break;
     }
   }
 

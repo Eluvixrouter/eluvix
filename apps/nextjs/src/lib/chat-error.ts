@@ -24,7 +24,15 @@ export type ChatErrorKind =
 export function classifyChatError(err: Error): ChatErrorKind {
   const msg = err.message || '';
 
-  if (msg.startsWith('No upstream available for model:')) {
+  if (
+    msg.startsWith('No upstream available') ||
+    msg.startsWith('No local upstream available') ||
+    msg.startsWith('No non-harness upstream available') ||
+    msg.startsWith('No attested confidential enclave upstream available') ||
+    msg.startsWith('No lossless reasoning upstream available') ||
+    msg.startsWith('No collision-free Rail-Optimized fabric upstream available') ||
+    /No .*upstream available/i.test(msg)
+  ) {
     return 'no-upstream';
   }
 

@@ -87,6 +87,9 @@ export async function POST(req: Request) {
   if (!identity.ok) {
     return unauthorized(identity);
   }
+  if (identity.role === 'readonly') {
+    return NextResponse.json({ error: 'Forbidden: read-only users cannot modify memory items' }, { status: 403 });
+  }
   const userId = identity.userId;
 
   let body: any;
@@ -140,6 +143,9 @@ export async function DELETE(req: Request) {
   const identity = await resolveCallerIdentity(req);
   if (!identity.ok) {
     return unauthorized(identity);
+  }
+  if (identity.role === 'readonly') {
+    return NextResponse.json({ error: 'Forbidden: read-only users cannot delete memory items' }, { status: 403 });
   }
   const userId = identity.userId;
 
