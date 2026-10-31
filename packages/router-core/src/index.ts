@@ -2,6 +2,11 @@ import type { PromptGuardConfig, PrivacyGuardConfig } from './guard.js';
 import type { EnclaveArchitectureId } from './tee-attestation.js';
 import type { QuantizationConfig, QuantizationPolicy } from './microscaling-quantization.js';
 import type { FabricOverlayConfig, FabricRoutingPolicy } from './clos-fabric-routing.js';
+import {
+  type CrsOverlayConfig,
+  type CrsPolicy,
+  analyzePromptForCrsTriage
+} from './neuro-symbolic-crs.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -10,7 +15,8 @@ export type RoutingStrategy =
   | 'lowest-latency' 
   | 'round-robin' 
   | 'priority'
-  | 'prefill-isolation';
+  | 'prefill-isolation'
+  | 'stall-escalation';
 
 export type ConfidentialPolicy =
   | 'disabled'
@@ -74,6 +80,10 @@ export interface SwitchyardConfig {
    * Rail-Optimized Clos Fabric routing policy (NCCL PxN, BGP Unnumbered EVPN, SRv6 uSID, DLB + OOO-DDP).
    */
   fabricPolicy?: FabricRoutingPolicy;
+  /**
+   * Neuro-Symbolic Cyber Reasoning System (CRS) & Backward Program Slicing policy.
+   */
+  crsPolicy?: CrsPolicy;
 }
 
 export interface ModelGatewayConfig {
@@ -114,6 +124,7 @@ export interface RouterConfig {
   confidentialPolicy?: ConfidentialPolicy;
   quantizationPolicy?: QuantizationPolicy;
   fabricPolicy?: FabricRoutingPolicy;
+  crsPolicy?: CrsPolicy;
   fallbackStrategy?: 'round-robin' | 'priority';
   switchyard?: SwitchyardConfig;
   modelGateway?: ModelGatewayConfig;
@@ -144,6 +155,7 @@ export * from './kv-math.js';
 export * from './tee-attestation.js';
 export * from './microscaling-quantization.js';
 export * from './clos-fabric-routing.js';
+export * from './neuro-symbolic-crs.js';
 export * from './shell-utils.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -197,6 +209,7 @@ export interface RouteTraceStep {
     | 'quantization-aware-guard'
     | 'quantization-microscaling'
     | 'clos-fabric-routing'
+    | 'neuro-symbolic-crs'
     | 'memory'
     | 'memory-egress'
     | 'knowledge-rag'
@@ -307,6 +320,19 @@ export interface UpstreamConfig {
   confidential?: ConfidentialComputeConfig;
   quantization?: QuantizationConfig;
   fabric?: FabricOverlayConfig;
+  crs?: CrsOverlayConfig;
+}
+
+/**
+ * Evaluates whether an upstream is equipped with Neuro-Symbolic CRS verification
+ * (Backward Program Slicing, SymCC/Z3 Concolic Verification, or ASan Shadow Triage).
+ */
+export function isNeuroSymbolicCrsUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  if (upstream.capabilities?.includes('neuro-symbolic-crs')) return true;
+  const c = upstream.crs;
+  if (!c || c.enabled === false) return false;
+  return true;
 }
 
 /**
@@ -1624,11 +1650,59 @@ export class Eluvix {
           }
         );
       }
+      if (err?.crsUnavailable) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'crs_unavailable',
+              code: 'neuro_symbolic_crs_required'
+            }
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-crs-guard': 'DENIED_CRS_VERIFIER_REQUIRED'
+            }
+          }
+        );
+      }
       throw err;
     }
     effectiveRequest = selection.effectiveRequest;
     const complexity = selection.complexity;
     let targetUpstreams = selection.targetUpstreams;
+
+    // 0e1. Neuro-Symbolic CRS Triage & Backward Program Slicing Context Enrichment
+    const activeCrsPolicy: CrsPolicy =
+      (effectiveRequest.metadata?.crsPolicy as CrsPolicy | undefined) ||
+      this.config.switchyard?.crsPolicy ||
+      this.config.crsPolicy ||
+      'disabled';
+    const isStallEscalationStrategy =
+      (this.config.switchyard?.strategy || this.config.strategy) === 'stall-escalation';
+    const hasCrsUpstreamSelected = targetUpstreams.some(u => isNeuroSymbolicCrsUpstream(u));
+    let crsTriageResult: ReturnType<typeof analyzePromptForCrsTriage> | null = null;
+
+    if (
+      (activeCrsPolicy !== 'disabled' || isStallEscalationStrategy || hasCrsUpstreamSelected) &&
+      Array.isArray(effectiveRequest.messages) &&
+      effectiveRequest.messages.length > 0
+    ) {
+      const combinedUserText = effectiveRequest.messages
+        .filter(m => m.role !== 'system')
+        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n');
+      const primaryCrsConfig = targetUpstreams.find(u => u.crs?.enabled)?.crs;
+      crsTriageResult = analyzePromptForCrsTriage(combinedUserText, primaryCrsConfig);
+      if (crsTriageResult.detected && crsTriageResult.systemBlock) {
+        effectiveRequest = {
+          ...effectiveRequest,
+          messages: injectMemoryIntoMessages(effectiveRequest.messages, crsTriageResult.systemBlock)
+        };
+      }
+    }
 
     // 0e2. Semantic / Response Cache Check. The key ALWAYS carries the
     // identity partition (scope.userId — proven identity only; unscoped
@@ -2207,6 +2281,54 @@ export class Eluvix {
                   'x-eluvix-srv6-usid-carrier',
                   upstream.fabric.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::'
                 );
+              }
+            }
+            if (isNeuroSymbolicCrsUpstream(upstream) || crsTriageResult?.detected) {
+              const effCrsPolicy =
+                activeCrsPolicy !== 'disabled'
+                  ? activeCrsPolicy
+                  : upstream.crs?.policy || 'slice-and-verify';
+              newResponse.headers.set('x-eluvix-crs-policy', effCrsPolicy);
+              newResponse.headers.set(
+                'x-eluvix-crs-slicer',
+                upstream.crs?.slicerMode || 'llvm-def-use'
+              );
+              newResponse.headers.set('x-eluvix-crs-verified', 'true');
+              if (crsTriageResult) {
+                newResponse.headers.set(
+                  'x-eluvix-crs-stall-escalated',
+                  String(crsTriageResult.stallMetrics.shouldEscalateToNeuroSymbolic)
+                );
+                if (crsTriageResult.sliceResult) {
+                  newResponse.headers.set(
+                    'x-eluvix-crs-slice-compression-pct',
+                    String(crsTriageResult.sliceResult.compressionRatioPct)
+                  );
+                  newResponse.headers.set(
+                    'x-eluvix-crs-tokens-saved',
+                    String(crsTriageResult.sliceResult.estimatedTokensSaved)
+                  );
+                }
+                if (crsTriageResult.shadowMapping) {
+                  newResponse.headers.set(
+                    'x-eluvix-crs-shadow-addr',
+                    crsTriageResult.shadowMapping.shadowAddressHex
+                  );
+                  newResponse.headers.set(
+                    'x-eluvix-crs-shadow-poison',
+                    crsTriageResult.shadowMapping.shadowByteHex
+                  );
+                  newResponse.headers.set(
+                    'x-eluvix-crs-bug-class',
+                    crsTriageResult.shadowMapping.bugClass
+                  );
+                }
+                if (crsTriageResult.overflowCheck?.overflowed) {
+                  newResponse.headers.set(
+                    'x-eluvix-crs-bv-overflow',
+                    `uint${crsTriageResult.overflowCheck.bitWidth}:${crsTriageResult.overflowCheck.wrappedHex}`
+                  );
+                }
               }
             }
             const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
@@ -2819,6 +2941,71 @@ export class Eluvix {
           kept: sortedRail.map(u => u.id)
         });
         targetUpstreams = [...sortedRail, ...rest];
+      }
+    }
+
+    // Neuro-Symbolic CRS & Stall-Escalation Routing Policy
+    const CRS_RANKS: Record<CrsPolicy, number> = {
+      'disabled': 0,
+      'slice-and-verify': 1,
+      'strict-zero-false-positive': 2
+    };
+    const serverCrsPolicy: CrsPolicy =
+      switchyardConfig.crsPolicy ||
+      this.config.crsPolicy ||
+      'disabled';
+    const clientCrsPolicy = effectiveRequest.metadata?.crsPolicy as CrsPolicy | undefined;
+    const crsPolicy: CrsPolicy =
+      clientCrsPolicy && Object.prototype.hasOwnProperty.call(CRS_RANKS, clientCrsPolicy)
+        ? (CRS_RANKS[clientCrsPolicy] > CRS_RANKS[serverCrsPolicy] ? clientCrsPolicy : serverCrsPolicy)
+        : serverCrsPolicy;
+
+    if (crsPolicy === 'strict-zero-false-positive') {
+      const crsUpstreams = targetUpstreams.filter(u => isNeuroSymbolicCrsUpstream(u));
+      const nonCrsUpstreams = targetUpstreams.filter(u => !isNeuroSymbolicCrsUpstream(u));
+      if (nonCrsUpstreams.length > 0 || crsUpstreams.length === 0) {
+        steps.push({
+          stage: 'neuro-symbolic-crs',
+          detail: 'crsPolicy=strict-zero-false-positive: requiring Neuro-Symbolic CRS verifier upstreams (Backward Slicer + SymCC/Z3 + ASan Shadow Verification) to eliminate standalone LLM false positives',
+          kept: crsUpstreams.map(u => u.id),
+          removed: nonCrsUpstreams.map(u => u.id)
+        });
+      }
+      if (crsUpstreams.length === 0) {
+        const err: any = new Error(
+          `No Neuro-Symbolic CRS verifier upstream available for model: ${effectiveRequest.model} (crsPolicy: strict-zero-false-positive)`
+        );
+        err.routeSteps = steps;
+        err.crsUnavailable = true;
+        throw err;
+      }
+      targetUpstreams = crsUpstreams;
+    } else if (crsPolicy === 'slice-and-verify' || strategy === 'stall-escalation') {
+      const promptTextForStall = (effectiveRequest.messages || [])
+        .filter(m => m.role !== 'system')
+        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n');
+      const triage = analyzePromptForCrsTriage(promptTextForStall);
+      const shouldEscalate =
+        crsPolicy === 'slice-and-verify' ||
+        triage.stallMetrics.shouldEscalateToNeuroSymbolic ||
+        triage.detected;
+
+      if (shouldEscalate) {
+        const crsCapable = targetUpstreams.filter(
+          u =>
+            isNeuroSymbolicCrsUpstream(u) ||
+            (strategy === 'stall-escalation' && ((u.maxComplexityScore ?? 2) >= 4 || u.type === 'harness'))
+        );
+        if (crsCapable.length > 0) {
+          const rest = targetUpstreams.filter(u => !crsCapable.includes(u));
+          steps.push({
+            stage: 'neuro-symbolic-crs',
+            detail: `strategy=${strategy}, crsPolicy=${crsPolicy}: stall/invariant barrier detected (engine=${triage.stallMetrics.recommendedEngine}); escalating to Neuro-Symbolic CRS / Frontier upstreams`,
+            kept: crsCapable.map(u => u.id)
+          });
+          targetUpstreams = [...crsCapable, ...rest];
+        }
       }
     }
 

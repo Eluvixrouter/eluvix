@@ -5,6 +5,10 @@ import {
   sanitizeIpv6SegmentList,
   sanitizePositiveInt
 } from '@eluvix/router-core/shell-utils';
+import {
+  generateCrsVerificationScript,
+  type CrsOverlayConfig
+} from '@eluvix/router-core/neuro-symbolic-crs';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -19,6 +23,7 @@ export interface CompilationResult {
   eluvixJson: string;
   disaggregatedSetup: string;
   confidentialSetup?: string;
+  crsSetup?: string;
   rawRouterConfig: any;
 }
 
@@ -42,6 +47,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const consensusNodes = nodes.filter(n => n.type === 'consensusNode');
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
   const confidentialEnclaveNodes = nodes.filter(n => n.type === 'confidentialEnclaveNode');
+  const crsNodes = nodes.filter(n => n.type === 'crsNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -107,7 +113,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     semanticCacheNodes,
     consensusNodes,
     fallbackChainNodes,
-    confidentialEnclaveNodes
+    confidentialEnclaveNodes,
+    crsNodes
   );
 
   return {
@@ -123,6 +130,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     eluvixJson: JSON.stringify(rawRouterConfig, null, 2),
     disaggregatedSetup: generateDisaggregatedLaunchScripts(vllmNodes, sglangNodes),
     confidentialSetup: generateConfidentialAttestationSetup(confidentialEnclaveNodes, localEngineNodes),
+    crsSetup: generateCrsSetup(crsNodes, localEngineNodes),
     rawRouterConfig
   };
 }
@@ -147,7 +155,8 @@ function generateEluvixConfig(
   semanticCacheNodes: Node[] = [],
   consensusNodes: Node[] = [],
   fallbackChainNodes: Node[] = [],
-  confidentialEnclaveNodes: Node[] = []
+  confidentialEnclaveNodes: Node[] = [],
+  crsNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -190,6 +199,40 @@ function generateEluvixConfig(
   const capabilityCap = (node: Node): number => {
     const n = Number((node.data as any)?.maxComplexityScore);
     return Number.isFinite(n) && n >= 1 && n <= 4 ? n : 4;
+  };
+
+  const primaryCrs = crsNodes[0];
+  const crsNodeData = (primaryCrs?.data || {}) as Record<string, any>;
+  const buildCrsCfgForNode = (node: Node): CrsOverlayConfig | undefined => {
+    const nodeCrs = (node.data as any)?.crs;
+    const connectedToCrs = crsNodes.some(crs => {
+      const direct = edges.some(
+        e => (e.source === crs.id && e.target === node.id) || (e.target === crs.id && e.source === node.id)
+      );
+      if (direct) return true;
+      const crsToSwitchyard = edges.some(
+        e => (e.source === crs.id && switchyardNodes.some(s => s.id === e.target)) ||
+             (e.target === crs.id && switchyardNodes.some(s => s.id === e.source))
+      );
+      const switchyardToNode = edges.some(
+        e => (switchyardNodes.some(s => s.id === e.source) && e.target === node.id) ||
+             (switchyardNodes.some(s => s.id === e.target) && e.source === node.id)
+      );
+      return crsToSwitchyard && switchyardToNode;
+    });
+
+    if (nodeCrs?.enabled || connectedToCrs) {
+      return {
+        enabled: true,
+        policy: (nodeCrs?.policy || crsNodeData.crsPolicy || 'slice-and-verify') as any,
+        slicerMode: (nodeCrs?.slicerMode || crsNodeData.slicerMode || 'backward-def-use') as any,
+        sanitizerArch: (nodeCrs?.sanitizerArch || crsNodeData.sanitizerArch || 'asan-x86_64') as any,
+        targetSink: String(nodeCrs?.targetSink || crsNodeData.targetSink || 'memcpy'),
+        stallThresholdSeconds: Number(nodeCrs?.stallThresholdSeconds ?? crsNodeData.stallThresholdSeconds ?? 300),
+        defaultBitWidth: (Number(nodeCrs?.defaultBitWidth ?? crsNodeData.defaultBitWidth ?? 16) as 8 | 16 | 32 | 64)
+      };
+    }
+    return undefined;
   };
 
   localEngines.forEach(node => {
@@ -271,6 +314,7 @@ function generateEluvixConfig(
 
     const fabricRaw = (node.data as any)?.fabric;
     const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
+    const crsCfg = buildCrsCfgForNode(node);
 
     upstreams.push({
       id: String(node.id),
@@ -290,7 +334,8 @@ function generateEluvixConfig(
       ...(disaggregationConfig ? { disaggregation: disaggregationConfig } : {}),
       ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
       ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
-      ...(fabricConfig ? { fabric: fabricConfig } : {})
+      ...(fabricConfig ? { fabric: fabricConfig } : {}),
+      ...(crsCfg ? { crs: crsCfg } : {})
     });
   });
 
@@ -341,6 +386,7 @@ function generateEluvixConfig(
       '*'
     ]));
 
+    const agyCrs = buildCrsCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Antigravity Agent (${modelId})`,
@@ -353,6 +399,7 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(agyCrs ? { crs: agyCrs } : {}),
       antigravity: {
         model: modelId,
         effort: node.data?.effort || 'auto',
@@ -380,6 +427,7 @@ function generateEluvixConfig(
       costPer1kTokens: 0.001
     };
 
+    const codexCrs = buildCrsCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `OpenAI Codex (${modelId})`,
@@ -392,6 +440,7 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(codexCrs ? { crs: codexCrs } : {}),
       codex: {
         model: modelId,
         reasoningEffort: node.data?.reasoningEffort || 'medium',
@@ -418,6 +467,7 @@ function generateEluvixConfig(
       costPer1kTokens: 0.003
     };
 
+    const claudeCodeCrs = buildCrsCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Claude Code Agent (${modelId})`,
@@ -430,6 +480,7 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(claudeCodeCrs ? { crs: claudeCodeCrs } : {}),
       claudeCode: {
         model: modelId,
         permissionMode: node.data?.permissionMode || 'accept-non-destructive',
@@ -602,6 +653,7 @@ function generateEluvixConfig(
       ? sandboxNodes.find(s => s.id === connectedSandboxEdge.source || s.id === connectedSandboxEdge.target)
       : primarySandbox;
 
+    const harnessCrs = buildCrsCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || `Agent Harness (${kind})`),
@@ -613,6 +665,7 @@ function generateEluvixConfig(
       tierName: tierInfo.tierName,
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
+      ...(harnessCrs ? { crs: harnessCrs } : {}),
       harness: {
         kind,
         agentId,
@@ -674,6 +727,12 @@ function generateEluvixConfig(
     swData.fabricPolicy && swData.fabricPolicy !== 'disabled'
       ? String(swData.fabricPolicy)
       : undefined;
+  const resolvedCrsPolicy =
+    swData.crsPolicy && swData.crsPolicy !== 'disabled'
+      ? String(swData.crsPolicy)
+      : crsNodeData.crsPolicy && crsNodeData.crsPolicy !== 'disabled'
+      ? String(crsNodeData.crsPolicy)
+      : undefined;
 
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
@@ -689,6 +748,7 @@ function generateEluvixConfig(
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
+    ...(resolvedCrsPolicy ? { crsPolicy: resolvedCrsPolicy } : {}),
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
       heavy: Number(thresholds.heavy ?? 1500),
@@ -874,6 +934,7 @@ function generateEluvixConfig(
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
+    ...(resolvedCrsPolicy ? { crsPolicy: resolvedCrsPolicy } : {}),
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
@@ -1816,5 +1877,31 @@ function generateConfidentialAttestationSetup(
     `  | openssl enc -d -aes-256-gcm -in /mnt/encrypted_nvme/llama-70b.enc -out "$ENCLAVE_MODEL_DIR/model.safetensors"`,
     `echo "✓ Confidential Enclave unsealed and ready for zero-trust inference."`
   ].join('\n');
+}
+
+function generateCrsSetup(
+  crsNodes: Node[],
+  localEngines: Node[]
+): string {
+  const crsNode = crsNodes[0];
+  const crsEngines = localEngines.filter((n) => (n.data as any)?.crs?.enabled);
+
+  if (!crsNode && crsEngines.length === 0) {
+    return '# No Neuro-Symbolic CRS node or CRS-enabled verifier configured on canvas.';
+  }
+
+  const cData = (crsNode?.data || {}) as Record<string, any>;
+  const eCrs = (crsEngines[0]?.data as any)?.crs || {};
+  const nodeId = String(crsNode?.id || crsEngines[0]?.id || 'crs-verifier');
+
+  return generateCrsVerificationScript(nodeId, {
+    enabled: true,
+    policy: (cData.crsPolicy || eCrs.policy || 'slice-and-verify') as any,
+    slicerMode: (cData.slicerMode || eCrs.slicerMode || 'backward-def-use') as any,
+    sanitizerArch: (cData.sanitizerArch || eCrs.sanitizerArch || 'asan-x86_64') as any,
+    targetSink: String(cData.targetSink || eCrs.targetSink || 'memcpy'),
+    stallThresholdSeconds: Number(cData.stallThresholdSeconds ?? eCrs.stallThresholdSeconds ?? 300),
+    defaultBitWidth: (Number(cData.defaultBitWidth ?? eCrs.defaultBitWidth ?? 16) as 8 | 16 | 32 | 64)
+  });
 }
 

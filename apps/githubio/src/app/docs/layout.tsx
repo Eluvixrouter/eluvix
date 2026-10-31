@@ -117,6 +117,12 @@ export default function DocsLayout({
                 </Link>
               </li>
               <li>
+                <Link href="/docs/neuro-symbolic-crs" className="text-slate-400 hover:text-sky-400 transition-colors flex items-center justify-between">
+                  <span>Neuro-Symbolic CRS Slicer</span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30">New</span>
+                </Link>
+              </li>
+              <li>
                 <Link href="/docs/disaggregated-serving" className="text-slate-400 hover:text-sky-400 transition-colors">
                   <span>Disaggregated RDMA P/D</span>
                 </Link>

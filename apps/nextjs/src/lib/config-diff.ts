@@ -27,6 +27,7 @@ export interface ConfigDiff {
   confidentialPolicyChanged?: boolean;
   quantizationPolicyChanged?: boolean;
   fabricPolicyChanged?: boolean;
+  crsPolicyChanged?: boolean;
   strategyChanged?: boolean;
   fallbackStrategyChanged?: boolean;
   promptGuardChanged?: boolean;
@@ -55,7 +56,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'disaggregation',
   'confidential',
   'quantization',
-  'fabric'
+  'fabric',
+  'crs'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -159,6 +161,11 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       normalizePolicy(current?.switchyard?.fabricPolicy || (current as any)?.fabricPolicy),
       normalizePolicy(next.switchyard?.fabricPolicy || (next as any).fabricPolicy)
     ) || undefined;
+  const crsPolicyChanged =
+    fieldDiffers(
+      normalizePolicy(current?.switchyard?.crsPolicy || (current as any)?.crsPolicy),
+      normalizePolicy(next.switchyard?.crsPolicy || (next as any).crsPolicy)
+    ) || undefined;
 
   const strategyChanged = fieldDiffers((current as any)?.strategy, (next as any).strategy) || undefined;
   const fallbackStrategyChanged = fieldDiffers((current as any)?.fallbackStrategy, (next as any).fallbackStrategy) || undefined;
@@ -181,6 +188,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     confidentialPolicyChanged,
     quantizationPolicyChanged,
     fabricPolicyChanged,
+    crsPolicyChanged,
     strategyChanged,
     fallbackStrategyChanged,
     promptGuardChanged,
@@ -201,6 +209,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !confidentialPolicyChanged &&
       !quantizationPolicyChanged &&
       !fabricPolicyChanged &&
+      !crsPolicyChanged &&
       !strategyChanged &&
       !fallbackStrategyChanged &&
       !promptGuardChanged &&

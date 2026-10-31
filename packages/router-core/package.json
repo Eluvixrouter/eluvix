@@ -24,6 +24,11 @@
       "types": "./dist/shell-utils.d.ts",
       "import": "./dist/shell-utils.js",
       "default": "./dist/shell-utils.js"
+    },
+    "./neuro-symbolic-crs": {
+      "types": "./dist/neuro-symbolic-crs.d.ts",
+      "import": "./dist/neuro-symbolic-crs.js",
+      "default": "./dist/neuro-symbolic-crs.js"
     }
   },
   "type": "module",

@@ -4,6 +4,20 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.0.15 — Neuro-Symbolic CRS Slicing, ASan Shadow Triage & Bit-Vector Verification *(October 31, 2026)*
+
+### 🧬 Neuro-Symbolic Cyber Reasoning System (`neuro-symbolic-crs.ts`)
+- **Backward Program Slicing (`computeBackwardProgramSlice`)**:
+  - Deterministic intra-procedural backward `def-use` data-flow and control-flow gate slicer from target vulnerability sinks (`memcpy`, `strcpy`, `kfree`), compressing thousands of lines of noisy source context into minimal executable slices and classifying branch guards into `magic-constant`, `coupled-arithmetic`, `state-guard`, and `bounds-check`.
+- **Exact 64-Bit `ASan` / `KASAN` Shadow Memory Mapping (`computeAsanShadowMapping`)**:
+  - Uses exact `BigInt` pointer arithmetic (`(addr >> 3n) + ShadowOffset`) across User-space x86_64 (`0x7fff8000`), User-space AArch64 (`0x1000000000`), and Linux Kernel `KASAN` x86_64 (`0xdffffc0000000000`), decoding poison bytes (`0xfa` heap redzone, `0xfd` freed quarantine, `0xf1..0xf3` stack redzones, `0xf8` use-after-scope) and Hexspeak / Linux SLUB poison constants (`0xDEADBEEF`, `0xFEE1DEAD`, `0x6b6b6b6b` `POISON_FREE`, `0x5a5a5a5a` `POISON_INUSE`, `0xDEAD10CC`).
+- **Fixed-Width Bit-Vector Overflow Verification (`verifyBitVectorOverflow`)**:
+  - Exact modular `2^w` wrap-around verification (`uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`) with automatic C/C++ and Rust `checked_add` defensive bounds-check synthesis.
+- **Switchyard `'stall-escalation'` Strategy, `crsPolicy` & Visual Node (`crsNode`)**:
+  - Added `'stall-escalation'` routing strategy, `crsPolicy` (`'disabled' | 'slice-and-verify' | 'strict-zero-false-positive'`), `<eluvix-crs-triage>` system prompt enrichment, `x-eluvix-crs-*` telemetry headers, and the interactive `NeuroSymbolicCrsNode` in the Visual Routing Editor.
+
+---
+
 ## v1.0.14 — Rail-Optimized 400G/800G Clos Fabrics & Unified Multi-Harness Studio *(October 29, 2026)*
 
 ### 🕸️ Rail-Optimized Leaf-Spine Clos, BGP EVPN, SRv6 `uSID` & Switch DLB (`@eluvix/router-core`)

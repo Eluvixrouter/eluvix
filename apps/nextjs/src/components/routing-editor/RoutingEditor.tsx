@@ -46,6 +46,7 @@ import SemanticCacheNode from './nodes/SemanticCacheNode';
 import ConsensusNode from './nodes/ConsensusNode';
 import FallbackChainNode from './nodes/FallbackChainNode';
 import ConfidentialEnclaveNode from './nodes/ConfidentialEnclaveNode';
+import NeuroSymbolicCrsNode from './nodes/NeuroSymbolicCrsNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
@@ -129,6 +130,15 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     expectedMeasurement: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
     restrictedInjection: true,
     spdmAttested: true
+  },
+  crsNode: {
+    label: 'Neuro-Symbolic CRS Slicer',
+    crsPolicy: 'slice-and-verify',
+    slicerMode: 'backward-def-use',
+    sanitizerArch: 'asan-x86_64',
+    targetSink: 'memcpy',
+    stallThresholdSeconds: 300,
+    defaultBitWidth: 16
   },
   lemonadeNode: {
     label: 'Lemonade Engine',
@@ -568,6 +578,7 @@ const nodeTypes = {
   consensusNode: ConsensusNode,
   fallbackChainNode: FallbackChainNode,
   confidentialEnclaveNode: ConfidentialEnclaveNode,
+  crsNode: NeuroSymbolicCrsNode,
 };
 
 let id = 0;
@@ -1074,7 +1085,7 @@ export default function RoutingEditor() {
 
       // Define valid target types for each source type
       const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
-      const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
+      const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
 
       const rules: Record<string, string[]> = {
         inputNode: preRouteTargets,
@@ -1083,8 +1094,9 @@ export default function RoutingEditor() {
         memoryNode: [...preRouteTargets, 'observabilityNode'],
         knowledgeBaseNode: [...preRouteTargets, 'observabilityNode'],
         semanticCacheNode: [...preRouteTargets, 'observabilityNode'],
-        confidentialEnclaveNode: ['switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'switchyardNode', ...allUpstreamTargets],
+        confidentialEnclaveNode: ['switchyardNode', 'crsNode', ...allUpstreamTargets, 'observabilityNode'],
+        crsNode: ['switchyardNode', 'confidentialEnclaveNode', ...allUpstreamTargets, 'observabilityNode'],
+        taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'switchyardNode', ...allUpstreamTargets],
         agentNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         antigravityNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         codexNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
@@ -1423,6 +1435,23 @@ export default function RoutingEditor() {
                 </div>
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-emerald-400 font-mono">+ Add</span>
+            </div>
+
+            {/* Neuro-Symbolic CRS Slicer & Sanitizer Verifier */}
+            <div
+              className="p-2.5 mb-2 border border-fuchsia-500/80 bg-fuchsia-950/25 rounded-lg cursor-grab hover:bg-fuchsia-900/35 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'crsNode')}
+              onClick={() => addNode('crsNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🧬</span>
+                <div>
+                  <div className="font-semibold text-xs text-fuchsia-300 group-hover:text-fuchsia-200">Neuro-Symbolic CRS</div>
+                  <div className="text-[10px] text-slate-400 font-mono">Def-Use Slicer • ASan Shadow</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-fuchsia-400 font-mono">+ Add</span>
             </div>
 
             {/* Task Router */}
@@ -4172,6 +4201,7 @@ export default function RoutingEditor() {
                   applyDiff.confidentialPolicyChanged ||
                   applyDiff.quantizationPolicyChanged ||
                   applyDiff.fabricPolicyChanged ||
+                  applyDiff.crsPolicyChanged ||
                   applyDiff.strategyChanged ||
                   applyDiff.fallbackStrategyChanged ||
                   applyDiff.promptGuardChanged ||
@@ -4194,6 +4224,11 @@ export default function RoutingEditor() {
                       {applyDiff.fabricPolicyChanged && (
                         <span className="bg-blue-950/60 border border-blue-500/50 text-blue-200 text-xs px-2 py-0.5 rounded font-mono">
                           🌐 Clos Rail Fabric
+                        </span>
+                      )}
+                      {applyDiff.crsPolicyChanged && (
+                        <span className="bg-fuchsia-950/60 border border-fuchsia-500/50 text-fuchsia-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🧬 Neuro-Symbolic CRS Policy
                         </span>
                       )}
                       {applyDiff.knowledgeChanged && (
@@ -4522,6 +4557,18 @@ export default function RoutingEditor() {
                     </h4>
                     <pre className="bg-gray-950 p-4 rounded text-sm text-purple-200 overflow-x-auto border border-purple-900/60 font-mono text-xs whitespace-pre-wrap">
                       {compiledConfigs.confidentialSetup}
+                    </pre>
+                  </div>
+                )}
+
+                {compiledConfigs.crsSetup && (
+                  <div>
+                    <h4 className="text-fuchsia-400 font-bold mb-2 flex items-center justify-between">
+                      <span>Neuro-Symbolic CRS Slicer &amp; Sanitizer Verifier (crs-verify.sh)</span>
+                      <span className="text-[10px] bg-fuchsia-500/20 text-fuchsia-300 px-2 py-0.5 rounded font-mono">ASan + Def-Use Spec</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-fuchsia-200 overflow-x-auto border border-fuchsia-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.crsSetup}
                     </pre>
                   </div>
                 )}

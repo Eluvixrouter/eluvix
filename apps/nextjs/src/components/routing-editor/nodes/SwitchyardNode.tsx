@@ -39,6 +39,9 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [fabricPolicy, setFabricPolicy] = useState<string>(
     data?.fabricPolicy || 'disabled'
   );
+  const [crsPolicy, setCrsPolicy] = useState<string>(
+    data?.crsPolicy || 'disabled'
+  );
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -141,6 +144,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
             <option value="lowest-cost">🪙 Lowest Cost First ($0 Local First)</option>
             <option value="lowest-latency">⚡ Lowest Latency</option>
             <option value="round-robin">🔄 Round Robin Multi-Provider</option>
+            <option value="stall-escalation">🧬 Neuro-Symbolic Stall Escalation</option>
           </select>
         </div>
 
@@ -340,6 +344,24 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
               <option value="disabled">Standard (Any Underlay Fabric)</option>
               <option value="prefer-rail-optimized">⚡ Prefer Rail-Optimized (DLB / SRv6 / PxN)</option>
               <option value="require-collision-free-fabric">🛡️ Require Collision-Free Fabric (Block Static ECMP)</option>
+            </select>
+          </div>
+
+          <div className="pt-1.5 border-t border-gray-800">
+            <label className="block text-[10px] font-semibold text-fuchsia-400 mb-1">
+              🧬 Neuro-Symbolic CRS Verification Policy
+            </label>
+            <select
+              className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-fuchsia-500 rounded p-1 text-white text-[10px] outline-none"
+              value={crsPolicy}
+              onChange={(e) => {
+                setCrsPolicy(e.target.value);
+                syncData({ crsPolicy: e.target.value });
+              }}
+            >
+              <option value="disabled">Standard (No CRS Triage Required)</option>
+              <option value="slice-and-verify">⚡ Slice &amp; Verify (Prefer CRS Slicer/Sanitizer)</option>
+              <option value="strict-zero-false-positive">🛡️ Strict Zero-False-Positive (Require CRS Verifier)</option>
             </select>
           </div>
         </div>

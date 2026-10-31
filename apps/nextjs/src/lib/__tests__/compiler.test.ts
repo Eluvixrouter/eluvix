@@ -303,5 +303,58 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(memory).not.toHaveProperty('autoCommitTurns');
       expect(memory.openviking).toBeUndefined();
     });
+
+    it('compiles Neuro-Symbolic CRS node into crsPolicy, upstream crs config, and crsSetup script', () => {
+      const nodes: Node[] = [
+        {
+          id: 'sw-crs',
+          type: 'switchyardNode',
+          position: { x: 0, y: 0 },
+          data: {
+            strategy: 'stall-escalation',
+            routes: [{ id: 'tier-1', name: 'Tier 1: CRS Verifier' }]
+          }
+        } as Node,
+        {
+          id: 'crs-1',
+          type: 'crsNode',
+          position: { x: 100, y: 0 },
+          data: {
+            crsPolicy: 'strict-zero-false-positive',
+            slicerMode: 'backward-def-use',
+            sanitizerArch: 'kasan-x86_64',
+            targetSink: 'memcpy',
+            stallThresholdSeconds: 240,
+            defaultBitWidth: 16
+          }
+        } as Node,
+        {
+          id: 'vllm-1',
+          type: 'vllmNode',
+          position: { x: 200, y: 0 },
+          data: { label: 'vLLM Verifier', endpoint: 'http://localhost:8000' }
+        } as Node
+      ];
+      const edges = [
+        { id: 'e-crs-sw', source: 'crs-1', target: 'sw-crs' } as any,
+        { id: 'e-sw-vllm', source: 'sw-crs', target: 'vllm-1', sourceHandle: 'tier-1' } as any
+      ];
+      const result = compileGraph(nodes, edges);
+      expect(result.rawRouterConfig.crsPolicy).toBe('strict-zero-false-positive');
+      expect(result.rawRouterConfig.switchyard.crsPolicy).toBe('strict-zero-false-positive');
+      expect(result.rawRouterConfig.switchyard.strategy).toBe('stall-escalation');
+      const vllmUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'vllm-1');
+      expect(vllmUpstream.crs).toEqual({
+        enabled: true,
+        policy: 'strict-zero-false-positive',
+        slicerMode: 'backward-def-use',
+        sanitizerArch: 'kasan-x86_64',
+        targetSink: 'memcpy',
+        stallThresholdSeconds: 240,
+        defaultBitWidth: 16
+      });
+      expect(result.crsSetup).toContain('0xdffffc0000000000');
+      expect(result.crsSetup).toContain('-fsanitize=address,undefined');
+    });
   });
 });
