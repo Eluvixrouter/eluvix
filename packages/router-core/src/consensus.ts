@@ -147,27 +147,41 @@ export async function executeConsensusGroup(
       }
     }
   } else {
-    // 'judge-synthesize': ask the highest-priority / first succeeded upstream to synthesize
-    const judgeUpstream = successes[0].upstream;
+    // 'judge-synthesize': pick an upstream supporting group.judgeModel if available, or fall back to first candidate
+    const judgeModelTarget = group.judgeModel && group.judgeModel !== 'auto' ? group.judgeModel : request.model;
+    const judgeUpstream =
+      (group.judgeModel && candidates.find((u) => u.models?.some((m) => m === group.judgeModel || m.includes(group.judgeModel!)))) ||
+      successes[0].upstream;
     const draftsBlock = successes
       .map((s, idx) => `--- Candidate ${idx + 1} (${s.upstream.name || s.upstream.id}) ---\n${s.text}`)
       .join('\n\n');
     const lastUser =
       [...request.messages].reverse().find((m) => m.role === 'user')?.content || '';
+    
+    // Preserve system context and prior history while augmenting with judge instructions
+    const existingSys = request.messages.filter((m) => m.role === 'system');
+    const existingNonSys = request.messages.filter((m) => m.role !== 'system');
+    const judgeSysPrompt = 'You are the Eluvix Consensus Judge. Synthesize the candidate model responses into a single, accurate, well-structured answer, respecting all system constraints.';
+    const judgeMessages = existingSys.length > 0
+      ? existingSys.map((m) => ({
+          ...m,
+          content: `${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}\n\n${judgeSysPrompt}`
+        }))
+      : [{ role: 'system' as const, content: judgeSysPrompt }];
+    const priorTurns = existingNonSys.slice(0, -1).map((m) => ({
+      ...m,
+      content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+    }));
+    judgeMessages.push(...priorTurns);
+    judgeMessages.push({
+      role: 'user',
+      content: `Original Request:\n${typeof lastUser === 'string' ? lastUser : JSON.stringify(lastUser)}\n\nCandidate Responses to Synthesize:\n${draftsBlock}`
+    });
+
     const judgeReq: ChatRequest = {
-      model: group.judgeModel && group.judgeModel !== 'auto' ? group.judgeModel : request.model,
+      model: judgeModelTarget,
       stream: false,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are the Eluvix Consensus Judge. Synthesize the following candidate model responses into a single, accurate, well-structured answer.'
-        },
-        {
-          role: 'user',
-          content: `Original Prompt:\n${typeof lastUser === 'string' ? lastUser : JSON.stringify(lastUser)}\n\nCandidate Responses:\n${draftsBlock}`
-        }
-      ]
+      messages: judgeMessages
     };
     try {
       const judgeRes = await dispatchToUpstream(judgeUpstream, judgeReq, clientSignal);

@@ -284,6 +284,9 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(node.data?.maxContextTokens ? { maxContextTokens: Number(node.data.maxContextTokens) } : {}),
+      ...(node.data?.maxParallelRequests ? { maxParallelRequests: Number(node.data.maxParallelRequests) } : {}),
+      ...(node.data?.monthlySpendLimit ? { monthlySpendLimit: Number(node.data.monthlySpendLimit) } : {}),
       ...(disaggregationConfig ? { disaggregation: disaggregationConfig } : {}),
       ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
       ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
@@ -469,7 +472,10 @@ function generateEluvixConfig(
       tierName: tierInfo.tierName,
       costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
       maxComplexityScore: capabilityCap(node),
-      capabilities: node.data?.visionCapable ? ["vision"] : []
+      capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(node.data?.maxContextTokens ? { maxContextTokens: Number(node.data.maxContextTokens) } : {}),
+      ...(node.data?.maxParallelRequests ? { maxParallelRequests: Number(node.data.maxParallelRequests) } : {}),
+      ...(node.data?.monthlySpendLimit ? { monthlySpendLimit: Number(node.data.monthlySpendLimit) } : {})
     });
   });
 
@@ -498,7 +504,10 @@ function generateEluvixConfig(
       tierName: tierInfo.tierName,
       costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
       maxComplexityScore: capabilityCap(node),
-      capabilities: node.data?.visionCapable ? ["vision"] : []
+      capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(node.data?.maxContextTokens ? { maxContextTokens: Number(node.data.maxContextTokens) } : {}),
+      ...(node.data?.maxParallelRequests ? { maxParallelRequests: Number(node.data.maxParallelRequests) } : {}),
+      ...(node.data?.monthlySpendLimit ? { monthlySpendLimit: Number(node.data.monthlySpendLimit) } : {})
     });
   });
 
@@ -526,7 +535,10 @@ function generateEluvixConfig(
       tierName: tierInfo.tierName,
       costPer1kTokens: Number(node.data?.costPer1kTokens ?? tierInfo.costPer1kTokens),
       maxComplexityScore: capabilityCap(node),
-      capabilities: node.data?.visionCapable ? ["vision"] : []
+      capabilities: node.data?.visionCapable ? ["vision"] : [],
+      ...(node.data?.maxContextTokens ? { maxContextTokens: Number(node.data.maxContextTokens) } : {}),
+      ...(node.data?.maxParallelRequests ? { maxParallelRequests: Number(node.data.maxParallelRequests) } : {}),
+      ...(node.data?.monthlySpendLimit ? { monthlySpendLimit: Number(node.data.monthlySpendLimit) } : {})
     });
   });
 
@@ -1295,21 +1307,22 @@ function generateSemanticRouterSetup(nodes: Node[]): string {
     const vectors = data.threatVectors || { instructionOverride: true, danJailbreak: true, systemPromptLeak: true, obfuscation: true };
     const banned = Array.isArray(data.bannedPhrases) ? data.bannedPhrases : [];
     
-    setup += `  // Guard Node: ${node.id} (${routeName})\n`;
-    setup += `  const guard_${node.id.replace(/-/g, '_')} = new SemanticRouter({\n`;
-    setup += `    name: "${routeName}",\n`;
-    setup += `    encoder: "${encoder}",\n`;
+    const safeNodeId = sanitizeSafeIdentifier(node.id, 'node');
+    setup += `  // Guard Node: ${safeNodeId}\n`;
+    setup += `  const guard_${safeNodeId} = new SemanticRouter({\n`;
+    setup += `    name: ${JSON.stringify(routeName)},\n`;
+    setup += `    encoder: ${JSON.stringify(encoder)},\n`;
     setup += `    similarityThreshold: ${threshold},\n`;
-    setup += `    enforcementAction: "${action}",\n`;
+    setup += `    enforcementAction: ${JSON.stringify(action)},\n`;
     setup += `    threatVectors: ${JSON.stringify(vectors)},\n`;
     if (banned.length > 0) {
       setup += `    bannedPhrases: ${JSON.stringify(banned)},\n`;
     }
-    setup += `    mode: "${encoder.includes('injection') || encoder.includes('guard') ? 'classifier-firewall' : 'vector-clustering'}"\n`;
+    setup += `    mode: ${JSON.stringify(encoder.includes('injection') || encoder.includes('guard') ? 'classifier-firewall' : 'vector-clustering')}\n`;
     setup += `  });\n\n`;
   });
   
-  setup += '  return { guards: [' + nodes.map(n => `guard_${n.id.replace(/-/g, '_')}`).join(', ') + '] };\n};\n';
+  setup += '  return { guards: [' + nodes.map(n => `guard_${sanitizeSafeIdentifier(n.id, 'node')}`).join(', ') + '] };\n};\n';
   
   return setup;
 }
@@ -1332,8 +1345,8 @@ function generatePrivacyGuardSetup(nodes: Node[]): string {
     const customPatterns = Array.isArray(data.customPatterns) ? data.customPatterns : [];
     const auditLogging = Boolean(data.auditLogging);
 
-    setup += `  action: "${action}",\n`;
-    setup += `  redactionStyle: "${redactionStyle}",\n`;
+    setup += `  action: ${JSON.stringify(action)},\n`;
+    setup += `  redactionStyle: ${JSON.stringify(redactionStyle)},\n`;
     setup += `  auditLogging: ${auditLogging},\n`;
     setup += `  detectPii: {\n`;
     setup += `    apiKey: ${pii.apiKey !== false},\n`;
@@ -1407,12 +1420,13 @@ function generateObservabilitySetup(nodes: Node[]): string {
     const scrubPii = data.scrubPii !== false;
     const latencyAlertMs = Number(data.latencyAlertMs ?? 5000);
 
+    const safeNodeId = sanitizeSafeIdentifier(node.id, 'node');
     setup += `  // Telemetry Exporter: ${exporter}\n`;
-    setup += `  const logger_${node.id.replace(/-/g, '_')} = initLogger({\n`;
-    setup += `    projectName: "${projectName}",\n`;
-    setup += `    exporter: "${exporter}",\n`;
+    setup += `  const logger_${safeNodeId} = initLogger({\n`;
+    setup += `    projectName: ${JSON.stringify(projectName)},\n`;
+    setup += `    exporter: ${JSON.stringify(exporter)},\n`;
     if (endpointUrl) {
-      setup += `    endpointUrl: "${endpointUrl}",\n`;
+      setup += `    endpointUrl: ${JSON.stringify(endpointUrl)},\n`;
     }
     setup += `    samplingRate: ${samplingRate / 100},\n`;
     setup += `    scrubPii: ${scrubPii},\n`;
@@ -1450,18 +1464,19 @@ function generateCodexSetup(nodes: Node[], edges: Edge[]): string {
       .filter(e => e.source === node.id && e.sourceHandle === 'subagents')
       .map(e => e.target);
 
-    setup += `# Codex Agent Node: ${node.id} (${model})\n`;
-    setup += `codex_agent_${node.id.replace(/-/g, '_')} = {\n`;
-    setup += `    "name": "Codex Agent (${model})",\n`;
-    setup += `    "model": "${model}",\n`;
+    const safeNodeId = sanitizeSafeIdentifier(node.id, 'node');
+    setup += `# Codex Agent Node: ${safeNodeId} (${model})\n`;
+    setup += `codex_agent_${safeNodeId} = {\n`;
+    setup += `    "name": ${JSON.stringify(`Codex Agent (${model})`)},\n`;
+    setup += `    "model": ${JSON.stringify(model)},\n`;
     if (model === 'o3-mini' || model === 'o1' || model === 'o1-mini') {
-      setup += `    "reasoning_effort": "${reasoningEffort}",\n`;
+      setup += `    "reasoning_effort": ${JSON.stringify(reasoningEffort)},\n`;
     }
-    setup += `    "instructions": "${instructions}",\n`;
+    setup += `    "instructions": ${JSON.stringify(instructions)},\n`;
     setup += `    "environment": {\n`;
-    setup += `        "type": "${env}",\n`;
-    setup += `        "approval_mode": "${approval}",\n`;
-    setup += `        "working_directory": "${workDir}",\n`;
+    setup += `        "type": ${JSON.stringify(env)},\n`;
+    setup += `        "approval_mode": ${JSON.stringify(approval)},\n`;
+    setup += `        "working_directory": ${JSON.stringify(workDir)},\n`;
     setup += `    },\n`;
     setup += `    "tools": [\n`;
     if (node.data?.enableCodeInterpreter !== false) {

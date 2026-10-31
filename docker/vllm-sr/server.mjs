@@ -11,6 +11,7 @@
 import http from 'http';
 
 const PORT = parseInt(process.env.PORT || '8001', 10);
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 
 function inspectPromptGuard(messages) {
   const text = (messages || []).map(m => m.content || '').join('\n');
@@ -38,7 +39,6 @@ function applyCors(req, res) {
         host === 'localhost' ||
         host === '127.0.0.1' ||
         host === '::1' ||
-        host.endsWith('.local') ||
         u.protocol === 'app:' ||
         u.protocol === 'vscode-webview:'
       ) {
@@ -51,40 +51,72 @@ function applyCors(req, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  applyCors(req, res);
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  const url = new URL(req.url, `http://${req.headers.host}`);
-
-  if (url.pathname === '/health' || url.pathname === '/healthz') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'vllm-sr', port: PORT }));
-    return;
-  }
-
-  if (url.pathname === '/v1/models' || url.pathname === '/models') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      object: 'list',
-      data: [
-        { id: 'meta-llama/Llama-3-8b-instruct', object: 'model', owned_by: 'vllm-sr' },
-        { id: 'mistralai/Mistral-7B-v0.1', object: 'model', owned_by: 'vllm-sr' },
-        { id: 'vllm-sr-semantic-guard', object: 'model', owned_by: 'vllm-sr' }
-      ]
-    }));
-    return;
-  }
-
-  if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
+function readBody(req) {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    applyCors(req, res);
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    let url;
+    try {
+      url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid URL' }));
+      return;
+    }
+
+    if (url.pathname === '/health' || url.pathname === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', service: 'vllm-sr', port: PORT }));
+      return;
+    }
+
+    if (url.pathname === '/v1/models' || url.pathname === '/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'meta-llama/Llama-3-8b-instruct', object: 'model', owned_by: 'vllm-sr' },
+          { id: 'mistralai/Mistral-7B-v0.1', object: 'model', owned_by: 'vllm-sr' },
+          { id: 'vllm-sr-semantic-guard', object: 'model', owned_by: 'vllm-sr' }
+        ]
+      }));
+      return;
+    }
+
+    if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large (limit 5MB)' }));
+        return;
+      }
+
       try {
         const payload = JSON.parse(body || '{}');
         const guardCheck = inspectPromptGuard(payload.messages);
@@ -134,12 +166,17 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-    });
-    return;
-  }
+      return;
+    }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Endpoint not found' }));
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Endpoint not found' }));
+  } catch (err) {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    }
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

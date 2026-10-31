@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getRequestLogs, getDb, getCachedAntigravityModels } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 import { spawn } from 'node:child_process';
 
 export const dynamic = 'force-dynamic';
@@ -131,12 +132,14 @@ async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
 
 export async function GET(req: Request) {
   try {
+    const caller = await resolveCallerIdentity(req);
     const { searchParams } = new URL(req.url);
     const limit = parseInt(searchParams.get('limit') || '100', 10);
     const filterStatus = searchParams.get('status');
     const filterModel = searchParams.get('model');
 
-    const rawLogs = getRequestLogs(limit);
+    const isAdmin = caller.ok && caller.role === 'admin';
+    const rawLogs = getRequestLogs(limit, isAdmin ? undefined : (caller.ok ? caller.userId : 'anonymous'));
     const router = getRouter();
     const upstreams = router.getUpstreams();
 

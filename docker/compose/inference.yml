@@ -8,7 +8,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     environment:
-      - OLLAMA_ORIGINS=*
+      - OLLAMA_ORIGINS=http://localhost:*,http://127.0.0.1:*,app://*
       - OLLAMA_HOST=0.0.0.0:11434
     restart: unless-stopped
     networks:

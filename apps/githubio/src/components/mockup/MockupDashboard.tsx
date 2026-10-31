@@ -133,7 +133,7 @@ export function MockupDashboard() {
         </div>
 
         <div className="grid grid-cols-1 gap-3.5 mt-4">
-          {upstreams
+          {[...upstreams]
             .sort((a, b) => b.priority - a.priority)
             .map((u) => {
               const isPinging = pingingId === u.id;

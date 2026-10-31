@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 import { getRequestLogs } from '@eluvix/router-core';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const logs = getRequestLogs(100); // Get last 100 requests
+    const caller = await resolveCallerIdentity(req);
+    const isAdmin = caller.ok && caller.role === 'admin';
+    const logs = getRequestLogs(100, isAdmin ? undefined : (caller.ok ? caller.userId : 'anonymous')); // Get last 100 requests
     
     // Calculate basic analytics
     const totalRequests = logs.length;

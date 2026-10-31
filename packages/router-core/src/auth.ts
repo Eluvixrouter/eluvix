@@ -88,9 +88,10 @@ export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
   const effectiveAdminPassword = process.env.ADMIN_PASSWORD || authConfig.adminPassword;
   const effectiveNextAuthSecret = process.env.NEXTAUTH_SECRET || authConfig.nextAuthSecret;
 
-  // Propagate to process.env so dependent submodules have immediate access
-  process.env.ADMIN_PASSWORD = effectiveAdminPassword;
-  process.env.NEXTAUTH_SECRET = effectiveNextAuthSecret;
+  // Do not mutate process.env.ADMIN_PASSWORD so disk rotations take effect
+  if (!process.env.NEXTAUTH_SECRET && effectiveNextAuthSecret) {
+    process.env.NEXTAUTH_SECRET = effectiveNextAuthSecret;
+  }
 
   return {
     adminPassword: effectiveAdminPassword,
@@ -118,6 +119,12 @@ function getKeysFilePath(appName = 'eluvix'): string {
     fs.mkdirSync(configDir, { recursive: true });
   }
   return path.join(configDir, 'keys.json');
+}
+
+function writeKeysFileAtomic(keysFile: string, keys: NamedApiKey[]): void {
+  const tmpFile = `${keysFile}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+  fs.writeFileSync(tmpFile, JSON.stringify(keys, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmpFile, keysFile);
 }
 
 export function listNamedApiKeys(appName = 'eluvix'): NamedApiKey[] {
@@ -156,7 +163,7 @@ export function createNamedApiKey(
     createdAt: new Date().toISOString()
   };
   keys.push(newKey);
-  fs.writeFileSync(keysFile, JSON.stringify(keys, null, 2), { encoding: 'utf8', mode: 0o600 });
+  writeKeysFileAtomic(keysFile, keys);
   return newKey;
 }
 
@@ -165,7 +172,7 @@ export function revokeNamedApiKey(id: string, appName = 'eluvix'): boolean {
   const keys = listNamedApiKeys(appName);
   const next = keys.filter(k => k.id !== id);
   if (next.length === keys.length) return false;
-  fs.writeFileSync(keysFile, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+  writeKeysFileAtomic(keysFile, next);
   return true;
 }
 

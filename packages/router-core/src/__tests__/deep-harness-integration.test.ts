@@ -369,7 +369,7 @@ describe('TrueForge & Eluvix-Forked OpenCode Deep Integration', () => {
       endpoint: 'opencode-eluvix://embedded',
       priority: 90,
       models: ['harness/opencode'],
-      harness: { kind: 'opencode', embedded: true, forked: true },
+      harness: { kind: 'opencode', embedded: true, forked: true, autoApproveTools: ['read_policy'] },
     };
 
     expect(isLocalUpstream(tfEmbedded)).toBe(true);

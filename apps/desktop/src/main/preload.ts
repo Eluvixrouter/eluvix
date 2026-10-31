@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, shell, clipboard } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('eluvixAPI', {
   getServerStatus: () => ipcRenderer.invoke('get-server-status'),
@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('eluvixAPI', {
   onRequestLogged: (callback: (log: any) => void) => {
     ipcRenderer.on('request-logged', (_event, log) => callback(log));
   },
+  onConfigUpdated: (callback: (config: any) => void) => {
+    ipcRenderer.on('config-updated', (_event, config) => callback(config));
+  },
   getProviderStatus: () => ipcRenderer.invoke('get-provider-status'),
   toggleProvider: (enabled: boolean) => ipcRenderer.invoke('toggle-provider', enabled),
   saveProviderConfig: (config: any) => ipcRenderer.invoke('save-provider-config', config),
@@ -23,17 +26,7 @@ contextBridge.exposeInMainWorld('eluvixAPI', {
   onProviderJobCompleted: (callback: (job: any) => void) => {
     ipcRenderer.on('provider-job-completed', (_event, job) => callback(job));
   },
-  // External links: http(s) only (audit M-22, decision D2). Anything else —
-  // file:, custom protocol handlers, javascript: — is refused rather than
-  // handed to the OS, because the renderer also renders request-log text.
-  openExternal: (url: string) => {
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-        return shell.openExternal(url);
-      }
-    } catch {}
-    return Promise.reject(new Error('Only http(s) links can be opened externally'));
-  },
-  copyToClipboard: (text: string) => clipboard.writeText(text)
+  // External links: http(s) only (audit M-22, decision D2). Handled in the main process.
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+  copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text)
 });

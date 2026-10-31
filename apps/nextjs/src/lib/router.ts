@@ -280,8 +280,26 @@ function upstreamProblem(upstream: any): string | null {
 }
 
 export function saveConfig(newConfig: RouterConfig): RouterConfig {
-  validateConfig(newConfig);
-  activeConfig = newConfig;
+  const existingConfig = activeConfig || loadConfig();
+  const mergedUpstreams = (newConfig.upstreams || []).map(u => {
+    if (u.apiKey === '[REDACTED]') {
+      const existing = existingConfig.upstreams?.find(e => e.id === u.id);
+      return { ...u, apiKey: existing?.apiKey };
+    }
+    return u;
+  });
+  let mergedMemory = newConfig.memory;
+  if (mergedMemory && mergedMemory.apiKey === '[REDACTED]') {
+    mergedMemory = { ...mergedMemory, apiKey: existingConfig.memory?.apiKey };
+  }
+  const mergedConfig: RouterConfig = {
+    ...newConfig,
+    upstreams: mergedUpstreams,
+    memory: mergedMemory,
+  };
+
+  validateConfig(mergedConfig);
+  activeConfig = mergedConfig;
   activeRouter = new Eluvix(activeConfig);
   try {
     const configFile = getConfigPath();

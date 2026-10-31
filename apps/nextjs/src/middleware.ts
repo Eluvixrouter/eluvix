@@ -115,6 +115,8 @@ export async function middleware(req: NextRequest) {
           pathname.startsWith('/api/orchestrator') ||
           pathname.startsWith('/api/v1/config') ||
           pathname.startsWith('/api/v1/configurator') ||
+          pathname.startsWith('/api/v1/detect-models') ||
+          pathname.startsWith('/api/v1/tools') ||
           pathname.startsWith('/api/v1/docker') ||
           pathname.startsWith('/api/v1/layouts') ||
           pathname.startsWith('/api/v1/provider') ||

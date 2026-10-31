@@ -80,6 +80,12 @@ export default function Home() {
     setConfig({ ...config, upstreams: updated });
   };
 
+  const handleUpdateApiKey = (index: number, newKey: string) => {
+    const updated = [...config.upstreams];
+    updated[index] = { ...updated[index], apiKey: newKey };
+    setConfig({ ...config, upstreams: updated });
+  };
+
   const handleUpdateName = (index: number, newName: string) => {
     const updated = [...config.upstreams];
     updated[index] = { ...updated[index], name: newName };
@@ -247,10 +253,10 @@ export default function Home() {
   const handleSaveConfig = async () => {
     setSaveStatus('Saving...');
     try {
-      // Sync Billama key if changed
+      // Sync Billama key if specifically targeting billama-cloud and provided
       const upstreamsWithKey = config.upstreams.map((u) => {
-        if (u.type === 'billama' || u.id === 'billama-cloud') {
-          return { ...u, apiKey: billamaKey };
+        if (u.id === 'billama-cloud' && billamaKey.trim()) {
+          return { ...u, apiKey: billamaKey.trim() };
         }
         return u;
       });
@@ -1012,6 +1018,23 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                           className="w-full bg-slate-900 border border-slate-700 focus:border-sky-400 text-sky-300 font-mono text-xs px-3 py-2 rounded-lg focus:outline-none shadow-inner transition"
                         />
                       </div>
+                    </div>
+
+                    {/* EDITABLE API KEY FIELD */}
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                        <span>API Key / Bearer Token (Optional)</span>
+                        <span className="text-[10px] text-slate-500 font-normal font-mono">
+                          leave blank for unauthenticated
+                        </span>
+                      </label>
+                      <input
+                        type="password"
+                        value={upstream.apiKey || ''}
+                        onChange={(e) => handleUpdateApiKey(index, e.target.value)}
+                        placeholder="sk-... or token (optional)"
+                        className="w-full bg-slate-900 border border-slate-700 focus:border-sky-400 text-slate-200 font-mono text-xs px-3 py-2 rounded-lg focus:outline-none shadow-inner transition"
+                      />
                     </div>
 
                     {upstream.type === 'harness' && (

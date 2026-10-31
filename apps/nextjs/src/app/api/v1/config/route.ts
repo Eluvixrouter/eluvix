@@ -40,7 +40,22 @@ export async function POST(req: Request) {
 
   try {
     const updated = saveConfig(body);
-    return NextResponse.json({ success: true, config: updated });
+    const isAdmin = identity.ok && identity.role === 'admin';
+    if (isAdmin) {
+      return NextResponse.json({ success: true, config: updated });
+    }
+    const sanitized = {
+      ...updated,
+      upstreams: updated.upstreams?.map(u => ({
+        ...u,
+        apiKey: u.apiKey ? '[REDACTED]' : undefined
+      })),
+      memory: updated.memory ? {
+        ...updated.memory,
+        apiKey: updated.memory.apiKey ? '[REDACTED]' : undefined
+      } : undefined
+    };
+    return NextResponse.json({ success: true, config: sanitized });
   } catch (error) {
     const err = error as Error;
     const isValidationError = err instanceof ConfigValidationError || err.message.startsWith('Invalid');

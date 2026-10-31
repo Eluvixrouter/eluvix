@@ -8,7 +8,13 @@ export default function NodeHealthIndicator({ serviceName }: { serviceName: stri
     return <div className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" title="Docker not running" />;
   }
 
-  const service = status.services?.find(s => s.name === serviceName);
+  const service = status.services?.find(
+    s =>
+      s.name === serviceName ||
+      s.container === serviceName ||
+      s.name === serviceName.replace(/^eluvix-/, '') ||
+      s.container === `eluvix-${serviceName}`
+  );
   
   if (!service) {
     // If not found in docker services (e.g., cloud provider node), hide it

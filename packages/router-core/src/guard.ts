@@ -84,8 +84,8 @@ const INJECTION_PATTERNS: Array<{ regex: RegExp; label: string; weight: number }
 // Common PII and Sensitive Data Patterns
 const PII_PATTERNS: Array<{ regex: RegExp; label: string; placeholder: string; key: keyof NonNullable<PrivacyGuardConfig['detectPii']> }> = [
   {
-    // API Keys (OpenAI, AWS, GitHub, generic bearer tokens)
-    regex: /\b(?:sk-[a-zA-Z0-9]{32,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{40,})\b/g,
+    // API Keys (OpenAI, Anthropic, AWS, GitHub, Slack, Eluvix, generic bearer tokens)
+    regex: /\b(?:sk-(?:proj-|svcacct-)?[a-zA-Z0-9_\-]{20,}|sk-ant-[a-zA-Z0-9_\-]{20,}|elx_[a-zA-Z0-9_\-]{20,}|xox[baprs]-[a-zA-Z0-9_\-]{10,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{40,})\b/g,
     label: 'api_key',
     placeholder: '[REDACTED_API_KEY]',
     key: 'apiKey'

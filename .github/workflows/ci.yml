@@ -48,10 +48,12 @@ jobs:
       env:
         NEXT_TELEMETRY_DISABLED: 1
 
+    - name: Build Desktop Application
+      run: pnpm --filter @eluvix/desktop build
+
     - name: Build GitHub Pages Documentation Site
       run: pnpm --filter githubio build
       env:
         NODE_ENV: production
         BASE_PATH: ""
         NEXT_TELEMETRY_DISABLED: 1
-

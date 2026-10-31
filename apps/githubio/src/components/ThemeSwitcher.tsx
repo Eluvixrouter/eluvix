@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { ALL_THEMES, DEFAULT_THEME_ID, getThemeById, applyTheme, EluvixTheme, ThemeCategory } from '@/lib/themes';
 
 const CATEGORY_TABS: { key: ThemeCategory | 'all'; label: string }[] = [
-  { key: 'all', label: 'All (20)' },
+  { key: 'all', label: `All (${ALL_THEMES.length})` },
   { key: 'original', label: 'Original' },
   { key: 'dark-ambient', label: 'Ambient Dark' },
   { key: 'oled', label: 'OLED' },
@@ -13,6 +13,7 @@ const CATEGORY_TABS: { key: ThemeCategory | 'all'; label: string }[] = [
   { key: 'gruvbox', label: 'Gruvbox' },
   { key: 'solarized', label: 'Solarized' },
   { key: 'dark-red', label: 'Night Red' },
+  { key: 'fun', label: 'Fun' },
 ];
 
 export function ThemeSwitcher() {

@@ -4162,6 +4162,93 @@ export default function RoutingEditor() {
                     </div>
                   </div>
                 )}
+
+                {/* Policy & Feature Changes */}
+                {(applyDiff.knowledgeChanged ||
+                  applyDiff.cacheChanged ||
+                  applyDiff.sandboxChanged ||
+                  applyDiff.consensusChanged ||
+                  applyDiff.fallbackChainsChanged ||
+                  applyDiff.confidentialPolicyChanged ||
+                  applyDiff.quantizationPolicyChanged ||
+                  applyDiff.fabricPolicyChanged ||
+                  applyDiff.strategyChanged ||
+                  applyDiff.fallbackStrategyChanged ||
+                  applyDiff.promptGuardChanged ||
+                  applyDiff.privacyGuardChanged ||
+                  applyDiff.switchyardChanged ||
+                  applyDiff.modelGatewayChanged) && (
+                  <div>
+                    <h4 className="text-purple-300 font-semibold mb-1.5">⚙️ Policies &amp; Topologies Updated</h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {applyDiff.confidentialPolicyChanged && (
+                        <span className="bg-purple-950/60 border border-purple-500/50 text-purple-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🛡️ Confidential Enclaves
+                        </span>
+                      )}
+                      {applyDiff.quantizationPolicyChanged && (
+                        <span className="bg-cyan-950/60 border border-cyan-500/50 text-cyan-200 text-xs px-2 py-0.5 rounded font-mono">
+                          💎 Microscaling Quantization
+                        </span>
+                      )}
+                      {applyDiff.fabricPolicyChanged && (
+                        <span className="bg-blue-950/60 border border-blue-500/50 text-blue-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🌐 Clos Rail Fabric
+                        </span>
+                      )}
+                      {applyDiff.knowledgeChanged && (
+                        <span className="bg-emerald-950/60 border border-emerald-500/50 text-emerald-200 text-xs px-2 py-0.5 rounded font-mono">
+                          📚 Knowledge Base (RAG)
+                        </span>
+                      )}
+                      {applyDiff.cacheChanged && (
+                        <span className="bg-teal-950/60 border border-teal-500/50 text-teal-200 text-xs px-2 py-0.5 rounded font-mono">
+                          ⚡ Semantic Cache
+                        </span>
+                      )}
+                      {applyDiff.sandboxChanged && (
+                        <span className="bg-rose-950/60 border border-rose-500/50 text-rose-200 text-xs px-2 py-0.5 rounded font-mono">
+                          📦 Execution Sandbox
+                        </span>
+                      )}
+                      {applyDiff.consensusChanged && (
+                        <span className="bg-amber-950/60 border border-amber-500/50 text-amber-200 text-xs px-2 py-0.5 rounded font-mono">
+                          ⚖️ Multi-LLM Consensus
+                        </span>
+                      )}
+                      {applyDiff.fallbackChainsChanged && (
+                        <span className="bg-indigo-950/60 border border-indigo-500/50 text-indigo-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🔄 Fallback Chains
+                        </span>
+                      )}
+                      {applyDiff.strategyChanged && (
+                        <span className="bg-sky-950/60 border border-sky-500/50 text-sky-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🎯 Routing Strategy
+                        </span>
+                      )}
+                      {applyDiff.promptGuardChanged && (
+                        <span className="bg-orange-950/60 border border-orange-500/50 text-orange-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🛑 Prompt Injection Guard
+                        </span>
+                      )}
+                      {applyDiff.privacyGuardChanged && (
+                        <span className="bg-fuchsia-950/60 border border-fuchsia-500/50 text-fuchsia-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🔒 Privacy / PII Masking
+                        </span>
+                      )}
+                      {applyDiff.switchyardChanged && (
+                        <span className="bg-indigo-950/60 border border-indigo-500/50 text-indigo-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🔀 Switchyard Balancer
+                        </span>
+                      )}
+                      {applyDiff.modelGatewayChanged && (
+                        <span className="bg-slate-800 border border-slate-600 text-slate-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🚪 Model Gateways
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="p-4 border-t border-gray-700 bg-gray-900 flex justify-end gap-2">
                 <button
@@ -4423,6 +4510,18 @@ export default function RoutingEditor() {
                     </h4>
                     <pre className="bg-gray-950 p-4 rounded text-sm text-emerald-200 overflow-x-auto border border-emerald-900/60 font-mono text-xs whitespace-pre-wrap">
                       {compiledConfigs.disaggregatedSetup}
+                    </pre>
+                  </div>
+                )}
+
+                {compiledConfigs.confidentialSetup && (
+                  <div>
+                    <h4 className="text-purple-400 font-bold mb-2 flex items-center justify-between">
+                      <span>Confidential Computing &amp; KBS Attestation (confidential.ts)</span>
+                      <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded font-mono">TEE / RATS Spec</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-purple-200 overflow-x-auto border border-purple-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.confidentialSetup}
                     </pre>
                   </div>
                 )}

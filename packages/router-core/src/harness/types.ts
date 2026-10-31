@@ -12,7 +12,7 @@ export type HarnessKind =
   | 'letta'
   | 'a2a';
 
-export type HarnessApprovalPolicy = 'auto-deny' | 'auto-approve-readonly' | 'read-only' | 'surface';
+export type HarnessApprovalPolicy = 'auto-deny' | 'auto-approve-readonly' | 'read-only' | 'surface' | 'never';
 
 export type HarnessSessionMode = 'per-request' | 'per-eluvix-session' | 'per-conversation';
 

@@ -278,6 +278,8 @@ export async function authenticateLdapUser(
     const searchRes = await client.search(config.userSearchBase || config.baseDn, {
       filter: searchFilter,
       scope: 'sub',
+      sizeLimit: 10,
+      timeLimit: 10,
       attributes: [
         'dn',
         'uid',
@@ -347,6 +349,8 @@ export async function authenticateLdapUser(
       const groupRes = await client.search(config.groupSearchBase || config.baseDn, {
         filter: groupFilter,
         scope: 'sub',
+        sizeLimit: 100,
+        timeLimit: 10,
         attributes: ['cn'],
       });
       for (const entry of groupRes.searchEntries) {

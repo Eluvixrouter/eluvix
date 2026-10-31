@@ -1,8 +1,12 @@
 import http from 'node:http';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { isToolAutoApproved } from './approval.js';
+import { resolveSafeWorkspacePath } from './trueforge.js';
+export { resolveSafeWorkspacePath };
 import {
   computeHarnessKvPrefixHash,
   inspectHarnessObservation,
@@ -86,14 +90,13 @@ export async function executeEmbeddedOpenCodeTurn(
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals ||
     harnessCfg.approvalPolicy ||
-    'auto-approve-readonly';
-  const READ_ONLY_TOOL_PATTERN = /^(?:read|get|list|fetch|describe|inspect|view|search|check|query)_/i;
+    (Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
+      ? 'auto-approve-readonly'
+      : 'never');
   const effectiveAutoApproveTools =
     Array.isArray(harnessCfg.autoApproveTools)
       ? harnessCfg.autoApproveTools
-      : (Array.isArray(request.tools) ? request.tools : [])
-          .map((t: any) => String(t?.function?.name || t?.name || ''))
-          .filter(name => READ_ONLY_TOOL_PATTERN.test(name));
+      : [];
 
   const cacheable = sessionMode === 'per-eluvix-session' && Boolean(scope?.sessionId);
   const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
@@ -158,6 +161,9 @@ export async function executeEmbeddedOpenCodeTurn(
             },
           }
         );
+      }
+      if (obsCheck.sanitizedText !== obsText) {
+        m.content = obsCheck.sanitizedText;
       }
     }
   }
@@ -728,6 +734,7 @@ export interface OpenCodeForkSession {
 export interface EluvixOpenCodeServerOptions {
   port?: number;
   host?: string;
+  authToken?: string;
   defaultApprovalPolicy?: HarnessApprovalPolicy;
   defaultAutoApproveTools?: string[];
   midLoopGuard?: HarnessMidLoopGuardConfig;
@@ -751,23 +758,21 @@ export function createEluvixOpenCodeServer(
   options: EluvixOpenCodeServerOptions = {}
 ): EluvixOpenCodeServerInstance {
   const sessions = new Map<string, OpenCodeForkSession>();
+  const defaultAutoApprove = options.defaultAutoApproveTools || [];
   const defaultPolicy: HarnessApprovalPolicy =
-    options.defaultApprovalPolicy || 'auto-approve-readonly';
-  const defaultAutoApprove = options.defaultAutoApproveTools || [
-    'read_file',
-    'grep_search',
-    'list_dir',
-    'inspect_repo',
-  ];
+    options.defaultApprovalPolicy ||
+    (Array.isArray(defaultAutoApprove) && defaultAutoApprove.length > 0
+      ? 'auto-approve-readonly'
+      : 'never');
 
   const parseJsonBody = (req: http.IncomingMessage): Promise<any> =>
     new Promise((resolve, reject) => {
       let raw = '';
       req.on('data', (chunk: Buffer) => {
         raw += chunk.toString();
-        if (raw.length > 5 * 1024 * 1024) {
+        if (raw.length > 2 * 1024 * 1024) {
           req.destroy();
-          reject(new Error('Payload too large'));
+          reject(new Error('Payload too large: maximum body size is 2MB'));
         }
       });
       req.on('end', () => {
@@ -783,6 +788,15 @@ export function createEluvixOpenCodeServer(
 
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+
+    if (options.authToken && url.pathname !== '/health' && url.pathname !== '/healthz') {
+      const authHeader = req.headers.authorization || '';
+      if (authHeader !== `Bearer ${options.authToken}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing Bearer token' }));
+        return;
+      }
+    }
 
     if (req.method === 'GET' && (url.pathname === '/health' || url.pathname === '/healthz')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -823,6 +837,11 @@ export function createEluvixOpenCodeServer(
 
     if (req.method === 'POST' && url.pathname === '/session') {
       const body = await parseJsonBody(req);
+      const MAX_SESSIONS = 500;
+      if (sessions.size >= MAX_SESSIONS) {
+        const oldestKey = sessions.keys().next().value;
+        if (oldestKey) sessions.delete(oldestKey);
+      }
       const id = `oc_elx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const mcpServers: HarnessMcpServerConfig[] = Array.isArray(body?.mcpServers)
         ? body.mcpServers
@@ -932,7 +951,9 @@ export function createEluvixOpenCodeServer(
       for (let i = 0; i < requestedTools.length; i++) {
         const t = requestedTools[i];
         const toolName = String(t?.function?.name || t?.name || `tool_${i}`);
-        const approved = isToolAutoApproved(policy, [toolName], autoApproveList);
+        const permRecord = Array.from(session.permissions.values()).find(p => p.tool === toolName);
+        const permApproved = permRecord?.status === 'approved';
+        const approved = permApproved || isToolAutoApproved(policy, [toolName], autoApproveList);
 
         if (!approved) {
           const permId = `perm_${Date.now()}_${i}`;
@@ -1012,6 +1033,9 @@ export function createEluvixOpenCodeServer(
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         switchyardTier: step2Decision.tier,
       };
+      if (session.messages.length >= 100) {
+        session.messages.shift();
+      }
       session.messages.push(msgRecord);
 
       res.writeHead(200, {

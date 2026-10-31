@@ -68,6 +68,18 @@ export interface KnowledgeBaseConfig {
   topK?: number;
   maxTokens?: number;
   citationMode?: 'inline-uris' | 'silent';
+  /**
+   * Controls whether retrieved knowledge may be sent to cloud upstreams:
+   * - false (default): never allow knowledge-tainted prompts to hit cloud upstreams unless cloudMode='strip'
+   * - true: allow retrieved knowledge blocks to be sent to cloud upstreams
+   */
+  allowCloudEgress?: boolean;
+  /**
+   * When allowCloudEgress is false:
+   * - 'filter' (default): remove non-local upstreams from consideration when knowledge is retrieved
+   * - 'strip': keep non-local upstreams as candidates, but strip the <eluvix-knowledge> block before sending to them
+   */
+  cloudMode?: 'filter' | 'strip';
 }
 
 export interface ContextProvider {

@@ -37,8 +37,9 @@
       if (status.status === 'running') {
         serverEndpoint = status.endpoint;
         statusText.textContent = `● Active: ${status.endpoint}`;
+        const safeTokenFile = status.tokenFile ? status.tokenFile.replace(/(["\\$`])/g, '\\$1') : '';
         const keyLine = status.tokenFile
-          ? `export OPENAI_API_KEY="$(cat "${status.tokenFile}")"`
+          ? `export OPENAI_API_KEY="$(cat "${safeTokenFile}")"`
           : 'export OPENAI_API_KEY="" # server token file unavailable';
         snippetBlock.textContent = `export OPENAI_BASE_URL="${status.endpoint}"
 ${keyLine}`;
@@ -64,6 +65,16 @@ ${keyLine}`;
       api.onRequestLogged((log) => {
         appendLogEntry(log);
       });
+
+      // Listen for external or server config updates
+      if (api.onConfigUpdated) {
+        api.onConfigUpdated((newConfig) => {
+          if (newConfig) {
+            currentConfig = newConfig;
+            renderUpstreams(currentConfig.upstreams || []);
+          }
+        });
+      }
 
       // Initialize GPU provider controller
       await initProvider();
@@ -233,8 +244,13 @@ ${keyLine}`;
   }
 
   function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   let saveTimeout = null;
@@ -591,7 +607,8 @@ ${keyLine}`;
       providerVramSub.textContent = `${status.gpu?.vramTotalGb || 0} GB VRAM`;
     }
     if (providerTempVal) {
-      providerTempVal.textContent = `${status.gpu?.temperatureC || 42}°C`;
+      const temp = status.gpu?.temperatureC;
+      providerTempVal.textContent = (temp !== undefined && temp !== null) ? `${temp}°C` : 'N/A';
     }
   }
 

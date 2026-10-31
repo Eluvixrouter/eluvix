@@ -85,7 +85,7 @@ export interface ConfidentialComputeStatus {
 }
 
 export interface ProviderStatusInfo {
-  status: 'OFFLINE' | 'INITIALIZING' | 'ONLINE' | 'SERVING' | 'PAUSED' | 'ERROR';
+  status: 'OFFLINE' | 'INITIALIZING' | 'ONLINE' | 'SERVING' | 'PAUSED' | 'STANDBY' | 'ERROR';
   nodeId?: string;
   reputationScore: number;
   totalJobsCompleted: number;
@@ -649,6 +649,7 @@ export class EluvixProviderAgent extends EventEmitter {
   private installedModels: LocalEngineModelInfo[] = [];
   private reputationScore: number = 100.0;
   private lastErrorMessage: string | null = null;
+  private activeJobs: number = 0;
 
   constructor(customConfig?: Partial<ProviderAgentConfig>) {
     super();
@@ -996,7 +997,16 @@ export class EluvixProviderAgent extends EventEmitter {
     console.log(`[Eluvix Provider] 📩 Processing command: ${cmd.type}`);
     if (cmd.type === 'CONFIG_APPLY') {
       const { targetModel, configPayload } = cmd.payload || {};
+      const SAFE_MODEL_ID_RE = /^[a-zA-Z0-9_\-.:/]+$/;
       if (this.config.engineType === 'ollama' && targetModel && configPayload) {
+        if (!SAFE_MODEL_ID_RE.test(targetModel)) {
+          console.warn('[Eluvix Provider] Rejected invalid targetModel identifier:', targetModel);
+          return;
+        }
+        if (/^\s*FROM\s+[/~]/im.test(configPayload) || /^\s*ADAPTER\s+[/~]/im.test(configPayload)) {
+          console.warn('[Eluvix Provider] Rejected dangerous FROM/ADAPTER local file directive in Modelfile');
+          return;
+        }
         try {
           await fetch(`${this.config.engineUrl}/api/create`, {
             method: 'POST',
@@ -1026,7 +1036,12 @@ export class EluvixProviderAgent extends EventEmitter {
     if (this.isPaused) {
       throw new Error('Provider is currently paused for local consumer activity or thermal limit.');
     }
+    const maxConcurrency = this.config.maxConcurrency ?? 1;
+    if (this.activeJobs >= maxConcurrency) {
+      throw new Error(`Provider reached maximum concurrency (${this.activeJobs}/${maxConcurrency})`);
+    }
 
+    this.activeJobs++;
     const startTime = Date.now();
     const promptTokens = Math.ceil(JSON.stringify(job.messages).length / 4); // estimate
     const url = `${this.config.engineUrl.replace(/\/+$/, '')}/v1/chat/completions`;
@@ -1087,6 +1102,8 @@ export class EluvixProviderAgent extends EventEmitter {
         error_message: err.message,
       });
       throw err;
+    } finally {
+      this.activeJobs--;
     }
   }
 }

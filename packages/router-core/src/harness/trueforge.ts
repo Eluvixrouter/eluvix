@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatMessage, ChatRequest, UpstreamConfig } from '../index.js';
@@ -9,6 +11,34 @@ import {
 } from './deep-guard.js';
 import { buildHarnessPrompt, isSessionGoneResponse } from './prompt.js';
 import type { HarnessApprovalPolicy, HarnessConfig } from './types.js';
+
+export function resolveSafeWorkspacePath(root: string, requestedPath: string): string {
+  const safeRoot = fs.realpathSync(path.resolve(root));
+  const candidate = path.resolve(safeRoot, requestedPath);
+  if (fs.existsSync(candidate)) {
+    const realCandidate = fs.realpathSync(candidate);
+    if (!realCandidate.startsWith(safeRoot + path.sep) && realCandidate !== safeRoot) {
+      throw new Error('Path traversal detected: target escapes workspace root');
+    }
+    return realCandidate;
+  }
+  const parentDir = path.dirname(candidate);
+  if (fs.existsSync(parentDir)) {
+    const realParent = fs.realpathSync(parentDir);
+    if (!realParent.startsWith(safeRoot + path.sep) && realParent !== safeRoot) {
+      throw new Error('Path traversal detected: target directory escapes workspace root');
+    }
+  } else {
+    if (!candidate.startsWith(safeRoot + path.sep) && candidate !== safeRoot) {
+      throw new Error('Path traversal detected: target escapes workspace root');
+    }
+  }
+  return candidate;
+}
+
+export function safeStringReplace(source: string, target: string, replacement: string): string {
+  return source.replace(target, () => replacement);
+}
 
 const sessionCache = new Map<string, string>();
 

@@ -373,6 +373,7 @@ export interface DualAttestationEvidence {
   gpuCcStatus: 'ON' | 'PPCIE' | 'OFF';
   gpuDevToolsBlocked: boolean;
   gpuSpdmRimVerified: boolean;
+  timestamp?: number;
 }
 
 export interface AttestationPolicy {
@@ -382,6 +383,7 @@ export interface AttestationPolicy {
   minTcbMicrocodeSvn?: number;
   requireGpuCcOn?: boolean;
   expectedReportDataHex?: string;
+  maxAgeMs?: number;
 }
 
 export interface DualAttestationVerdict {
@@ -424,11 +426,20 @@ export function verifyDualAttestationReport(
       `CPU Microcode SVN (${evidence.reportedTcbSvn.microcode}) is below minimum required (${policy.minTcbMicrocodeSvn})`
     );
   }
-  if (
-    policy.expectedReportDataHex &&
+  if (policy.expectedReportDataHex &&
     evidence.reportDataHex.toLowerCase() !== policy.expectedReportDataHex.toLowerCase()
   ) {
     reasons.push('REPORT_DATA binding mismatch (replay or MITM detected on KBS challenge nonce)');
+  }
+  if (policy.maxAgeMs !== undefined) {
+    if (!Number.isFinite(evidence.timestamp) || (evidence.timestamp ?? 0) <= 0) {
+      reasons.push('Attestation report timestamp is invalid or missing');
+    } else {
+      const ageMs = Date.now() - evidence.timestamp!;
+      if (ageMs > policy.maxAgeMs || ageMs < -60_000) {
+        reasons.push(`Attestation report expired or from the future (age: ${ageMs}ms, max: ${policy.maxAgeMs}ms)`);
+      }
+    }
   }
   if ((policy.requireGpuCcOn ?? true) && evidence.gpuCcStatus === 'OFF') {
     reasons.push('GPU Confidential Computing mode is OFF (PCIe BAR1 exposed)');

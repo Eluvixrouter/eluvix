@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
 import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
+import { saveConfig } from '@/lib/router';
 import { DOCKER_SERVICE_CATALOG } from '@/lib/docker-catalog';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
@@ -224,6 +225,13 @@ export class OrchestrationManager {
 
     fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
     logs.push(`✓ Written active router config to ${targetFile}`);
+
+    try {
+      if (!isTest) {
+        saveConfig(mergedConfig);
+        logs.push(`✓ Saved and reloaded active router configuration`);
+      }
+    } catch {}
 
     // Synchronize active Eluvix models & auth into OpenCode config (~/.config/opencode/opencode.json)
     try {
@@ -496,7 +504,10 @@ export class OrchestrationManager {
     ]).catch(() => {});
 
     // 4. Write temporary custom values containing compiled configs
-    const tempValuesPath = path.join(this.repoRoot, 'helm', 'eluvix', '.temp-compiled-values.yaml');
+    const tempValuesPath = path.join(
+      os.tmpdir(),
+      `eluvix-helm-values-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.yaml`
+    );
     try {
       const customValues = {
         routingConfig: {

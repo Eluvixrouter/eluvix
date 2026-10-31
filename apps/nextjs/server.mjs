@@ -63,6 +63,22 @@ if (dev) {
   }
 }
 
+function sanitizeRedirectPath(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '/';
+  let p = rawUrl.replace(/^\/+/, '/');
+  p = p.replace(/[\r\n\0]/g, '');
+  return p;
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const app = next({ dev, dir: __dirname, hostname, port: httpsPort });
 const handle = app.getRequestHandler();
 
@@ -80,12 +96,13 @@ async function startServer() {
       (req, res) => {
         // Redirect localhost to 127.0.0.1 to avoid NextAuth host mismatch issues
         if (req.headers.host && req.headers.host.startsWith('localhost:')) {
-          const redirectUrl = `https://${hostname}:${currentPort}${req.url}`;
+          const safePath = sanitizeRedirectPath(req.url);
+          const redirectUrl = `https://${hostname}:${currentPort}${safePath}`;
           res.writeHead(301, {
             Location: redirectUrl,
             'Content-Type': 'text/html'
           });
-          res.end(`Redirecting to <a href="${redirectUrl}">${hostname}</a>...\n`);
+          res.end(`Redirecting to <a href="${escapeHtml(redirectUrl)}">${hostname}</a>...\n`);
           return;
         }
 
@@ -124,13 +141,14 @@ async function startServer() {
       const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname)
         ? (rawHost === 'localhost' ? hostname : rawHost)
         : hostname;
-      const redirectUrl = `https://${safeHost}:${currentPort}${req.url}`;
+      const safePath = sanitizeRedirectPath(req.url);
+      const redirectUrl = `https://${safeHost}:${currentPort}${safePath}`;
       res.writeHead(308, {
         Location: redirectUrl,
         'Content-Type': 'text/html; charset=utf-8',
         Connection: 'close'
       });
-      res.end(`Redirecting to <a href="${redirectUrl}">HTTPS</a>...\n`);
+      res.end(`Redirecting to <a href="${escapeHtml(redirectUrl)}">HTTPS</a>...\n`);
     });
 
     httpServer.requestTimeout = 600000;
@@ -141,7 +159,8 @@ async function startServer() {
       const safeHost = (rawHost === 'localhost' || rawHost === '127.0.0.1' || rawHost === '::1' || rawHost === hostname)
         ? (rawHost === 'localhost' ? hostname : rawHost)
         : hostname;
-      const redirectUrl = `wss://${safeHost}:${currentPort}${req.url}`;
+      const safePath = sanitizeRedirectPath(req.url);
+      const redirectUrl = `wss://${safeHost}:${currentPort}${safePath}`;
       socket.write(`HTTP/1.1 308 Permanent Redirect\r\nLocation: ${redirectUrl}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     });

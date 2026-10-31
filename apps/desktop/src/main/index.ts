@@ -1,8 +1,11 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, clipboard } from 'electron';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { DesktopRouterServer } from './server';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { DesktopRouterServer } from './server.js';
 import { getProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
 let server: DesktopRouterServer | null = null;
@@ -228,6 +231,21 @@ function setupIpcHandlers() {
     assertTrustedSender(event);
     const jobs = getProviderJobLogs(limit || 20);
     return { success: true, jobs };
+  });
+
+  ipcMain.handle('open-external', async (event, url: string) => {
+    assertTrustedSender(event);
+    if (isSafeExternalUrl(url)) {
+      await shell.openExternal(url);
+      return true;
+    }
+    throw new Error('Only http(s) links can be opened externally');
+  });
+
+  ipcMain.handle('copy-to-clipboard', (event, text: string) => {
+    assertTrustedSender(event);
+    clipboard.writeText(String(text ?? ''));
+    return true;
   });
 }
 

@@ -3,6 +3,7 @@ import Image from 'next/image';
 import { DataFlowDiagram, CostComparisonWidget } from '@/components/SovereignVisuals';
 
 export default function Home() {
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
   return (
     <div className="flex flex-col items-center overflow-hidden">
       
@@ -56,7 +57,7 @@ export default function Home() {
           <div className="max-w-5xl mx-auto rounded-2xl p-2 bg-gradient-to-b from-sky-500/30 via-slate-800/50 to-slate-900/50 border border-sky-500/30 shadow-[0_0_50px_rgba(56,189,248,0.2)] relative group overflow-hidden">
             <div className="relative rounded-xl overflow-hidden bg-slate-950 aspect-[16/9] w-full">
               <Image 
-                src="/hero-banner.jpg" 
+                src={`${basePath}/hero-banner.jpg`} 
                 alt="Eluvix Cybernetic AI Routing Core & Privacy Shield" 
                 fill
                 priority
@@ -113,7 +114,7 @@ export default function Home() {
             <div className="w-full lg:w-1/2 relative">
               <div className="relative rounded-2xl overflow-hidden border border-sky-500/30 shadow-[0_0_40px_rgba(56,189,248,0.2)] bg-slate-950 aspect-[16/9]">
                 <Image 
-                  src="/privacy-shield.jpg" 
+                  src={`${basePath}/privacy-shield.jpg`} 
                   alt="Eluvix Hardware Privacy Vault Shielding GPU from External Surveillance" 
                   fill
                   className="object-cover"

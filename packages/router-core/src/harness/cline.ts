@@ -32,7 +32,11 @@ export async function executeEmbeddedClineTurn(
   const harnessCfg: HarnessConfig = upstream.harness || { kind: 'cline' };
   const mode: 'plan' | 'act' = harnessCfg.agentId === 'plan' ? 'plan' : 'act';
   const approvalPolicy: HarnessApprovalPolicy =
-    harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-approve-readonly';
+    harnessCfg.approvals ||
+    harnessCfg.approvalPolicy ||
+    (Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
+      ? 'auto-approve-readonly'
+      : 'never');
 
   const sessionKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
   let session = clineStore.get(sessionKey);
@@ -69,6 +73,31 @@ export async function executeEmbeddedClineTurn(
       );
       redactionCount += check.piiTypes.length;
       if (check.injectionDetected) injectionCount += 1;
+      if (!check.allowed) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: check.blockedReason || 'Blocked by Eluvix Cline mid-loop PromptGuard',
+              type: 'harness_mid_loop_guard_blocked',
+              code: 'prompt_injection_detected',
+            },
+          }),
+          {
+            status: 403,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-harness': 'cline',
+              'x-eluvix-harness-mode': 'embedded',
+              'x-eluvix-session': session.id,
+              'x-eluvix-prefix-hash': kvPrefixHash,
+              'x-eluvix-guard-injections': String(injectionCount),
+            },
+          }
+        );
+      }
+      if (check.sanitizedText !== messageText(msg)) {
+        msg.content = check.sanitizedText;
+      }
     }
   }
 
@@ -107,13 +136,10 @@ export async function executeEmbeddedClineTurn(
   const step2 = selectSwitchyardStepTier(2, mode === 'plan' ? 'final-synthesis' : 'code-edit', promptCheck.sanitizedText);
   const tierProgression = `${step1.tier}->${step2.tier}`;
 
-  const READ_ONLY_TOOL_PATTERN = /^(?:read|get|list|fetch|describe|inspect|view|search|check|query)_/i;
   const effectiveAutoApprove =
     Array.isArray(harnessCfg.autoApproveTools)
       ? harnessCfg.autoApproveTools
-      : (Array.isArray(request.tools) ? request.tools : [])
-          .map((t: any) => String(t?.function?.name || t?.name || ''))
-          .filter(name => READ_ONLY_TOOL_PATTERN.test(name));
+      : [];
 
   const toolCalls: any[] = [];
   for (let i = 0; i < (request.tools || []).length; i++) {

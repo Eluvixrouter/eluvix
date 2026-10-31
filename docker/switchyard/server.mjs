@@ -11,6 +11,7 @@
 import http from 'http';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 
 function estimateComplexity(messages) {
   if (!messages || messages.length === 0) return { score: 1, label: 'simple' };
@@ -40,7 +41,6 @@ function applyCors(req, res) {
         host === 'localhost' ||
         host === '127.0.0.1' ||
         host === '::1' ||
-        host.endsWith('.local') ||
         u.protocol === 'app:' ||
         u.protocol === 'vscode-webview:'
       ) {
@@ -53,44 +53,75 @@ function applyCors(req, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  // CORS restricted to local origins
-  applyCors(req, res);
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  const url = new URL(req.url, `http://${req.headers.host}`);
-
-  if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/healthz') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'switchyard', port: PORT }));
-    return;
-  }
-
-  if (url.pathname === '/v1/config' || url.pathname === '/config') {
-    const expectedToken = process.env.SWITCHYARD_AUTH_TOKEN || process.env.ADMIN_PASSWORD;
-    if (expectedToken && req.method === 'POST') {
-      const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-      if (authHeader !== expectedToken) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Payload too large'));
         return;
       }
-    }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
 
-    if (req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(activeSwConfig));
+const server = http.createServer(async (req, res) => {
+  try {
+    // CORS restricted to local origins
+    applyCors(req, res);
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
       return;
     }
-    if (req.method === 'POST') {
-      let body = '';
-      req.on('data', chunk => { body += chunk; });
-      req.on('end', () => {
+
+    let url;
+    try {
+      url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid URL' }));
+      return;
+    }
+
+    if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', service: 'switchyard', port: PORT }));
+      return;
+    }
+
+    if (url.pathname === '/v1/config' || url.pathname === '/config') {
+      const expectedToken = process.env.SWITCHYARD_AUTH_TOKEN || process.env.ADMIN_PASSWORD;
+      if (expectedToken && req.method === 'POST') {
+        const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+        if (authHeader !== expectedToken) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
+          return;
+        }
+      }
+
+      if (req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(activeSwConfig));
+        return;
+      }
+      if (req.method === 'POST') {
+        let body;
+        try {
+          body = await readBody(req);
+        } catch {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Payload too large (limit 5MB)' }));
+          return;
+        }
         try {
           const parsed = JSON.parse(body || '{}');
           activeSwConfig = { ...activeSwConfig, ...parsed };
@@ -100,42 +131,47 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
         }
-      });
+        return;
+      }
+    }
+
+    if (url.pathname === '/v1/models' || url.pathname === '/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'switchyard-auto', object: 'model', owned_by: 'switchyard', tier: 'tier-1' },
+          { id: 'deepseek-ai/deepseek-coder-6.7b', object: 'model', owned_by: 'switchyard', tier: 'tier-2' },
+          { id: 'codellama/CodeLlama-7b-hf', object: 'model', owned_by: 'switchyard', tier: 'tier-2' }
+        ]
+      }));
       return;
     }
-  }
 
-  if (url.pathname === '/v1/models' || url.pathname === '/models') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      object: 'list',
-      data: [
-        { id: 'switchyard-auto', object: 'model', owned_by: 'switchyard', tier: 'tier-1' },
-        { id: 'deepseek-ai/deepseek-coder-6.7b', object: 'model', owned_by: 'switchyard', tier: 'tier-2' },
-        { id: 'codellama/CodeLlama-7b-hf', object: 'model', owned_by: 'switchyard', tier: 'tier-2' }
-      ]
-    }));
-    return;
-  }
+    if (url.pathname === '/v1/tiers') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        tiers: [
+          { id: 'tier-1', name: 'Lemonade / Local Fast', costPer1k: 0.0, maxComplexity: 2 },
+          { id: 'tier-2', name: 'Ollama / Local Reasoning', costPer1k: 0.0, maxComplexity: 3 },
+          { id: 'tier-3', name: 'Antigravity / Codex', costPer1k: 0.001, maxComplexity: 4 },
+          { id: 'tier-4', name: 'Claude Code / Frontier', costPer1k: 0.003, maxComplexity: 4 }
+        ],
+        defaultStrategy: 'lowest-cost'
+      }));
+      return;
+    }
 
-  if (url.pathname === '/v1/tiers') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      tiers: [
-        { id: 'tier-1', name: 'Lemonade / Local Fast', costPer1k: 0.0, maxComplexity: 2 },
-        { id: 'tier-2', name: 'Ollama / Local Reasoning', costPer1k: 0.0, maxComplexity: 3 },
-        { id: 'tier-3', name: 'Antigravity / Codex', costPer1k: 0.001, maxComplexity: 4 },
-        { id: 'tier-4', name: 'Claude Code / Frontier', costPer1k: 0.003, maxComplexity: 4 }
-      ],
-      defaultStrategy: 'lowest-cost'
-    }));
-    return;
-  }
+    if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large (limit 5MB)' }));
+        return;
+      }
 
-  if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
       try {
         const payload = JSON.parse(body || '{}');
         const complexity = estimateComplexity(payload.messages || []);
@@ -220,12 +256,17 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-    });
-    return;
-  }
+      return;
+    }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Endpoint not found' }));
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Endpoint not found' }));
+  } catch (err) {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    }
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {

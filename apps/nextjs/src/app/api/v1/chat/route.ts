@@ -4,11 +4,13 @@ import {
   saveChatMessage,
   upsertHarnessSession,
   getHarnessSession,
+  isLocalUpstream,
   type HarnessKind,
   type UpstreamConfig,
 } from '@eluvix/router-core';
-import { getRouter } from '@/lib/router';
+import { getRouter, getConfig } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
+import { isBlockedDns } from '@/lib/api-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,6 +41,16 @@ export async function POST(req: Request) {
 
     let res: Response;
     if (harnessOverride && typeof harnessOverride === 'object' && harnessOverride.kind) {
+      if (caller.role !== 'admin' && caller.role !== 'operator') {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Forbidden: only admin or operator roles may supply harnessOverride',
+          },
+          { status: 403 }
+        );
+      }
+
       const kind = String(harnessOverride.kind) as HarnessKind;
       const defaultEmbeddedEndpoint =
         kind === 'opencode'
@@ -60,6 +72,24 @@ export async function POST(req: Request) {
           ? harnessOverride.endpoint.trim()
           : defaultEmbeddedEndpoint;
 
+      if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+        let parsedUrl: URL;
+        try {
+          parsedUrl = new URL(endpoint);
+        } catch {
+          return NextResponse.json(
+            { success: false, error: 'Invalid harnessOverride endpoint URL' },
+            { status: 400 }
+          );
+        }
+        if (await isBlockedDns(parsedUrl.hostname)) {
+          return NextResponse.json(
+            { success: false, error: `harnessOverride endpoint ${parsedUrl.hostname} is blocked` },
+            { status: 403 }
+          );
+        }
+      }
+
       const overrideUpstream: UpstreamConfig = {
         id: harnessOverride.nodeId || `harness-${kind}`,
         name: harnessOverride.label || `${kind} Harness`,
@@ -73,7 +103,7 @@ export async function POST(req: Request) {
           embedded: harnessOverride.embedded ?? endpoint.includes('://embedded'),
           forked: harnessOverride.forked ?? true,
           deepIntegration: harnessOverride.deepIntegration ?? true,
-          approvalPolicy: harnessOverride.approvalPolicy || harnessOverride.approvals || 'auto-approve-readonly',
+          approvalPolicy: harnessOverride.approvalPolicy || harnessOverride.approvals || 'never',
           autoApproveTools: Array.isArray(harnessOverride.autoApproveTools)
             ? harnessOverride.autoApproveTools
             : undefined,
@@ -91,6 +121,14 @@ export async function POST(req: Request) {
           aciProfile: harnessOverride.aciProfile,
         },
       };
+
+      const currentCfg = getConfig();
+      if (currentCfg.egressPolicy === 'local-only' && !isLocalUpstream(overrideUpstream)) {
+        return NextResponse.json(
+          { success: false, error: 'Egress violation: router is configured for local-only egress' },
+          { status: 403 }
+        );
+      }
 
       res = await forwardHarnessRequest(
         overrideUpstream,
@@ -174,10 +212,21 @@ export async function POST(req: Request) {
       );
     }
 
+    const normalizeContent = (content: any): string => {
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        return content
+          .map(c => (typeof c === 'string' ? c : c?.text || JSON.stringify(c)))
+          .join('\n');
+      }
+      if (content === null || content === undefined) return '';
+      return String(content);
+    };
+
     if (session_id && forwardBody.messages) {
       const userMsg = forwardBody.messages[forwardBody.messages.length - 1];
       if (userMsg) {
-        saveChatMessage(session_id, userMsg.role, userMsg.content, userId);
+        saveChatMessage(session_id, userMsg.role, normalizeContent(userMsg.content), userId);
       }
 
       const assistantMsg = data.choices?.[0]?.message;
@@ -189,7 +238,7 @@ export async function POST(req: Request) {
                 trace,
               }
             : undefined;
-        saveChatMessage(session_id, assistantMsg.role, assistantMsg.content, userId, msgMeta);
+        saveChatMessage(session_id, assistantMsg.role, normalizeContent(assistantMsg.content), userId, msgMeta);
       }
 
       let sessionTitle = session_title;

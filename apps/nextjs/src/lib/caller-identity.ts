@@ -1,5 +1,5 @@
 import { getToken } from 'next-auth/jwt';
-import { resolveBearerToken } from '@eluvix/router-core';
+import { resolveBearerToken, getOrCreateAuthConfig } from '@eluvix/router-core';
 
 /**
  * The memory store identity of the app's human operator. Eluvix is a
@@ -49,7 +49,8 @@ export async function resolveSessionIdentity(req: Request): Promise<{
 } | null> {
   try {
     const tokenParams: Record<string, unknown> = { req: req as any };
-    tokenParams['secret'] = process.env.NEXTAUTH_SECRET;
+    const authConfig = getOrCreateAuthConfig();
+    tokenParams['secret'] = process.env.NEXTAUTH_SECRET || authConfig.nextAuthSecret;
     const token = await getToken(tokenParams as any);
     if (!token) return null;
     const rawUserId = (token.userId as string) || (token.sub as string);

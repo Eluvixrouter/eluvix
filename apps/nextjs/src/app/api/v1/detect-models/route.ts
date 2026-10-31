@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { detectUpstreamModelDetails, UpstreamConfig } from '@eluvix/router-core';
 import { getRouter, getConfig, saveConfig } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 import dns from 'node:dns/promises';
 
@@ -35,6 +36,11 @@ async function isMetadataEndpoint(hostname: string): Promise<boolean> {
 
 export async function POST(req: Request) {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
     const body = await req.json();
 
     // If batch detect across all configured upstreams requested
@@ -58,10 +64,18 @@ export async function POST(req: Request) {
         saveConfig({ ...currentConfig, upstreams: updatedUpstreams });
       }
 
+      const returnedConfig = getConfig();
+      if (caller.role !== 'admin') {
+        returnedConfig.upstreams = returnedConfig.upstreams.map(u => ({
+          ...u,
+          apiKey: u.apiKey ? '[REDACTED]' : undefined,
+        }));
+      }
+
       return NextResponse.json({
         success: true,
         detected: detectedMap,
-        config: getConfig()
+        config: returnedConfig
       });
     }
 
@@ -96,11 +110,23 @@ export async function POST(req: Request) {
       const currentConfig = getConfig();
       const saved = currentConfig.upstreams.find(u => u.id === body.id);
       if (saved) {
+        if (body.type && body.type !== saved.type && caller.role !== 'admin') {
+          return NextResponse.json(
+            { success: false, error: 'Forbidden: only admin can change upstream type during detection' },
+            { status: 403 }
+          );
+        }
         const endpointChanged = Boolean(body.endpoint && body.endpoint.trim() !== saved.endpoint.trim());
+        if (endpointChanged && caller.role !== 'admin') {
+          return NextResponse.json(
+            { success: false, error: 'Forbidden: only admin can probe alternate endpoints for saved upstreams' },
+            { status: 403 }
+          );
+        }
         targetUpstream = {
           ...saved,
           endpoint: body.endpoint || saved.endpoint,
-          type: body.type || saved.type,
+          type: saved.type,
           harness: body.harness || saved.harness,
           // Never send a stored API key to a newly changed endpoint host
           apiKey: endpointChanged ? body.apiKey : (body.apiKey || saved.apiKey)

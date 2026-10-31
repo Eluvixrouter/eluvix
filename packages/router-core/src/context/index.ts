@@ -35,11 +35,10 @@ export const MEMORY_BLOCK_END = '</eluvix-memory>';
  * human/model-readable as inert text.
  */
 export function escapeMemoryBlockText(text: string): string {
-  return text
-    .split(MEMORY_BLOCK_END)
-    .join('&lt;/eluvix-memory&gt;')
-    .split(MEMORY_BLOCK_START)
-    .join('&lt;eluvix-memory&gt;');
+  // Use case-insensitive regex to catch case and whitespace variants (e.g. < / eluvix-memory >)
+  return text.replace(/<\s*(\/?)\s*eluvix-memory\b[^>]*>/gi, (_match, slash) => {
+    return slash ? '&lt;/eluvix-memory&gt;' : '&lt;eluvix-memory&gt;';
+  });
 }
 
 export function createContextProvider(config?: MemoryConfig): ContextProvider {

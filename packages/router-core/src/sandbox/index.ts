@@ -6,8 +6,10 @@ export interface SandboxConfig {
   endpoint?: string;
   image?: string;
   networkPolicy?: 'none' | 'local-only' | 'bridge';
+  allowNetwork?: boolean;
   timeoutSec?: number;
   memoryLimitMb?: number;
+  cpuCores?: number;
 }
 
 export interface SandboxExecutionResult {
@@ -49,9 +51,11 @@ export async function executeInSandbox(
         code,
         runtime,
         image: config?.image || 'node:22-alpine',
-        networkPolicy: config?.networkPolicy || 'none',
+        networkPolicy: config?.allowNetwork ? (config?.networkPolicy || 'bridge') : (config?.networkPolicy || 'none'),
+        allowNetwork: config?.allowNetwork ?? false,
         timeoutMs,
-        memoryLimitMb: config?.memoryLimitMb ?? 512
+        memoryLimitMb: config?.memoryLimitMb ?? 512,
+        cpuCores: config?.cpuCores ?? 1
       }),
       signal
     });

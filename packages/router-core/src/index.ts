@@ -299,6 +299,9 @@ export interface UpstreamConfig {
   latencyMs?: number;
   capabilities?: string[];
   antigravity?: AntigravityConfig;
+  codex?: any;
+  claudeCode?: any;
+  organization?: string;
   harness?: HarnessConfig;
   disaggregation?: DisaggregationConfig;
   confidential?: ConfidentialComputeConfig;
@@ -432,8 +435,35 @@ export function isConfidentialEnclaveUpstream(
  * let the egress policy and the memory-egress guard treat remote or
  * cloud-backed harnesses as on-machine.)
  */
+export function isCloudMetadataEndpoint(endpoint: string): boolean {
+  try {
+    let host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
+    if (host.startsWith('::ffff:')) {
+      const mapped = host.slice(7);
+      const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+      if (hexMatch) {
+        const high = parseInt(hexMatch[1], 16);
+        const low = parseInt(hexMatch[2], 16);
+        host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+      } else {
+        host = mapped;
+      }
+    }
+    return (
+      host.startsWith('169.254.') ||
+      host === '169.254.169.254' ||
+      host === 'fd00:ec2::254' ||
+      host.startsWith('fe80:') ||
+      host.startsWith('64:ff9b::')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
+  if (isCloudMetadataEndpoint(upstream.endpoint || '')) return false;
   if (upstream.type === 'antigravity') return false;
   if (upstream.type === 'harness' && upstream.harness?.providerIsLocal !== undefined) {
     return upstream.harness.providerIsLocal;
@@ -693,6 +723,14 @@ export interface ChatRequest {
   // used as the caller's identity — identity is options.scope.userId.
   user?: string;
   metadata?: Record<string, any>;
+  response_format?: any;
+  stop?: string | string[];
+  top_p?: number;
+  seed?: number;
+  presence_penalty?: number;
+  frequency_penalty?: number;
+  max_tokens?: number;
+  max_completion_tokens?: number;
 }
 
 /**
@@ -1221,9 +1259,13 @@ export class Eluvix {
 
     // 0b2. Context / Memory Recall (Pre-Routing Context Injection)
     let memoryTainted = false;
+    let knowledgeTainted = false;
     let memoryStatus = 'disabled';
+    let knowledgeStatus = 'disabled';
     let memoryTokens = 0;
+    let knowledgeTokens = 0;
     let memoryDigest = '';
+    let knowledgeDigest = '';
     let lastUserQuery = '';
 
     // Neutralize any client-supplied delimiter tags so user input cannot forge memory or knowledge blocks
@@ -1377,8 +1419,8 @@ export class Eluvix {
     }
 
     // 0b3. Knowledge Base RAG Recall (Static Project / Docs RAG)
-    let knowledgeStatus = 'disabled';
-    let knowledgeTokens = 0;
+    knowledgeStatus = 'disabled';
+    knowledgeTokens = 0;
     if (
       this.config.knowledge?.enabled &&
       lastUserQuery.trim().length > 0 &&
@@ -1444,6 +1486,8 @@ export class Eluvix {
             };
             knowledgeTokens = kbResult.tokenEstimate;
             knowledgeStatus = `${kbResult.provider}:hit(${usableKbBlocks.length})`;
+            knowledgeTainted = true;
+            knowledgeDigest = crypto.createHash('sha256').update(kbBlock).digest('hex').slice(0, 12);
           }
         } else {
           knowledgeStatus = `${kbResult.provider}:miss`;
@@ -1465,7 +1509,8 @@ export class Eluvix {
           this.requestCounts.delete(key);
         }
       }
-      const windowKey = Math.floor(now / 60000).toString();
+      const userKey = scope?.userId || 'global';
+      const windowKey = `${userKey}:${Math.floor(now / 60000)}`;
       const current = this.requestCounts.get(windowKey) || { count: 0, resetTime: (Math.floor(now / 60000) + 1) * 60000 };
       if (current.count >= rateLimit) {
         return new Response(
@@ -1521,6 +1566,7 @@ export class Eluvix {
         scope,
         hops,
         memoryTainted,
+        knowledgeTainted,
         memoryTokens: memoryTokens + knowledgeTokens
       });
     } catch (err: any) {
@@ -1639,6 +1685,10 @@ export class Eluvix {
             memoryAllowCloudEgress: this.config.memory?.allowCloudEgress ?? null,
             memoryCloudMode: this.config.memory?.cloudMode ?? null,
             memoryTainted,
+            knowledgeAllowCloudEgress: this.config.knowledge?.allowCloudEgress ?? null,
+            knowledgeCloudMode: this.config.knowledge?.cloudMode ?? null,
+            knowledgeTainted,
+            knowledgeDigest,
             stripByUpstream
           })
         )
@@ -1652,9 +1702,9 @@ export class Eluvix {
       const scopePrefix =
         isolation === 'session'
           ? `${encodeURIComponent(scope.userId)}:${scope.sessionId || 'default'}`
-          : isolation === 'global' && !memoryTainted
+          : isolation === 'global' && !memoryTainted && !knowledgeTainted
           ? 'global'
-          : `${encodeURIComponent(scope.userId)}:${memoryDigest || 'nomem'}`;
+          : `${encodeURIComponent(scope.userId)}:${memoryDigest || 'nomem'}:${knowledgeDigest || 'noknow'}`;
       cacheKey = `v2:${scopePrefix}:${routingDigest}:${effectiveRequest.model || 'default'}:${variantKey}:${JSON.stringify(effectiveRequest.messages)}`;
       let cached = this.responseCache.get(cacheKey) as
         | { response: any; timestamp: number }
@@ -1664,6 +1714,7 @@ export class Eluvix {
         // Expired entries are deleted, not just ignored — otherwise they
         // accumulate forever behind keys that are never asked for again.
         this.responseCache.delete(cacheKey);
+        cached = undefined;
       }
       // Optional semantic similarity match across the same scope prefix,
       // routing context, and request variant when mode === 'semantic' (config.cache).
@@ -1678,7 +1729,10 @@ export class Eluvix {
           const scanPrefix = `v2:${scopePrefix}:${routingDigest}:${effectiveRequest.model || 'default'}:${variantKey}:`;
           for (const [k, entry] of this.responseCache.entries()) {
             if (!k.startsWith(scanPrefix)) continue;
-            if (Date.now() - entry.timestamp >= ttlMs) continue;
+            if (Date.now() - entry.timestamp >= ttlMs) {
+              this.responseCache.delete(k);
+              continue;
+            }
             const targetQuery = entry.lastUserQuery || '';
             const entryTokens = new Set(targetQuery.toLowerCase().split(/\W+/).filter(Boolean));
             if (entryTokens.size === 0) continue;
@@ -1716,6 +1770,12 @@ export class Eluvix {
     }
 
     const switchyardConfig = this.config.switchyard || {};
+    const routeStartTime = Date.now();
+    const canRemember =
+      Boolean(this.contextProvider) &&
+      Boolean(this.config.memory?.enabled) &&
+      this.config.memory?.writeBack !== false &&
+      lastUserQuery.trim().length > 0;
 
     // Consensus Group Execution (Mixture-of-Agents / Parallel Judge / Fastest-First)
     const activeConsensus = this.config.consensusGroups?.[0];
@@ -1725,7 +1785,18 @@ export class Eluvix {
       activeConsensus.candidateUpstreamIds.length >= 2
     ) {
       const idSet = new Set(activeConsensus.candidateUpstreamIds);
-      const consensusCandidates = targetUpstreams.filter((u) => idSet.has(u.id));
+      let consensusCandidates = targetUpstreams.filter((u) => idSet.has(u.id) && globalCircuitBreaker.isAllowed(u.id));
+      if (consensusCandidates.length >= 2) {
+        if (switchyardConfig.maxCostPerRequest != null) {
+          const estimatedCost = consensusCandidates.reduce((acc, u) => {
+            return acc + (u.costPer1kTokens != null ? (complexity.tokenEstimate / 1000) * u.costPer1kTokens : 0);
+          }, 0);
+          if (estimatedCost > switchyardConfig.maxCostPerRequest) {
+            console.warn(`[ConsensusGroup] Estimated consensus fan-out cost ($${estimatedCost.toFixed(4)}) exceeds ceiling ($${switchyardConfig.maxCostPerRequest}). Skipping consensus.`);
+            consensusCandidates = [];
+          }
+        }
+      }
       if (consensusCandidates.length >= 2) {
         try {
           const consensusTimeout = activeConsensus.timeoutMs ?? switchyardConfig.timeoutMs ?? 45000;
@@ -1747,16 +1818,82 @@ export class Eluvix {
                   messages: stripMemoryFromMessages(reqForCandidate.messages)
                 };
               }
+              if (
+                knowledgeTainted &&
+                !this.config.knowledge?.allowCloudEgress &&
+                this.config.knowledge?.cloudMode === 'strip' &&
+                !isLocalUpstream(u) &&
+                reqForCandidate.messages
+              ) {
+                reqForCandidate = {
+                  ...reqForCandidate,
+                  messages: stripKnowledgeFromMessages(reqForCandidate.messages)
+                };
+              }
               return this.forwardRequest(u, reqForCandidate, consensusTimeout, sig, complexity.score, scope, hops);
             },
             options?.signal
           );
+
+          for (const u of consensusCandidates) {
+            globalCircuitBreaker.recordSuccess(u.id);
+          }
           if (this.config.memory?.enabled) {
             consensusRes.headers.set('x-eluvix-memory', memoryStatus);
           }
           if (this.config.knowledge?.enabled) {
             consensusRes.headers.set('x-eluvix-knowledge', knowledgeStatus);
           }
+          consensusRes.headers.set('x-eluvix-consensus-group', activeConsensus.id);
+
+          const duration_ms = Date.now() - routeStartTime;
+          let assistantOutputText = '';
+          let promptTokens = complexity.tokenEstimate;
+          let completionTokens = 0;
+
+          if (!effectiveRequest.stream) {
+            try {
+              const rawData = await consensusRes.clone().text();
+              const parsed = JSON.parse(rawData);
+              if (parsed.usage?.completion_tokens != null) {
+                completionTokens = parsed.usage.completion_tokens;
+              }
+              if (parsed.usage?.prompt_tokens != null) {
+                promptTokens = parsed.usage.prompt_tokens;
+              }
+              if (typeof parsed.choices?.[0]?.message?.content === 'string') {
+                assistantOutputText = parsed.choices[0].message.content;
+              }
+              if (cacheConfig?.enabled && cacheKey) {
+                this.setCachedResponse(cacheKey, parsed, lastUserQuery);
+              }
+            } catch {}
+
+            if (canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
+              void this.contextProvider
+                .remember(
+                  {
+                    user: { role: 'user', content: lastUserQuery },
+                    assistant: assistantOutputText
+                  },
+                  scope
+                )
+                .catch(() => {});
+            }
+
+            logRequest({
+              model: activeConsensus.judgeModel || effectiveRequest.model,
+              upstream_id: `consensus:${activeConsensus.id}`,
+              status: consensusRes.status,
+              duration_ms,
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              ttft_ms: duration_ms,
+              itl_ms: undefined,
+              kv_cache_kb: 0
+            });
+          }
+
           return consensusRes;
         } catch (err) {
           console.warn('[ConsensusGroup] Consensus execution failed, falling back to standard routing:', err);
@@ -1803,16 +1940,9 @@ export class Eluvix {
     const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
     const retryCount = Math.max(1, switchyardConfig.retryCount ?? 1);
     const failoverBudgetMs = switchyardConfig.failoverBudgetMs ?? 120000;
-    const routeStartTime = Date.now();
     let attemptsMade = 0;
     let budgetExhausted = false;
     const activeChain = this.config.fallbackChains?.[0];
-
-    const canRemember =
-      Boolean(this.contextProvider) &&
-      Boolean(this.config.memory?.enabled) &&
-      this.config.memory?.writeBack !== false &&
-      lastUserQuery.trim().length > 0;
 
     // Attempt the highest priority upstream first with retry and budget guardrails
     for (const upstream of targetUpstreams) {
@@ -1845,6 +1975,21 @@ export class Eluvix {
           messages: stripMemoryFromMessages(effectiveRequest.messages)
         };
         strippedMemoryForCloud = true;
+      }
+
+      let strippedKnowledgeForCloud = false;
+      if (
+        knowledgeTainted &&
+        !this.config.knowledge?.allowCloudEgress &&
+        this.config.knowledge?.cloudMode === 'strip' &&
+        !isLocalUpstream(upstream) &&
+        requestForUpstream.messages
+      ) {
+        requestForUpstream = {
+          ...requestForUpstream,
+          messages: stripKnowledgeFromMessages(requestForUpstream.messages)
+        };
+        strippedKnowledgeForCloud = true;
       }
 
       for (let attempt = 1; attempt <= retryCount; attempt++) {
@@ -1942,8 +2087,8 @@ export class Eluvix {
             const kvFootprint = estimateKvCacheFootprint(servedModel, promptTokens, kvDtype);
             const kvCacheKb = Number((kvFootprint.totalBytes / 1024).toFixed(1));
 
-            // Fire and forget logging (for non-streaming or non-agy streaming; agy streaming logs exact tokens on stream completion)
-            if (!(effectiveRequest.stream && (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')))) {
+            // Logging: For non-streaming, log immediately. For streaming, tee stream to log full duration and token count upon completion.
+            if (!effectiveRequest.stream) {
               logRequest({
                 model: servedModel,
                 upstream_id: upstream.id,
@@ -1955,6 +2100,46 @@ export class Eluvix {
                 itl_ms: itlMs,
                 kv_cache_kb: kvCacheKb
               });
+            } else if (
+              responseBody &&
+              typeof (responseBody as any).getReader === 'function' &&
+              !(upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
+            ) {
+              const streamStartTime = startTime;
+              const providerRef = canRemember ? this.contextProvider : undefined;
+              responseBody = teeSseStreamForMemory(
+                responseBody as ReadableStream<Uint8Array>,
+                (fullAssistantText) => {
+                  if (providerRef) {
+                    void providerRef
+                      .remember(
+                        {
+                          user: { role: 'user', content: lastUserQuery },
+                          assistant: fullAssistantText
+                        },
+                        scope
+                      )
+                      .catch(() => {});
+                  }
+                  const finalDuration = Date.now() - streamStartTime;
+                  const estimatedCompletion = Math.max(1, Math.ceil(fullAssistantText.length / 4));
+                  const finalDecode = Math.max(0, finalDuration - ttftMs);
+                  const finalItl = estimatedCompletion > 1
+                    ? Number((finalDecode / (estimatedCompletion - 1)).toFixed(2))
+                    : Number((finalDecode || finalDuration).toFixed(2));
+                  logRequest({
+                    model: servedModel,
+                    upstream_id: upstream.id,
+                    status: response.status,
+                    duration_ms: finalDuration,
+                    prompt_tokens: promptTokens,
+                    completion_tokens: estimatedCompletion,
+                    ttft_ms: ttftMs,
+                    itl_ms: finalItl,
+                    kv_cache_kb: kvCacheKb
+                  });
+                }
+              );
             }
             
             const newResponse = new Response(responseBody, {
@@ -2042,8 +2227,11 @@ export class Eluvix {
               newResponse.headers.set('x-eluvix-memory-tokens', String(strippedMemoryForCloud ? 0 : memoryTokens));
             }
             if (this.config.knowledge?.enabled) {
-              newResponse.headers.set('x-eluvix-knowledge', knowledgeStatus);
-              newResponse.headers.set('x-eluvix-knowledge-tokens', String(knowledgeTokens));
+              newResponse.headers.set(
+                'x-eluvix-knowledge',
+                strippedKnowledgeForCloud ? `${knowledgeStatus};stripped-for-cloud` : knowledgeStatus
+              );
+              newResponse.headers.set('x-eluvix-knowledge-tokens', String(strippedKnowledgeForCloud ? 0 : knowledgeTokens));
             }
             
             return newResponse;
@@ -2138,7 +2326,9 @@ export class Eluvix {
       scope?: Partial<RequestScope>;
       hops?: number;
       memoryTainted?: boolean;
+      knowledgeTainted?: boolean;
       memoryTokens?: number;
+      knowledgeTokens?: number;
     }
   ): {
     effectiveRequest: ResolvedChatRequest;
@@ -2273,6 +2463,33 @@ export class Eluvix {
         });
         if (localOnly.length === 0) {
           fail(`No local upstream available to serve memory-tainted request for model: ${effectiveRequest.model} (memory.allowCloudEgress=false)`);
+        }
+        matchingUpstreams = localOnly;
+      }
+    }
+
+    // Knowledge-Taint Egress Guard: when retrieved knowledge is injected,
+    // prevent silent exfiltration to cloud upstreams unless allowCloudEgress=true.
+    if (options?.knowledgeTainted && !this.config.knowledge?.allowCloudEgress) {
+      const cloudMode = this.config.knowledge?.cloudMode || 'filter';
+      if (cloudMode === 'strip') {
+        steps.push({
+          stage: 'knowledge-rag',
+          detail: 'knowledge-tainted request with cloudMode=strip: <eluvix-knowledge> block will be stripped before forwarding to non-local upstreams',
+          kept: matchingUpstreams.map(u => u.id),
+          removed: []
+        });
+      } else {
+        const localOnly = matchingUpstreams.filter(u => isLocalUpstream(u));
+        const removedCloud = matchingUpstreams.filter(u => !isLocalUpstream(u));
+        steps.push({
+          stage: 'knowledge-rag',
+          detail: 'knowledge-tainted request with allowCloudEgress=false (cloudMode=filter): only local upstreams may receive retrieved knowledge',
+          kept: localOnly.map(u => u.id),
+          removed: removedCloud.map(u => u.id)
+        });
+        if (localOnly.length === 0) {
+          fail(`No local upstream available to serve knowledge-tainted request for model: ${effectiveRequest.model} (knowledge.allowCloudEgress=false)`);
         }
         matchingUpstreams = localOnly;
       }

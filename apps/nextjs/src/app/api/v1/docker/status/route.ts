@@ -109,6 +109,8 @@ export async function GET() {
     return NextResponse.json({
       installed: true,
       running: daemonRunning,
+      dockerAvailable: daemonRunning,
+      containers: runningContainers,
       version,
       composeVersion,
       allRunning,

@@ -17,6 +17,7 @@ export interface RequestLog {
   ttft_ms?: number;
   itl_ms?: number;
   kv_cache_kb?: number;
+  user_id?: string;
 }
 
 export interface SqliteDb {
@@ -150,6 +151,10 @@ function initSchema(db: SqliteDb) {
   if (!reqCols.some(c => c.name === 'kv_cache_kb')) {
     db.exec('ALTER TABLE request_logs ADD COLUMN kv_cache_kb REAL');
   }
+  if (!reqCols.some(c => c.name === 'user_id')) {
+    db.exec("ALTER TABLE request_logs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_user ON request_logs(user_id, id DESC)');
 }
 
 export function getDb(): SqliteDb {
@@ -195,8 +200,8 @@ export function logRequest(log: RequestLog) {
   try {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -208,16 +213,22 @@ export function logRequest(log: RequestLog) {
       log.completion_tokens || 0,
       log.ttft_ms ?? null,
       log.itl_ms ?? null,
-      log.kv_cache_kb ?? null
+      log.kv_cache_kb ?? null,
+      log.user_id || 'default'
     );
   } catch (err: any) {
     console.error('Failed to log request to DB:', err.message);
   }
 }
 
-export function getRequestLogs(limit = 50): RequestLog[] {
+export function getRequestLogs(limit = 50, userId?: string): RequestLog[] {
   try {
     const db = getDb();
+    if (userId) {
+      return db
+        .prepare('SELECT * FROM request_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?')
+        .all(userId, limit) as RequestLog[];
+    }
     return db.prepare('SELECT * FROM request_logs ORDER BY id DESC LIMIT ?').all(limit) as RequestLog[];
   } catch (err: any) {
     console.error('Failed to query request logs from DB:', err.message);
@@ -314,71 +325,80 @@ export function upsertHarnessSession(input: HarnessSessionUpsertInput): HarnessS
   try {
     const db = getDb();
     const userId = input.userId || 'default';
-    const existing = db
-      .prepare('SELECT * FROM harness_sessions WHERE user_id = ? AND session_id = ?')
-      .get(userId, input.sessionId) as HarnessSessionRecord | undefined;
 
-    const title =
-      input.title && input.title.trim().length > 0
-        ? input.title.trim().slice(0, 120)
-        : existing?.title || 'Untitled Harness Session';
-    const harnessKind = input.harnessKind || existing?.harness_kind || 'opencode';
-    const agentId = input.agentId || existing?.agent_id || 'build';
-    const nodeId = input.nodeId !== undefined ? input.nodeId : existing?.node_id ?? null;
-    const endpoint = input.endpoint !== undefined ? input.endpoint : existing?.endpoint ?? null;
-    const kvPrefixHash = input.kvPrefixHash || existing?.kv_prefix_hash || null;
-    const lastTier = input.lastTier || existing?.last_tier || null;
-    const redactionCount = (existing?.redaction_count || 0) + (input.redactionDelta || 0);
-    const injectionCount = (existing?.injection_count || 0) + (input.injectionDelta || 0);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = db
+        .prepare('SELECT * FROM harness_sessions WHERE user_id = ? AND session_id = ?')
+        .get(userId, input.sessionId) as HarnessSessionRecord | undefined;
 
-    if (existing) {
-      db.prepare(`
-        UPDATE harness_sessions
-        SET title = ?,
-            harness_kind = ?,
-            agent_id = ?,
-            node_id = ?,
-            endpoint = ?,
-            kv_prefix_hash = ?,
-            last_tier = ?,
-            redaction_count = ?,
-            injection_count = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = ? AND session_id = ?
-      `).run(
-        title,
-        harnessKind,
-        agentId,
-        nodeId,
-        endpoint,
-        kvPrefixHash,
-        lastTier,
-        redactionCount,
-        injectionCount,
-        userId,
-        input.sessionId
-      );
-    } else {
-      db.prepare(`
-        INSERT INTO harness_sessions (
-          session_id, user_id, title, harness_kind, agent_id,
-          node_id, endpoint, kv_prefix_hash, last_tier, redaction_count, injection_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.sessionId,
-        userId,
-        title,
-        harnessKind,
-        agentId,
-        nodeId,
-        endpoint,
-        kvPrefixHash,
-        lastTier,
-        redactionCount,
-        injectionCount
-      );
+      const title =
+        input.title && input.title.trim().length > 0
+          ? input.title.trim().slice(0, 120)
+          : existing?.title || 'Untitled Harness Session';
+      const harnessKind = input.harnessKind || existing?.harness_kind || 'opencode';
+      const agentId = input.agentId || existing?.agent_id || 'build';
+      const nodeId = input.nodeId !== undefined ? input.nodeId : existing?.node_id ?? null;
+      const endpoint = input.endpoint !== undefined ? input.endpoint : existing?.endpoint ?? null;
+      const kvPrefixHash = input.kvPrefixHash || existing?.kv_prefix_hash || null;
+      const lastTier = input.lastTier || existing?.last_tier || null;
+      const redactionCount = (existing?.redaction_count || 0) + (input.redactionDelta || 0);
+      const injectionCount = (existing?.injection_count || 0) + (input.injectionDelta || 0);
+
+      if (existing) {
+        db.prepare(`
+          UPDATE harness_sessions
+          SET title = ?,
+              harness_kind = ?,
+              agent_id = ?,
+              node_id = ?,
+              endpoint = ?,
+              kv_prefix_hash = ?,
+              last_tier = ?,
+              redaction_count = ?,
+              injection_count = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE user_id = ? AND session_id = ?
+        `).run(
+          title,
+          harnessKind,
+          agentId,
+          nodeId,
+          endpoint,
+          kvPrefixHash,
+          lastTier,
+          redactionCount,
+          injectionCount,
+          userId,
+          input.sessionId
+        );
+      } else {
+        db.prepare(`
+          INSERT INTO harness_sessions (
+            session_id, user_id, title, harness_kind, agent_id,
+            node_id, endpoint, kv_prefix_hash, last_tier, redaction_count, injection_count
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          input.sessionId,
+          userId,
+          title,
+          harnessKind,
+          agentId,
+          nodeId,
+          endpoint,
+          kvPrefixHash,
+          lastTier,
+          redactionCount,
+          injectionCount
+        );
+      }
+      db.exec('COMMIT');
+    } catch (txnErr) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {}
+      throw txnErr;
     }
-
     return getHarnessSession(input.sessionId, userId);
   } catch (err: any) {
     console.error('Failed to upsert harness session:', err.message);
@@ -444,8 +464,9 @@ export function listHarnessSessions(
       params.push(filter.harnessKind);
     }
     if (filter?.search && filter.search.trim().length > 0) {
-      const q = `%${filter.search.trim()}%`;
-      conditions.push('(hs.title LIKE ? OR hs.session_id LIKE ? OR hs.agent_id LIKE ?)');
+      const escaped = filter.search.trim().replace(/[\\%_]/g, '\\$&');
+      const q = `%${escaped}%`;
+      conditions.push("(hs.title LIKE ? ESCAPE '\\' OR hs.session_id LIKE ? ESCAPE '\\' OR hs.agent_id LIKE ? ESCAPE '\\')");
       params.push(q, q, q);
     }
 

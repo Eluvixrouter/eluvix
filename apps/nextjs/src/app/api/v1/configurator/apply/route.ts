@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getOrCreateAuthConfig } from '@eluvix/router-core';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,12 +23,15 @@ interface ApplyRequestBody {
 function atomicWriteFile(filePath: string, content: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   const tmpPath = `${filePath}.tmp.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmpPath, filePath);
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {}
   } catch (err) {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -38,6 +42,14 @@ function atomicWriteFile(filePath: string, content: string): void {
 
 export async function POST(req: Request) {
   try {
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.ok || caller.role !== 'admin') {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden: only admin can modify client configuration files.' },
+        { status: 403 }
+      );
+    }
+
     const body = (await req.json()) as ApplyRequestBody;
     const { client, protocol, models } = body;
 
@@ -82,7 +94,7 @@ export async function POST(req: Request) {
           opencodeConfig = JSON.parse(raw);
           // Create backup
           const backupPath = `${opencodePath}.bak-${timestamp}`;
-          fs.writeFileSync(backupPath, raw, 'utf8');
+          fs.writeFileSync(backupPath, raw, { encoding: 'utf8', mode: 0o600 });
         } catch (err: any) {
           console.warn('[Configurator] Could not parse existing opencode.json:', err.message);
         }

@@ -32,10 +32,19 @@ export function MockupPlayground() {
   const [activeInspector, setActiveInspector] = useState<MockSamplePrompt | null>(null);
   const [showSanitizerDiff, setShowSanitizerDiff] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const streamIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamedText]);
+
+  useEffect(() => {
+    return () => {
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current);
+      }
+    };
+  }, []);
 
   function handleSendPrompt(sample?: MockSamplePrompt) {
     const promptData = sample || {
@@ -59,6 +68,11 @@ export function MockupPlayground() {
 
     if (!promptData.rawPrompt) return;
 
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current);
+      streamIntervalRef.current = null;
+    }
+
     setActiveInspector(promptData);
     setMessages((prev) => [
       ...prev,
@@ -72,10 +86,13 @@ export function MockupPlayground() {
     const words = promptData.response.split(' ');
     let currentIndex = 0;
 
-    const interval = setInterval(() => {
+    streamIntervalRef.current = setInterval(() => {
       currentIndex += 2;
       if (currentIndex >= words.length) {
-        clearInterval(interval);
+        if (streamIntervalRef.current) {
+          clearInterval(streamIntervalRef.current);
+          streamIntervalRef.current = null;
+        }
         setStreamedText('');
         setIsStreaming(false);
         setMessages((prev) => [
@@ -103,6 +120,12 @@ export function MockupPlayground() {
   }
 
   function handleClearChat() {
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current);
+      streamIntervalRef.current = null;
+    }
+    setIsStreaming(false);
+    setStreamedText('');
     setMessages([
       {
         role: 'assistant',

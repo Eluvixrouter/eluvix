@@ -124,6 +124,12 @@ export async function recallKnowledgeBase(
   }
 }
 
+export function escapeKnowledgeBlockText(text: string): string {
+  return text.replace(/<\s*(\/?)\s*eluvix-knowledge\b[^>]*>/gi, (_match, slash) => {
+    return slash ? '&lt;/eluvix-knowledge&gt;' : '&lt;eluvix-knowledge&gt;';
+  });
+}
+
 export function formatKnowledgeSystemBlock(
   blocks: RecallBlock[],
   config?: KnowledgeBaseConfig
@@ -132,11 +138,10 @@ export function formatKnowledgeSystemBlock(
   const includeCitations = config?.citationMode !== 'silent';
   const body = blocks
     .map((b, idx) => {
-      const safeUri = b.uri ? b.uri.replace(/<\/eluvix-knowledge>/gi, '<\\/eluvix-knowledge>') : '';
+      const safeUri = b.uri ? escapeKnowledgeBlockText(b.uri) : '';
       const header =
         includeCitations && safeUri ? `[Doc ${idx + 1}] (${safeUri})` : `[Doc ${idx + 1}]`;
-      // Escape delimiter to prevent breakout
-      const safeText = b.text.replace(/<\/eluvix-knowledge>/gi, '<\\/eluvix-knowledge>');
+      const safeText = escapeKnowledgeBlockText(b.text);
       return `${header}\n${safeText}`;
     })
     .join('\n\n');

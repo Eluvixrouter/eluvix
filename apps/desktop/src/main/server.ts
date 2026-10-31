@@ -178,6 +178,9 @@ export class DesktopRouterServer extends EventEmitter {
   }
 
   public updateConfig(newConfig: Partial<RouterConfig>) {
+    if (newConfig.upstreams && !Array.isArray(newConfig.upstreams)) {
+      throw new Error('upstreams must be an array');
+    }
     this.config = { ...this.config, ...newConfig };
     this.router = new Eluvix(this.config);
     this.emit('config-updated', this.config);
@@ -236,7 +239,9 @@ export class DesktopRouterServer extends EventEmitter {
     this.providerAgent.stop();
     return new Promise((resolve) => {
       if (this.server) {
-        this.server.close(() => resolve());
+        const s = this.server;
+        this.server = null;
+        s.close(() => resolve());
       } else {
         resolve();
       }
@@ -530,12 +535,21 @@ export class DesktopRouterServer extends EventEmitter {
           });
 
           const reader = upstreamResponse.body.getReader();
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
+          let closed = false;
+          req.on('close', () => {
+            closed = true;
+            try { reader.cancel(); } catch {}
+          });
+          try {
+            while (!closed) {
+              const { done, value } = await reader.read();
+              if (done || closed) break;
+              res.write(value);
+            }
+          } finally {
+            try { reader.releaseLock(); } catch {}
+            if (!closed && !res.writableEnded) res.end();
           }
-          res.end();
           return;
         }
 

@@ -49,7 +49,8 @@ export async function executeSafeCommand(
     const child = spawn(executable, args, {
       cwd: options.cwd || process.cwd(),
       env: { ...process.env, ...options.env },
-      shell: false
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
     const timer = setTimeout(() => {

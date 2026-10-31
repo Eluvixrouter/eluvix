@@ -1,6 +1,7 @@
 {
   "name": "@eluvix/desktop",
   "version": "1.0.16",
+  "type": "module",
   "description": "Eluvix Desktop - Local token router and OpenAI-compatible proxy with Billama integration",
   "homepage": "https://github.com/Eluvixrouter/eluvix",
   "author": "Eluvix Team",

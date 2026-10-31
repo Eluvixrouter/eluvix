@@ -76,7 +76,7 @@ jobs:
           sudo apt-get install -y libarchive-tools libfuse2
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter @eluvix/router-core build
@@ -151,13 +151,21 @@ jobs:
 
       - name: Determine Release Tag
         id: release_tag
+        env:
+          TAG_INPUT: ${{ inputs.tag_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IS_TAG_REF: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            echo "tag=${{ inputs.tag_name }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          if [ -n "$TAG_INPUT" ]; then
+            if [[ ! "$TAG_INPUT" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+              echo "Error: Invalid tag format: $TAG_INPUT" >&2
+              exit 1
+            fi
+            echo "tag=$TAG_INPUT" >> $GITHUB_OUTPUT
+          elif [ "$IS_TAG_REF" = "true" ]; then
+            echo "tag=$REF_NAME" >> $GITHUB_OUTPUT
           else
-            VERSION=$(node -p "require('./apps/desktop/package.json').version")
+            VERSION=$(node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('./apps/desktop/package.json', 'utf8')); console.log(pkg.version);")
             echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
           fi
 

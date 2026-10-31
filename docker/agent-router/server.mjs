@@ -11,6 +11,7 @@
 import http from 'http';
 
 const PORT = parseInt(process.env.PORT || '8002', 10);
+const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
 
 function applyCors(req, res) {
   const origin = req.headers.origin;
@@ -22,7 +23,6 @@ function applyCors(req, res) {
         host === 'localhost' ||
         host === '127.0.0.1' ||
         host === '::1' ||
-        host.endsWith('.local') ||
         u.protocol === 'app:' ||
         u.protocol === 'vscode-webview:'
       ) {
@@ -35,53 +35,85 @@ function applyCors(req, res) {
   }
 }
 
-const server = http.createServer(async (req, res) => {
-  applyCors(req, res);
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  const url = new URL(req.url, `http://${req.headers.host}`);
-
-  if (url.pathname === '/health' || url.pathname === '/healthz') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'agent-router', port: PORT }));
-    return;
-  }
-
-  if (url.pathname === '/v1/models' || url.pathname === '/models') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      object: 'list',
-      data: [
-        { id: 'agent-router-balanced', object: 'model', owned_by: 'agent-router' },
-        { id: 'agent-router-speed', object: 'model', owned_by: 'agent-router' },
-        { id: 'agent-router-reasoning', object: 'model', owned_by: 'agent-router' }
-      ]
-    }));
-    return;
-  }
-
-  if (url.pathname === '/v1/routes') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      preference: 'balanced',
-      agents: [
-        { id: 'antigravity-1', name: 'Google Antigravity', capability: 'general', status: 'ready' },
-        { id: 'codex-1', name: 'OpenAI Codex', capability: 'coding', status: 'ready' },
-        { id: 'claude-1', name: 'Claude Code', capability: 'full-stack', status: 'ready' }
-      ]
-    }));
-    return;
-  }
-
-  if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
+function readBody(req) {
+  return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    applyCors(req, res);
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    let url;
+    try {
+      url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid URL' }));
+      return;
+    }
+
+    if (url.pathname === '/health' || url.pathname === '/healthz') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', service: 'agent-router', port: PORT }));
+      return;
+    }
+
+    if (url.pathname === '/v1/models' || url.pathname === '/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'agent-router-balanced', object: 'model', owned_by: 'agent-router' },
+          { id: 'agent-router-speed', object: 'model', owned_by: 'agent-router' },
+          { id: 'agent-router-reasoning', object: 'model', owned_by: 'agent-router' }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === '/v1/routes') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        preference: 'balanced',
+        agents: [
+          { id: 'antigravity-1', name: 'Google Antigravity', capability: 'general', status: 'ready' },
+          { id: 'codex-1', name: 'OpenAI Codex', capability: 'coding', status: 'ready' },
+          { id: 'claude-1', name: 'Claude Code', capability: 'full-stack', status: 'ready' }
+        ]
+      }));
+      return;
+    }
+
+    if ((url.pathname === '/v1/chat/completions' || url.pathname === '/chat/completions') && req.method === 'POST') {
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (err) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Payload too large (limit 5MB)' }));
+        return;
+      }
+
       try {
         const payload = JSON.parse(body || '{}');
         const model = payload.model || 'agent-router-balanced';
@@ -126,12 +158,17 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
-    });
-    return;
-  }
+      return;
+    }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Endpoint not found' }));
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Endpoint not found' }));
+  } catch (err) {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    }
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
