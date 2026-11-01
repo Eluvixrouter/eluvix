@@ -9,6 +9,13 @@ import {
   generateCrsVerificationScript,
   type CrsOverlayConfig
 } from '@eluvix/router-core/neuro-symbolic-crs';
+import {
+  generateVectorCraftSetupScript,
+  toHarnessMcpServerConfig,
+  resolveVectorCraftAutoApproveTools,
+  buildVectorCraftCliArgs,
+  type VectorCraftMcpConfig
+} from '@eluvix/router-core/vectorcraft-mcp';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -24,6 +31,7 @@ export interface CompilationResult {
   disaggregatedSetup: string;
   confidentialSetup?: string;
   crsSetup?: string;
+  vectorcraftSetup?: string;
   rawRouterConfig: any;
 }
 
@@ -48,6 +56,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
   const confidentialEnclaveNodes = nodes.filter(n => n.type === 'confidentialEnclaveNode');
   const crsNodes = nodes.filter(n => n.type === 'crsNode');
+  const vectorcraftNodes = nodes.filter(n => n.type === 'vectorcraftNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -81,7 +90,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
 
   // 6. Extract Agent Gateway Configurations
   const agentGateways = nodes.filter(n => n.type === 'agentGatewayNode');
-  const agentGatewayConfig = generateAgentGatewayJson(agentGateways, mcpTools, edges);
+  const agentGatewayConfig = generateAgentGatewayJson(agentGateways, mcpTools, edges, vectorcraftNodes);
 
   // 7. Extract Observability Configurations
   const observabilityNodes = nodes.filter(n => n.type === 'observabilityNode');
@@ -90,7 +99,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   // 8. Extract Autonomous Agent Configurations (AGY, Codex, Claude Code)
   const antigravityConfig = generateAntigravitySetup(antigravityNodes, edges);
   const codexConfig = generateCodexSetup(codexNodes, edges);
-  const claudeCodeConfig = generateClaudeCodeSetup(claudeCodeNodes, edges);
+  const claudeCodeConfig = generateClaudeCodeSetup(claudeCodeNodes, edges, vectorcraftNodes);
 
   // 9. Generate Native Eluvix JSON Configuration
   const rawRouterConfig = generateEluvixConfig(
@@ -114,7 +123,10 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     consensusNodes,
     fallbackChainNodes,
     confidentialEnclaveNodes,
-    crsNodes
+    crsNodes,
+    vectorcraftNodes,
+    mcpTools,
+    agentGateways
   );
 
   return {
@@ -131,6 +143,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     disaggregatedSetup: generateDisaggregatedLaunchScripts(vllmNodes, sglangNodes),
     confidentialSetup: generateConfidentialAttestationSetup(confidentialEnclaveNodes, localEngineNodes),
     crsSetup: generateCrsSetup(crsNodes, localEngineNodes),
+    vectorcraftSetup: generateVectorCraftSetup(vectorcraftNodes, localEngineNodes),
     rawRouterConfig
   };
 }
@@ -156,7 +169,10 @@ function generateEluvixConfig(
   consensusNodes: Node[] = [],
   fallbackChainNodes: Node[] = [],
   confidentialEnclaveNodes: Node[] = [],
-  crsNodes: Node[] = []
+  crsNodes: Node[] = [],
+  vectorcraftNodes: Node[] = [],
+  mcpTools: Node[] = [],
+  agentGateways: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -231,6 +247,76 @@ function generateEluvixConfig(
         stallThresholdSeconds: Number(nodeCrs?.stallThresholdSeconds ?? crsNodeData.stallThresholdSeconds ?? 300),
         defaultBitWidth: (Number(nodeCrs?.defaultBitWidth ?? crsNodeData.defaultBitWidth ?? 16) as 8 | 16 | 32 | 64)
       };
+    }
+    return undefined;
+  };
+
+  const normalizeVcNodeData = (vcData: Record<string, any>): VectorCraftMcpConfig => {
+    const readRoots = Array.isArray(vcData.readRoots)
+      ? vcData.readRoots.map((r: any) => String(r).trim()).filter(Boolean)
+      : vcData.readRoot
+        ? [String(vcData.readRoot).trim()].filter(Boolean)
+        : [];
+    const writeRoots = Array.isArray(vcData.writeRoots)
+      ? vcData.writeRoots.map((w: any) => String(w).trim()).filter(Boolean)
+      : vcData.writeRoot
+        ? [String(vcData.writeRoot).trim()].filter(Boolean)
+        : [];
+    return {
+      enabled: true,
+      cliCommand: String(vcData.cliCommand || vcData.cliBinary || 'vectorcraft-cli'),
+      backendMode: (vcData.backendMode || vcData.mode || 'auto') as any,
+      controlAddress: String(vcData.controlAddress || vcData.connectAddress || '127.0.0.1:7979'),
+      defaultPromptWorkflow: (vcData.defaultPromptWorkflow || vcData.promptPreset || 'poster') as any,
+      autoApproveTier: (vcData.autoApproveTier || 'canvas-draw') as any,
+      defaultExportFormat: (vcData.defaultExportFormat || 'svg') as any,
+      ...(readRoots.length > 0 ? { readRoots } : {}),
+      ...(writeRoots.length > 0 ? { writeRoots } : {})
+    };
+  };
+
+  const primaryVcNode = vectorcraftNodes[0];
+  const primaryVcConfig = primaryVcNode
+    ? normalizeVcNodeData((primaryVcNode.data || {}) as Record<string, any>)
+    : undefined;
+
+  const buildVectorCraftCfgForNode = (node: Node): VectorCraftMcpConfig | undefined => {
+    const nodeVc = (node.data as any)?.vectorcraft;
+    if (nodeVc?.enabled) {
+      return normalizeVcNodeData(nodeVc);
+    }
+    const matchingVcNode = vectorcraftNodes.find(vc => {
+      const direct = edges.some(
+        e => (e.source === vc.id && e.target === node.id) || (e.target === vc.id && e.source === node.id)
+      );
+      if (direct) return true;
+      const viaSwitchyard =
+        edges.some(
+          e =>
+            (e.source === vc.id && switchyardNodes.some(s => s.id === e.target)) ||
+            (e.target === vc.id && switchyardNodes.some(s => s.id === e.source))
+        ) &&
+        edges.some(
+          e =>
+            (switchyardNodes.some(s => s.id === e.source) && e.target === node.id) ||
+            (switchyardNodes.some(s => s.id === e.target) && e.source === node.id)
+        );
+      if (viaSwitchyard) return true;
+      const viaGateway =
+        edges.some(
+          e =>
+            (e.source === vc.id && agentGateways.some(g => g.id === e.target)) ||
+            (e.target === vc.id && agentGateways.some(g => g.id === e.source))
+        ) &&
+        edges.some(
+          e =>
+            (agentGateways.some(g => g.id === e.source) && e.target === node.id) ||
+            (agentGateways.some(g => g.id === e.target) && e.source === node.id)
+        );
+      return viaGateway;
+    });
+    if (matchingVcNode) {
+      return normalizeVcNodeData((matchingVcNode.data || {}) as Record<string, any>);
     }
     return undefined;
   };
@@ -315,6 +401,7 @@ function generateEluvixConfig(
     const fabricRaw = (node.data as any)?.fabric;
     const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
     const crsCfg = buildCrsCfgForNode(node);
+    const vcCfg = buildVectorCraftCfgForNode(node);
 
     upstreams.push({
       id: String(node.id),
@@ -335,7 +422,8 @@ function generateEluvixConfig(
       ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
       ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
       ...(fabricConfig ? { fabric: fabricConfig } : {}),
-      ...(crsCfg ? { crs: crsCfg } : {})
+      ...(crsCfg ? { crs: crsCfg } : {}),
+      ...(vcCfg ? { vectorcraft: vcCfg } : {})
     });
   });
 
@@ -387,6 +475,7 @@ function generateEluvixConfig(
     ]));
 
     const agyCrs = buildCrsCfgForNode(node);
+    const agyVc = buildVectorCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Antigravity Agent (${modelId})`,
@@ -400,6 +489,7 @@ function generateEluvixConfig(
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(agyCrs ? { crs: agyCrs } : {}),
+      ...(agyVc ? { vectorcraft: agyVc } : {}),
       antigravity: {
         model: modelId,
         effort: node.data?.effort || 'auto',
@@ -428,6 +518,7 @@ function generateEluvixConfig(
     };
 
     const codexCrs = buildCrsCfgForNode(node);
+    const codexVc = buildVectorCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `OpenAI Codex (${modelId})`,
@@ -441,6 +532,7 @@ function generateEluvixConfig(
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(codexCrs ? { crs: codexCrs } : {}),
+      ...(codexVc ? { vectorcraft: codexVc } : {}),
       codex: {
         model: modelId,
         reasoningEffort: node.data?.reasoningEffort || 'medium',
@@ -468,6 +560,7 @@ function generateEluvixConfig(
     };
 
     const claudeCodeCrs = buildCrsCfgForNode(node);
+    const claudeCodeVc = buildVectorCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Claude Code Agent (${modelId})`,
@@ -481,6 +574,7 @@ function generateEluvixConfig(
       maxComplexityScore: capabilityCap(node),
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(claudeCodeCrs ? { crs: claudeCodeCrs } : {}),
+      ...(claudeCodeVc ? { vectorcraft: claudeCodeVc } : {}),
       claudeCode: {
         model: modelId,
         permissionMode: node.data?.permissionMode || 'accept-non-destructive',
@@ -654,6 +748,47 @@ function generateEluvixConfig(
       : primarySandbox;
 
     const harnessCrs = buildCrsCfgForNode(node);
+    const harnessVc = buildVectorCraftCfgForNode(node);
+
+    // Discover MCP tools connected directly to this harness or via a connected AgentGateway
+    const connectedMcpToolNodes = mcpTools.filter(tool => {
+      const direct = edges.some(
+        e => (e.source === tool.id && e.target === node.id) || (e.target === tool.id && e.source === node.id)
+      );
+      if (direct) return true;
+      const viaGateway =
+        edges.some(
+          e =>
+            (e.source === tool.id && agentGateways.some(g => g.id === e.target)) ||
+            (e.target === tool.id && agentGateways.some(g => g.id === e.source))
+        ) &&
+        edges.some(
+          e =>
+            (agentGateways.some(g => g.id === e.source) && e.target === node.id) ||
+            (agentGateways.some(g => g.id === e.target) && e.source === node.id)
+        );
+      return viaGateway;
+    });
+
+    const mcpServers: any[] = [];
+    for (const tool of connectedMcpToolNodes) {
+      const endpoint = String(tool.data?.mcpEndpoint || 'http://localhost:8003/mcp');
+      mcpServers.push({
+        name: String(tool.data?.toolName || tool.id),
+        endpoint,
+        transport: endpoint.startsWith('stdio://') ? 'stdio' : 'http'
+      });
+    }
+    if (harnessVc) {
+      mcpServers.push(toHarnessMcpServerConfig(harnessVc));
+    }
+
+    const baseApproveTools = Array.isArray(node.data?.autoApproveTools)
+      ? node.data.autoApproveTools.map((t: any) => String(t))
+      : [];
+    const vcApproveTools = harnessVc ? resolveVectorCraftAutoApproveTools(harnessVc) : [];
+    const mergedApproveTools = Array.from(new Set([...baseApproveTools, ...vcApproveTools]));
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || `Agent Harness (${kind})`),
@@ -666,6 +801,7 @@ function generateEluvixConfig(
       costPer1kTokens: tierInfo.costPer1kTokens,
       maxComplexityScore: capabilityCap(node),
       ...(harnessCrs ? { crs: harnessCrs } : {}),
+      ...(harnessVc ? { vectorcraft: harnessVc } : {}),
       harness: {
         kind,
         agentId,
@@ -688,9 +824,10 @@ function generateEluvixConfig(
           : {}),
         // M-4: explicit per-harness tool allowlist for auto-approval.
         // Absent/empty means nothing is auto-approved by name.
-        ...(Array.isArray(node.data?.autoApproveTools)
-          ? { autoApproveTools: node.data.autoApproveTools.map((t: any) => String(t)) }
+        ...(mergedApproveTools.length > 0
+          ? { autoApproveTools: mergedApproveTools }
           : {}),
+        ...(mcpServers.length > 0 ? { mcpServers } : {}),
         ...(node.data?.cwd ? { cwd: String(node.data.cwd) } : {}),
         ...(typeof node.data?.embedded === 'boolean' ? { embedded: node.data.embedded } : {}),
         ...(typeof node.data?.forked === 'boolean' ? { forked: node.data.forked } : {}),
@@ -945,6 +1082,7 @@ function generateEluvixConfig(
     ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
     ...(consensusGroups.length > 0 ? { consensusGroups } : {}),
     ...(fallbackChains.length > 0 ? { fallbackChains } : {}),
+    ...(primaryVcConfig ? { vectorcraft: primaryVcConfig } : {}),
     promptGuard: {
       enabled: semanticGuards.length > 0,
       threshold: sgNode ? Number(sgData.threshold ?? 0.85) : 0.85,
@@ -1429,22 +1567,50 @@ function generatePrivacyGuardSetup(nodes: Node[]): string {
   return setup;
 }
 
-function generateAgentGatewayJson(nodes: Node[], mcpTools: Node[], edges: Edge[]): string {
+function generateAgentGatewayJson(
+  nodes: Node[],
+  mcpTools: Node[],
+  edges: Edge[],
+  vectorcraftNodes: Node[] = []
+): string {
   if (nodes.length === 0) return '{}';
 
   const gateways = nodes.map(node => {
     const data = (node.data || {}) as Record<string, any>;
     // Find MCP tools connected to this gateway
-    const toolEdges = edges.filter(te => te.target === node.id);
-    const gatewayTools = toolEdges.map(te => {
-      const tool = mcpTools.find(t => t.id === te.source);
-      return tool ? {
-        name: tool.data?.toolName,
-        endpoint: tool.data?.mcpEndpoint,
-        executionMode: tool.data?.executionMode || 'auto',
-        timeoutMs: tool.data?.timeoutMs ?? 15000
-      } : null;
-    }).filter(Boolean);
+    const toolEdges = edges.filter(te => te.target === node.id || te.source === node.id);
+    const gatewayTools: any[] = toolEdges
+      .map(te => {
+        const otherId = te.source === node.id ? te.target : te.source;
+        const tool = mcpTools.find(t => t.id === otherId);
+        if (tool) {
+          return {
+            name: tool.data?.toolName,
+            endpoint: tool.data?.mcpEndpoint,
+            executionMode: tool.data?.executionMode || 'auto',
+            timeoutMs: tool.data?.timeoutMs ?? 15000
+          };
+        }
+        const vc = vectorcraftNodes.find(v => v.id === otherId);
+        if (vc) {
+          const vcData = (vc.data || {}) as Record<string, any>;
+          const built = buildVectorCraftCliArgs({
+            cliCommand: String(vcData.cliCommand || 'vectorcraft-cli'),
+            backendMode: (vcData.backendMode || 'auto') as any,
+            controlAddress: String(vcData.controlAddress || '127.0.0.1:7979'),
+            readRoots: Array.isArray(vcData.readRoots) ? vcData.readRoots.map((r: any) => String(r)) : undefined,
+            writeRoots: Array.isArray(vcData.writeRoots) ? vcData.writeRoots.map((w: any) => String(w)) : undefined
+          });
+          return {
+            name: 'vectorcraft',
+            endpoint: `stdio://${built.cliCommand} ${built.mcpArgs.join(' ')}`,
+            executionMode: 'auto',
+            timeoutMs: 30000
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
 
     if (data.enableNativeTools !== false) {
       gatewayTools.push({ name: 'native_tools', endpoint: 'local:///api/v1/tools', executionMode: 'auto', timeoutMs: 10000 });
@@ -1580,13 +1746,31 @@ function generateCodexSetup(nodes: Node[], edges: Edge[]): string {
   return setup;
 }
 
-function generateClaudeCodeSetup(nodes: Node[], edges: Edge[]): string {
+function generateClaudeCodeSetup(
+  nodes: Node[],
+  edges: Edge[],
+  vectorcraftNodes: Node[] = []
+): string {
   if (nodes.length === 0) return '';
   
   let setup = '# ==============================================================================\n';
   setup += '# Claude Code CLI & Agent Orchestration Setup\n';
   setup += '# Generated by Eluvix Visual Routing Editor\n';
   setup += '# ==============================================================================\n\n';
+
+  if (vectorcraftNodes.length > 0) {
+    const vc = vectorcraftNodes[0];
+    const vcData = (vc.data || {}) as Record<string, any>;
+    const built = buildVectorCraftCliArgs({
+      cliCommand: String(vcData.cliCommand || 'vectorcraft-cli'),
+      backendMode: (vcData.backendMode || 'auto') as any,
+      controlAddress: String(vcData.controlAddress || '127.0.0.1:7979'),
+      readRoots: Array.isArray(vcData.readRoots) ? vcData.readRoots.map((r: any) => String(r)) : undefined,
+      writeRoots: Array.isArray(vcData.writeRoots) ? vcData.writeRoots.map((w: any) => String(w)) : undefined
+    });
+    setup += `# VectorCraft Art MCP Server Registration:\n`;
+    setup += `# $ claude mcp add vectorcraft -- ${built.cliCommand} ${built.mcpArgs.join(' ')}\n\n`;
+  }
 
   nodes.forEach(node => {
     const model = node.data?.model === 'custom'
@@ -1902,6 +2086,43 @@ function generateCrsSetup(
     targetSink: String(cData.targetSink || eCrs.targetSink || 'memcpy'),
     stallThresholdSeconds: Number(cData.stallThresholdSeconds ?? eCrs.stallThresholdSeconds ?? 300),
     defaultBitWidth: (Number(cData.defaultBitWidth ?? eCrs.defaultBitWidth ?? 16) as 8 | 16 | 32 | 64)
+  });
+}
+
+function generateVectorCraftSetup(
+  vectorcraftNodes: Node[],
+  localEngines: Node[]
+): string {
+  const vcNode = vectorcraftNodes[0];
+  const vcEngines = localEngines.filter((n) => (n.data as any)?.vectorcraft?.enabled);
+
+  if (!vcNode && vcEngines.length === 0) {
+    return '# No VectorCraft Art MCP node configured on canvas.';
+  }
+
+  const vData = (vcNode?.data || (vcEngines[0]?.data as any)?.vectorcraft || {}) as Record<string, any>;
+  const nodeId = String(vcNode?.id || vcEngines[0]?.id || 'vectorcraft-mcp');
+  const readRoots = Array.isArray(vData.readRoots)
+    ? vData.readRoots.map((r: any) => String(r).trim()).filter(Boolean)
+    : vData.readRoot
+      ? [String(vData.readRoot).trim()].filter(Boolean)
+      : [];
+  const writeRoots = Array.isArray(vData.writeRoots)
+    ? vData.writeRoots.map((w: any) => String(w).trim()).filter(Boolean)
+    : vData.writeRoot
+      ? [String(vData.writeRoot).trim()].filter(Boolean)
+      : [];
+
+  return generateVectorCraftSetupScript(nodeId, {
+    enabled: true,
+    cliCommand: String(vData.cliCommand || 'vectorcraft-cli'),
+    backendMode: (vData.backendMode || 'auto') as any,
+    controlAddress: String(vData.controlAddress || '127.0.0.1:7979'),
+    defaultPromptWorkflow: (vData.defaultPromptWorkflow || 'poster') as any,
+    autoApproveTier: (vData.autoApproveTier || 'canvas-draw') as any,
+    defaultExportFormat: (vData.defaultExportFormat || 'svg') as any,
+    readRoots,
+    writeRoots
   });
 }
 

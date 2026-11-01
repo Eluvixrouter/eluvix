@@ -58,6 +58,42 @@ export default function McpToolNode({ id, data }: { id: string; data: any }) {
       
       <div className="text-xs text-gray-300 space-y-2.5">
         <div>
+          <label className="block text-[10px] font-semibold text-gray-400 mb-1">Quick Server Preset</label>
+          <select
+            className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-yellow-500 rounded p-1.5 text-white text-[11px] outline-none transition cursor-pointer"
+            value={
+              mcpEndpoint.startsWith('stdio://vectorcraft-cli mcp')
+                ? 'vectorcraft'
+                : mcpEndpoint === 'http://localhost:8003/mcp'
+                  ? 'filesystem'
+                  : 'custom'
+            }
+            onChange={(e) => {
+              const preset = e.target.value;
+              if (preset === 'vectorcraft') {
+                setToolName('vectorcraft');
+                setMcpEndpoint('stdio://vectorcraft-cli mcp --headless');
+                syncData({
+                  toolName: 'vectorcraft',
+                  mcpEndpoint: 'stdio://vectorcraft-cli mcp --headless'
+                });
+              } else if (preset === 'filesystem') {
+                setToolName('Filesystem');
+                setMcpEndpoint('http://localhost:8003/mcp');
+                syncData({
+                  toolName: 'Filesystem',
+                  mcpEndpoint: 'http://localhost:8003/mcp'
+                });
+              }
+            }}
+          >
+            <option value="filesystem">📁 Filesystem MCP (HTTP)</option>
+            <option value="vectorcraft">🎨 VectorCraft Art MCP (stdio)</option>
+            <option value="custom">⚙️ Custom MCP Server</option>
+          </select>
+        </div>
+
+        <div>
           <label className="block text-[10px] font-semibold text-gray-400 mb-1">Tool Identifier</label>
           <input
             className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-yellow-500 rounded p-1.5 text-white font-mono text-[11px] outline-none transition"

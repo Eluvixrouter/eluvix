@@ -6,7 +6,11 @@ import { resolveCliExecutable, ACP_CLI_BINARIES } from '../cli-exec.js';
 import { buildHarnessPrompt } from './prompt.js';
 import { buildChildEnv } from './env.js';
 import { isToolAutoApproved } from './approval.js';
-import type { HarnessApprovalPolicy } from './types.js';
+import type { HarnessApprovalPolicy, HarnessMcpServerConfig } from './types.js';
+import {
+  toHarnessMcpServerConfig,
+  resolveVectorCraftAutoApproveTools
+} from '../vectorcraft-mcp.js';
 
 /** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
 const ACP_KILL_GRACE_MS = 2000;
@@ -57,6 +61,16 @@ export async function forwardAcpHarness(
 
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
+  const sessionMcpServers: HarnessMcpServerConfig[] = Array.isArray(harnessCfg.mcpServers)
+    ? [...harnessCfg.mcpServers]
+    : [];
+  if (upstream.vectorcraft?.enabled && !sessionMcpServers.some(s => s.name === 'vectorcraft')) {
+    sessionMcpServers.push(toHarnessMcpServerConfig(upstream.vectorcraft));
+  }
+  const effectiveAutoApproveTools: string[] = [
+    ...(Array.isArray(harnessCfg.autoApproveTools) ? harnessCfg.autoApproveTools : []),
+    ...(upstream.vectorcraft?.enabled ? resolveVectorCraftAutoApproveTools(upstream.vectorcraft) : [])
+  ];
   // ACP sessions are spawned per request, so the full conversation —
   // system context (incl. the injected <eluvix-memory> block) plus the
   // history transcript — is folded into the prompt.
@@ -198,7 +212,7 @@ export async function forwardAcpHarness(
               jsonrpc: '2.0',
               id: 2,
               method: 'session/new',
-              params: { cwd, mcpServers: [] }
+              params: { cwd, mcpServers: sessionMcpServers }
             });
             continue;
           }
@@ -258,7 +272,7 @@ export async function forwardAcpHarness(
             const shouldApprove = isToolAutoApproved(
               approvalPolicy,
               toolIdentifiers,
-              harnessCfg.autoApproveTools
+              effectiveAutoApproveTools
             );
             const selectedOptionId = shouldApprove
               ? allowOpt?.optionId || 'allow'

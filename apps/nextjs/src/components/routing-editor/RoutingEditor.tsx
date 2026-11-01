@@ -47,6 +47,7 @@ import ConsensusNode from './nodes/ConsensusNode';
 import FallbackChainNode from './nodes/FallbackChainNode';
 import ConfidentialEnclaveNode from './nodes/ConfidentialEnclaveNode';
 import NeuroSymbolicCrsNode from './nodes/NeuroSymbolicCrsNode';
+import VectorCraftNode from './nodes/VectorCraftNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
@@ -254,6 +255,17 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     mcpEndpoint: 'http://localhost:3588/sse',
     executionMode: 'auto',
     timeoutMs: 15000
+  },
+  vectorcraftNode: {
+    label: 'VectorCraft Art MCP',
+    backendMode: 'auto',
+    cliCommand: 'vectorcraft-cli',
+    controlAddress: '127.0.0.1:7979',
+    defaultPromptWorkflow: 'poster',
+    autoApproveTier: 'canvas-draw',
+    defaultExportFormat: 'svg',
+    readRoots: [],
+    writeRoots: []
   },
   observabilityNode: {
     label: 'Observability Sink',
@@ -579,6 +591,7 @@ const nodeTypes = {
   fallbackChainNode: FallbackChainNode,
   confidentialEnclaveNode: ConfidentialEnclaveNode,
   crsNode: NeuroSymbolicCrsNode,
+  vectorcraftNode: VectorCraftNode,
 };
 
 let id = 0;
@@ -1097,14 +1110,15 @@ export default function RoutingEditor() {
         confidentialEnclaveNode: ['switchyardNode', 'crsNode', ...allUpstreamTargets, 'observabilityNode'],
         crsNode: ['switchyardNode', 'confidentialEnclaveNode', ...allUpstreamTargets, 'observabilityNode'],
         taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'switchyardNode', ...allUpstreamTargets],
-        agentNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        antigravityNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        codexNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        claudeCodeNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        harnessNode: ['agentGatewayNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        agentNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        antigravityNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        codexNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        claudeCodeNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        harnessNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         sandboxNode: ['harnessNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'agentNode', 'observabilityNode'],
-        agentGatewayNode: ['switchyardNode', 'sandboxNode', ...allUpstreamTargets],
-        mcpToolNode: ['agentGatewayNode'],
+        agentGatewayNode: ['switchyardNode', 'sandboxNode', 'vectorcraftNode', ...allUpstreamTargets],
+        mcpToolNode: ['agentGatewayNode', 'harnessNode', 'claudeCodeNode', 'codexNode', 'antigravityNode', 'agentNode'],
+        vectorcraftNode: ['agentGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         modelGatewayNode: ['switchyardNode', 'observabilityNode'],
         switchyardNode: [...allUpstreamTargets, 'observabilityNode'],
         consensusNode: [...allUpstreamTargets, 'observabilityNode'],
@@ -1809,6 +1823,23 @@ export default function RoutingEditor() {
                 </div>
               </div>
               <span className="text-[10px] text-slate-400 group-hover:text-yellow-400 font-mono">+ Add</span>
+            </div>
+
+            {/* VectorCraft Art MCP Node */}
+            <div
+              className="p-2.5 mb-2 border border-pink-500/80 bg-pink-950/25 rounded-lg cursor-grab hover:bg-pink-900/35 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'vectorcraftNode')}
+              onClick={() => addNode('vectorcraftNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🎨</span>
+                <div>
+                  <div className="font-semibold text-xs text-pink-300 group-hover:text-pink-200">VectorCraft Art MCP</div>
+                  <div className="text-[10px] text-slate-400 font-mono">33 Tools • SVG/PDF/AI Studio</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-pink-400 font-mono">+ Add</span>
             </div>
 
             {/* Model Gateway */}
@@ -4569,6 +4600,18 @@ export default function RoutingEditor() {
                     </h4>
                     <pre className="bg-gray-950 p-4 rounded text-sm text-fuchsia-200 overflow-x-auto border border-fuchsia-900/60 font-mono text-xs whitespace-pre-wrap">
                       {compiledConfigs.crsSetup}
+                    </pre>
+                  </div>
+                )}
+
+                {compiledConfigs.vectorcraftSetup && (
+                  <div>
+                    <h4 className="text-pink-400 font-bold mb-2 flex items-center justify-between">
+                      <span>VectorCraft Art MCP Server Setup &amp; Batch Smoke Test (vectorcraft-mcp-setup.sh)</span>
+                      <span className="text-[10px] bg-pink-500/20 text-pink-300 px-2 py-0.5 rounded font-mono">JSON-RPC 2.0 MCP</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-pink-200 overflow-x-auto border border-pink-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.vectorcraftSetup}
                     </pre>
                   </div>
                 )}

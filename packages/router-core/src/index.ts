@@ -7,6 +7,12 @@ import {
   type CrsPolicy,
   analyzePromptForCrsTriage
 } from './neuro-symbolic-crs.js';
+import {
+  type VectorCraftMcpConfig,
+  buildVectorCraftSystemInstructions,
+  buildVectorCraftCliArgs,
+  isVectorArtPrompt
+} from './vectorcraft-mcp.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -136,6 +142,7 @@ export interface RouterConfig {
   sandbox?: SandboxConfig;
   consensusGroups?: ConsensusGroupConfig[];
   fallbackChains?: FallbackChainConfig[];
+  vectorcraft?: VectorCraftMcpConfig;
 }
 
 export * from './paths.js';
@@ -156,6 +163,7 @@ export * from './tee-attestation.js';
 export * from './microscaling-quantization.js';
 export * from './clos-fabric-routing.js';
 export * from './neuro-symbolic-crs.js';
+export * from './vectorcraft-mcp.js';
 export * from './shell-utils.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -321,6 +329,7 @@ export interface UpstreamConfig {
   quantization?: QuantizationConfig;
   fabric?: FabricOverlayConfig;
   crs?: CrsOverlayConfig;
+  vectorcraft?: VectorCraftMcpConfig;
 }
 
 /**
@@ -1704,6 +1713,37 @@ export class Eluvix {
       }
     }
 
+    // 0e1b. VectorCraft MCP Context & Workflow Prompt Enrichment
+    const upstreamVcConfig = targetUpstreams.find(u => u.vectorcraft?.enabled)?.vectorcraft;
+    const activeVcConfig = upstreamVcConfig || (this.config.vectorcraft?.enabled ? this.config.vectorcraft : undefined);
+    let vectorcraftActive = false;
+    if (
+      activeVcConfig &&
+      activeVcConfig.enabled !== false &&
+      Array.isArray(effectiveRequest.messages) &&
+      effectiveRequest.messages.length > 0
+    ) {
+      const combinedUserText = effectiveRequest.messages
+        .filter(m => m.role !== 'system')
+        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n');
+      const activePreset = activeVcConfig.defaultPromptWorkflow || activeVcConfig.promptPreset;
+      if (
+        upstreamVcConfig ||
+        (activePreset && activePreset !== 'none') ||
+        isVectorArtPrompt(combinedUserText)
+      ) {
+        vectorcraftActive = true;
+        if (activeVcConfig.injectSystemInstructions !== false) {
+          const vcSystemBlock = buildVectorCraftSystemInstructions(activeVcConfig);
+          effectiveRequest = {
+            ...effectiveRequest,
+            messages: injectMemoryIntoMessages(effectiveRequest.messages, vcSystemBlock)
+          };
+        }
+      }
+    }
+
     // 0e2. Semantic / Response Cache Check. The key ALWAYS carries the
     // identity partition (scope.userId — proven identity only; unscoped
     // calls share the 'default' partition: per decision D4 the cache is
@@ -2329,6 +2369,23 @@ export class Eluvix {
                     `uint${crsTriageResult.overflowCheck.bitWidth}:${crsTriageResult.overflowCheck.wrappedHex}`
                   );
                 }
+              }
+            }
+            const effectiveVc = upstream.vectorcraft?.enabled ? upstream.vectorcraft : activeVcConfig;
+            if (effectiveVc && (upstream.vectorcraft?.enabled || vectorcraftActive)) {
+              const vcCliSpec = buildVectorCraftCliArgs(effectiveVc);
+              newResponse.headers.set('x-eluvix-vectorcraft-mode', vcCliSpec.effectiveMode);
+              newResponse.headers.set(
+                'x-eluvix-vectorcraft-protocol',
+                effectiveVc.protocolVersion || '2025-06-18'
+              );
+              newResponse.headers.set(
+                'x-eluvix-vectorcraft-tools',
+                vcCliSpec.effectiveMode === 'headless' ? '27' : '33'
+              );
+              const effPreset = effectiveVc.defaultPromptWorkflow || effectiveVc.promptPreset;
+              if (effPreset && effPreset !== 'none') {
+                newResponse.headers.set('x-eluvix-vectorcraft-preset', effPreset);
               }
             }
             const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);

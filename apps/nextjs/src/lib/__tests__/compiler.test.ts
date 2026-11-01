@@ -356,5 +356,88 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(result.crsSetup).toContain('0xdffffc0000000000');
       expect(result.crsSetup).toContain('-fsanitize=address,undefined');
     });
+
+    it('compiles VectorCraft Art MCP node into upstream vectorcraft config, harness mcpServers, and setup script', () => {
+      const nodes: Node[] = [
+        {
+          id: 'vc-1',
+          type: 'vectorcraftNode',
+          position: { x: 0, y: 0 },
+          data: {
+            backendMode: 'headless',
+            cliCommand: 'vectorcraft-cli',
+            controlAddress: '127.0.0.1:7979',
+            defaultPromptWorkflow: 'icon-set',
+            autoApproveTier: 'canvas-draw',
+            defaultExportFormat: 'svg',
+            readRoots: ['/workspace/assets'],
+            writeRoots: ['/workspace/exports']
+          }
+        } as Node,
+        {
+          id: 'gw-1',
+          type: 'agentGatewayNode',
+          position: { x: 150, y: 0 },
+          data: { accessPolicy: 'restrictive' }
+        } as Node,
+        {
+          id: 'harness-1',
+          type: 'harnessNode',
+          position: { x: 300, y: 0 },
+          data: {
+            label: 'ACP Artist Harness',
+            kind: 'acp',
+            endpoint: 'acp://goose',
+            approvals: 'auto-approve-readonly'
+          }
+        } as Node
+      ];
+      const edges = [
+        { id: 'e-vc-gw', source: 'vc-1', target: 'gw-1' } as any,
+        { id: 'e-gw-harness', source: 'gw-1', target: 'harness-1' } as any
+      ];
+      const result = compileGraph(nodes, edges);
+
+      expect(result.rawRouterConfig.vectorcraft).toEqual({
+        enabled: true,
+        cliCommand: 'vectorcraft-cli',
+        backendMode: 'headless',
+        controlAddress: '127.0.0.1:7979',
+        defaultPromptWorkflow: 'icon-set',
+        autoApproveTier: 'canvas-draw',
+        defaultExportFormat: 'svg',
+        readRoots: ['/workspace/assets'],
+        writeRoots: ['/workspace/exports']
+      });
+
+      const harnessUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(harnessUpstream).toBeTruthy();
+      expect(harnessUpstream.vectorcraft?.enabled).toBe(true);
+      expect(harnessUpstream.harness.mcpServers).toEqual([
+        expect.objectContaining({
+          name: 'vectorcraft',
+          transport: 'stdio',
+          endpoint:
+            'stdio://vectorcraft-cli mcp --headless --automation-read-root /workspace/assets --automation-write-root /workspace/exports'
+        })
+      ]);
+      expect(harnessUpstream.harness.autoApproveTools).toContain('draw_shape');
+      expect(harnessUpstream.harness.autoApproveTools).toContain('command_batch');
+      expect(harnessUpstream.harness.autoApproveTools).not.toContain('ui_screenshot');
+
+      const parsedGw = JSON.parse(result.agentGatewayJson);
+      expect(parsedGw.gateways[0].mcpTools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'vectorcraft',
+            endpoint:
+              'stdio://vectorcraft-cli mcp --headless --automation-read-root /workspace/assets --automation-write-root /workspace/exports'
+          })
+        ])
+      );
+
+      expect(result.vectorcraftSetup).toContain('claude mcp add vectorcraft');
+      expect(result.vectorcraftSetup).toContain('--automation-write-root');
+    });
   });
 });

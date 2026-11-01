@@ -4,6 +4,31 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.0.16 — VectorCraft Art MCP Studio, Stdio JSON-RPC & Generative Vector Tooling *(November 1, 2026)*
+
+### 🎨 VectorCraft Art MCP Integration (`@eluvix/router-core/vectorcraft-mcp`)
+- **Full MCP Protocol v0.19.0 Catalog (`VECTORCRAFT_ALL_TOOLS`)**:
+  - Implements the complete 33-tool VectorCraft MCP server catalog over newline-delimited JSON-RPC 2.0 (`vectorcraft-cli mcp`), supporting protocol version `2025-06-18` (with backwards compatibility for `2025-03-26`, `2024-11-05`, and cache revisions).
+  - Explicit categorization: `VECTORCRAFT_READONLY_TOOLS` (8 tools with `readOnlyHint: true`), `VECTORCRAFT_REMOTE_UI_ONLY_TOOLS` (6 GUI-only tools disabled in headless mode: `inspect_ui`, `ui_inspect`, `type_text`, `answer_dialog`, `open_panel`, `ui_screenshot`), `VECTORCRAFT_CANVAS_DRAW_TOOLS` (24 canvas/batch tools), and full export/file mutations.
+  - Native resource catalog (`vectorcraft://document`, `vectorcraft://document/json`, `vectorcraft://commands`) and 4 URI templates (`vectorcraft://object/{id}`, `vectorcraft://command/{id}`, `vectorcraft://effect/{id}`, `vectorcraft://swatch/{name}`).
+  - Workflow templates (`poster`, `icon-set`, `recolor`, `trace-and-style`, `export-set`).
+- **CLI & Confinement Engine (`buildVectorCraftCliArgs`)**:
+  - Three execution backends: `auto` (tries `127.0.0.1:7979` once on startup, falls back to headless CPU renderer), `remote` (`--connect 127.0.0.1:7979`), and `headless` (`--headless`).
+  - Strict filesystem root confinement: Automatically applies `--automation-read-root` and `--automation-write-root`, enforcing the upstream CLI invariant that confinement on `vectorcraft-cli mcp` implies `--headless`; in `remote` mode, `--connect` is passed to the stdio CLI while roots are formatted into `vectorcraft --control <port>` GUI launch arguments.
+- **Router Context Injection & Telemetry**:
+  - Injects `<eluvix-vectorcraft-mcp>` system instructions during chat completion routing, teaching routed LLMs the `612 x 792 pt` document coordinate space, the `opacityPct` (`0..100%`) scale constraint, and atomic `command_batch` result interpolation (`"$0.id"` / `"$last.id"`).
+  - Emits telemetry headers: `x-eluvix-vectorcraft-mode`, `x-eluvix-vectorcraft-protocol`, `x-eluvix-vectorcraft-tools`, and `x-eluvix-vectorcraft-preset`.
+- **ACP Harness Integration (`acp.ts`)**:
+  - Passes dynamic `mcpServers` in ACP `session/new` handshakes and merges the selected VectorCraft auto-approval tier into `autoApproveTools`.
+
+### 🎛️ Visual Routing Editor Node (`vectorcraftNode`) & Orchestration Compiler
+- Added `VectorCraftNode.tsx` (`🎨 VectorCraft Art MCP`) with controls for Backend Mode (`auto`, `remote`, `headless`), Export Format (`svg`, `pdf`, `ai`, `eps`, `png`, `webp`, `psd`, `vectorcraft`), Workflow Presets, Tool Approval Tiers (`canvas-draw`, `readonly-inspect`, `full-automation`), CLI Binary, Control Port, and Read/Write Confinement Roots.
+- Extended `McpToolNode.tsx` with a Quick Server Preset dropdown to one-click configure VectorCraft Art MCP on generic tool nodes.
+- Updated `compiler.ts` and `RoutingEditor.tsx` to compile `vectorcraftNode` into `rawRouterConfig.vectorcraft`, harness `mcpServers`, `agentGatewayJson`, `claudeCodeConfig` (`claude mcp add vectorcraft -- ...`), and an executable shell setup script `vectorcraft-mcp-setup.sh` with an atomic multi-shape smoke test.
+- Added comprehensive unit tests in `@eluvix/router-core` (`vectorcraft-mcp.test.ts`) and `apps/nextjs` (`compiler.test.ts`).
+
+---
+
 ## v1.0.15 — Neuro-Symbolic CRS Slicing, ASan Shadow Triage & Bit-Vector Verification *(October 31, 2026)*
 
 ### 🧬 Neuro-Symbolic Cyber Reasoning System (`neuro-symbolic-crs.ts`)

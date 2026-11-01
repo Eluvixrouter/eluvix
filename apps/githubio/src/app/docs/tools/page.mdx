@@ -44,6 +44,34 @@ The visual editor provides dedicated MCP Tool nodes:
 
 ---
 
+## VectorCraft Art MCP Node (`vectorcraftNode`)
+
+Eluvix includes a first-class **VectorCraft Art MCP Node** that integrates `vectorcraft-cli mcp` (newline-delimited JSON-RPC 2.0 over `stdio`, protocol `2025-06-18`) into the Visual Routing Editor and `@eluvix/router-core`. Agents and LLMs connected to `vectorcraftNode` can inspect documents, draw geometric primitives and cubic Bézier paths, style fills/strokes/gradients, run boolean Pathfinder operations, trace raster images, and export multi-artboard illustrations to `SVG`, `PDF`, `AI`, `EPS`, `PNG`, `WebP`, `PSD`, or `.vectorcraft`.
+
+### Execution Backend Modes
+- **Auto (`auto`)**: Attempts to connect once on startup to a live VectorCraft desktop session at `127.0.0.1:7979` and automatically falls back to the in-process headless CPU renderer if no GUI is listening.
+- **Remote Desktop GUI (`remote`)**: Passes `--connect 127.0.0.1:7979` to `vectorcraft-cli mcp`, forwarding all 33 tools over the control socket to a running desktop window started with `vectorcraft --control 7979`.
+- **Headless CPU Renderer (`headless`)**: Passes `--headless` to run an in-process document model and CPU renderer with no window or display server required (exposes all 27 non-UI tools; UI-only tools `inspect_ui`, `ui_inspect`, `type_text`, `answer_dialog`, `open_panel`, and `ui_screenshot` are automatically filtered out).
+
+### Filesystem Confinement (`--automation-read-root` & `--automation-write-root`)
+- Operators can restrict `open_file`, `save_file`, `export`, `document.import`, and `document.place` to explicit directory trees via **Read Root** and **Write Root**.
+- Per the upstream VectorCraft MCP specification, passing `--automation-read-root` or `--automation-write-root` to `vectorcraft-cli mcp` implies `--headless` and cannot be combined with `--connect`. When `remote` mode is selected alongside confinement roots, Eluvix's compiler automatically places `--connect <addr>` on `vectorcraft-cli mcp` and emits the `--control <port> --automation-read-root ... --automation-write-root ...` flags for the desktop GUI launch command.
+
+### Built-in MCP Workflow Presets
+- **`poster`**: Lay out a poster from a brief using live shapes, gradients, typography, and live effects, verified with `render_preview` before export.
+- **`icon-set`**: Build a grid of consistent icons as live vector shapes and inspect alignment across the set.
+- **`recolor`**: Recolor selected artwork with explicit colour mappings or `recolor.colors` k-means clustering.
+- **`trace-and-style`**: Vectorize a raster image with Image Trace (`trace.create` + `trace.expand`), then apply live effects and recoloring.
+- **`export-set`**: Export every artboard across multiple vector/raster formats at once and report format fidelity.
+
+### Context Enrichment & Coordinate / Opacity Guardrails
+When `vectorcraftNode` is active on a route, `@eluvix/router-core` injects an `<eluvix-vectorcraft-mcp>` system instruction block and emits `x-eluvix-vectorcraft-mode`, `x-eluvix-vectorcraft-protocol`, `x-eluvix-vectorcraft-tools`, and `x-eluvix-vectorcraft-preset` response headers:
+- **Coordinate System**: Document points (`612 x 792` US Letter default, origin `(0, 0)` at top-left of the first artboard, `y` points downward).
+- **Opacity Scale Rule**: `doc_inspect` reports both `opacity` (`0..1` fraction) and `opacityPct` (`0..100%`). All drawing and mutation tools (`draw_shape`, `draw_path`, `object.setProps`, `transparency.set`) require `opacityPct` (`0..100`).
+- **Atomic Command Batching**: Multi-step illustrations use `command_batch` (`atomic: true`, up to 256 steps) with `"$0.id"` / `"$last.id"` step result interpolation so complex artwork is grouped into a single undo step.
+
+---
+
 ## Native Built-in Tools
 
 Eluvix includes zero-dependency native tools served directly from `/api/v1/tools`:

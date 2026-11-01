@@ -29,6 +29,11 @@
       "types": "./dist/neuro-symbolic-crs.d.ts",
       "import": "./dist/neuro-symbolic-crs.js",
       "default": "./dist/neuro-symbolic-crs.js"
+    },
+    "./vectorcraft-mcp": {
+      "types": "./dist/vectorcraft-mcp.d.ts",
+      "import": "./dist/vectorcraft-mcp.js",
+      "default": "./dist/vectorcraft-mcp.js"
     }
   },
   "type": "module",
