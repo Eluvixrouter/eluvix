@@ -16,6 +16,15 @@ import {
   buildVectorCraftCliArgs,
   type VectorCraftMcpConfig
 } from '@eluvix/router-core/vectorcraft-mcp';
+import {
+  ARTCRAFT_APPS_CATALOG,
+  generateArtCraftSetupScript,
+  toArtCraftHarnessMcpServers,
+  resolveArtCraftAutoApproveTools,
+  buildArtCraftCliArgs,
+  type ArtCraftAppId,
+  type ArtCraftMcpConfig
+} from '@eluvix/router-core/artcraft-mcp';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -32,6 +41,7 @@ export interface CompilationResult {
   confidentialSetup?: string;
   crsSetup?: string;
   vectorcraftSetup?: string;
+  artcraftSetup?: string;
   rawRouterConfig: any;
 }
 
@@ -56,7 +66,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
   const confidentialEnclaveNodes = nodes.filter(n => n.type === 'confidentialEnclaveNode');
   const crsNodes = nodes.filter(n => n.type === 'crsNode');
-  const vectorcraftNodes = nodes.filter(n => n.type === 'vectorcraftNode');
+  const vectorcraftNodes = nodes.filter(n => n.type === 'vectorcraftNode' || n.type === 'artcraftNode');
   
   // 2. Extract Bifrost (ModelGateway) Configurations
   const modelGateways = nodes.filter(n => n.type === 'modelGatewayNode');
@@ -129,6 +139,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     agentGateways
   );
 
+  const vcSetupScript = generateVectorCraftSetup(vectorcraftNodes, localEngineNodes);
+
   return {
     bifrostYaml: bifrostConfig,
     agentRouterJson: agentRouterConfig,
@@ -143,7 +155,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     disaggregatedSetup: generateDisaggregatedLaunchScripts(vllmNodes, sglangNodes),
     confidentialSetup: generateConfidentialAttestationSetup(confidentialEnclaveNodes, localEngineNodes),
     crsSetup: generateCrsSetup(crsNodes, localEngineNodes),
-    vectorcraftSetup: generateVectorCraftSetup(vectorcraftNodes, localEngineNodes),
+    vectorcraftSetup: vcSetupScript,
+    artcraftSetup: vcSetupScript,
     rawRouterConfig
   };
 }
@@ -275,17 +288,84 @@ function generateEluvixConfig(
     };
   };
 
+  const normalizeAcNodeData = (acData: Record<string, any>): ArtCraftMcpConfig => {
+    const appId: ArtCraftAppId =
+      acData.app && ARTCRAFT_APPS_CATALOG[acData.app as ArtCraftAppId]
+        ? (acData.app as ArtCraftAppId)
+        : 'vectorcraft';
+    const spec = ARTCRAFT_APPS_CATALOG[appId];
+    const rawEnabledApps = acData.enabledApps || acData.apps;
+    const enabledApps: ArtCraftAppId[] =
+      Array.isArray(rawEnabledApps) && rawEnabledApps.length > 0
+        ? Array.from(
+            new Set(
+              rawEnabledApps
+                .map((a: any) => String(a) as ArtCraftAppId)
+                .filter(a => Boolean(ARTCRAFT_APPS_CATALOG[a]))
+            )
+          )
+        : [appId];
+    const readRoots = Array.isArray(acData.readRoots)
+      ? acData.readRoots.map((r: any) => String(r).trim()).filter(Boolean)
+      : acData.readRoot
+        ? [String(acData.readRoot).trim()].filter(Boolean)
+        : [];
+    const writeRoots = Array.isArray(acData.writeRoots)
+      ? acData.writeRoots.map((w: any) => String(w).trim()).filter(Boolean)
+      : acData.writeRoot
+        ? [String(acData.writeRoot).trim()].filter(Boolean)
+        : [];
+    const autoTierRaw = String(acData.autoApproveTier || 'workspace-edit');
+    const autoApproveTier =
+      autoTierRaw === 'readonly-inspect'
+        ? 'readonly-inspect'
+        : autoTierRaw === 'full-automation'
+          ? 'full-automation'
+          : 'workspace-edit';
+    return {
+      enabled: true,
+      app: appId,
+      ...(enabledApps.length > 1 || enabledApps[0] !== appId ? { enabledApps } : {}),
+      cliCommand: String(acData.cliCommand || acData.cliBinary || spec.cliBinary),
+      backendMode: (acData.backendMode || acData.mode || 'auto') as any,
+      controlAddress: String(
+        acData.controlAddress ||
+          acData.connectAddress ||
+          `127.0.0.1:${spec.defaultControlPort ?? 7979}`
+      ),
+      ...(acData.defaultPromptWorkflow && acData.defaultPromptWorkflow !== 'none'
+        ? { defaultPromptWorkflow: String(acData.defaultPromptWorkflow) }
+        : {}),
+      autoApproveTier,
+      defaultExportFormat: String(acData.defaultExportFormat || spec.defaultExportFormat),
+      ...(readRoots.length > 0 ? { readRoots } : {}),
+      ...(writeRoots.length > 0 ? { writeRoots } : {})
+    };
+  };
+
+  const isMultiOrNonVectorCraftNode = (vcNode?: Node): boolean => {
+    if (!vcNode) return false;
+    if (vcNode.type === 'artcraftNode') return true;
+    const d = (vcNode.data || {}) as Record<string, any>;
+    if (d.app && d.app !== 'vectorcraft') return true;
+    const list = d.enabledApps || d.apps;
+    if (Array.isArray(list) && (list.length > 1 || (list.length === 1 && list[0] !== 'vectorcraft'))) {
+      return true;
+    }
+    return false;
+  };
+
   const primaryVcNode = vectorcraftNodes[0];
   const primaryVcConfig = primaryVcNode
     ? normalizeVcNodeData((primaryVcNode.data || {}) as Record<string, any>)
     : undefined;
+  const primaryAcConfig =
+    primaryVcNode && isMultiOrNonVectorCraftNode(primaryVcNode)
+      ? normalizeAcNodeData((primaryVcNode.data || {}) as Record<string, any>)
+      : undefined;
 
-  const buildVectorCraftCfgForNode = (node: Node): VectorCraftMcpConfig | undefined => {
-    const nodeVc = (node.data as any)?.vectorcraft;
-    if (nodeVc?.enabled) {
-      return normalizeVcNodeData(nodeVc);
-    }
-    const matchingVcNode = vectorcraftNodes.find(vc => {
+  const findConnectedArtCraftNode = (node: Node): Node | undefined => {
+    return vectorcraftNodes.find(vc => {
       const direct = edges.some(
         e => (e.source === vc.id && e.target === node.id) || (e.target === vc.id && e.source === node.id)
       );
@@ -315,8 +395,28 @@ function generateEluvixConfig(
         );
       return viaGateway;
     });
+  };
+
+  const buildVectorCraftCfgForNode = (node: Node): VectorCraftMcpConfig | undefined => {
+    const nodeVc = (node.data as any)?.vectorcraft;
+    if (nodeVc?.enabled) {
+      return normalizeVcNodeData(nodeVc);
+    }
+    const matchingVcNode = findConnectedArtCraftNode(node);
     if (matchingVcNode) {
       return normalizeVcNodeData((matchingVcNode.data || {}) as Record<string, any>);
+    }
+    return undefined;
+  };
+
+  const buildArtCraftCfgForNode = (node: Node): ArtCraftMcpConfig | undefined => {
+    const nodeAc = (node.data as any)?.artcraft;
+    if (nodeAc?.enabled) {
+      return normalizeAcNodeData(nodeAc);
+    }
+    const matchingVcNode = findConnectedArtCraftNode(node);
+    if (matchingVcNode && isMultiOrNonVectorCraftNode(matchingVcNode)) {
+      return normalizeAcNodeData((matchingVcNode.data || {}) as Record<string, any>);
     }
     return undefined;
   };
@@ -402,6 +502,7 @@ function generateEluvixConfig(
     const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
     const crsCfg = buildCrsCfgForNode(node);
     const vcCfg = buildVectorCraftCfgForNode(node);
+    const acCfg = buildArtCraftCfgForNode(node);
 
     upstreams.push({
       id: String(node.id),
@@ -423,7 +524,8 @@ function generateEluvixConfig(
       ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
       ...(fabricConfig ? { fabric: fabricConfig } : {}),
       ...(crsCfg ? { crs: crsCfg } : {}),
-      ...(vcCfg ? { vectorcraft: vcCfg } : {})
+      ...(vcCfg ? { vectorcraft: vcCfg } : {}),
+      ...(acCfg ? { artcraft: acCfg } : {})
     });
   });
 
@@ -476,6 +578,7 @@ function generateEluvixConfig(
 
     const agyCrs = buildCrsCfgForNode(node);
     const agyVc = buildVectorCraftCfgForNode(node);
+    const agyAc = buildArtCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Antigravity Agent (${modelId})`,
@@ -490,6 +593,7 @@ function generateEluvixConfig(
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(agyCrs ? { crs: agyCrs } : {}),
       ...(agyVc ? { vectorcraft: agyVc } : {}),
+      ...(agyAc ? { artcraft: agyAc } : {}),
       antigravity: {
         model: modelId,
         effort: node.data?.effort || 'auto',
@@ -519,6 +623,7 @@ function generateEluvixConfig(
 
     const codexCrs = buildCrsCfgForNode(node);
     const codexVc = buildVectorCraftCfgForNode(node);
+    const codexAc = buildArtCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `OpenAI Codex (${modelId})`,
@@ -533,6 +638,7 @@ function generateEluvixConfig(
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(codexCrs ? { crs: codexCrs } : {}),
       ...(codexVc ? { vectorcraft: codexVc } : {}),
+      ...(codexAc ? { artcraft: codexAc } : {}),
       codex: {
         model: modelId,
         reasoningEffort: node.data?.reasoningEffort || 'medium',
@@ -561,6 +667,7 @@ function generateEluvixConfig(
 
     const claudeCodeCrs = buildCrsCfgForNode(node);
     const claudeCodeVc = buildVectorCraftCfgForNode(node);
+    const claudeCodeAc = buildArtCraftCfgForNode(node);
     upstreams.push({
       id: String(node.id),
       name: `Claude Code Agent (${modelId})`,
@@ -575,6 +682,7 @@ function generateEluvixConfig(
       capabilities: node.data?.visionCapable ? ["vision"] : [],
       ...(claudeCodeCrs ? { crs: claudeCodeCrs } : {}),
       ...(claudeCodeVc ? { vectorcraft: claudeCodeVc } : {}),
+      ...(claudeCodeAc ? { artcraft: claudeCodeAc } : {}),
       claudeCode: {
         model: modelId,
         permissionMode: node.data?.permissionMode || 'accept-non-destructive',
@@ -749,6 +857,7 @@ function generateEluvixConfig(
 
     const harnessCrs = buildCrsCfgForNode(node);
     const harnessVc = buildVectorCraftCfgForNode(node);
+    const harnessAc = buildArtCraftCfgForNode(node);
 
     // Discover MCP tools connected directly to this harness or via a connected AgentGateway
     const connectedMcpToolNodes = mcpTools.filter(tool => {
@@ -779,14 +888,24 @@ function generateEluvixConfig(
         transport: endpoint.startsWith('stdio://') ? 'stdio' : 'http'
       });
     }
-    if (harnessVc) {
+    if (harnessAc) {
+      for (const acServer of toArtCraftHarnessMcpServers(harnessAc)) {
+        if (!mcpServers.some(s => s.name === acServer.name)) {
+          mcpServers.push(acServer);
+        }
+      }
+    } else if (harnessVc) {
       mcpServers.push(toHarnessMcpServerConfig(harnessVc));
     }
 
     const baseApproveTools = Array.isArray(node.data?.autoApproveTools)
       ? node.data.autoApproveTools.map((t: any) => String(t))
       : [];
-    const vcApproveTools = harnessVc ? resolveVectorCraftAutoApproveTools(harnessVc) : [];
+    const vcApproveTools = harnessAc
+      ? resolveArtCraftAutoApproveTools(harnessAc)
+      : harnessVc
+        ? resolveVectorCraftAutoApproveTools(harnessVc)
+        : [];
     const mergedApproveTools = Array.from(new Set([...baseApproveTools, ...vcApproveTools]));
 
     upstreams.push({
@@ -802,6 +921,7 @@ function generateEluvixConfig(
       maxComplexityScore: capabilityCap(node),
       ...(harnessCrs ? { crs: harnessCrs } : {}),
       ...(harnessVc ? { vectorcraft: harnessVc } : {}),
+      ...(harnessAc ? { artcraft: harnessAc } : {}),
       harness: {
         kind,
         agentId,
@@ -1083,6 +1203,7 @@ function generateEluvixConfig(
     ...(consensusGroups.length > 0 ? { consensusGroups } : {}),
     ...(fallbackChains.length > 0 ? { fallbackChains } : {}),
     ...(primaryVcConfig ? { vectorcraft: primaryVcConfig } : {}),
+    ...(primaryAcConfig ? { artcraft: primaryAcConfig } : {}),
     promptGuard: {
       enabled: semanticGuards.length > 0,
       threshold: sgNode ? Number(sgData.threshold ?? 0.85) : 0.85,
@@ -1594,22 +1715,39 @@ function generateAgentGatewayJson(
         const vc = vectorcraftNodes.find(v => v.id === otherId);
         if (vc) {
           const vcData = (vc.data || {}) as Record<string, any>;
-          const built = buildVectorCraftCliArgs({
-            cliCommand: String(vcData.cliCommand || 'vectorcraft-cli'),
-            backendMode: (vcData.backendMode || 'auto') as any,
-            controlAddress: String(vcData.controlAddress || '127.0.0.1:7979'),
-            readRoots: Array.isArray(vcData.readRoots) ? vcData.readRoots.map((r: any) => String(r)) : undefined,
-            writeRoots: Array.isArray(vcData.writeRoots) ? vcData.writeRoots.map((w: any) => String(w)) : undefined
+          const rawApps = vcData.enabledApps || vcData.apps;
+          const appList: ArtCraftAppId[] =
+            Array.isArray(rawApps) && rawApps.length > 0
+              ? (rawApps.filter((a: any) => Boolean(ARTCRAFT_APPS_CATALOG[a as ArtCraftAppId])) as ArtCraftAppId[])
+              : [
+                  vcData.app && ARTCRAFT_APPS_CATALOG[vcData.app as ArtCraftAppId]
+                    ? (vcData.app as ArtCraftAppId)
+                    : 'vectorcraft'
+                ];
+          return appList.map(appId => {
+            const spec = ARTCRAFT_APPS_CATALOG[appId];
+            const built = buildArtCraftCliArgs({
+              app: appId,
+              cliCommand: appList.length === 1 ? String(vcData.cliCommand || spec.cliBinary) : spec.cliBinary,
+              backendMode: (vcData.backendMode || 'auto') as any,
+              controlAddress:
+                appList.length === 1
+                  ? String(vcData.controlAddress || `127.0.0.1:${spec.defaultControlPort ?? 7979}`)
+                  : undefined,
+              readRoots: Array.isArray(vcData.readRoots) ? vcData.readRoots.map((r: any) => String(r)) : undefined,
+              writeRoots: Array.isArray(vcData.writeRoots) ? vcData.writeRoots.map((w: any) => String(w)) : undefined
+            });
+            return {
+              name: appId,
+              endpoint: `stdio://${built.cliCommand} ${built.mcpArgs.join(' ')}`,
+              executionMode: 'auto',
+              timeoutMs: 30000
+            };
           });
-          return {
-            name: 'vectorcraft',
-            endpoint: `stdio://${built.cliCommand} ${built.mcpArgs.join(' ')}`,
-            executionMode: 'auto',
-            timeoutMs: 30000
-          };
         }
         return null;
       })
+      .flat()
       .filter(Boolean);
 
     if (data.enableNativeTools !== false) {
@@ -2094,13 +2232,18 @@ function generateVectorCraftSetup(
   localEngines: Node[]
 ): string {
   const vcNode = vectorcraftNodes[0];
-  const vcEngines = localEngines.filter((n) => (n.data as any)?.vectorcraft?.enabled);
+  const vcEngines = localEngines.filter((n) => (n.data as any)?.vectorcraft?.enabled || (n.data as any)?.artcraft?.enabled);
 
   if (!vcNode && vcEngines.length === 0) {
-    return '# No VectorCraft Art MCP node configured on canvas.';
+    return '# No VectorCraft / ArtCraft MCP node configured on canvas.';
   }
 
-  const vData = (vcNode?.data || (vcEngines[0]?.data as any)?.vectorcraft || {}) as Record<string, any>;
+  const vData = (
+    vcNode?.data ||
+    (vcEngines[0]?.data as any)?.artcraft ||
+    (vcEngines[0]?.data as any)?.vectorcraft ||
+    {}
+  ) as Record<string, any>;
   const nodeId = String(vcNode?.id || vcEngines[0]?.id || 'vectorcraft-mcp');
   const readRoots = Array.isArray(vData.readRoots)
     ? vData.readRoots.map((r: any) => String(r).trim()).filter(Boolean)
@@ -2112,6 +2255,25 @@ function generateVectorCraftSetup(
     : vData.writeRoot
       ? [String(vData.writeRoot).trim()].filter(Boolean)
       : [];
+
+  const rawApps = vData.enabledApps || vData.apps;
+  const isMultiOrOtherApp =
+    vcNode?.type === 'artcraftNode' ||
+    (vData.app && vData.app !== 'vectorcraft') ||
+    (Array.isArray(rawApps) && (rawApps.length > 1 || (rawApps.length === 1 && rawApps[0] !== 'vectorcraft')));
+
+  if (isMultiOrOtherApp) {
+    return generateArtCraftSetupScript(nodeId, {
+      enabled: true,
+      app: (vData.app || 'vectorcraft') as ArtCraftAppId,
+      enabledApps: Array.isArray(rawApps) ? (rawApps as ArtCraftAppId[]) : undefined,
+      cliCommand: vData.cliCommand ? String(vData.cliCommand) : undefined,
+      backendMode: (vData.backendMode || 'auto') as any,
+      controlAddress: vData.controlAddress ? String(vData.controlAddress) : undefined,
+      readRoots,
+      writeRoots
+    });
+  }
 
   return generateVectorCraftSetupScript(nodeId, {
     enabled: true,

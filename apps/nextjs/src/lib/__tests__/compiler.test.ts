@@ -439,5 +439,80 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(result.vectorcraftSetup).toContain('claude mcp add vectorcraft');
       expect(result.vectorcraftSetup).toContain('--automation-write-root');
     });
+
+    it('compiles multi-app ArtCraft Suite node into bundled harness mcpServers, gateway tools, and artcraftSetup', () => {
+      const nodes: Node[] = [
+        {
+          id: 'ac-bundle-1',
+          type: 'artcraftNode',
+          position: { x: 0, y: 0 },
+          data: {
+            app: 'photocraft',
+            enabledApps: ['photocraft', 'figcraft', 'cadcraft', 'craft-anything'],
+            backendMode: 'remote',
+            autoApproveTier: 'full-automation'
+          }
+        } as Node,
+        {
+          id: 'gw-ac',
+          type: 'agentGatewayNode',
+          position: { x: 150, y: 0 },
+          data: { accessPolicy: 'restrictive' }
+        } as Node,
+        {
+          id: 'harness-ac',
+          type: 'harnessNode',
+          position: { x: 300, y: 0 },
+          data: {
+            label: 'ACP Creative Studio Harness',
+            kind: 'acp',
+            endpoint: 'acp://goose',
+            approvals: 'auto-approve-readonly'
+          }
+        } as Node
+      ];
+      const edges = [
+        { id: 'e-ac-gw', source: 'ac-bundle-1', target: 'gw-ac' } as any,
+        { id: 'e-gw-hac', source: 'gw-ac', target: 'harness-ac' } as any
+      ];
+      const result = compileGraph(nodes, edges);
+
+      expect(result.rawRouterConfig.artcraft?.enabled).toBe(true);
+      expect(result.rawRouterConfig.artcraft?.app).toBe('photocraft');
+      expect(result.rawRouterConfig.artcraft?.enabledApps).toEqual([
+        'photocraft',
+        'figcraft',
+        'cadcraft',
+        'craft-anything'
+      ]);
+
+      const harnessUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-ac');
+      expect(harnessUpstream).toBeTruthy();
+      expect(harnessUpstream.artcraft?.enabled).toBe(true);
+      expect(harnessUpstream.harness.mcpServers.map((s: any) => s.name)).toEqual([
+        'photocraft',
+        'figcraft',
+        'cadcraft',
+        'craft-anything'
+      ]);
+      expect(harnessUpstream.harness.mcpServers[0].endpoint).toBe(
+        'stdio://photocraft-cli mcp --bridge 127.0.0.1:9878'
+      );
+      expect(harnessUpstream.harness.mcpServers[1].endpoint).toBe(
+        'stdio://figcraft-cli mcp --attach 127.0.0.1:7979'
+      );
+      expect(harnessUpstream.harness.mcpServers[3].endpoint).toBe(
+        'stdio://craft-anything-cli mcp --deep --all-tools'
+      );
+
+      const parsedGw = JSON.parse(result.agentGatewayJson);
+      expect(parsedGw.gateways[0].mcpTools.map((t: any) => t.name)).toEqual(
+        expect.arrayContaining(['photocraft', 'figcraft', 'cadcraft', 'craft-anything'])
+      );
+      expect(result.artcraftSetup).toContain('claude mcp add photocraft');
+      expect(result.artcraftSetup).toContain('claude mcp add figcraft');
+      expect(result.artcraftSetup).toContain('claude mcp add cadcraft');
+      expect(result.artcraftSetup).toContain('claude mcp add craft-anything');
+    });
   });
 });

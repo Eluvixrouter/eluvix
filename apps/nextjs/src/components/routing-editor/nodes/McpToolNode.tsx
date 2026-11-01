@@ -62,33 +62,54 @@ export default function McpToolNode({ id, data }: { id: string; data: any }) {
           <select
             className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-yellow-500 rounded p-1.5 text-white text-[11px] outline-none transition cursor-pointer"
             value={
-              mcpEndpoint.startsWith('stdio://vectorcraft-cli mcp')
-                ? 'vectorcraft'
-                : mcpEndpoint === 'http://localhost:8003/mcp'
-                  ? 'filesystem'
+              mcpEndpoint === 'http://localhost:8003/mcp'
+                ? 'filesystem'
+                : mcpEndpoint.startsWith('stdio://') && mcpEndpoint.includes('-cli mcp')
+                  ? mcpEndpoint.replace(/^stdio:\/\/([a-z-]+)-cli\s+mcp.*$/, '$1')
                   : 'custom'
             }
             onChange={(e) => {
               const preset = e.target.value;
-              if (preset === 'vectorcraft') {
-                setToolName('vectorcraft');
-                setMcpEndpoint('stdio://vectorcraft-cli mcp --headless');
-                syncData({
-                  toolName: 'vectorcraft',
-                  mcpEndpoint: 'stdio://vectorcraft-cli mcp --headless'
-                });
-              } else if (preset === 'filesystem') {
+              if (preset === 'filesystem') {
                 setToolName('Filesystem');
                 setMcpEndpoint('http://localhost:8003/mcp');
                 syncData({
                   toolName: 'Filesystem',
                   mcpEndpoint: 'http://localhost:8003/mcp'
                 });
+              } else if (preset !== 'custom') {
+                const endpoint =
+                  preset === 'vectorcraft'
+                    ? 'stdio://vectorcraft-cli mcp --headless'
+                    : preset === 'craft-anything'
+                      ? 'stdio://craft-anything-cli mcp --deep --all-tools'
+                      : `stdio://${preset}-cli mcp`;
+                setToolName(preset);
+                setMcpEndpoint(endpoint);
+                syncData({
+                  toolName: preset,
+                  mcpEndpoint: endpoint
+                });
               }
             }}
           >
             <option value="filesystem">📁 Filesystem MCP (HTTP)</option>
-            <option value="vectorcraft">🎨 VectorCraft Art MCP (stdio)</option>
+            <optgroup label="ArtCraft Suite MCP Servers (stdio)">
+              <option value="vectorcraft">🎨 VectorCraft (vectorcraft-cli mcp)</option>
+              <option value="photocraft">🖼️ PhotoCraft (photocraft-cli mcp)</option>
+              <option value="filmcraft">🎬 FilmCraft (filmcraft-cli mcp)</option>
+              <option value="lightcraft">📸 LightCraft (lightcraft-cli mcp)</option>
+              <option value="pdfcraft">📄 PdfCraft (pdfcraft-cli mcp)</option>
+              <option value="effectcraft">✨ EffectCraft (effectcraft-cli mcp)</option>
+              <option value="designcraft">📰 DesignCraft (designcraft-cli mcp)</option>
+              <option value="figcraft">📐 FigCraft (figcraft-cli mcp)</option>
+              <option value="wordcraft">📝 WordCraft (wordcraft-cli mcp)</option>
+              <option value="soundcraft">🎵 SoundCraft (soundcraft-cli mcp)</option>
+              <option value="deckcraft">📊 DeckCraft (deckcraft-cli mcp)</option>
+              <option value="cadcraft">⚙️ CADCraft (cadcraft-cli mcp)</option>
+              <option value="gridcraft">📈 GridCraft (gridcraft-cli mcp)</option>
+              <option value="craft-anything">🔬 Craft Anything (craft-anything-cli mcp)</option>
+            </optgroup>
             <option value="custom">⚙️ Custom MCP Server</option>
           </select>
         </div>

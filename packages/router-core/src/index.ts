@@ -13,6 +13,13 @@ import {
   buildVectorCraftCliArgs,
   isVectorArtPrompt
 } from './vectorcraft-mcp.js';
+import {
+  type ArtCraftMcpConfig,
+  buildArtCraftSystemInstructions,
+  buildArtCraftCliArgs,
+  detectArtCraftAppsForPrompt,
+  isArtCraftPrompt
+} from './artcraft-mcp.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -143,6 +150,7 @@ export interface RouterConfig {
   consensusGroups?: ConsensusGroupConfig[];
   fallbackChains?: FallbackChainConfig[];
   vectorcraft?: VectorCraftMcpConfig;
+  artcraft?: ArtCraftMcpConfig;
 }
 
 export * from './paths.js';
@@ -164,6 +172,7 @@ export * from './microscaling-quantization.js';
 export * from './clos-fabric-routing.js';
 export * from './neuro-symbolic-crs.js';
 export * from './vectorcraft-mcp.js';
+export * from './artcraft-mcp.js';
 export * from './shell-utils.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -330,6 +339,7 @@ export interface UpstreamConfig {
   fabric?: FabricOverlayConfig;
   crs?: CrsOverlayConfig;
   vectorcraft?: VectorCraftMcpConfig;
+  artcraft?: ArtCraftMcpConfig;
 }
 
 /**
@@ -1713,7 +1723,7 @@ export class Eluvix {
       }
     }
 
-    // 0e1b. VectorCraft MCP Context & Workflow Prompt Enrichment
+    // 0e1b. VectorCraft & ArtCraft Suite MCP Context & Workflow Prompt Enrichment
     const upstreamVcConfig = targetUpstreams.find(u => u.vectorcraft?.enabled)?.vectorcraft;
     const activeVcConfig = upstreamVcConfig || (this.config.vectorcraft?.enabled ? this.config.vectorcraft : undefined);
     let vectorcraftActive = false;
@@ -1739,6 +1749,38 @@ export class Eluvix {
           effectiveRequest = {
             ...effectiveRequest,
             messages: injectMemoryIntoMessages(effectiveRequest.messages, vcSystemBlock)
+          };
+        }
+      }
+    }
+
+    const upstreamAcConfig = targetUpstreams.find(u => u.artcraft?.enabled)?.artcraft;
+    const activeAcConfig = upstreamAcConfig || (this.config.artcraft?.enabled ? this.config.artcraft : undefined);
+    let artcraftActive = false;
+    let detectedArtCraftApps: string[] = [];
+    if (
+      activeAcConfig &&
+      activeAcConfig.enabled !== false &&
+      Array.isArray(effectiveRequest.messages) &&
+      effectiveRequest.messages.length > 0
+    ) {
+      const combinedUserText = effectiveRequest.messages
+        .filter(m => m.role !== 'system')
+        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n');
+      detectedArtCraftApps = detectArtCraftAppsForPrompt(combinedUserText);
+      const activePreset = activeAcConfig.defaultPromptWorkflow || activeAcConfig.promptPreset;
+      if (
+        upstreamAcConfig ||
+        (activePreset && activePreset !== 'none') ||
+        isArtCraftPrompt(combinedUserText, activeAcConfig.app)
+      ) {
+        artcraftActive = true;
+        if (activeAcConfig.injectSystemInstructions !== false) {
+          const acSystemBlock = buildArtCraftSystemInstructions(activeAcConfig);
+          effectiveRequest = {
+            ...effectiveRequest,
+            messages: injectMemoryIntoMessages(effectiveRequest.messages, acSystemBlock)
           };
         }
       }
@@ -2386,6 +2428,27 @@ export class Eluvix {
               const effPreset = effectiveVc.defaultPromptWorkflow || effectiveVc.promptPreset;
               if (effPreset && effPreset !== 'none') {
                 newResponse.headers.set('x-eluvix-vectorcraft-preset', effPreset);
+              }
+            }
+            const effectiveAc = upstream.artcraft?.enabled ? upstream.artcraft : activeAcConfig;
+            if (effectiveAc && (upstream.artcraft?.enabled || artcraftActive)) {
+              const acCliSpec = buildArtCraftCliArgs(effectiveAc);
+              const rawAppsList = effectiveAc.enabledApps || effectiveAc.apps;
+              const activeAppsList =
+                Array.isArray(rawAppsList) && rawAppsList.length > 0
+                  ? rawAppsList
+                  : [acCliSpec.app];
+              newResponse.headers.set('x-eluvix-artcraft-apps', activeAppsList.join(','));
+              newResponse.headers.set('x-eluvix-artcraft-mode', acCliSpec.effectiveMode);
+              newResponse.headers.set(
+                'x-eluvix-artcraft-protocol',
+                effectiveAc.protocolVersion || '2025-06-18'
+              );
+              if (detectedArtCraftApps.length > 0) {
+                newResponse.headers.set(
+                  'x-eluvix-artcraft-detected',
+                  detectedArtCraftApps.join(',')
+                );
               }
             }
             const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);

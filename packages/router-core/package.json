@@ -34,6 +34,11 @@
       "types": "./dist/vectorcraft-mcp.d.ts",
       "import": "./dist/vectorcraft-mcp.js",
       "default": "./dist/vectorcraft-mcp.js"
+    },
+    "./artcraft-mcp": {
+      "types": "./dist/artcraft-mcp.d.ts",
+      "import": "./dist/artcraft-mcp.js",
+      "default": "./dist/artcraft-mcp.js"
     }
   },
   "type": "module",

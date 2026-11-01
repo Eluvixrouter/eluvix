@@ -29,6 +29,7 @@ export interface ConfigDiff {
   fabricPolicyChanged?: boolean;
   crsPolicyChanged?: boolean;
   vectorcraftChanged?: boolean;
+  artcraftChanged?: boolean;
   strategyChanged?: boolean;
   fallbackStrategyChanged?: boolean;
   promptGuardChanged?: boolean;
@@ -59,7 +60,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'quantization',
   'fabric',
   'crs',
-  'vectorcraft'
+  'vectorcraft',
+  'artcraft'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -170,6 +172,8 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     ) || undefined;
   const vectorcraftChanged =
     fieldDiffers((current as any)?.vectorcraft, (next as any).vectorcraft) || undefined;
+  const artcraftChanged =
+    fieldDiffers((current as any)?.artcraft, (next as any).artcraft) || undefined;
 
   const strategyChanged = fieldDiffers((current as any)?.strategy, (next as any).strategy) || undefined;
   const fallbackStrategyChanged = fieldDiffers((current as any)?.fallbackStrategy, (next as any).fallbackStrategy) || undefined;
@@ -194,6 +198,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     fabricPolicyChanged,
     crsPolicyChanged,
     vectorcraftChanged,
+    artcraftChanged,
     strategyChanged,
     fallbackStrategyChanged,
     promptGuardChanged,
@@ -216,6 +221,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !fabricPolicyChanged &&
       !crsPolicyChanged &&
       !vectorcraftChanged &&
+      !artcraftChanged &&
       !strategyChanged &&
       !fallbackStrategyChanged &&
       !promptGuardChanged &&

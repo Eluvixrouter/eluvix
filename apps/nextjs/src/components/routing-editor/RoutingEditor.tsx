@@ -257,7 +257,22 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     timeoutMs: 15000
   },
   vectorcraftNode: {
-    label: 'VectorCraft Art MCP',
+    label: 'ArtCraft Suite MCP',
+    app: 'vectorcraft',
+    enabledApps: ['vectorcraft'],
+    backendMode: 'auto',
+    cliCommand: 'vectorcraft-cli',
+    controlAddress: '127.0.0.1:7979',
+    defaultPromptWorkflow: 'poster',
+    autoApproveTier: 'canvas-draw',
+    defaultExportFormat: 'svg',
+    readRoots: [],
+    writeRoots: []
+  },
+  artcraftNode: {
+    label: 'ArtCraft Suite MCP',
+    app: 'vectorcraft',
+    enabledApps: ['vectorcraft'],
     backendMode: 'auto',
     cliCommand: 'vectorcraft-cli',
     controlAddress: '127.0.0.1:7979',
@@ -592,6 +607,7 @@ const nodeTypes = {
   confidentialEnclaveNode: ConfidentialEnclaveNode,
   crsNode: NeuroSymbolicCrsNode,
   vectorcraftNode: VectorCraftNode,
+  artcraftNode: VectorCraftNode,
 };
 
 let id = 0;
@@ -1110,15 +1126,16 @@ export default function RoutingEditor() {
         confidentialEnclaveNode: ['switchyardNode', 'crsNode', ...allUpstreamTargets, 'observabilityNode'],
         crsNode: ['switchyardNode', 'confidentialEnclaveNode', ...allUpstreamTargets, 'observabilityNode'],
         taskRouterNode: ['memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'switchyardNode', ...allUpstreamTargets],
-        agentNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        antigravityNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        codexNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        claudeCodeNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        harnessNode: ['agentGatewayNode', 'vectorcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        agentNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        antigravityNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        codexNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        claudeCodeNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        harnessNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         sandboxNode: ['harnessNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'agentNode', 'observabilityNode'],
-        agentGatewayNode: ['switchyardNode', 'sandboxNode', 'vectorcraftNode', ...allUpstreamTargets],
+        agentGatewayNode: ['switchyardNode', 'sandboxNode', 'vectorcraftNode', 'artcraftNode', ...allUpstreamTargets],
         mcpToolNode: ['agentGatewayNode', 'harnessNode', 'claudeCodeNode', 'codexNode', 'antigravityNode', 'agentNode'],
         vectorcraftNode: ['agentGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
+        artcraftNode: ['agentGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         modelGatewayNode: ['switchyardNode', 'observabilityNode'],
         switchyardNode: [...allUpstreamTargets, 'observabilityNode'],
         consensusNode: [...allUpstreamTargets, 'observabilityNode'],
@@ -1157,7 +1174,7 @@ export default function RoutingEditor() {
     [setEdges, isValidConnection]
   );
 
-  const addNode = (type: string) => {
+  const addNode = (type: string, customData?: Record<string, any>) => {
     const id = getId();
     const position = reactFlowInstance
       ? reactFlowInstance.screenToFlowPosition({
@@ -1166,11 +1183,15 @@ export default function RoutingEditor() {
         })
       : { x: 500, y: 300 };
 
+    const baseData = DEFAULT_NODE_DATA[type]
+      ? { ...DEFAULT_NODE_DATA[type] }
+      : { label: `${type} node` };
+
     const newNode = {
       id,
       type,
       position,
-      data: DEFAULT_NODE_DATA[type] ? { ...DEFAULT_NODE_DATA[type] } : { label: `${type} node` }
+      data: customData ? { ...baseData, ...customData } : baseData
     };
 
     setNodes((nds) => nds.concat(newNode));
@@ -1825,21 +1846,60 @@ export default function RoutingEditor() {
               <span className="text-[10px] text-slate-400 group-hover:text-yellow-400 font-mono">+ Add</span>
             </div>
 
-            {/* VectorCraft Art MCP Node */}
-            <div
-              className="p-2.5 mb-2 border border-pink-500/80 bg-pink-950/25 rounded-lg cursor-grab hover:bg-pink-900/35 transition flex items-center justify-between group"
-              onDragStart={(e) => onDragStart(e, 'vectorcraftNode')}
-              onClick={() => addNode('vectorcraftNode')}
-              draggable
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-lg">🎨</span>
-                <div>
-                  <div className="font-semibold text-xs text-pink-300 group-hover:text-pink-200">VectorCraft Art MCP</div>
-                  <div className="text-[10px] text-slate-400 font-mono">33 Tools • SVG/PDF/AI Studio</div>
+            {/* ArtCraft Suite MCP Node (14 Apps) */}
+            <div className="p-2.5 mb-2 border border-pink-500/80 bg-pink-950/25 rounded-lg hover:bg-pink-900/35 transition">
+              <div
+                className="cursor-grab flex items-center justify-between group"
+                onDragStart={(e) => onDragStart(e, 'vectorcraftNode')}
+                onClick={() => addNode('vectorcraftNode')}
+                draggable
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🎨</span>
+                  <div>
+                    <div className="font-semibold text-xs text-pink-300 group-hover:text-pink-200">
+                      ArtCraft Suite MCP (14 Apps)
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-mono">
+                      Vector • Photo • Video • UI • CAD • RE
+                    </div>
+                  </div>
                 </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-pink-400 font-mono">
+                  + Add
+                </span>
               </div>
-              <span className="text-[10px] text-slate-400 group-hover:text-pink-400 font-mono">+ Add</span>
+              <div className="flex flex-wrap gap-1 mt-2 pt-1.5 border-t border-pink-500/20">
+                {[
+                  { id: 'vectorcraft', icon: '🎨', label: 'Vector' },
+                  { id: 'photocraft', icon: '🖼️', label: 'Photo', port: 9878, fmt: 'png' },
+                  { id: 'filmcraft', icon: '🎬', label: 'Film', port: 9876, fmt: 'mp4' },
+                  { id: 'figcraft', icon: '📐', label: 'Fig', port: 7979, fmt: 'svg', prompt: 'mobile_screen' },
+                  { id: 'pdfcraft', icon: '📄', label: 'PDF', fmt: 'pdf' },
+                  { id: 'cadcraft', icon: '⚙️', label: 'CAD', port: 7979, fmt: 'dxf' },
+                  { id: 'craft-anything', icon: '🔬', label: 'RE', fmt: 'json' }
+                ].map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() =>
+                      addNode('vectorcraftNode', {
+                        label: `${preset.label}Craft MCP`,
+                        app: preset.id,
+                        enabledApps: [preset.id],
+                        cliCommand: `${preset.id}-cli`,
+                        controlAddress: `127.0.0.1:${preset.port ?? 7979}`,
+                        defaultExportFormat: preset.fmt || 'svg',
+                        defaultPromptWorkflow: preset.prompt || 'none'
+                      })
+                    }
+                    className="text-[9px] px-1.5 py-0.5 rounded bg-slate-900/90 hover:bg-pink-500/30 border border-pink-500/30 text-pink-200 font-mono transition"
+                    title={`Add ${preset.id}-cli mcp node`}
+                  >
+                    {preset.icon} {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Model Gateway */}
@@ -4260,6 +4320,11 @@ export default function RoutingEditor() {
                       {applyDiff.crsPolicyChanged && (
                         <span className="bg-fuchsia-950/60 border border-fuchsia-500/50 text-fuchsia-200 text-xs px-2 py-0.5 rounded font-mono">
                           🧬 Neuro-Symbolic CRS Policy
+                        </span>
+                      )}
+                      {(applyDiff.vectorcraftChanged || applyDiff.artcraftChanged) && (
+                        <span className="bg-pink-950/60 border border-pink-500/50 text-pink-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🎨 ArtCraft Suite MCP
                         </span>
                       )}
                       {applyDiff.knowledgeChanged && (

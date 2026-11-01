@@ -11,6 +11,10 @@ import {
   toHarnessMcpServerConfig,
   resolveVectorCraftAutoApproveTools
 } from '../vectorcraft-mcp.js';
+import {
+  toArtCraftHarnessMcpServers,
+  resolveArtCraftAutoApproveTools
+} from '../artcraft-mcp.js';
 
 /** Grace period between SIGTERM and SIGKILL when cleaning up an ACP child. */
 const ACP_KILL_GRACE_MS = 2000;
@@ -67,9 +71,17 @@ export async function forwardAcpHarness(
   if (upstream.vectorcraft?.enabled && !sessionMcpServers.some(s => s.name === 'vectorcraft')) {
     sessionMcpServers.push(toHarnessMcpServerConfig(upstream.vectorcraft));
   }
+  if (upstream.artcraft?.enabled) {
+    for (const acSrv of toArtCraftHarnessMcpServers(upstream.artcraft)) {
+      if (!sessionMcpServers.some(s => s.name === acSrv.name)) {
+        sessionMcpServers.push(acSrv);
+      }
+    }
+  }
   const effectiveAutoApproveTools: string[] = [
     ...(Array.isArray(harnessCfg.autoApproveTools) ? harnessCfg.autoApproveTools : []),
-    ...(upstream.vectorcraft?.enabled ? resolveVectorCraftAutoApproveTools(upstream.vectorcraft) : [])
+    ...(upstream.vectorcraft?.enabled ? resolveVectorCraftAutoApproveTools(upstream.vectorcraft) : []),
+    ...(upstream.artcraft?.enabled ? resolveArtCraftAutoApproveTools(upstream.artcraft) : [])
   ];
   // ACP sessions are spawned per request, so the full conversation —
   // system context (incl. the injected <eluvix-memory> block) plus the

@@ -44,31 +44,45 @@ The visual editor provides dedicated MCP Tool nodes:
 
 ---
 
-## VectorCraft Art MCP Node (`vectorcraftNode`)
+## ArtCraft Suite 14-App MCP Node (`vectorcraftNode` / `artcraftNode`)
 
-Eluvix includes a first-class **VectorCraft Art MCP Node** that integrates `vectorcraft-cli mcp` (newline-delimited JSON-RPC 2.0 over `stdio`, protocol `2025-06-18`) into the Visual Routing Editor and `@eluvix/router-core`. Agents and LLMs connected to `vectorcraftNode` can inspect documents, draw geometric primitives and cubic Bézier paths, style fills/strokes/gradients, run boolean Pathfinder operations, trace raster images, and export multi-artboard illustrations to `SVG`, `PDF`, `AI`, `EPS`, `PNG`, `WebP`, `PSD`, or `.vectorcraft`.
+Eluvix includes a first-class **ArtCraft Suite MCP Node** (`@eluvix/router-core/artcraft-mcp` and `@eluvix/router-core/vectorcraft-mcp`) that integrates all **14 open-source creative, productivity, CAD, and reverse-engineering applications** from the [ArtCraft Suite](https://getartcraft.com/apps) (`https://github.com/storytold/*`) over newline-delimited JSON-RPC 2.0 `stdio` (protocol `2025-06-18`). Operators can select a single ArtCraft studio application or enable **Multi-App Bundle Mode** to attach any combination of the 14 MCP servers to an Agent Gateway, ACP harness, or LLM route at once:
+
+| Application | CLI Binary | Remote Desktop Flag & Default Port | Primary Domain & Native Export Formats |
+| :--- | :--- | :--- | :--- |
+| **🎨 VectorCraft** | `vectorcraft-cli mcp` | `--connect 127.0.0.1:7979` | Vector art, Bézier paths, Pathfinder, Image Trace (`SVG`, `PDF`, `AI`, `EPS`, `PNG`) |
+| **🖼️ PhotoCraft** | `photocraft-cli mcp` | `--bridge 127.0.0.1:9878` (`PHOTOCRAFT_CONTROL_TOKEN`) | Layered raster editing, masks, brushes, filters (`PNG`, `JPG`, `WebP`, `TIFF`, `PSD`, `ORA`) |
+| **🎬 FilmCraft** | `filmcraft-cli mcp` | `--bridge 127.0.0.1:9876` (`FILMCRAFT_CONTROL_TOKEN`) | Non-linear video editing (NLE), Lumetri color, 24-track audio (`MP4`, `MOV`, `FCPXML`, `AAF`, `EDL`) |
+| **📸 LightCraft** | `lightcraft-cli mcp` | `--connect 127.0.0.1:7980` | RAW photography darkroom, non-destructive develop sliders & catalog (`JPG`, `PNG`, `TIFF`, `DNG`) |
+| **📄 PdfCraft** | `pdfcraft-cli mcp` | Headless `stdio` (`--root <DIR>`, `--compact`) | PDF inspection, page assembly, OCR, true content redaction, forms & signatures (`PDF`, `PNG`, `TXT`) |
+| **✨ EffectCraft** | `effectcraft-cli mcp` | `--bridge 127.0.0.1:9877` | Keyframe motion graphics, visual effects compositing & render queue (`MP4`, `MOV`, `WebM`, `GIF`) |
+| **📰 DesignCraft** | `designcraft-cli mcp` | `--connect 127.0.0.1:7979` | Multi-page desktop publishing, master spreads, baseline grids & preflight (`IDML`, `PDF`, `EPUB`) |
+| **📐 FigCraft** | `figcraft-cli mcp` | `--attach 127.0.0.1:7979 --timeout 300` | UI/UX design, auto-layout frames, components, FigJam & prototyping (`SVG`, `PNG`, `PDF`, `JSON`) |
+| **📝 WordCraft** | `wordcraft-cli mcp` | `--connect 127.0.0.1:7981` (`WORDCRAFT_CONTROL_KEY`) | Structured word processor, styles, tracked changes, mail merge (`DOCX`, `PDF`, `ODT`, `LaTeX`, `MD`) |
+| **🎵 SoundCraft** | `soundcraft-cli mcp` | `--connect 127.0.0.1:7801` | Digital Audio Workstation (DAW), MIDI, sampler, DSP mixing & LUFS bounce (`WAV`, `FLAC`, `MP3`, `MID`) |
+| **📊 DeckCraft** | `deckcraft-cli mcp` | `--connect 127.0.0.1:7990` | Slide deck studio, speaker notes, vector shapes, charts & tables (`PPTX`, `PDF`, `PNG`, `HTML`) |
+| **⚙️ CADCraft** | `cadcraft-cli mcp` | `--connect 127.0.0.1:7979` (`--lazy`, `--launch`) | 2D/3D parametric CAD, command-line drafting & geometry verifiers `shapes`/`loops` (`DXF`, `DWG`, `STEP`) |
+| **📈 GridCraft** | `gridcraft-cli mcp` | `--connect 127.0.0.1:7979` (`GRIDCRAFT_CONTROL_TOKEN`) | Spreadsheet & formula engine, pivot tables, AutoFilter & charts (`XLSX`, `CSV`, `TSV`, `JSON`, `PDF`) |
+| **🔬 Craft Anything** | `craft-anything-cli mcp` | Headless `stdio` (`--deep --all-tools`) | 284-tool reverse engineering (Ghidra/Rizin/GDB/Frida), web/Electron decompilation & clean-room rebuild |
 
 ### Execution Backend Modes
-- **Auto (`auto`)**: Attempts to connect once on startup to a live VectorCraft desktop session at `127.0.0.1:7979` and automatically falls back to the in-process headless CPU renderer if no GUI is listening.
-- **Remote Desktop GUI (`remote`)**: Passes `--connect 127.0.0.1:7979` to `vectorcraft-cli mcp`, forwarding all 33 tools over the control socket to a running desktop window started with `vectorcraft --control 7979`.
-- **Headless CPU Renderer (`headless`)**: Passes `--headless` to run an in-process document model and CPU renderer with no window or display server required (exposes all 27 non-UI tools; UI-only tools `inspect_ui`, `ui_inspect`, `type_text`, `answer_dialog`, `open_panel`, and `ui_screenshot` are automatically filtered out).
+- **Auto (`auto`)**: Attempts to connect once on startup to a live desktop session and automatically falls back to the in-process headless CPU renderer if no GUI is listening.
+- **Remote Desktop GUI (`remote`)**: Automatically selects the exact remote flag per application (`--connect` for VectorCraft/LightCraft/DesignCraft/WordCraft/SoundCraft/DeckCraft/CADCraft/GridCraft, `--bridge` for PhotoCraft/FilmCraft/EffectCraft, `--attach` for FigCraft).
+- **Headless CPU Renderer (`headless`)**: Runs an in-process document model and CPU renderer with no window or display server required (remote UI-only tools such as `ui_screenshot`, `wait_for_changes`, and `ui_click` are automatically filtered out).
 
 ### Filesystem Confinement (`--automation-read-root` & `--automation-write-root`)
-- Operators can restrict `open_file`, `save_file`, `export`, `document.import`, and `document.place` to explicit directory trees via **Read Root** and **Write Root**.
-- Per the upstream VectorCraft MCP specification, passing `--automation-read-root` or `--automation-write-root` to `vectorcraft-cli mcp` implies `--headless` and cannot be combined with `--connect`. When `remote` mode is selected alongside confinement roots, Eluvix's compiler automatically places `--connect <addr>` on `vectorcraft-cli mcp` and emits the `--control <port> --automation-read-root ... --automation-write-root ...` flags for the desktop GUI launch command.
+- Operators can restrict file open, import, place, save, and export operations to explicit directory trees via **Read Root** and **Write Root**.
+- When `remote` mode is selected alongside confinement roots, Eluvix's compiler automatically places the remote flag (`--connect` / `--bridge` / `--attach`) on `<app>-cli mcp` and emits the `--control <port> --automation-read-root ... --automation-write-root ...` flags for the desktop GUI launch command.
 
 ### Built-in MCP Workflow Presets
-- **`poster`**: Lay out a poster from a brief using live shapes, gradients, typography, and live effects, verified with `render_preview` before export.
-- **`icon-set`**: Build a grid of consistent icons as live vector shapes and inspect alignment across the set.
-- **`recolor`**: Recolor selected artwork with explicit colour mappings or `recolor.colors` k-means clustering.
-- **`trace-and-style`**: Vectorize a raster image with Image Trace (`trace.create` + `trace.expand`), then apply live effects and recoloring.
-- **`export-set`**: Export every artboard across multiple vector/raster formats at once and report format fidelity.
+- **VectorCraft Presets**: `poster`, `icon-set`, `recolor`, `trace-and-style`, `export-set`.
+- **FigCraft Presets**: `mobile_screen`, `design_system`, `landing_page`, `prototype_flow`, `fix_comments`, `watch_comments`.
 
-### Context Enrichment & Coordinate / Opacity Guardrails
-When `vectorcraftNode` is active on a route, `@eluvix/router-core` injects an `<eluvix-vectorcraft-mcp>` system instruction block and emits `x-eluvix-vectorcraft-mode`, `x-eluvix-vectorcraft-protocol`, `x-eluvix-vectorcraft-tools`, and `x-eluvix-vectorcraft-preset` response headers:
-- **Coordinate System**: Document points (`612 x 792` US Letter default, origin `(0, 0)` at top-left of the first artboard, `y` points downward).
-- **Opacity Scale Rule**: `doc_inspect` reports both `opacity` (`0..1` fraction) and `opacityPct` (`0..100%`). All drawing and mutation tools (`draw_shape`, `draw_path`, `object.setProps`, `transparency.set`) require `opacityPct` (`0..100`).
-- **Atomic Command Batching**: Multi-step illustrations use `command_batch` (`atomic: true`, up to 256 steps) with `"$0.id"` / `"$last.id"` step result interpolation so complex artwork is grouped into a single undo step.
+### Context Enrichment & Domain Guardrails
+When `vectorcraftNode` or `artcraftNode` is active on a route, `@eluvix/router-core` injects `<eluvix-vectorcraft-mcp>` / `<eluvix-artcraft-mcp>` system instructions and emits `x-eluvix-artcraft-apps`, `x-eluvix-artcraft-mode`, `x-eluvix-artcraft-protocol`, and `x-eluvix-artcraft-detected` response headers:
+- **VectorCraft Coordinate & Opacity Rules**: Document points (`612 x 792` US Letter default, origin `(0, 0)` top-left, `y` downward) and `opacityPct` (`0..100%`) on all drawing/mutation calls (`draw_shape`, `draw_path`, `object.setProps`, `transparency.set`), with `command_batch` step result interpolation (`"step0.id"` / `"last.id"`).
+- **CADCraft Mathematical Geometry Verifiers**: Agents verify drafted geometry using `execute {"command": "shapes"}` (exact perimeter, area, centroid, self-intersections) and `execute {"command": "loops"}` before calling `render`.
+- **Craft Anything Clean-Room Rebuilds**: Agents inspect binaries and Electron/web bundles via 284 tools across `core`, `web`, `javascript`, `runtime` (GDB/Rizin), `frida`, `application`, `database`, and `build`, paging through large decompilation evidence via `core_evidence_browse`.
 
 ---
 
