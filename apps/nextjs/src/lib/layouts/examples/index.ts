@@ -1461,29 +1461,29 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     ]
   },
 
-  // 19. OpenCode Agentic Coder + VectorCraft Generative Art Studio
+  // 19. OpenCode Agentic Coder + VectorCraft Generative Art Studio (with Lemonade Multi-Model Routing)
   {
     id: 'opencode-vectorcraft-art-studio',
-    name: 'OpenCode + VectorCraft Generative Art Studio',
-    description: 'Autonomous creative pipeline coupling OpenCode (:4096) to VectorCraft MCP (:7979) via an Agent Gateway. Allows AI agents to draft vector shapes, cubic Bézier paths, icon sets, and posters with full SVG/PDF export.',
+    name: 'OpenCode + VectorCraft Generative Art Studio (Lemonade)',
+    description: 'Autonomous creative pipeline coupling OpenCode (:4096) to VectorCraft MCP (:7979) via an Agent Gateway, with Switchyard multi-model routing across local Lemonade LLMs (Qwen 2.5 Coder for vector math, DeepSeek-R1 for generative layout reasoning, and Llama 3.2 Vision for visual critique) with full SVG/PDF export.',
     category: 'agent',
-    tags: ['opencode', 'vectorcraft', 'artcraft', 'art', 'svg', 'mcp', 'gateway'],
+    tags: ['opencode', 'vectorcraft', 'lemonade', 'artcraft', 'art', 'svg', 'mcp', 'gateway', 'switchyard'],
     isExample: true,
     version: 1,
     createdAt: '2026-11-01T00:00:00.000Z',
     updatedAt: '2026-11-01T00:00:00.000Z',
-    viewport: { x: 0, y: 0, zoom: 0.85 },
+    viewport: { x: 0, y: 0, zoom: 0.8 },
     nodes: [
       {
         id: 'input-1',
         type: 'inputNode',
-        position: { x: 50, y: 220 },
+        position: { x: 50, y: 260 },
         data: { label: 'Creative Brief / Art Prompt' }
       },
       {
         id: 'privacy-guard-1',
         type: 'privacyGuardNode',
-        position: { x: 300, y: 180 },
+        position: { x: 300, y: 260 },
         data: {
           action: 'anonymize',
           detectPii: { apiKey: true, ssn: true, creditCard: true, email: true, phone: true }
@@ -1492,17 +1492,23 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       {
         id: 'switchyard-1',
         type: 'switchyardNode',
-        position: { x: 620, y: 180 },
+        position: { x: 620, y: 200 },
         data: {
           strategy: 'cost-complexity',
           failover: 'enabled',
-          codeEscalation: true
+          codeEscalation: true,
+          routes: [
+            { id: 'tier-1', name: 'Tier 1: OpenCode Art Director (:4096)', costLabel: '$0.00', color: '#10b981' },
+            { id: 'tier-2', name: 'Tier 2: Lemonade Qwen 2.5 Coder (Vector Math)', costLabel: '$0.00', color: '#eab308' },
+            { id: 'tier-3', name: 'Tier 3: Lemonade DeepSeek-R1 (Layout Reasoning)', costLabel: '$0.00', color: '#3b82f6' },
+            { id: 'tier-4', name: 'Tier 4: Lemonade Llama 3.2 Vision (Art QA)', costLabel: '$0.00', color: '#a855f7' }
+          ]
         }
       },
       {
         id: 'vectorcraft-node-1',
         type: 'vectorcraftNode',
-        position: { x: 620, y: 440 },
+        position: { x: 620, y: -120 },
         data: {
           label: 'VectorCraft Art Studio',
           app: 'vectorcraft',
@@ -1520,7 +1526,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       {
         id: 'agent-gateway-1',
         type: 'agentGatewayNode',
-        position: { x: 960, y: 440 },
+        position: { x: 1060, y: -120 },
         data: {
           label: 'Studio Tool Gateway',
           accessPolicy: 'restrictive',
@@ -1533,7 +1539,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       {
         id: 'opencode-harness-1',
         type: 'harnessNode',
-        position: { x: 960, y: 140 },
+        position: { x: 1060, y: 60 },
         data: {
           label: 'OpenCode Creative Agent',
           kind: 'opencode',
@@ -1541,7 +1547,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
           agentId: 'art-director',
           approvals: 'auto-approve-readonly',
           sessionMode: 'per-eluvix-session',
-          priority: 30,
+          priority: 40,
           providerIsLocal: true,
           autoApproveTools: [
             'doc_inspect',
@@ -1555,22 +1561,49 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
         }
       },
       {
-        id: 'claude-code-artist-1',
-        type: 'claudeCodeNode',
-        position: { x: 960, y: 280 },
+        id: 'lemonade-coder-1',
+        type: 'lemonadeNode',
+        position: { x: 1060, y: 240 },
         data: {
-          label: 'Claude Code (Illustrator)',
-          model: 'claude-3-7-sonnet',
-          permissionMode: 'accept-non-destructive',
-          extendedThinking: true,
-          thinkingBudget: 4096,
-          persona: 'vector-illustrator'
+          label: 'Lemonade Coder (Qwen 2.5 Coder 7B)',
+          endpoint: 'http://localhost:13305',
+          priority: 35,
+          selectedModel: 'qwen2.5-coder-7b',
+          models: ['qwen2.5-coder-7b', 'deepseek-r1-distill-qwen-14b', 'llama-3.2-11b-vision'],
+          maxComplexityScore: 2
+        }
+      },
+      {
+        id: 'lemonade-reasoning-1',
+        type: 'lemonadeNode',
+        position: { x: 1060, y: 420 },
+        data: {
+          label: 'Lemonade Reasoning (DeepSeek-R1 14B)',
+          endpoint: 'http://localhost:13305',
+          priority: 25,
+          selectedModel: 'deepseek-r1-distill-qwen-14b',
+          models: ['qwen2.5-coder-7b', 'deepseek-r1-distill-qwen-14b', 'llama-3.2-11b-vision'],
+          maxComplexityScore: 4
+        }
+      },
+      {
+        id: 'lemonade-vision-1',
+        type: 'lemonadeNode',
+        position: { x: 1060, y: 600 },
+        data: {
+          label: 'Lemonade Vision (Llama 3.2 11B Vision)',
+          endpoint: 'http://localhost:13305',
+          priority: 20,
+          selectedModel: 'llama-3.2-11b-vision',
+          visionCapable: true,
+          models: ['qwen2.5-coder-7b', 'deepseek-r1-distill-qwen-14b', 'llama-3.2-11b-vision'],
+          maxComplexityScore: 3
         }
       },
       {
         id: 'observability-1',
         type: 'observabilityNode',
-        position: { x: 1380, y: 200 },
+        position: { x: 1480, y: 300 },
         data: {
           projectName: 'opencode-vectorcraft-studio',
           captureInputs: true
@@ -1580,13 +1613,17 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     edges: [
       { id: 'e-in-priv', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-priv-sw', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
-      { id: 'e-sw-opencode', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#f59e0b' } },
-      { id: 'e-sw-claudecode', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'claude-code-artist-1', animated: true, style: { stroke: '#a855f7' } },
+      { id: 'e-sw-opencode', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sw-lem-coder', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'lemonade-coder-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e-sw-lem-reasoning', source: 'switchyard-1', sourceHandle: 'tier-3', target: 'lemonade-reasoning-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-sw-lem-vision', source: 'switchyard-1', sourceHandle: 'tier-4', target: 'lemonade-vision-1', animated: true, style: { stroke: '#a855f7' } },
       { id: 'e-vc-gw', source: 'vectorcraft-node-1', target: 'agent-gateway-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 3 } },
       { id: 'e-gw-vc-write', source: 'agent-gateway-1', target: 'vectorcraft-node-1', targetHandle: 'vectorcraft-in', animated: true, style: { stroke: '#ec4899', strokeDasharray: '4 4' } },
       { id: 'e-gw-opencode', source: 'agent-gateway-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 2 } },
-      { id: 'e-opencode-obs', source: 'opencode-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
-      { id: 'e-claudecode-obs', source: 'claude-code-artist-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+      { id: 'e-opencode-obs', source: 'opencode-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-lem-coder-obs', source: 'lemonade-coder-1', target: 'observability-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e-lem-reasoning-obs', source: 'lemonade-reasoning-1', target: 'observability-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-lem-vision-obs', source: 'lemonade-vision-1', target: 'observability-1', animated: true, style: { stroke: '#a855f7' } }
     ]
   }
 ];

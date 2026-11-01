@@ -556,6 +556,30 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
           })
         ])
       );
+
+      // Verify Lemonade multi-model routing upstreams replaced Claude
+      const coderUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-coder-1');
+      expect(coderUpstream).toBeDefined();
+      expect(coderUpstream.type).toBe('lemonade');
+      expect(coderUpstream.models).toContain('qwen2.5-coder-7b');
+      expect(coderUpstream.tier).toBe('tier-2');
+
+      const reasoningUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-reasoning-1');
+      expect(reasoningUpstream).toBeDefined();
+      expect(reasoningUpstream.type).toBe('lemonade');
+      expect(reasoningUpstream.models).toContain('deepseek-r1-distill-qwen-14b');
+      expect(reasoningUpstream.tier).toBe('tier-3');
+
+      const visionUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-vision-1');
+      expect(visionUpstream).toBeDefined();
+      expect(visionUpstream.type).toBe('lemonade');
+      expect(visionUpstream.models).toContain('llama-3.2-11b-vision');
+      expect(visionUpstream.tier).toBe('tier-4');
+      expect(visionUpstream.capabilities).toContain('vision');
+
+      // Verify Claude is not present
+      const claudeUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'claude-code-artist-1');
+      expect(claudeUpstream).toBeUndefined();
     });
   });
 });
