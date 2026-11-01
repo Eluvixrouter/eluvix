@@ -497,7 +497,7 @@ export default function Home() {
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xl">🔀</span>
-              <h3 className="font-bold text-slate-100 text-base">Billama Visual Node Routing Editor</h3>
+              <h3 className="font-bold text-slate-100 text-base">Eluvix Visual Node Routing Editor</h3>
               <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-[10px] font-mono px-2 py-0.5 rounded-full">
                 Interactive Canvas
               </span>
