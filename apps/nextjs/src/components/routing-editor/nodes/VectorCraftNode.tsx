@@ -146,7 +146,9 @@ export default function VectorCraftNode({ id, data }: { id: string; data: any })
       <Handle
         type="target"
         position={Position.Left}
-        className="w-3.5 h-3.5 bg-pink-500 -left-2"
+        id="vectorcraft-in"
+        className="w-3.5 h-3.5 bg-pink-500 -left-2 transition hover:scale-125"
+        title="Agent Commands & Canvas Writes in (JSON-RPC)"
       />
 
       {/* Header */}
@@ -442,15 +444,18 @@ export default function VectorCraftNode({ id, data }: { id: string; data: any })
           >
             $ {cliPreview}
           </div>
-          <div className="grid grid-cols-3 gap-1 text-[9px] font-mono text-gray-400">
-            <div className="bg-gray-950 px-1.5 py-1 rounded border border-gray-800 text-center">
+          <div className="grid grid-cols-4 gap-1 text-[9px] font-mono text-gray-400">
+            <div className="bg-gray-950 px-1 py-1 rounded border border-gray-800 text-center" title="Active MCP Tools">
               🛠️ {toolCountLabel}
             </div>
-            <div className="bg-gray-950 px-1.5 py-1 rounded border border-gray-800 text-center">
+            <div className="bg-gray-950 px-1 py-1 rounded border border-gray-800 text-center" title="Connection Mode">
               🔌 {spec.defaultControlPort ? `:${spec.defaultControlPort}` : 'stdio'}
             </div>
-            <div className="bg-gray-950 px-1.5 py-1 rounded border border-gray-800 text-center">
+            <div className="bg-gray-950 px-1 py-1 rounded border border-gray-800 text-center" title="Export File Format">
               📦 .{defaultExportFormat}
+            </div>
+            <div className="bg-pink-950/40 text-pink-300 px-1 py-1 rounded border border-pink-900/60 text-center" title="Bi-directional MCP: Read state & Write shapes/files">
+              ↔️ R/W
             </div>
           </div>
         </div>
@@ -461,6 +466,7 @@ export default function VectorCraftNode({ id, data }: { id: string; data: any })
         position={Position.Right}
         id="vectorcraft-out"
         className="w-3.5 h-3.5 bg-pink-500 -right-2 transition hover:scale-125"
+        title="MCP Tool Exposure & Canvas State out"
       />
     </div>
   );

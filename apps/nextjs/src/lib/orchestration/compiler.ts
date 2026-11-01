@@ -1750,8 +1750,13 @@ function generateAgentGatewayJson(
       .flat()
       .filter(Boolean);
 
+    // Deduplicate tools in case of bidirectional or multiple edges
+    const dedupedTools = Array.from(
+      new Map(gatewayTools.map(t => [t.name, t])).values()
+    );
+
     if (data.enableNativeTools !== false) {
-      gatewayTools.push({ name: 'native_tools', endpoint: 'local:///api/v1/tools', executionMode: 'auto', timeoutMs: 10000 });
+      dedupedTools.push({ name: 'native_tools', endpoint: 'local:///api/v1/tools', executionMode: 'auto', timeoutMs: 10000 });
     }
 
     return {
@@ -1761,7 +1766,7 @@ function generateAgentGatewayJson(
       toolTimeoutMs: Number(data.toolTimeoutMs ?? 10000),
       sanitizeToolOutput: data.sanitizeToolOutput !== false,
       protocols: ['mcp', 'a2a'],
-      mcpTools: gatewayTools.length > 0 ? gatewayTools : undefined
+      mcpTools: dedupedTools.length > 0 ? dedupedTools : undefined
     };
   });
 

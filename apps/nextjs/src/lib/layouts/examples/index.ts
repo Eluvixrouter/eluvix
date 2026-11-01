@@ -1583,6 +1583,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-sw-opencode', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#f59e0b' } },
       { id: 'e-sw-claudecode', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'claude-code-artist-1', animated: true, style: { stroke: '#a855f7' } },
       { id: 'e-vc-gw', source: 'vectorcraft-node-1', target: 'agent-gateway-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 3 } },
+      { id: 'e-gw-vc-write', source: 'agent-gateway-1', target: 'vectorcraft-node-1', targetHandle: 'vectorcraft-in', animated: true, style: { stroke: '#ec4899', strokeDasharray: '4 4' } },
       { id: 'e-gw-opencode', source: 'agent-gateway-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 2 } },
       { id: 'e-opencode-obs', source: 'opencode-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-claudecode-obs', source: 'claude-code-artist-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
