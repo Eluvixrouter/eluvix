@@ -8,6 +8,12 @@ import {
   generateHostFabricTuningScript
 } from '@eluvix/router-core/clos-fabric';
 import { generateModelOptNvfp4Script } from '@eluvix/router-core/microscaling';
+import {
+  FLASH_ATTENTION_BENCHMARK_TABLE,
+  planWarpSpecializedRegisterBudget,
+  analyzePingPongScheduleOverlap,
+  analyzeBlackwellTmemArchitecture
+} from '@eluvix/router-core/flash-attention-kernels';
 
 interface GpuInfo {
   vendor: string;
@@ -2169,6 +2175,120 @@ export default function ProviderPage() {
             </pre>
           </div>
         </div>
+
+        {/* FlashAttention-3 Warp-Specialization & Blackwell tcgen05 TMEM Kernel Lab */}
+        {(() => {
+          const regPlan = planWarpSpecializedRegisterBudget({
+            producerRegsPerThread: 40,
+            consumerRegsPerThread: 232,
+            consumerWarpgroups: 2
+          });
+          const pingPong = analyzePingPongScheduleOverlap({ smArch: 'sm_90a', precision: 'BF16' });
+          const blackwellTmem = analyzeBlackwellTmemArchitecture({ ctaClusterSize: 2 });
+          const benchmarkRows = Object.values(FLASH_ATTENTION_BENCHMARK_TABLE);
+          return (
+            <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl space-y-5">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-3 border-b border-slate-800 gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider">
+                      CUDA Kernel Co-Design Lab
+                    </span>
+                    <span className="bg-cyan-950 text-cyan-300 text-[10px] px-2 py-0.5 rounded border border-cyan-800 font-mono font-semibold">
+                      SM90a WGMMA &amp; SM100 tcgen05
+                    </span>
+                  </div>
+                  <h2 className="text-base font-bold text-slate-100 mt-1">
+                    FlashAttention-3 Warp-Specialization, TMA 128B Swizzling &amp; Blackwell 256 KB TMEM
+                  </h2>
+                </div>
+                <div className="text-[11px] text-slate-400 font-mono">
+                  64:1 Tensor Core vs. SFU Asymmetry ({pingPong.throughputAsymmetryRatio}:1 on H100)
+                </div>
+              </div>
+
+              {/* Hardware Register File & TMEM Telemetry Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-400">Dynamic Register Budget (setmaxnreg)</div>
+                  <div className="text-sm font-mono font-bold text-cyan-300 mt-1">
+                    {regPlan.totalAllocatedRegisters.toLocaleString()} / {regPlan.smRegisterFileCapacity.toLocaleString()} regs
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                    WG0: {regPlan.producerRegsPerThread} regs | WG1/WG2: {regPlan.consumerRegsPerThread} regs (0 spill)
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-400">Ping-Pong Softmax/WGMMA Overlap</div>
+                  <div className="text-sm font-mono font-bold text-emerald-300 mt-1">
+                    {pingPong.speedupOverSynchronousFa2}x vs. Sync FA2
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                    {pingPong.pingPongOverlappedTensorCoreUtilPct}% vs. {pingPong.synchronousSimtTensorCoreUtilPct}% SOL
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-400">Blackwell Dedicated TMEM (SM100)</div>
+                  <div className="text-sm font-mono font-bold text-purple-300 mt-1">
+                    {blackwellTmem.tmemCapacityKbPerSm} KB ({blackwellTmem.tmemColumns}×{blackwellTmem.tmemLanes}×4B)
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                    Frees {blackwellTmem.rmemAccumulatorRegistersSavedPerThread} accumulator regs/thread
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3">
+                  <div className="text-[11px] text-slate-400">2-CTA Cooperative MMA (cta_group::2)</div>
+                  <div className="text-sm font-mono font-bold text-amber-300 mt-1">
+                    -{blackwellTmem.kvHbmReloadReductionPct}% HBM KV Traffic
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                    {blackwellTmem.mmaInstruction.slice(0, 32)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Benchmark Comparison Table */}
+              <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950/60">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-slate-900/90 text-slate-400 font-semibold border-b border-slate-800">
+                    <tr>
+                      <th className="p-2.5">Attention Kernel Implementation</th>
+                      <th className="p-2.5">Hardware</th>
+                      <th className="p-2.5">Precision</th>
+                      <th className="p-2.5">Achieved TFLOPS/s</th>
+                      <th className="p-2.5">SOL Utilization</th>
+                      <th className="p-2.5">Speedup</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {benchmarkRows.map((row) => (
+                      <tr
+                        key={row.id}
+                        className={
+                          row.id === 'blackwell-tcgen05-tmem'
+                            ? 'bg-emerald-950/25 text-emerald-200 font-semibold'
+                            : row.id === 'fa3-fp8-hadamard'
+                            ? 'bg-cyan-950/25 text-cyan-200 font-semibold'
+                            : 'hover:bg-slate-900/40 text-slate-300'
+                        }
+                      >
+                        <td className="p-2.5 font-sans font-semibold">{row.name}</td>
+                        <td className="p-2.5">{row.silicon}</td>
+                        <td className="p-2.5">{row.precision}</td>
+                        <td className="p-2.5 text-cyan-300 font-bold">{row.measuredTflops.toLocaleString()} TFLOPS</td>
+                        <td className="p-2.5 text-emerald-400 font-bold">{row.tensorCoreUtilizationPct}%</td>
+                        <td className="p-2.5 text-amber-300 font-bold">{row.relativeSpeedup}x</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Live Job Feed */}
         <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-6 shadow-xl">

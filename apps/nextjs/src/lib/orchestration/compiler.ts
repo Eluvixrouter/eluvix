@@ -25,6 +25,10 @@ import {
   type ArtCraftAppId,
   type ArtCraftMcpConfig
 } from '@eluvix/router-core/artcraft-mcp';
+import {
+  generateFlashAttentionKernelLaunchScript,
+  type AttentionKernelConfig
+} from '@eluvix/router-core/flash-attention-kernels';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -500,6 +504,11 @@ function generateEluvixConfig(
 
     const fabricRaw = (node.data as any)?.fabric;
     const fabricConfig = fabricRaw ? { ...fabricRaw } : undefined;
+    const attentionRaw = (node.data as any)?.attentionKernel;
+    const attentionKernelConfig: AttentionKernelConfig | undefined =
+      attentionRaw && attentionRaw.enabled !== false
+        ? { ...attentionRaw, enabled: true }
+        : undefined;
     const crsCfg = buildCrsCfgForNode(node);
     const vcCfg = buildVectorCraftCfgForNode(node);
     const acCfg = buildArtCraftCfgForNode(node);
@@ -523,6 +532,7 @@ function generateEluvixConfig(
       ...(confidentialCfg ? { confidential: confidentialCfg } : {}),
       ...(quantizationConfig ? { quantization: quantizationConfig } : {}),
       ...(fabricConfig ? { fabric: fabricConfig } : {}),
+      ...(attentionKernelConfig ? { attentionKernel: attentionKernelConfig } : {}),
       ...(crsCfg ? { crs: crsCfg } : {}),
       ...(vcCfg ? { vectorcraft: vcCfg } : {}),
       ...(acCfg ? { artcraft: acCfg } : {})
@@ -990,6 +1000,10 @@ function generateEluvixConfig(
       : crsNodeData.crsPolicy && crsNodeData.crsPolicy !== 'disabled'
       ? String(crsNodeData.crsPolicy)
       : undefined;
+  const resolvedAttentionPolicy =
+    swData.attentionPolicy && swData.attentionPolicy !== 'disabled'
+      ? String(swData.attentionPolicy)
+      : undefined;
 
   const thresholds = (swData.complexityThresholds || {}) as Record<string, any>;
   const switchyardConfig = switchyard ? {
@@ -1006,6 +1020,7 @@ function generateEluvixConfig(
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
     ...(resolvedCrsPolicy ? { crsPolicy: resolvedCrsPolicy } : {}),
+    ...(resolvedAttentionPolicy ? { attentionPolicy: resolvedAttentionPolicy } : {}),
     complexityThresholds: {
       moderate: Number(thresholds.moderate ?? 300),
       heavy: Number(thresholds.heavy ?? 1500),
@@ -1192,6 +1207,7 @@ function generateEluvixConfig(
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
     ...(resolvedCrsPolicy ? { crsPolicy: resolvedCrsPolicy } : {}),
+    ...(resolvedAttentionPolicy ? { attentionPolicy: resolvedAttentionPolicy } : {}),
     strategy: switchyardStrategy,
     fallbackStrategy: switchyardStrategy === 'round-robin' ? 'round-robin' : 'priority',
     switchyard: switchyardConfig,
@@ -2034,6 +2050,19 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
       parts.push(`  --decode ${decodeEndpoint} \\`);
       parts.push(`  --host 0.0.0.0 --port 8000`);
       parts.push(`EOF\n`);
+
+      const attnCfg = (node.data as any)?.attentionKernel;
+      if (attnCfg && attnCfg.enabled !== false) {
+        parts.push(
+          generateFlashAttentionKernelLaunchScript(
+            String(node.id),
+            'sglang',
+            String(rawModel),
+            attnCfg
+          )
+        );
+        parts.push('');
+      }
     });
   }
 
@@ -2127,6 +2156,19 @@ export function generateDisaggregatedLaunchScripts(vllmNodes: Node[], sglangNode
       parts.push(`  --gpu-memory-utilization 0.93 \\`);
       parts.push(`  --kv-transfer-config '{"kv_connector": "NixlConnector", "kv_role": "kv_both"}'`);
       parts.push(`EOF\n`);
+
+      const attnCfg = (node.data as any)?.attentionKernel;
+      if (attnCfg && attnCfg.enabled !== false) {
+        parts.push(
+          generateFlashAttentionKernelLaunchScript(
+            String(node.id),
+            'vllm',
+            String(rawModel),
+            attnCfg
+          )
+        );
+        parts.push('');
+      }
     });
   }
 

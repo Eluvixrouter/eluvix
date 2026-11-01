@@ -64,6 +64,9 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
   const [srv6UsidCarrier, setSrv6UsidCarrier] = useState<string>(
     data?.fabric?.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::'
   );
+  const [attentionBackend, setAttentionBackend] = useState<string>(
+    data?.attentionKernel?.backend || 'blackwell-tcgen05-tmem'
+  );
 
   const dataRef = useRef(data);
   dataRef.current = data;
@@ -657,6 +660,60 @@ export default function SglangNode({ id, data }: { id: string; data: any }) {
               placeholder="fcbb:bb00:0202:0104:0040::"
             />
           )}
+        </div>
+
+        {/* FlashAttention-3 & Blackwell tcgen05 Kernel Controls */}
+        <div className="pt-2 border-t border-gray-800 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <label className="text-[10px] font-semibold text-emerald-400 flex items-center gap-1">
+              <span>⚡</span> Attention Kernel (FA3 / tcgen05)
+            </label>
+            <span className="text-[9px] font-mono text-emerald-300/80">
+              {attentionBackend === 'blackwell-tcgen05-tmem'
+                ? '3,080 TFLOPS (TMEM)'
+                : attentionBackend === 'fa3-fp8-hadamard'
+                ? '1,195 TFLOPS (FP8)'
+                : attentionBackend === 'fa3-wgmma-tma'
+                ? '742 TFLOPS (75%)'
+                : attentionBackend === 'fa2-cp-async'
+                ? '415 TFLOPS (42%)'
+                : '312 TFLOPS (31.5%)'}
+            </span>
+          </div>
+          <select
+            className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-emerald-500 rounded p-1 text-white text-[10px] font-mono outline-none"
+            value={attentionBackend}
+            onChange={(e) => {
+              const next = e.target.value;
+              setAttentionBackend(next);
+              const isBlackwell = next === 'blackwell-tcgen05-tmem';
+              const isLegacy = next === 'fa2-cp-async' || next === 'pytorch-sdpa';
+              syncData({
+                attentionKernel: {
+                  ...(dataRef.current?.attentionKernel || {}),
+                  enabled: true,
+                  backend: next,
+                  smArch: isBlackwell ? 'sm_100a' : 'sm_90a',
+                  mmaPrimitive: isBlackwell ? 'tcgen05.mma' : isLegacy ? 'mma.sync' : 'wgmma.mma_async',
+                  tmaSwizzle: isLegacy ? 'none' : '128B',
+                  warpSpecialized: !isLegacy,
+                  pingPongSchedule: !isLegacy,
+                  fp8HadamardIncoherent: next === 'fa3-fp8-hadamard' || isBlackwell,
+                  blackwellTmem: isBlackwell,
+                  ctaPair2Sm: isBlackwell,
+                  pipelineStages: isBlackwell ? 4 : isLegacy ? 1 : 3,
+                  producerMaxRegs: isLegacy ? 128 : 40,
+                  consumerMaxRegs: isLegacy ? 128 : 232
+                }
+              });
+            }}
+          >
+            <option value="blackwell-tcgen05-tmem">Blackwell SM100 tcgen05 + 256KB TMEM (2-CTA)</option>
+            <option value="fa3-fp8-hadamard">FlashAttention-3 FP8 + Hadamard Ping-Pong (H100)</option>
+            <option value="fa3-wgmma-tma">FlashAttention-3 BF16 (WGMMA + TMA 128B Swizzle)</option>
+            <option value="fa2-cp-async">FlashAttention-2 BF16 (Synchronous mma.sync)</option>
+            <option value="pytorch-sdpa">PyTorch Eager SDPA (Fallback)</option>
+          </select>
         </div>
       </div>
 

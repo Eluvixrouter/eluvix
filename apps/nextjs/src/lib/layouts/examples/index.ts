@@ -1625,6 +1625,166 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-lem-reasoning-obs', source: 'lemonade-reasoning-1', target: 'observability-1', animated: true, style: { stroke: '#3b82f6' } },
       { id: 'e-lem-vision-obs', source: 'lemonade-vision-1', target: 'observability-1', animated: true, style: { stroke: '#a855f7' } }
     ]
+  },
+
+  // 20. FlashAttention-3 Warp-Specialized & Blackwell tcgen05 TMEM Cluster
+  {
+    id: 'fa3-warp-specialized-hopper-blackwell-cluster',
+    name: 'FlashAttention-3 Warp-Specialized & Blackwell tcgen05 TMEM Cluster',
+    description: 'Hardware-co-designed attention routing across NVIDIA B200 (SM100 tcgen05.mma + 256 KB TMEM + 2-CTA cooperative KV sharing at 3,080 TFLOPS) and H100 (SM90a FlashAttention-3 FP8 Ping-Pong + 16x16 Walsh-Hadamard incoherent processing at 1,195 TFLOPS) with TMA 128B swizzling and setmaxnreg register reallocation.',
+    category: 'local-first',
+    tags: ['flashattention-3', 'wgmma', 'tma', 'blackwell', 'tcgen05', 'tmem', 'fp8', 'hadamard', 'hopper', 'cuda'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.85 },
+    nodes: [
+      {
+        id: 'input-1',
+        type: 'inputNode',
+        position: { x: 40, y: 260 },
+        data: { label: 'Long-Context 32K Prompt Ingress' }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 340, y: 140 },
+        data: {
+          strategy: 'lowest-latency',
+          timeoutMs: 60000,
+          retryCount: 1,
+          spilloverThresholdMs: 15000,
+          codeEscalation: true,
+          kvPrefixAffinity: true,
+          prefillIsolationThresholdTokens: 4096,
+          quantizationPolicy: 'prefer-nvfp4-hadamard',
+          fabricPolicy: 'prefer-rail-optimized',
+          attentionPolicy: 'prefer-blackwell-tmem',
+          complexityThresholds: { moderate: 300, heavy: 1500, frontier: 6000 },
+          maxCostPerRequest: 0.05,
+          routes: [
+            { id: 'tier-1', name: 'Tier 1: Blackwell B200 tcgen05 TMEM (3.08 PFLOPS)', costLabel: '$0.00 / 1k', color: '#10b981' },
+            { id: 'tier-2', name: 'Tier 2: Hopper H100 FA3 FP8 Ping-Pong (1.20 PFLOPS)', costLabel: '$0.00 / 1k', color: '#06b6d4' }
+          ]
+        }
+      },
+      {
+        id: 'sglang-blackwell-1',
+        type: 'sglangNode',
+        position: { x: 780, y: 60 },
+        data: {
+          label: 'SGLang B200 SM100 (tcgen05 + 256KB TMEM)',
+          endpoint: 'http://10.200.1.10:30000',
+          priority: 40,
+          selectedModel: 'deepseek-ai/DeepSeek-R1-FP8',
+          models: ['deepseek-ai/DeepSeek-R1-FP8'],
+          disaggregation: {
+            role: 'prefill',
+            kvConnector: 'mooncake',
+            rdmaDevice: 'mlx5_0',
+            tensorParallelSize: 4,
+            kvCacheDtype: 'fp8_e4m3'
+          },
+          quantization: {
+            enabled: true,
+            format: 'nvfp4',
+            outlierMitigation: 'hadamard-quarot',
+            kvCacheDtype: 'fp8_e4m3'
+          },
+          fabric: {
+            enabled: true,
+            topology: 'rail-dlb-oooddp',
+            ncclPxn: true,
+            bgpUnnumberedEvpn: true,
+            dlbPacketSpraying: true,
+            oooDdpEnabled: true,
+            qpsPerConnection: 4
+          },
+          attentionKernel: {
+            enabled: true,
+            backend: 'blackwell-tcgen05-tmem',
+            smArch: 'sm_100a',
+            mmaPrimitive: 'tcgen05.mma',
+            tmaSwizzle: '128B',
+            warpSpecialized: true,
+            pingPongSchedule: true,
+            fp8HadamardIncoherent: true,
+            blackwellTmem: true,
+            ctaPair2Sm: true,
+            pipelineStages: 4,
+            producerMaxRegs: 40,
+            consumerMaxRegs: 232
+          }
+        }
+      },
+      {
+        id: 'vllm-hopper-fa3-1',
+        type: 'vllmNode',
+        position: { x: 780, y: 420 },
+        data: {
+          label: 'vLLM H100 SM90a (FA3 FP8 + Hadamard)',
+          endpoint: 'http://10.200.1.20:8000',
+          priority: 30,
+          selectedModel: 'meta-llama/Llama-3.3-70B-Instruct-FP8',
+          models: ['meta-llama/Llama-3.3-70B-Instruct-FP8'],
+          disaggregation: {
+            role: 'decode',
+            kvConnector: 'nixl',
+            rdmaDevice: 'mlx5_0:1',
+            tensorParallelSize: 4,
+            kvCacheDtype: 'fp8_e4m3',
+            sideChannelPort: 5557
+          },
+          quantization: {
+            enabled: true,
+            format: 'fp8_e4m3',
+            outlierMitigation: 'hadamard-quarot',
+            kvCacheDtype: 'fp8_e4m3'
+          },
+          fabric: {
+            enabled: true,
+            topology: 'rail-dlb-oooddp',
+            ncclPxn: true,
+            bgpUnnumberedEvpn: true,
+            dlbPacketSpraying: true,
+            oooDdpEnabled: true,
+            qpsPerConnection: 4
+          },
+          attentionKernel: {
+            enabled: true,
+            backend: 'fa3-fp8-hadamard',
+            smArch: 'sm_90a',
+            mmaPrimitive: 'wgmma.mma_async',
+            tmaSwizzle: '128B',
+            warpSpecialized: true,
+            pingPongSchedule: true,
+            fp8HadamardIncoherent: true,
+            blackwellTmem: false,
+            ctaPair2Sm: false,
+            pipelineStages: 3,
+            producerMaxRegs: 40,
+            consumerMaxRegs: 232
+          }
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1220, y: 240 },
+        data: {
+          projectName: 'fa3-hopper-blackwell-attention-telemetry',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-sw', source: 'input-1', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-sw-b200', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'sglang-blackwell-1', animated: true, style: { stroke: '#10b981', strokeWidth: 3 } },
+      { id: 'e-sw-h100', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'vllm-hopper-fa3-1', animated: true, style: { stroke: '#06b6d4', strokeWidth: 2 } },
+      { id: 'e-b200-obs', source: 'sglang-blackwell-1', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-h100-obs', source: 'vllm-hopper-fa3-1', target: 'observability-1', animated: true, style: { stroke: '#06b6d4' } }
+    ]
   }
 ];
 

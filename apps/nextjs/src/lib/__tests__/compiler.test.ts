@@ -581,5 +581,33 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       const claudeUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'claude-code-artist-1');
       expect(claudeUpstream).toBeUndefined();
     });
+
+    it('compiles FlashAttention-3 Warp-Specialized & Blackwell tcgen05 TMEM Cluster layout (Bundled Example 20)', async () => {
+      const { EXAMPLE_LAYOUTS } = await import('../layouts/examples/index');
+      const fa3Layout = EXAMPLE_LAYOUTS.find(l => l.id === 'fa3-warp-specialized-hopper-blackwell-cluster');
+      expect(fa3Layout).toBeDefined();
+
+      const result = compileGraph(fa3Layout!.nodes, fa3Layout!.edges);
+      expect(result.rawRouterConfig.attentionPolicy).toBe('prefer-blackwell-tmem');
+      expect(result.rawRouterConfig.switchyard?.attentionPolicy).toBe('prefer-blackwell-tmem');
+
+      const blackwellUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'sglang-blackwell-1');
+      expect(blackwellUpstream).toBeDefined();
+      expect(blackwellUpstream.attentionKernel?.backend).toBe('blackwell-tcgen05-tmem');
+      expect(blackwellUpstream.attentionKernel?.smArch).toBe('sm_100a');
+      expect(blackwellUpstream.attentionKernel?.blackwellTmem).toBe(true);
+      expect(blackwellUpstream.attentionKernel?.ctaPair2Sm).toBe(true);
+
+      const hopperUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'vllm-hopper-fa3-1');
+      expect(hopperUpstream).toBeDefined();
+      expect(hopperUpstream.attentionKernel?.backend).toBe('fa3-fp8-hadamard');
+      expect(hopperUpstream.attentionKernel?.smArch).toBe('sm_90a');
+      expect(hopperUpstream.attentionKernel?.fp8HadamardIncoherent).toBe(true);
+
+      expect(result.disaggregatedSetup).toContain('tcgen05.mma.cta_group::2.m256n128k32');
+      expect(result.disaggregatedSetup).toContain('setmaxnreg.dec.sync.aligned.u32 40');
+      expect(result.disaggregatedSetup).toContain('setmaxnreg.inc.sync.aligned.u32 232');
+      expect(result.disaggregatedSetup).toContain('CU_TENSOR_MAP_SWIZZLE_128B');
+    });
   });
 });

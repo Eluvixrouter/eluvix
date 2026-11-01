@@ -96,7 +96,7 @@ export default function LayoutBrowserModal({
   };
 
   const handleRestore = async () => {
-    if (!confirm('This will restore all 19 bundled example templates to ~/.config/eluvix/layouts. Continue?')) {
+    if (!confirm('This will restore all 20 bundled example templates to ~/.config/eluvix/layouts. Continue?')) {
       return;
     }
     setActionError(null);

@@ -39,6 +39,11 @@
       "types": "./dist/artcraft-mcp.d.ts",
       "import": "./dist/artcraft-mcp.js",
       "default": "./dist/artcraft-mcp.js"
+    },
+    "./flash-attention-kernels": {
+      "types": "./dist/flash-attention-kernels.d.ts",
+      "import": "./dist/flash-attention-kernels.js",
+      "default": "./dist/flash-attention-kernels.js"
     }
   },
   "type": "module",

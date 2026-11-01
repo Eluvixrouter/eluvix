@@ -42,6 +42,9 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [crsPolicy, setCrsPolicy] = useState<string>(
     data?.crsPolicy || 'disabled'
   );
+  const [attentionPolicy, setAttentionPolicy] = useState<string>(
+    data?.attentionPolicy || 'disabled'
+  );
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -362,6 +365,25 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
               <option value="disabled">Standard (No CRS Triage Required)</option>
               <option value="slice-and-verify">⚡ Slice &amp; Verify (Prefer CRS Slicer/Sanitizer)</option>
               <option value="strict-zero-false-positive">🛡️ Strict Zero-False-Positive (Require CRS Verifier)</option>
+            </select>
+          </div>
+
+          <div className="pt-1.5 border-t border-gray-800">
+            <label className="block text-[10px] font-semibold text-cyan-400 mb-1">
+              ⚡ FlashAttention-3 &amp; tcgen05 Kernel Policy
+            </label>
+            <select
+              className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-cyan-500 rounded p-1 text-white text-[10px] outline-none"
+              value={attentionPolicy}
+              onChange={(e) => {
+                setAttentionPolicy(e.target.value);
+                syncData({ attentionPolicy: e.target.value });
+              }}
+            >
+              <option value="disabled">Standard (Allow Any Attention Kernel)</option>
+              <option value="prefer-fa3-warp-specialized">⚡ Prefer FA3 Warp-Specialized (WGMMA + TMA 128B)</option>
+              <option value="prefer-blackwell-tmem">🚀 Prefer Blackwell SM100 tcgen05 + 256KB TMEM</option>
+              <option value="require-fp8-ping-pong">🛡️ Require FP8 Ping-Pong + Hadamard (Block FA2/SDPA)</option>
             </select>
           </div>
         </div>

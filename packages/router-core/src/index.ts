@@ -20,6 +20,11 @@ import {
   detectArtCraftAppsForPrompt,
   isArtCraftPrompt
 } from './artcraft-mcp.js';
+import {
+  type AttentionKernelConfig,
+  type AttentionRoutingPolicy,
+  FLASH_ATTENTION_BENCHMARK_TABLE
+} from './flash-attention-kernels.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -97,6 +102,10 @@ export interface SwitchyardConfig {
    * Neuro-Symbolic Cyber Reasoning System (CRS) & Backward Program Slicing policy.
    */
   crsPolicy?: CrsPolicy;
+  /**
+   * FlashAttention-3 Warp-Specialized (WGMMA + TMA Ping-Pong) & Blackwell tcgen05 + TMEM routing policy.
+   */
+  attentionPolicy?: AttentionRoutingPolicy;
 }
 
 export interface ModelGatewayConfig {
@@ -138,6 +147,7 @@ export interface RouterConfig {
   quantizationPolicy?: QuantizationPolicy;
   fabricPolicy?: FabricRoutingPolicy;
   crsPolicy?: CrsPolicy;
+  attentionPolicy?: AttentionRoutingPolicy;
   fallbackStrategy?: 'round-robin' | 'priority';
   switchyard?: SwitchyardConfig;
   modelGateway?: ModelGatewayConfig;
@@ -173,6 +183,7 @@ export * from './clos-fabric-routing.js';
 export * from './neuro-symbolic-crs.js';
 export * from './vectorcraft-mcp.js';
 export * from './artcraft-mcp.js';
+export * from './flash-attention-kernels.js';
 export * from './shell-utils.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -227,6 +238,7 @@ export interface RouteTraceStep {
     | 'quantization-microscaling'
     | 'clos-fabric-routing'
     | 'neuro-symbolic-crs'
+    | 'flash-attention-kernel'
     | 'memory'
     | 'memory-egress'
     | 'knowledge-rag'
@@ -340,6 +352,37 @@ export interface UpstreamConfig {
   crs?: CrsOverlayConfig;
   vectorcraft?: VectorCraftMcpConfig;
   artcraft?: ArtCraftMcpConfig;
+  attentionKernel?: AttentionKernelConfig;
+}
+
+/**
+ * Evaluates whether an upstream is equipped with a Warp-Specialized FlashAttention-3
+ * (`WGMMA` + `TMA` + `mbarrier` Ping-Pong) or Blackwell `tcgen05.mma` + `256 KB TMEM` kernel.
+ */
+export function isWarpSpecializedAttentionUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  if (upstream.capabilities?.includes('fa3-warp-specialized') || upstream.capabilities?.includes('blackwell-tmem')) {
+    return true;
+  }
+  const ak = upstream.attentionKernel;
+  if (!ak || ak.enabled === false) return false;
+  return (
+    ak.backend === 'fa3-wgmma-tma' ||
+    ak.backend === 'fa3-fp8-hadamard' ||
+    ak.backend === 'blackwell-tcgen05-tmem' ||
+    ak.warpSpecialized === true
+  );
+}
+
+/**
+ * Evaluates whether an upstream is explicitly configured with a legacy synchronous
+ * attention kernel (`pytorch-sdpa` or `fa2-cp-async`) that suffers from the 64:1 SFU softmax stall.
+ */
+export function isLegacySynchronousAttentionUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream) return false;
+  const ak = upstream.attentionKernel;
+  if (!ak || ak.enabled === false) return false;
+  return ak.backend === 'pytorch-sdpa' || ak.backend === 'fa2-cp-async';
 }
 
 /**
@@ -1687,6 +1730,24 @@ export class Eluvix {
           }
         );
       }
+      if (err?.attentionKernelUnavailable) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'attention_kernel_unavailable',
+              code: 'warp_specialized_attention_required'
+            }
+          }),
+          {
+            status: 503,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-attention-guard': 'DENIED_SYNCHRONOUS_KERNEL'
+            }
+          }
+        );
+      }
       throw err;
     }
     effectiveRequest = selection.effectiveRequest;
@@ -2364,6 +2425,29 @@ export class Eluvix {
                   upstream.fabric.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::'
                 );
               }
+            }
+            if (upstream.attentionKernel?.backend && upstream.attentionKernel.enabled !== false) {
+              const akBackend = upstream.attentionKernel.backend;
+              const akSpec =
+                FLASH_ATTENTION_BENCHMARK_TABLE[akBackend] ||
+                FLASH_ATTENTION_BENCHMARK_TABLE['fa3-fp8-hadamard'];
+              newResponse.headers.set('x-eluvix-attention-kernel', akBackend);
+              newResponse.headers.set(
+                'x-eluvix-cuda-arch',
+                upstream.attentionKernel.smArch || akSpec.smArch
+              );
+              newResponse.headers.set(
+                'x-eluvix-mma-primitive',
+                upstream.attentionKernel.mmaPrimitive || akSpec.mmaPrimitive
+              );
+              newResponse.headers.set(
+                'x-eluvix-tma-swizzle',
+                upstream.attentionKernel.tmaSwizzle || akSpec.tmaSwizzle
+              );
+              newResponse.headers.set(
+                'x-eluvix-tensor-core-util-pct',
+                `${akSpec.tensorCoreUtilizationPct}%`
+              );
             }
             if (isNeuroSymbolicCrsUpstream(upstream) || crsTriageResult?.detected) {
               const effCrsPolicy =
@@ -3126,6 +3210,71 @@ export class Eluvix {
           });
           targetUpstreams = [...crsCapable, ...rest];
         }
+      }
+    }
+
+    // FlashAttention-3 Warp-Specialized (WGMMA + TMA Ping-Pong) & Blackwell tcgen05 + TMEM Routing Policy
+    const ATTN_RANKS: Record<AttentionRoutingPolicy, number> = {
+      'disabled': 0,
+      'prefer-fa3-warp-specialized': 1,
+      'prefer-blackwell-tmem': 2,
+      'require-fp8-ping-pong': 3
+    };
+    const serverAttnPolicy: AttentionRoutingPolicy =
+      switchyardConfig.attentionPolicy ||
+      this.config.attentionPolicy ||
+      'disabled';
+    const clientAttnPolicy = effectiveRequest.metadata?.attentionPolicy as AttentionRoutingPolicy | undefined;
+    const attentionPolicy: AttentionRoutingPolicy =
+      clientAttnPolicy && Object.prototype.hasOwnProperty.call(ATTN_RANKS, clientAttnPolicy)
+        ? (ATTN_RANKS[clientAttnPolicy] > ATTN_RANKS[serverAttnPolicy] ? clientAttnPolicy : serverAttnPolicy)
+        : serverAttnPolicy;
+
+    if (attentionPolicy === 'require-fp8-ping-pong') {
+      const warpSpecialized = targetUpstreams.filter(
+        u => !isLegacySynchronousAttentionUpstream(u) && isWarpSpecializedAttentionUpstream(u)
+      );
+      const excludedSync = targetUpstreams.filter(u => !warpSpecialized.includes(u));
+      steps.push({
+        stage: 'flash-attention-kernel',
+        detail:
+          'attentionPolicy=require-fp8-ping-pong: requiring Warp-Specialized FlashAttention-3 (WGMMA + TMA Ping-Pong) or Blackwell tcgen05 + 256KB TMEM upstreams to avoid 64:1 SFU MUFU.EX2 softmax stalls',
+        kept: warpSpecialized.map(u => u.id),
+        removed: excludedSync.map(u => u.id)
+      });
+      if (warpSpecialized.length === 0) {
+        const err: any = new Error(
+          `No Warp-Specialized FlashAttention-3 / Blackwell tcgen05+TMEM upstream available for model: ${effectiveRequest.model} (attentionPolicy: require-fp8-ping-pong)`
+        );
+        err.routeSteps = steps;
+        err.attentionKernelUnavailable = true;
+        throw err;
+      }
+      targetUpstreams = warpSpecialized;
+    }
+
+    if (
+      attentionPolicy === 'prefer-fa3-warp-specialized' ||
+      attentionPolicy === 'prefer-blackwell-tmem' ||
+      attentionPolicy === 'require-fp8-ping-pong'
+    ) {
+      const fa3Upstreams = targetUpstreams.filter(u => isWarpSpecializedAttentionUpstream(u));
+      if (fa3Upstreams.length > 0) {
+        const attnScore = (u: UpstreamConfig): number => {
+          const b = u.attentionKernel?.backend;
+          if (b === 'blackwell-tcgen05-tmem') return 4;
+          if (b === 'fa3-fp8-hadamard') return 3;
+          if (b === 'fa3-wgmma-tma') return 2;
+          return 1;
+        };
+        const sortedFa3 = [...fa3Upstreams].sort((a, b) => attnScore(b) - attnScore(a));
+        const rest = targetUpstreams.filter(u => !fa3Upstreams.includes(u));
+        steps.push({
+          stage: 'flash-attention-kernel',
+          detail: `attentionPolicy=${attentionPolicy}: prioritizing Warp-Specialized TMA + WGMMA / tcgen05 + 256KB TMEM attention kernels (75%-85% Tensor Core utilization)`,
+          kept: sortedFa3.map(u => u.id)
+        });
+        targetUpstreams = [...sortedFa3, ...rest];
       }
     }
 
