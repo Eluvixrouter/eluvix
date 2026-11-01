@@ -1459,6 +1459,134 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-sglang-obs', source: 'sglang-rail-dlb-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-vllm-obs', source: 'vllm-rail-srv6-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+
+  // 19. OpenCode Agentic Coder + VectorCraft Generative Art Studio
+  {
+    id: 'opencode-vectorcraft-art-studio',
+    name: 'OpenCode + VectorCraft Generative Art Studio',
+    description: 'Autonomous creative pipeline coupling OpenCode (:4096) to VectorCraft MCP (:7979) via an Agent Gateway. Allows AI agents to draft vector shapes, cubic Bézier paths, icon sets, and posters with full SVG/PDF export.',
+    category: 'agent',
+    tags: ['opencode', 'vectorcraft', 'artcraft', 'art', 'svg', 'mcp', 'gateway'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-11-01T00:00:00.000Z',
+    updatedAt: '2026-11-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.85 },
+    nodes: [
+      {
+        id: 'input-1',
+        type: 'inputNode',
+        position: { x: 50, y: 220 },
+        data: { label: 'Creative Brief / Art Prompt' }
+      },
+      {
+        id: 'privacy-guard-1',
+        type: 'privacyGuardNode',
+        position: { x: 300, y: 180 },
+        data: {
+          action: 'anonymize',
+          detectPii: { apiKey: true, ssn: true, creditCard: true, email: true, phone: true }
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 620, y: 180 },
+        data: {
+          strategy: 'cost-complexity',
+          failover: 'enabled',
+          codeEscalation: true
+        }
+      },
+      {
+        id: 'vectorcraft-node-1',
+        type: 'vectorcraftNode',
+        position: { x: 620, y: 440 },
+        data: {
+          label: 'VectorCraft Art Studio',
+          app: 'vectorcraft',
+          enabledApps: ['vectorcraft'],
+          backendMode: 'auto',
+          cliCommand: 'vectorcraft-cli',
+          controlAddress: '127.0.0.1:7979',
+          defaultPromptWorkflow: 'poster',
+          autoApproveTier: 'canvas-draw',
+          defaultExportFormat: 'svg',
+          readRoots: ['/workspace/assets'],
+          writeRoots: ['/workspace/exports']
+        }
+      },
+      {
+        id: 'agent-gateway-1',
+        type: 'agentGatewayNode',
+        position: { x: 960, y: 440 },
+        data: {
+          label: 'Studio Tool Gateway',
+          accessPolicy: 'restrictive',
+          toolFilterMode: 'all',
+          toolTimeoutMs: 30000,
+          sanitizeToolOutput: true,
+          enableNativeTools: true
+        }
+      },
+      {
+        id: 'opencode-harness-1',
+        type: 'harnessNode',
+        position: { x: 960, y: 140 },
+        data: {
+          label: 'OpenCode Creative Agent',
+          kind: 'opencode',
+          endpoint: 'http://localhost:4096',
+          agentId: 'art-director',
+          approvals: 'auto-approve-readonly',
+          sessionMode: 'per-eluvix-session',
+          priority: 30,
+          providerIsLocal: true,
+          autoApproveTools: [
+            'doc_inspect',
+            'draw_shape',
+            'draw_path',
+            'object.setProps',
+            'command_batch',
+            'render_preview',
+            'export'
+          ]
+        }
+      },
+      {
+        id: 'claude-code-artist-1',
+        type: 'claudeCodeNode',
+        position: { x: 960, y: 280 },
+        data: {
+          label: 'Claude Code (Illustrator)',
+          model: 'claude-3-7-sonnet',
+          permissionMode: 'accept-non-destructive',
+          extendedThinking: true,
+          thinkingBudget: 4096,
+          persona: 'vector-illustrator'
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1380, y: 200 },
+        data: {
+          projectName: 'opencode-vectorcraft-studio',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-priv', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-priv-sw', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e-sw-opencode', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#f59e0b' } },
+      { id: 'e-sw-claudecode', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'claude-code-artist-1', animated: true, style: { stroke: '#a855f7' } },
+      { id: 'e-vc-gw', source: 'vectorcraft-node-1', target: 'agent-gateway-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 3 } },
+      { id: 'e-gw-opencode', source: 'agent-gateway-1', target: 'opencode-harness-1', animated: true, style: { stroke: '#ec4899', strokeWidth: 2 } },
+      { id: 'e-opencode-obs', source: 'opencode-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-claudecode-obs', source: 'claude-code-artist-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
 

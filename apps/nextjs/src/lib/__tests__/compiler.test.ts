@@ -514,5 +514,48 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(result.artcraftSetup).toContain('claude mcp add cadcraft');
       expect(result.artcraftSetup).toContain('claude mcp add craft-anything');
     });
+
+    it('compiles OpenCode + VectorCraft Art Studio layout (Bundled Example 19)', async () => {
+      const { EXAMPLE_LAYOUTS } = await import('../layouts/examples/index');
+      const studioLayout = EXAMPLE_LAYOUTS.find(l => l.id === 'opencode-vectorcraft-art-studio');
+      expect(studioLayout).toBeDefined();
+
+      const result = compileGraph(studioLayout!.nodes, studioLayout!.edges);
+      expect(result.rawRouterConfig.vectorcraft?.enabled).toBe(true);
+      expect(result.rawRouterConfig.vectorcraft?.cliCommand).toBe('vectorcraft-cli');
+      expect(result.rawRouterConfig.vectorcraft?.defaultExportFormat).toBe('svg');
+
+      const opencodeUpstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'opencode-harness-1');
+      expect(opencodeUpstream).toBeDefined();
+      expect(opencodeUpstream.type).toBe('harness');
+      expect(opencodeUpstream.harness?.kind).toBe('opencode');
+      expect(opencodeUpstream.harness?.providerIsLocal).toBe(true);
+      expect(opencodeUpstream.vectorcraft?.enabled).toBe(true);
+
+      // Verify mcpServers injected into the OpenCode harness
+      expect(opencodeUpstream.harness.mcpServers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'vectorcraft',
+            transport: 'stdio'
+          })
+        ])
+      );
+
+      // Verify autoApproveTools contains vectorcraft tools
+      expect(opencodeUpstream.harness.autoApproveTools).toContain('draw_shape');
+      expect(opencodeUpstream.harness.autoApproveTools).toContain('draw_path');
+      expect(opencodeUpstream.harness.autoApproveTools).toContain('command_batch');
+
+      // Verify Agent Gateway tool list
+      const parsedGw = JSON.parse(result.agentGatewayJson);
+      expect(parsedGw.gateways[0].mcpTools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'vectorcraft'
+          })
+        ])
+      );
+    });
   });
 });
