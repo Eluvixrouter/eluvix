@@ -123,6 +123,13 @@ export function getOrCreateDesktopToken(appName = 'eluvix'): DesktopTokenResult 
     try {
       const existing = fs.readFileSync(tokenFile, 'utf8').trim();
       if (existing) {
+        // Tighten pre-existing files too: a token created by an older
+        // build, copied in, or restored from backup may carry loose modes,
+        // and any local user who can read it can call the desktop server.
+        // Best-effort — a chmod failure must not break token loading.
+        try {
+          fs.chmodSync(tokenFile, 0o600);
+        } catch {}
         return { token: existing, tokenFile, isNew: false };
       }
     } catch {}

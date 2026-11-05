@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionUserId, extractApiTokenFromHeaders } from '@/lib/caller-identity';
+import { resolveSessionIdentity, extractApiTokenFromHeaders } from '@/lib/caller-identity';
 import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +38,21 @@ export async function POST(req: Request) {
           }
         },
         { status }
+      );
+    }
+    // Readonly named keys may not execute completions (quota spend,
+    // harness triggers, memory write-back). Session readonly callers are
+    // blocked by the middleware blocklist; this is the key path.
+    if (resolved.role === 'readonly') {
+      return NextResponse.json(
+        {
+          error: {
+            message: 'Forbidden: read-only users cannot execute chat requests.',
+            type: 'insufficient_role',
+            code: 'forbidden_readonly_user'
+          }
+        },
+        { status: 403 }
       );
     }
     keyUserId = resolved.userId;
@@ -104,7 +119,22 @@ export async function POST(req: Request) {
     // are self-asserted and are deliberately NOT consulted (audit H-2):
     // keyless, sessionless callers that reach this route passed the
     // middleware with the admin bearer, so they belong to 'default'.
-    const sessionUserId = keyUserId ? null : await resolveSessionUserId(req);
+    const sessionIdentity = keyUserId ? null : await resolveSessionIdentity(req);
+    // Session readonly callers are blocked by the middleware blocklist;
+    // this is the same check in-handler so the route is safe on its own.
+    if (sessionIdentity?.role === 'readonly') {
+      return NextResponse.json(
+        {
+          error: {
+            message: 'Forbidden: read-only users cannot execute chat requests.',
+            type: 'insufficient_role',
+            code: 'forbidden_readonly_user'
+          }
+        },
+        { status: 403 }
+      );
+    }
+    const sessionUserId = sessionIdentity?.userId ?? null;
     const headerOrigin = req.headers.get('x-eluvix-origin');
     const origin: RequestScope['origin'] =
       keyOrigin ||

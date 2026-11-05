@@ -39,7 +39,13 @@ export async function POST(req: Request) {
   }
 
   try {
-    const updated = saveConfig(body);
+    // Merge over the live config: a partial body must not silently drop
+    // sections the caller never mentioned (egressPolicy, memory). Absent
+    // egressPolicy means allow-egress in router-core, so a replace would
+    // fail-open egress for a local-only deployment. Explicit nulls still
+    // go through saveConfig validation and are rejected where invalid.
+    const merged = { ...getConfig(), ...body };
+    const updated = saveConfig(merged);
     const isAdmin = identity.ok && identity.role === 'admin';
     if (isAdmin) {
       return NextResponse.json({ success: true, config: updated });

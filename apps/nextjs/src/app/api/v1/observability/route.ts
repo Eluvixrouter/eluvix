@@ -279,8 +279,17 @@ export async function GET(req: Request) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(req: Request) {
   try {
+    // Purging the audit trail is admin-only: the middleware readonly block
+    // alone would still let any operator session wipe the request log.
+    const caller = await resolveCallerIdentity(req);
+    if (!caller.ok) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+    if (caller.role !== 'admin') {
+      return NextResponse.json({ success: false, error: 'Forbidden: only admins can purge request logs' }, { status: 403 });
+    }
     const db = getDb();
     db.exec('DELETE FROM request_logs;');
     return NextResponse.json({ success: true, message: 'All request logs have been purged.' });
@@ -289,17 +298,24 @@ export async function DELETE() {
   }
 }
 
-export async function POST() {
+export async function POST(req: Request) {
   try {
     const router = getRouter();
     const startTime = Date.now();
+
+    // Attribute the probe to its caller, not the admin partition: the old
+    // hardcoded 'default' let any operator spend completions billed to the
+    // admin store and pollute its memory with probe exchanges. Admin
+    // bearer callers still resolve to 'default'; unauthenticated callers
+    // cannot reach this route (middleware), so the fallback is defensive.
+    const caller = await resolveCallerIdentity(req);
+    const pingUserId = caller.ok ? caller.userId : 'default';
 
     const response = await router.routeChatCompletion({
       model: 'auto',
       messages: [{ role: 'user', content: 'Eluvix health ping' }],
     }, {
-      // Internal admin health probe: explicitly the 'default' partition.
-      scope: { userId: 'default' }
+      scope: { userId: pingUserId }
     });
 
     const durationMs = Date.now() - startTime;

@@ -260,8 +260,13 @@ export class DesktopRouterServer extends EventEmitter {
     if (newConfig.upstreams && !Array.isArray(newConfig.upstreams)) {
       throw new Error('upstreams must be an array');
     }
-    this.config = { ...this.config, ...newConfig };
-    this.router = new Eluvix(this.config);
+    // Construct first, then swap: if the Eluvix constructor throws on the
+    // merged config, the old config/router pair stays intact instead of
+    // leaving config updated while the router still serves the old one.
+    const nextConfig = { ...this.config, ...newConfig };
+    const nextRouter = new Eluvix(nextConfig);
+    this.config = nextConfig;
+    this.router = nextRouter;
     this.emit('config-updated', this.config);
   }
 
