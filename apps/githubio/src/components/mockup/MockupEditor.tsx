@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import { EXAMPLE_LAYOUTS, Layout } from './mockup-layouts';
 
 interface CanvasNode {

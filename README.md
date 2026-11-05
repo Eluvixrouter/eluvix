@@ -34,7 +34,7 @@
 - **Autonomous Agent & SWE Harness Mesh**: First-class gateways for coding agents including **OpenHands**, **Devin**, **SWE-bench**, **TrueForge**, and **Antigravity**, coupled with isolated **Sandboxes** (Docker, gVisor, Firecracker).
 - **Stateful Memory & RAG**: Temporal knowledge graphs (**Graphiti**), semantic preference memory (**Mem0**, **Letta**), dual-level RAG (**LightRAG**), and sub-millisecond **Semantic Caching**.
 - **Privacy & Prompt Injection Defense**: In-flight PII masking/blocking (API keys, SSNs, credit cards, emails) and heuristic semantic prompt injection defense.
-- **Dual-Protocol Same-Port TLS Auto-Upgrade**: In-kernel TCP byte-sniffing on port `3588`. Plaintext HTTP clients receive an instant `HTTP 308` redirect to HTTPS on the exact same port without proxy overhead.
+- **Dual-Protocol Same-Port TLS Auto-Upgrade**: Userspace first-byte demuxing on port `3588` (`apps/nextjs/server.mjs`: a Node `net` server reads the first byte — `0x16` TLS ClientHello goes to the HTTPS server, anything else to the HTTP server). Plaintext HTTP **browser navigation** receives an `HTTP 308` redirect to HTTPS on the exact same port; `/api/` requests on port 3588 are served directly over plain HTTP by design, so API clients must use `https://127.0.0.1:3588`.
 - **Interactive Roofline & RDMA Lab**: Client-side simulator on `/provider` modeling arithmetic intensity, network wire time, layer overlap %, and exposed TTFT overhead across hardware architectures.
 - **Monetize Idle Compute**: Decentralized Billama Provider daemon allowing developers to sell idle GPU compute time with instant consumer preemption.
 
@@ -86,7 +86,7 @@ graph TD
 
 ## 🧩 Visual Routing Studio & Templates
 
-The interactive node editor at `https://127.0.0.1:3588/editor` provides drag-and-drop orchestration with 16 bundled production templates:
+The interactive node editor at `https://127.0.0.1:3588/editor` provides drag-and-drop orchestration with 22 bundled production templates:
 
 | Template | Focus | Key Nodes Included |
 | :--- | :--- | :--- |
@@ -160,16 +160,16 @@ docker compose \
 Eluvix maintains a comprehensive test suite across the monorepo:
 
 ```bash
-# Test router core (34 test files, 298 tests)
+# Test router core (40 test files, 314 tests)
 pnpm --filter @eluvix/router-core test
 
-# Test Next.js application & Eluvix Visual Node Routing Editor (19 test files, 163 tests)
+# Test Next.js application & Eluvix Visual Node Routing Editor (20 test files, 165 tests)
 pnpm --filter nextjs test
 
 # Run Golden Routing & Security Regression Eval Suite from CLI
 npx eluvix-eval run suite.json
 
-# Run full monorepo production build (53 Vitest suites / 461 passing tests)
+# Run full monorepo production build (60 Vitest suites / 479 tests)
 pnpm build
 ```
 

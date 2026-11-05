@@ -9,8 +9,8 @@ Eluvix provides a unified, production-grade REST API. In addition to being a dro
 Eluvix features **same-port dual-protocol demuxing on port 3588**:
 
 - **HTTPS (Canonical)**: `https://127.0.0.1:3588/api/v1` (Encrypted TLS via local `mkcert` certificate)
-- **HTTP Auto-Upgrade (Same Port)**: `http://127.0.0.1:3588/api/v1` (Plaintext HTTP connections to port 3588 are automatically sniffed at the TCP byte layer and redirected with an immediate `HTTP/1.1 308 Permanent Redirect` to HTTPS on the exact same port)
-- **HTTP Fallback Port**: `http://127.0.0.1:3580/api/v1` (Secondary loopback port that also upgrades browser/client traffic)
+- **HTTP on 3588 (NOT upgraded for API traffic)**: `http://127.0.0.1:3588/api/v1` is served directly over plain HTTP by design (`apps/nextjs/server.mjs`: the same-port HTTP handler serves `/api/` before the 308 branch). Only browser navigation to port 3588 gets the `HTTP/1.1 308` upgrade to HTTPS. **Never send an `Authorization` Bearer token to the `http://` API URL** — it will work, unencrypted. API clients must use the `https://` URL above.
+- **HTTP Fallback Port**: `http://127.0.0.1:3580/api/v1` (Secondary loopback port; same rule — browser navigation is upgraded, `/api/*` is served directly over HTTP, as documented on the configurator page.)
 
 ### Authentication: Master Password & Named API Keys
 
@@ -326,7 +326,7 @@ Enables programmatic CRUD for visual routing graph topologies (`lib/layouts`):
 | `/api/v1/layouts/[slug]` | `PUT` | Updates an existing layout definition. |
 | `/api/v1/layouts/[slug]` | `DELETE` | Deletes a custom layout (protects built-in examples). |
 | `/api/v1/layouts/active` | `GET` / `POST` | Gets or sets the currently active layout slug. |
-| `/api/v1/layouts/restore-examples` | `POST` | Restores the 12 official starter templates. |
+| `/api/v1/layouts/restore-examples` | `POST` | Restores the 22 bundled example templates (the route returns `EXAMPLE_LAYOUTS.length`). |
 
 ---
 
@@ -378,49 +378,74 @@ Discovers available API keys and credential paths stored in OpenBao or HashiCorp
 
 ## 13. Memory Management API
 
+Memory is always scoped to the authenticated caller (named `elx_` key,
+admin bearer, or NextAuth session — see `apps/nextjs/src/lib/caller-identity`).
+A `userId` supplied via query string or request body is deliberately
+ignored: it can never widen access beyond the caller's own store, and the
+response echoes the caller's own `userId`. Readonly callers get `403` on
+`POST` and `DELETE`.
+
 ### `GET /api/v1/memory`
-Retrieves semantically relevant memories or search results for a user:
+Retrieves semantically relevant memories or search results for the caller:
 
 #### Query Parameters
-- `userId` *(required)*: User identifier (e.g. `alice`, `dev_1`).
-- `query` *(required)*: Natural language search string or prompt.
-- `limit` *(optional)*: Maximum number of memory items to return (default: `5`).
+- `q` or `query` *(optional)*: Natural language search string. When empty
+  or absent, the call lists stored items instead of searching.
+- `limit` *(optional)*: Maximum number of memory items to return
+  (default: `50`, clamped to `1`–`200`).
+
+With a query and a healthy context provider, the provider's recall runs
+first (falling back to local SQLite search when the provider is
+unreachable); without a query, stored items are listed.
 
 ---
 
 ### `POST /api/v1/memory`
-Creates, commits, or clears memories in the active memory backend:
+Adds a memory item, or commits a session transcript, in the active memory
+backend:
 
-#### Add Memory Record (`action: "add"`)
+#### Add Memory Record (no `action` field)
 ```json
 {
-  "action": "add",
-  "userId": "alice",
-  "text": "Prefers TypeScript strict mode with no implicit any in all repositories.",
-  "category": "preferences"
+  "content": "Prefers TypeScript strict mode with no implicit any in all repositories.",
+  "sessionId": "sess_frontend_123",
+  "uri": "memory://user/alice/preferences/1",
+  "level": "L1",
+  "metadata": { "source": "client" }
 }
 ```
+
+- `content` *(required string)*: anything else returns `400`
+  `"'content' string is required"`. There is no `text` field and no
+  `category` field — both are ignored if sent.
+- `sessionId`, `uri`, `metadata` *(optional)*.
+- `level` *(optional)*: `L0`, `L1` (default), or `L2`.
+- There is no `action: "add"`: any POST body without `action: "commit"`
+  is treated as an add, and the item is also synced to the active
+  external provider (OpenViking / Mem0) when one is configured.
 
 #### Commit Session Transcript (`action: "commit"`)
 ```json
 {
   "action": "commit",
-  "userId": "alice",
-  "sessionId": "sess_frontend_123",
-  "messages": [
-    { "role": "user", "content": "Let's always use pnpm instead of npm." },
-    { "role": "assistant", "content": "Understood, I will default to pnpm for package management commands." }
-  ]
+  "sessionId": "sess_frontend_123"
 }
 ```
 
-#### Clear User Memories (`action: "clear"`)
-```json
-{
-  "action": "clear",
-  "userId": "alice"
-}
-```
+Only `action: "commit"` is special-cased. The provider commits its own
+server-side transcript for the session; no `messages` array is read from
+the request.
+
+### `DELETE /api/v1/memory`
+There is no POST `"clear"` action — clearing is a `DELETE`:
+
+- `DELETE /api/v1/memory?clearAll=true` — deletes all of the caller's
+  memories (returns `{ success: true, deletedCount, userId }`).
+- `DELETE /api/v1/memory?id=<number>` — deletes a single item, but only
+  if it belongs to the caller (returns `{ success: true|false }`).
+- Omitting both parameters returns `400` `"Provide '?id=<number>' or
+  '?clearAll=true'"`; a non-positive or non-numeric `id` returns `400`
+  `"Invalid '?id=<number>' parameter"`.
 
 ---
 
