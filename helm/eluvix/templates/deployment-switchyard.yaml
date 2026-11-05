@@ -29,6 +29,10 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.switchyard.port }}"
+            {{- if .Values.switchyard.authToken }}
+            - name: SWITCHYARD_AUTH_TOKEN
+              value: {{ .Values.switchyard.authToken | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
