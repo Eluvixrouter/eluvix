@@ -53,10 +53,10 @@ nextjs:
     port: 3588
   env:
     NODE_ENV: production
-  persistence:
-    enabled: true
-    storageClass: local-path
-    size: 2Gi
+  # No persistence block: a previous revision mounted a PVC at
+  # /app/apps/nextjs/data, a path the app never reads, so it persisted
+  # nothing. App state lives under $XDG_CONFIG_HOME/eluvix inside the pod
+  # and is ephemeral unless an operator mounts that path deliberately.
   resources:
     limits:
       cpu: 1000m

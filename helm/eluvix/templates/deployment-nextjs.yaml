@@ -34,10 +34,9 @@ spec:
             - name: ELUVIX_CONFIG_PATH
               value: /config/eluvix.json
           volumeMounts:
-            {{- if .Values.nextjs.persistence.enabled }}
-            - name: data-storage
-              mountPath: /app/apps/nextjs/data
-            {{- end }}
+            # NOTE: no data PVC is mounted. The app keeps its state under
+            # $XDG_CONFIG_HOME/eluvix, not /app/apps/nextjs/data (the path
+            # a previous PVC revision mounted); that mount persisted nothing.
             - name: routing-config-volume
               mountPath: /config/eluvix.json
               subPath: eluvix.json
@@ -56,11 +55,6 @@ spec:
           resources:
             {{- toYaml .Values.nextjs.resources | nindent 12 }}
       volumes:
-        {{- if .Values.nextjs.persistence.enabled }}
-        - name: data-storage
-          persistentVolumeClaim:
-            claimName: {{ include "eluvix.fullname" . }}-nextjs-data
-        {{- end }}
         - name: routing-config-volume
           configMap:
             name: {{ include "eluvix.fullname" . }}-routing-config

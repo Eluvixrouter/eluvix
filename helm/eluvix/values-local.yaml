@@ -31,10 +31,8 @@ nextjs:
     requests:
       cpu: 50m
       memory: 128Mi
-  persistence:
-    enabled: true
-    storageClass: local-path
-    size: 1Gi
+  # No persistence: see the note on nextjs in values.yaml — the old PVC
+  # mounted a path the app never reads.
 
 ollama:
   replicaCount: 1

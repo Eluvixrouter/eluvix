@@ -22,8 +22,10 @@ services:
     profiles: ["inference", "all"]
     ports:
       - "127.0.0.1:${VLLM_PORT:-8000}:8000"
-    volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+    # No HF cache mount: this service builds the in-memory vllm SIM, which
+    # never reads /root/.cache/huggingface. (The sglang service below runs
+    # the real image, so it keeps its cache mount. If this service is ever
+    # swapped for a real vLLM image, re-add the mount then.)
     restart: unless-stopped
     networks:
       - eluvix-net
