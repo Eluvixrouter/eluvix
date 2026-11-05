@@ -5,6 +5,17 @@ services:
     profiles: ["inference", "all"]
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    # Compose-level readiness signal (spin_up polls the Ollama API
+    # separately, but compose itself previously had no signal for ollama).
+    # Uses the in-image ollama binary, not wget/curl: the ollama image
+    # does not ship them, and `ollama list` exits nonzero while the
+    # server is down. (Not runtime-verified here — no docker binary in
+    # this environment; see the batch report.)
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     volumes:
       - ollama_data:/root/.ollama
     environment:

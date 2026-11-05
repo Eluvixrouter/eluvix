@@ -1,5 +1,13 @@
 # Eluvix Hardware Override - AMD ROCm Acceleration
 # Usage: docker compose -f docker-compose.yml -f docker-compose.amd.yml up -d
+#
+# NOTE: no HSA_OVERRIDE_GFX_VERSION is set here on purpose. Forcing a gfx
+# version (the old file forced 11.0.0) misconfigures GPUs it does not
+# describe, e.g. gfx10xx/gfx12xx hardware; ROCm auto-detects the target
+# when the override is absent. Add an explicit HSA_OVERRIDE_GFX_VERSION
+# only if your GPU demonstrably needs one. (Prefer
+# scripts/docker-detect-and-spinup.sh detect, which maps the detected gfx
+# target to the matching override version.)
 services:
   ollama:
     image: ollama/ollama:rocm
@@ -8,4 +16,3 @@ services:
       - /dev/dri:/dev/dri
     environment:
       - OLLAMA_IGPU_ENABLE=1
-      - HSA_OVERRIDE_GFX_VERSION=11.0.0
