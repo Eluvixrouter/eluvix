@@ -15,3 +15,8 @@ import path from 'node:path';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-test-'));
 process.env.XDG_CONFIG_HOME = path.join(root, 'config');
 process.env.XDG_DATA_HOME = path.join(root, 'data');
+// Hunt-2 L-B4: the suite's fake ACP agents spawn via process.execPath
+// (`node`). That is allowed only under this explicit opt-in flag —
+// never under the ambient NODE_ENV=test/VITEST markers, which must not
+// authorize arbitrary script execution in a deployed process.
+process.env.ELUVIX_ALLOW_TEST_AGENTS = '1';

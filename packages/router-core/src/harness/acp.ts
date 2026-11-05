@@ -39,18 +39,25 @@ export async function forwardAcpHarness(
     cmdArray = ['goose', 'acp'];
   }
   const rawBin = cmdArray[0].trim();
-  const isTestEnv = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
 
   // Resolve through the central executable gate (audit M-1): the old
   // basename-only check let a config value like `/tmp/dropped/goose` pass
   // and execute. The resolver enforces the allowlist on the canonical
   // path — the file must exist, be executable, and not live under a
   // world-writable or config-controlled directory. The spawn below uses
-  // the RESOLVED path, never the raw config value. (Test env keeps its
-  // historical exception: `node`, used by the suite's fake ACP agents via
-  // process.execPath.)
+  // the RESOLVED path, never the raw config value.
+  //
+  // Hunt-2 L-B4: the historical test-env exception (`node` allowed when
+  // NODE_ENV=test or VITEST was set) is gone. Those markers leak into
+  // deployed processes far too easily, and the gate checks the binary,
+  // not its arguments — so a config with `node /any/script.js` executed
+  // an arbitrary script. Fake ACP agents in the suite now run only under
+  // the explicit opt-in ELUVIX_ALLOW_TEST_AGENTS=1, which the
+  // router-core test setup sets and which no production config enables
+  // by accident.
+  const allowTestAgents = process.env.ELUVIX_ALLOW_TEST_AGENTS === '1';
   const resolvedBin = resolveCliExecutable(rawBin, {
-    allowedBasenames: isTestEnv ? [...ACP_CLI_BINARIES, 'node'] : ACP_CLI_BINARIES
+    allowedBasenames: allowTestAgents ? [...ACP_CLI_BINARIES, 'node'] : ACP_CLI_BINARIES
   });
   const baseBin = path.basename(resolvedBin);
 
@@ -286,9 +293,33 @@ export async function forwardAcpHarness(
               toolIdentifiers,
               effectiveAutoApproveTools
             );
+            // Hunt-2 M-B2: answer only with an optionId the server
+            // actually offered. The old code fabricated 'allow'/'reject'
+            // when no offered option matched — under ACP the response
+            // optionId must be one of the offered options, and an
+            // invented id is a protocol violation the agent may reject
+            // or mishandle. When approval has no allow-like option,
+            // deny via an offered reject-like option (the safe
+            // direction); when neither direction has an offered option,
+            // fail the turn loudly instead of inventing an id.
+            const pickOfferedId = (opt: any): string | undefined =>
+              typeof opt?.optionId === 'string' && opt.optionId.length > 0
+                ? opt.optionId
+                : undefined;
             const selectedOptionId = shouldApprove
-              ? allowOpt?.optionId || 'allow'
-              : rejectOpt?.optionId || 'reject';
+              ? pickOfferedId(allowOpt) ?? pickOfferedId(rejectOpt)
+              : pickOfferedId(rejectOpt);
+            if (selectedOptionId === undefined) {
+              finishErr(
+                new Error(
+                  `ACP permission request offers no usable optionId for a ` +
+                  `${shouldApprove ? 'approval' : 'denial'} decision ` +
+                  `(offered optionIds: ${options.map(o => String(o?.optionId ?? '')).join(', ') || 'none'}); ` +
+                  `refusing to invent an optionId`
+                )
+              );
+              return;
+            }
 
             sendRpc({
               jsonrpc: '2.0',

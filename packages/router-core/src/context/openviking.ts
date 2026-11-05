@@ -189,7 +189,7 @@ export class OpenVikingContextProvider implements ContextProvider {
     const timer = setTimeout(() => controller.abort(), 3000);
 
     try {
-      await fetch(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      const res = await fetch(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: 'POST',
         headers: this.buildHeaders(scope),
         body: JSON.stringify({
@@ -202,6 +202,11 @@ export class OpenVikingContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+
+      // Hunt-2 L-B2: a server-rejected write must not advance auto-commit
+      // progress — commits would otherwise fire for turns the server
+      // never stored. Only a successful write counts toward the threshold.
+      if (!res.ok) return;
 
       const count = (this.turnCounts.get(sessionId) || 0) + 1;
       // Bounded: one counter per session id, evicted oldest-first, so the
