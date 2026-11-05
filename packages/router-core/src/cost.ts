@@ -18,12 +18,16 @@ export function isCloudMetadataEndpoint(endpoint: string): boolean {
         host = mapped;
       }
     }
+    // Strip a trailing dot so "metadata.google.internal." matches too.
+    host = host.replace(/\.$/, '');
     return (
       host.startsWith('169.254.') ||
       host === '169.254.169.254' ||
       host === 'fd00:ec2::254' ||
       host.startsWith('fe80:') ||
-      host.startsWith('64:ff9b::')
+      host.startsWith('64:ff9b::') ||
+      host === 'metadata.google.internal' ||
+      host.endsWith('.metadata.google.internal')
     );
   } catch {
     return false;
@@ -57,7 +61,11 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
   }
   if (endpoint.startsWith('cli://')) return false;
   if (endpoint.startsWith('acp://')) {
-    return upstream.type === 'harness' ? false : upstream.harness?.providerIsLocal !== false;
+    // An ACP endpoint is not local unless explicitly declared so. The old
+    // default treated undeclared remote ACP endpoints as on-machine for
+    // egress purposes (harness upstreams were fixed in T1; non-harness
+    // upstreams kept the legacy local-unless-declared-otherwise default).
+    return upstream.harness?.providerIsLocal === true;
   }
   let host: string;
   try {

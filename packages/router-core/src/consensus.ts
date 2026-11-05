@@ -10,6 +10,11 @@ export interface ConsensusGroupConfig {
   judgeModel?: string;
   minQuorum?: number;
   timeoutMs?: number;
+  // Circuit-breaker policy for candidate filtering (index.ts). Defaults
+  // (3 failures / 60 s) match the fallback-chain defaults; without these,
+  // consensus silently used defaults while chains used their own values.
+  failureThreshold?: number;
+  cooldownSeconds?: number;
 }
 
 export async function executeConsensusGroup(
@@ -29,6 +34,13 @@ export async function executeConsensusGroup(
 
   if (strategy === 'fastest-first') {
     const controllers = candidates.map(() => new AbortController());
+    // A listener attached to an already-aborted signal never fires, so
+    // without this pre-check the fan-out ran despite client disconnect.
+    if (clientSignal?.aborted) {
+      throw clientSignal.reason instanceof Error
+        ? clientSignal.reason
+        : new Error('Client disconnected before consensus fan-out');
+    }
     if (clientSignal) {
       clientSignal.addEventListener(
         'abort',
@@ -120,6 +132,15 @@ export async function executeConsensusGroup(
     .filter((r): r is PromiseFulfilledResult<{ upstream: UpstreamConfig; text: string; raw: any }> => r.status === 'fulfilled' && Boolean(r.value.text))
     .map((r) => r.value);
 
+  // Aggregate candidate usage for the synthesized response: it used to be
+  // reported as 0/0/0 regardless of actual candidate usage.
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
+  for (const s of successes) {
+    totalPromptTokens += s.raw?.usage?.prompt_tokens || 0;
+    totalCompletionTokens += s.raw?.usage?.completion_tokens || 0;
+  }
+
   if (successes.length < minQuorum) {
     throw new Error(`Consensus group "${group.id}" failed to reach quorum (${successes.length}/${candidates.length} succeeded, minimum ${minQuorum} required)`);
   }
@@ -189,6 +210,8 @@ export async function executeConsensusGroup(
         const jData: any = await judgeRes.json();
         const synthesized = String(jData?.choices?.[0]?.message?.content || '').trim();
         if (synthesized) finalContent = synthesized;
+        totalPromptTokens += jData?.usage?.prompt_tokens || 0;
+        totalCompletionTokens += jData?.usage?.completion_tokens || 0;
       }
     } catch {
       // Fallback to first candidate if judge synthesis call fails
@@ -252,7 +275,7 @@ export async function executeConsensusGroup(
           finish_reason: 'stop'
         }
       ],
-      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+      usage: { prompt_tokens: totalPromptTokens, completion_tokens: totalCompletionTokens, total_tokens: totalPromptTokens + totalCompletionTokens }
     }),
     {
       status: 200,

@@ -905,7 +905,13 @@ export class EluvixProviderAgent extends EventEmitter {
       throw new Error(data.error || 'Failed to register GPU node with Billama Edge');
     }
 
-    this.nodeId = data.node.id;
+    // Validate the registration shape instead of dereferencing blindly:
+    // a malformed response used to throw a bare TypeError here.
+    const nodeId = (data as any)?.node?.id;
+    if (typeof nodeId !== 'string' || nodeId.length === 0) {
+      throw new Error('Malformed registration response: missing node.id');
+    }
+    this.nodeId = nodeId;
     if (data.node.reputationScore) {
       this.reputationScore = data.node.reputationScore;
     }
@@ -1003,8 +1009,29 @@ export class EluvixProviderAgent extends EventEmitter {
           console.warn('[Eluvix Provider] Rejected invalid targetModel identifier:', targetModel);
           return;
         }
-        if (/^\s*FROM\s+[/~]/im.test(configPayload) || /^\s*ADAPTER\s+[/~]/im.test(configPayload)) {
-          console.warn('[Eluvix Provider] Rejected dangerous FROM/ADAPTER local file directive in Modelfile');
+        // Reject path-like FROM/ADAPTER values, not just absolute/home
+        // paths: the old [/~] prefix check passed ./, ../, and ../../
+        // traversal, which Ollama resolves against the daemon's working
+        // directory. A bare namespace/model reference (e.g. vendor/model)
+        // is still allowed — it is a registry name, not a filesystem path.
+        // All directive lines, not just the first: a payload with a benign
+        // first FROM and a traversal second FROM must still be rejected.
+        const directiveValues = (directive: string): string[] => {
+          const re = new RegExp(`^\\s*${directive}\\s+(\\S+)`, 'gim');
+          return [...configPayload.matchAll(re)].map((m) => m[1].replace(/^["']|["']$/g, ''));
+        };
+        const isPathLikeRef = (value: string): boolean => {
+          if (/^[/~.\\]/.test(value)) return true; // /, ~/, ./, ../, backslash-led
+          if (/^[A-Za-z]:/.test(value)) return true; // Windows drive
+          if (/(^|\/)\.\.?(\/|$)/.test(value)) return true; // . or .. segment
+          if (value.includes('\\')) return true;
+          return false;
+        };
+        const badDirective = ['FROM', 'ADAPTER'].find((d) =>
+          directiveValues(d).some(isPathLikeRef)
+        );
+        if (badDirective) {
+          console.warn(`[Eluvix Provider] Rejected dangerous ${badDirective} local file directive in Modelfile`);
           return;
         }
         try {

@@ -301,7 +301,10 @@ export function isAntigravitySupportedModel(
   if (!modelName || modelName === 'auto') return false;
   if (upstreamModels.includes(modelName)) return true;
 
-  if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(modelName)) return false;
+  // Reject explicitly retired Google Gemini models (3.1, 3.6, 3.7, 2.5).
+  // The (?![0-9]) guard keeps a future gemini-3.10 from colliding with the
+  // 3.1 prefix, while gemini-3.1-pro etc. still match.
+  if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)(?![0-9])/i.test(modelName)) return false;
 
   const catalog = getCachedAntigravityModels();
   const lower = modelName.toLowerCase();

@@ -74,12 +74,26 @@ export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
   let isNew = false;
 
   if (fs.existsSync(authFile)) {
+    // Fail closed on a corrupt auth.json: the old code silently replaced
+    // it with fresh credentials, locking the operator out (and re-displaying
+    // a "first run" password) on a single bad byte. The corrupt file is
+    // left untouched so nothing is lost; the operator repairs or deletes
+    // it to regenerate.
+    const raw = fs.readFileSync(authFile, 'utf8');
+    let parsed: unknown;
     try {
-      const raw = fs.readFileSync(authFile, 'utf8');
-      authConfig = JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
-      authConfig = {};
+      throw new Error(
+        `[Eluvix Auth] auth.json at ${authFile} is corrupt (invalid JSON) — refusing to overwrite it. Repair or delete the file to regenerate credentials.`
+      );
     }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(
+        `[Eluvix Auth] auth.json at ${authFile} is corrupt (not a JSON object) — refusing to overwrite it. Repair or delete the file to regenerate credentials.`
+      );
+    }
+    authConfig = parsed as AuthConfig;
   }
 
   if (!authConfig.adminPassword) {

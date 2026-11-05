@@ -111,16 +111,36 @@ export function estimateKvCacheFootprint(
   const normalized = (modelIdentifier || '').toLowerCase();
   let profile = MODEL_KV_PROFILES['llama-3.3-70b'];
 
-  if (normalized.includes('405b')) {
-    profile = MODEL_KV_PROFILES['llama-3.1-405b'];
-  } else if (normalized.includes('8b') && (normalized.includes('llama') || normalized.includes('distill'))) {
-    profile = MODEL_KV_PROFILES['llama-3.1-8b'];
-  } else if (normalized.includes('deepseek') || normalized.includes('r1') || normalized.includes('mla')) {
+  if (normalized.includes('deepseek') || normalized.includes('r1') || normalized.includes('mla')) {
     profile = MODEL_KV_PROFILES['deepseek-v3'];
-  } else if (normalized.includes('8b')) {
-    profile = MODEL_KV_PROFILES['llama-3.1-8b'];
-  } else if (normalized.includes('qwen')) {
-    profile = MODEL_KV_PROFILES['qwen-2.5-72b'];
+  } else {
+    // Size-aware selection: the old if-chain fell through to the qwen
+    // 72B profile for any qwen name, so qwen2.5-7b got an 80-layer profile
+    // for a 28-layer model (~2.9x footprint inflation). An explicit
+    // parameter count in the name now picks the closest profile in log
+    // space; a qwen name with no size still defaults to the 72B profile.
+    const sizeMatch = normalized.match(/(\d+(?:\.\d+)?)b(?![a-z0-9])/);
+    const sizeB = sizeMatch ? parseFloat(sizeMatch[1]) : null;
+    if (sizeB !== null) {
+      const candidates: Array<[number, ModelKvProfile]> = [
+        [8, MODEL_KV_PROFILES['llama-3.1-8b']],
+        [70, MODEL_KV_PROFILES['llama-3.3-70b']],
+        [72, MODEL_KV_PROFILES['qwen-2.5-72b']],
+        [405, MODEL_KV_PROFILES['llama-3.1-405b']],
+      ];
+      let best = candidates[0];
+      let bestDist = Infinity;
+      for (const c of candidates) {
+        const d = Math.abs(Math.log(sizeB) - Math.log(c[0]));
+        if (d < bestDist) {
+          bestDist = d;
+          best = c;
+        }
+      }
+      profile = best[1];
+    } else if (normalized.includes('qwen')) {
+      profile = MODEL_KV_PROFILES['qwen-2.5-72b'];
+    }
   }
 
   const is16Bit = dtype === 'bf16' || dtype === 'fp16';

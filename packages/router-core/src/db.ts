@@ -341,6 +341,11 @@ export function getDb(): SqliteDb {
     if (sqliteModule && sqliteModule.DatabaseSync) {
       const db: SqliteDb = new sqliteModule.DatabaseSync(dbPath);
       db.exec('PRAGMA journal_mode = WAL;');
+      // Contended writers (desktop server + Next.js dashboard both open
+      // eluvix.db) must wait instead of failing instantly with SQLITE_BUSY
+      // and silently dropping the write. 5000 ms matches the
+      // better-sqlite3 fallback default.
+      db.exec('PRAGMA busy_timeout = 5000;');
       initSchema(db);
       dbInstance = db;
       dbInstancePath = dbPath;
@@ -355,6 +360,7 @@ export function getDb(): SqliteDb {
     const BetterSqlite = require('better-sqlite3');
     const db: SqliteDb = new BetterSqlite(dbPath);
     db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA busy_timeout = 5000;');
     initSchema(db);
     dbInstance = db;
     dbInstancePath = dbPath;
@@ -419,12 +425,16 @@ export function getRollingSpendUsd(windowHours = 24, userId?: string): number {
 export function getRequestLogs(limit = 50, userId?: string): RequestLog[] {
   try {
     const db = getDb();
+    // Clamp like listHarnessSessions (1–200): the observability route passes
+    // a user-controlled limit straight through, and SQLite LIMIT -1 means
+    // "unlimited" — an unbounded row dump / memory-CPU DoS vector.
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50;
     if (userId) {
       return db
         .prepare('SELECT * FROM request_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?')
-        .all(userId, limit) as RequestLog[];
+        .all(userId, safeLimit) as RequestLog[];
     }
-    return db.prepare('SELECT * FROM request_logs ORDER BY id DESC LIMIT ?').all(limit) as RequestLog[];
+    return db.prepare('SELECT * FROM request_logs ORDER BY id DESC LIMIT ?').all(safeLimit) as RequestLog[];
   } catch (err: any) {
     console.error('Failed to query request logs from DB:', err.message);
     return [];
@@ -627,30 +637,6 @@ export function listHarnessSessions(
     const db = getDb();
     const limit = Math.max(1, Math.min(200, filter?.limit ?? 60));
 
-    // Also include legacy chat_history sessions that may not yet have a row in harness_sessions
-    const legacySessions = getChatSessions(userId);
-    for (const s of legacySessions) {
-      if (!s?.session_id) continue;
-      const exists = db
-        .prepare('SELECT 1 FROM harness_sessions WHERE user_id = ? AND session_id = ?')
-        .get(userId, s.session_id);
-      if (!exists) {
-        const firstMsg = db
-          .prepare('SELECT content FROM chat_history WHERE user_id = ? AND session_id = ? ORDER BY id ASC LIMIT 1')
-          .get(userId, s.session_id) as { content?: string } | undefined;
-        const autoTitle = firstMsg?.content
-          ? String(firstMsg.content).replace(/\s+/g, ' ').trim().slice(0, 64)
-          : `Session ${String(s.session_id).slice(0, 8)}`;
-        upsertHarnessSession({
-          sessionId: s.session_id,
-          userId,
-          title: autoTitle || `Session ${String(s.session_id).slice(0, 8)}`,
-          harnessKind: 'opencode',
-          agentId: 'build',
-        });
-      }
-    }
-
     const conditions: string[] = ['hs.user_id = ?'];
     const params: any[] = [userId];
 
@@ -675,7 +661,46 @@ export function listHarnessSessions(
       ORDER BY hs.updated_at DESC, hs.created_at DESC
       LIMIT ?
     `;
-    return db.prepare(sql).all(...params) as HarnessSessionRecord[];
+    const stored = db.prepare(sql).all(...params) as HarnessSessionRecord[];
+
+    // Legacy chat_history sessions with no harness_sessions row are
+    // synthesized in memory instead of upserted: a list call must not
+    // write. The synthesized records apply the same filters the SQL
+    // applied to stored rows, then merge, sort, and honor the limit.
+    const storedIds = new Set(stored.map(r => r.session_id));
+    const searchNeedle = filter?.search?.trim().toLowerCase() || '';
+    const legacy: HarnessSessionRecord[] = [];
+    for (const s of getChatSessions(userId)) {
+      if (!s?.session_id || storedIds.has(s.session_id)) continue;
+      if (filter?.harnessKind && filter.harnessKind !== 'all' && filter.harnessKind !== 'opencode') continue;
+      const firstMsg = db
+        .prepare('SELECT content FROM chat_history WHERE user_id = ? AND session_id = ? ORDER BY id ASC LIMIT 1')
+        .get(userId, s.session_id) as { content?: string } | undefined;
+      const title = firstMsg?.content
+        ? String(firstMsg.content).replace(/\s+/g, ' ').trim().slice(0, 64) || `Session ${String(s.session_id).slice(0, 8)}`
+        : `Session ${String(s.session_id).slice(0, 8)}`;
+      const record: HarnessSessionRecord = {
+        session_id: s.session_id,
+        user_id: userId,
+        title,
+        harness_kind: 'opencode',
+        agent_id: 'build',
+        redaction_count: 0,
+        injection_count: 0,
+        message_count: Number(s.message_count || 0),
+        created_at: String(s.last_updated || ''),
+        updated_at: String(s.last_updated || ''),
+      };
+      if (searchNeedle) {
+        const hay = `${record.title} ${record.session_id} ${record.agent_id}`.toLowerCase();
+        if (!hay.includes(searchNeedle)) continue;
+      }
+      legacy.push(record);
+    }
+    const merged = [...stored, ...legacy].sort((a, b) =>
+      String(b.updated_at).localeCompare(String(a.updated_at)) ||
+      String(b.created_at).localeCompare(String(a.created_at)));
+    return merged.slice(0, limit);
   } catch (err: any) {
     console.error('Failed to list harness sessions:', err.message);
     return [];
@@ -857,7 +882,9 @@ export function addMemoryItem(item: {
     const db = getDb();
     const userId = item.userId || 'default';
     const level = item.level || 'L1';
-    const uri = item.uri || `viking://user/${userId}/memories/${Date.now()}`;
+    // Date.now() alone collides for two writes in the same millisecond; the
+    // random suffix makes the default URI unique per write.
+    const uri = item.uri || `viking://user/${userId}/memories/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const metaStr = item.metadata ? JSON.stringify(item.metadata) : null;
 
     const stmt = db.prepare(`
@@ -892,12 +919,40 @@ const STOP_WORDS = new Set([
   'can', 'could', 'will', 'would', 'should', 'my', 'your', 'me', 'you', 'i', 'we'
 ]);
 
+// CJK ranges: CJK Unified Ideographs (+Ext A), Hiragana, Katakana, Hangul.
+const CJK_RE = /[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/;
+const CJK_SEGMENT_RE = /[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]+|[^\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]+/g;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function tokenizeForSearch(text: string): string[] {
-  return text
+  // Keep all Unicode letters/marks/numbers (not just ASCII): the old
+  // [^a-z0-9] strip turned every CJK query into zero tokens, so recall
+  // silently returned [] for Chinese/Japanese/Korean. CJK runs carry no
+  // spaces, so split them into individual characters — otherwise a query
+  // token only matches content containing the exact same run.
+  const normalized = text
     .toLowerCase()
-    .replace(/[^a-z0-9_\-\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length >= 2 && !STOP_WORDS.has(t));
+    .replace(/[^\p{L}\p{M}\p{N}_\- \s\p{Extended_Pictographic}]/gu, ' ');
+  const tokens: string[] = [];
+  for (const raw of normalized.split(/\s+/).filter(Boolean)) {
+    if (CJK_RE.test(raw)) {
+      for (const seg of raw.match(CJK_SEGMENT_RE) || []) {
+        if (CJK_RE.test(seg[0])) {
+          for (const ch of seg) tokens.push(ch);
+        } else if (seg.length >= 2 && !STOP_WORDS.has(seg)) {
+          tokens.push(seg);
+        }
+      }
+    } else if (raw.length >= 2 && !STOP_WORDS.has(raw)) {
+      tokens.push(raw);
+    } else if (/^\p{Extended_Pictographic}$/u.test(raw)) {
+      tokens.push(raw);
+    }
+  }
+  return tokens;
 }
 
 export function searchMemoryItems(
@@ -908,7 +963,7 @@ export function searchMemoryItems(
   try {
     const db = getDb();
     const candidates = db
-      .prepare('SELECT * FROM memory_items WHERE user_id = ? ORDER BY id DESC LIMIT 250')
+      .prepare('SELECT * FROM memory_items WHERE user_id = ? ORDER BY id DESC LIMIT 1000')
       .all(userId) as MemoryDbItem[];
 
     if (candidates.length === 0) return [];
@@ -928,7 +983,13 @@ export function searchMemoryItems(
       const docTokens = new Set(tokenizeForSearch(item.content));
       let matches = 0;
       for (const qt of queryTokens) {
-        if (docTokens.has(qt) || contentLower.includes(qt)) {
+        // Substring fallback must be word-boundary aware: the old bare
+        // includes() let "art" match "start"/"heart" and inject unrelated
+        // memories. A match counts only at a token boundary (start of
+        // content or after a non-word character), which still covers
+        // hyphenated words ("quantum" in "quantum-computing").
+        const boundaryMatch = new RegExp(`(^|[^\\p{L}\\p{N}_-])${escapeRegExp(qt)}`, 'u').test(contentLower);
+        if (docTokens.has(qt) || boundaryMatch) {
           matches += 1;
         }
       }
