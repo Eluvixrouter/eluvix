@@ -339,6 +339,23 @@ describe('Bug Hunt Fixes Regression Suite', () => {
       expect(diff.isEmpty).toBe(false);
       expect(diff.strategyChanged).toBe(true);
       expect(diff.promptGuardChanged).toBe(true);
+
+      const attnModified = {
+        ...base,
+        attentionPolicy: 'prefer-blackwell-tmem' as const,
+        upstreams: [
+          {
+            ...base.upstreams[0],
+            maxContextTokens: 131072,
+            attentionKernel: { enabled: true, backend: 'blackwell-tcgen05-tmem' as const }
+          }
+        ]
+      };
+      const attnDiff = diffRouterConfigs(base as any, attnModified as any);
+      expect(attnDiff.isEmpty).toBe(false);
+      expect(attnDiff.attentionPolicyChanged).toBe(true);
+      expect(attnDiff.changed[0]?.fields).toContain('attentionKernel');
+      expect(attnDiff.changed[0]?.fields).toContain('maxContextTokens');
     });
 
     it('getConfigPath: respects ELUVIX_CONFIG_PATH override', () => {

@@ -18,9 +18,11 @@ import {
   buildArtCraftSystemInstructions,
   buildArtCraftCliArgs,
   detectArtCraftAppsForPrompt,
-  isArtCraftPrompt
+  isArtCraftPrompt,
+  resolveSelectedArtCraftApps
 } from './artcraft-mcp.js';
 import {
+  type AttentionKernelBackend,
   type AttentionKernelConfig,
   type AttentionRoutingPolicy,
   FLASH_ATTENTION_BENCHMARK_TABLE
@@ -338,6 +340,9 @@ export interface UpstreamConfig {
   tier?: string;
   tierName?: string;
   maxComplexityScore?: number;
+  maxContextTokens?: number;
+  maxParallelRequests?: number;
+  monthlySpendLimit?: number;
   latencyMs?: number;
   capabilities?: string[];
   antigravity?: AntigravityConfig;
@@ -356,22 +361,69 @@ export interface UpstreamConfig {
 }
 
 /**
+ * Resolves the effective attention kernel backend for an upstream from either
+ * `upstream.attentionKernel` or `upstream.capabilities`.
+ */
+export function resolveEffectiveAttentionBackend(
+  upstream: UpstreamConfig
+): AttentionKernelBackend | null {
+  if (!upstream) return null;
+  const ak = upstream.attentionKernel;
+  if (ak && ak.enabled !== false && ak.backend) {
+    return ak.backend;
+  }
+  const caps = upstream.capabilities || [];
+  if (caps.includes('blackwell-tmem') || ak?.blackwellTmem || ak?.blackwellTmemEnabled) {
+    return 'blackwell-tcgen05-tmem';
+  }
+  if (
+    caps.includes('fp8-hadamard') ||
+    ak?.fp8HadamardSmoothing ||
+    ak?.fp8HadamardIncoherent ||
+    ak?.fp8BlockHad
+  ) {
+    return 'fa3-fp8-hadamard';
+  }
+  if (caps.includes('fa3-warp-specialized') || (ak && ak.enabled !== false && ak.warpSpecialized === true)) {
+    return 'fa3-wgmma-tma';
+  }
+  return null;
+}
+
+/**
  * Evaluates whether an upstream is equipped with a Warp-Specialized FlashAttention-3
  * (`WGMMA` + `TMA` + `mbarrier` Ping-Pong) or Blackwell `tcgen05.mma` + `256 KB TMEM` kernel.
  */
 export function isWarpSpecializedAttentionUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (upstream.capabilities?.includes('fa3-warp-specialized') || upstream.capabilities?.includes('blackwell-tmem')) {
+  const b = resolveEffectiveAttentionBackend(upstream);
+  return (
+    b === 'fa3-wgmma-tma' ||
+    b === 'fa3-fp8-hadamard' ||
+    b === 'blackwell-tcgen05-tmem'
+  );
+}
+
+/**
+ * Evaluates whether an upstream supports FP8 Ping-Pong scheduling with Walsh-Hadamard
+ * incoherent processing (`fa3-fp8-hadamard`) or Blackwell `tcgen05.mma` + `256 KB TMEM`.
+ */
+export function isFp8PingPongAttentionUpstream(upstream: UpstreamConfig): boolean {
+  if (!upstream || isLegacySynchronousAttentionUpstream(upstream)) return false;
+  const ak = upstream.attentionKernel;
+  if (ak && ak.enabled !== false && ak.pingPongSchedule === false) return false;
+  const b = resolveEffectiveAttentionBackend(upstream);
+  if (b === 'blackwell-tcgen05-tmem' || b === 'fa3-fp8-hadamard') return true;
+  const caps = upstream.capabilities || [];
+  if (caps.includes('blackwell-tmem') || caps.includes('fp8-hadamard')) return true;
+  if (
+    ak &&
+    ak.enabled !== false &&
+    ak.pingPongSchedule !== false &&
+    (ak.fp8HadamardSmoothing || ak.fp8HadamardIncoherent || ak.fp8BlockHad)
+  ) {
     return true;
   }
-  const ak = upstream.attentionKernel;
-  if (!ak || ak.enabled === false) return false;
-  return (
-    ak.backend === 'fa3-wgmma-tma' ||
-    ak.backend === 'fa3-fp8-hadamard' ||
-    ak.backend === 'blackwell-tcgen05-tmem' ||
-    ak.warpSpecialized === true
-  );
+  return false;
 }
 
 /**
@@ -382,7 +434,18 @@ export function isLegacySynchronousAttentionUpstream(upstream: UpstreamConfig): 
   if (!upstream) return false;
   const ak = upstream.attentionKernel;
   if (!ak || ak.enabled === false) return false;
-  return ak.backend === 'pytorch-sdpa' || ak.backend === 'fa2-cp-async';
+  return ak.backend === 'pytorch-sdpa' || ak.backend === 'fa2-cp-async' || ak.warpSpecialized === false;
+}
+
+function extractMessageText(content: string | MessageContentPart[] | undefined): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => (part && part.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
 }
 
 /**
@@ -819,6 +882,11 @@ export interface ChatRequest {
   frequency_penalty?: number;
   max_tokens?: number;
   max_completion_tokens?: number;
+  confidentialPolicy?: ConfidentialPolicy;
+  quantizationPolicy?: QuantizationPolicy;
+  fabricPolicy?: FabricRoutingPolicy;
+  crsPolicy?: CrsPolicy;
+  attentionPolicy?: AttentionRoutingPolicy;
 }
 
 /**
@@ -1765,6 +1833,8 @@ export class Eluvix {
     const hasCrsUpstreamSelected = targetUpstreams.some(u => isNeuroSymbolicCrsUpstream(u));
     let crsTriageResult: ReturnType<typeof analyzePromptForCrsTriage> | null = null;
 
+    const preInjectionPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+
     if (
       (activeCrsPolicy !== 'disabled' || isStallEscalationStrategy || hasCrsUpstreamSelected) &&
       Array.isArray(effectiveRequest.messages) &&
@@ -1772,7 +1842,7 @@ export class Eluvix {
     ) {
       const combinedUserText = effectiveRequest.messages
         .filter(m => m.role !== 'system')
-        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .map(m => extractMessageText(m.content))
         .join('\n');
       const primaryCrsConfig = targetUpstreams.find(u => u.crs?.enabled)?.crs;
       crsTriageResult = analyzePromptForCrsTriage(combinedUserText, primaryCrsConfig);
@@ -1796,7 +1866,7 @@ export class Eluvix {
     ) {
       const combinedUserText = effectiveRequest.messages
         .filter(m => m.role !== 'system')
-        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .map(m => extractMessageText(m.content))
         .join('\n');
       const activePreset = activeVcConfig.defaultPromptWorkflow || activeVcConfig.promptPreset;
       if (
@@ -1827,7 +1897,7 @@ export class Eluvix {
     ) {
       const combinedUserText = effectiveRequest.messages
         .filter(m => m.role !== 'system')
-        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .map(m => extractMessageText(m.content))
         .join('\n');
       detectedArtCraftApps = detectArtCraftAppsForPrompt(combinedUserText);
       const activePreset = activeAcConfig.defaultPromptWorkflow || activeAcConfig.promptPreset;
@@ -1838,11 +1908,22 @@ export class Eluvix {
       ) {
         artcraftActive = true;
         if (activeAcConfig.injectSystemInstructions !== false) {
-          const acSystemBlock = buildArtCraftSystemInstructions(activeAcConfig);
-          effectiveRequest = {
-            ...effectiveRequest,
-            messages: injectMemoryIntoMessages(effectiveRequest.messages, acSystemBlock)
-          };
+          const selectedAcApps = resolveSelectedArtCraftApps(activeAcConfig);
+          const dedupedAcApps =
+            vectorcraftActive && activeVcConfig?.injectSystemInstructions !== false
+              ? selectedAcApps.filter(a => a !== 'vectorcraft')
+              : selectedAcApps;
+          if (dedupedAcApps.length > 0) {
+            const acSystemBlock = buildArtCraftSystemInstructions({
+              ...activeAcConfig,
+              app: dedupedAcApps[0],
+              enabledApps: dedupedAcApps
+            });
+            effectiveRequest = {
+              ...effectiveRequest,
+              messages: injectMemoryIntoMessages(effectiveRequest.messages, acSystemBlock)
+            };
+          }
         }
       }
     }
@@ -2260,7 +2341,8 @@ export class Eluvix {
               effectiveRequest.stream &&
               responseBody &&
               canRemember &&
-              typeof (responseBody as any).getReader === 'function'
+              typeof (responseBody as any).getReader === 'function' &&
+              (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
             ) {
               const providerRef = this.contextProvider!;
               responseBody = teeSseStreamForMemory(
@@ -2426,23 +2508,23 @@ export class Eluvix {
                 );
               }
             }
-            if (upstream.attentionKernel?.backend && upstream.attentionKernel.enabled !== false) {
-              const akBackend = upstream.attentionKernel.backend;
+            const resolvedAkBackend = resolveEffectiveAttentionBackend(upstream);
+            if (resolvedAkBackend) {
               const akSpec =
-                FLASH_ATTENTION_BENCHMARK_TABLE[akBackend] ||
+                FLASH_ATTENTION_BENCHMARK_TABLE[resolvedAkBackend] ||
                 FLASH_ATTENTION_BENCHMARK_TABLE['fa3-fp8-hadamard'];
-              newResponse.headers.set('x-eluvix-attention-kernel', akBackend);
+              newResponse.headers.set('x-eluvix-attention-kernel', resolvedAkBackend);
               newResponse.headers.set(
                 'x-eluvix-cuda-arch',
-                upstream.attentionKernel.smArch || akSpec.smArch
+                upstream.attentionKernel?.smArch || akSpec.smArch
               );
               newResponse.headers.set(
                 'x-eluvix-mma-primitive',
-                upstream.attentionKernel.mmaPrimitive || akSpec.mmaPrimitive
+                upstream.attentionKernel?.mmaPrimitive || akSpec.mmaPrimitive
               );
               newResponse.headers.set(
                 'x-eluvix-tma-swizzle',
-                upstream.attentionKernel.tmaSwizzle || akSpec.tmaSwizzle
+                upstream.attentionKernel?.tmaSwizzle || akSpec.tmaSwizzle
               );
               newResponse.headers.set(
                 'x-eluvix-tensor-core-util-pct',
@@ -2516,12 +2598,11 @@ export class Eluvix {
             }
             const effectiveAc = upstream.artcraft?.enabled ? upstream.artcraft : activeAcConfig;
             if (effectiveAc && (upstream.artcraft?.enabled || artcraftActive)) {
-              const acCliSpec = buildArtCraftCliArgs(effectiveAc);
-              const rawAppsList = effectiveAc.enabledApps || effectiveAc.apps;
-              const activeAppsList =
-                Array.isArray(rawAppsList) && rawAppsList.length > 0
-                  ? rawAppsList
-                  : [acCliSpec.app];
+              const activeAppsList = resolveSelectedArtCraftApps(effectiveAc);
+              const acCliSpec = buildArtCraftCliArgs({
+                ...effectiveAc,
+                app: activeAppsList[0] || 'vectorcraft'
+              });
               newResponse.headers.set('x-eluvix-artcraft-apps', activeAppsList.join(','));
               newResponse.headers.set('x-eluvix-artcraft-mode', acCliSpec.effectiveMode);
               newResponse.headers.set(
@@ -2535,7 +2616,10 @@ export class Eluvix {
                 );
               }
             }
-            const reqPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+            const reqPrefixHash =
+              preInjectionPrefixHash !== 'empty'
+                ? preInjectionPrefixHash
+                : computeKvPrefixHash(effectiveRequest.messages || []);
             if (reqPrefixHash !== 'empty') {
               newResponse.headers.set('x-eluvix-kv-prefix-hash', reqPrefixHash);
               if (this.config.switchyard?.kvPrefixAffinity) {
@@ -2737,7 +2821,7 @@ export class Eluvix {
       this.config.switchyard?.confidentialPolicy ||
       this.config.confidentialPolicy ||
       'disabled';
-    const clientPolicy = effectiveRequest.metadata?.confidentialPolicy as ConfidentialPolicy | undefined;
+    const clientPolicy = (effectiveRequest.confidentialPolicy || effectiveRequest.metadata?.confidentialPolicy) as ConfidentialPolicy | undefined;
     const confidentialPolicy: ConfidentialPolicy =
       clientPolicy && Object.prototype.hasOwnProperty.call(POLICY_RANKS, clientPolicy)
         ? (POLICY_RANKS[clientPolicy] > POLICY_RANKS[serverPolicy] ? clientPolicy : serverPolicy)
@@ -3046,7 +3130,7 @@ export class Eluvix {
       switchyardConfig.quantizationPolicy ||
       this.config.quantizationPolicy ||
       'disabled';
-    const clientQuantPolicy = effectiveRequest.metadata?.quantizationPolicy as QuantizationPolicy | undefined;
+    const clientQuantPolicy = (effectiveRequest.quantizationPolicy || effectiveRequest.metadata?.quantizationPolicy) as QuantizationPolicy | undefined;
     const quantizationPolicy: QuantizationPolicy =
       clientQuantPolicy && Object.prototype.hasOwnProperty.call(QUANT_RANKS, clientQuantPolicy)
         ? (QUANT_RANKS[clientQuantPolicy] > QUANT_RANKS[serverQuantPolicy] ? clientQuantPolicy : serverQuantPolicy)
@@ -3099,7 +3183,7 @@ export class Eluvix {
       switchyardConfig.fabricPolicy ||
       this.config.fabricPolicy ||
       'disabled';
-    const clientFabricPolicy = effectiveRequest.metadata?.fabricPolicy as FabricRoutingPolicy | undefined;
+    const clientFabricPolicy = (effectiveRequest.fabricPolicy || effectiveRequest.metadata?.fabricPolicy) as FabricRoutingPolicy | undefined;
     const fabricPolicy: FabricRoutingPolicy =
       clientFabricPolicy && Object.prototype.hasOwnProperty.call(FABRIC_RANKS, clientFabricPolicy)
         ? (FABRIC_RANKS[clientFabricPolicy] > FABRIC_RANKS[serverFabricPolicy] ? clientFabricPolicy : serverFabricPolicy)
@@ -3158,7 +3242,7 @@ export class Eluvix {
       switchyardConfig.crsPolicy ||
       this.config.crsPolicy ||
       'disabled';
-    const clientCrsPolicy = effectiveRequest.metadata?.crsPolicy as CrsPolicy | undefined;
+    const clientCrsPolicy = (effectiveRequest.crsPolicy || effectiveRequest.metadata?.crsPolicy) as CrsPolicy | undefined;
     const crsPolicy: CrsPolicy =
       clientCrsPolicy && Object.prototype.hasOwnProperty.call(CRS_RANKS, clientCrsPolicy)
         ? (CRS_RANKS[clientCrsPolicy] > CRS_RANKS[serverCrsPolicy] ? clientCrsPolicy : serverCrsPolicy)
@@ -3187,7 +3271,7 @@ export class Eluvix {
     } else if (crsPolicy === 'slice-and-verify' || strategy === 'stall-escalation') {
       const promptTextForStall = (effectiveRequest.messages || [])
         .filter(m => m.role !== 'system')
-        .map(m => (typeof m.content === 'string' ? m.content : ''))
+        .map(m => extractMessageText(m.content))
         .join('\n');
       const triage = analyzePromptForCrsTriage(promptTextForStall);
       const shouldEscalate =
@@ -3224,25 +3308,39 @@ export class Eluvix {
       switchyardConfig.attentionPolicy ||
       this.config.attentionPolicy ||
       'disabled';
-    const clientAttnPolicy = effectiveRequest.metadata?.attentionPolicy as AttentionRoutingPolicy | undefined;
+    const clientAttnPolicy = (effectiveRequest.attentionPolicy || effectiveRequest.metadata?.attentionPolicy) as AttentionRoutingPolicy | undefined;
     const attentionPolicy: AttentionRoutingPolicy =
       clientAttnPolicy && Object.prototype.hasOwnProperty.call(ATTN_RANKS, clientAttnPolicy)
         ? (ATTN_RANKS[clientAttnPolicy] > ATTN_RANKS[serverAttnPolicy] ? clientAttnPolicy : serverAttnPolicy)
         : serverAttnPolicy;
 
+    const computeAttentionScore = (u: UpstreamConfig): number => {
+      if (isLegacySynchronousAttentionUpstream(u)) return -1;
+      const b = resolveEffectiveAttentionBackend(u);
+      if (!b) return 0;
+      if (attentionPolicy === 'prefer-fa3-warp-specialized') {
+        if (b === 'fa3-fp8-hadamard') return 4;
+        if (b === 'fa3-wgmma-tma') return 3;
+        if (b === 'blackwell-tcgen05-tmem') return 3;
+        return 1;
+      }
+      if (b === 'blackwell-tcgen05-tmem') return 4;
+      if (b === 'fa3-fp8-hadamard') return 3;
+      if (b === 'fa3-wgmma-tma') return 2;
+      return 1;
+    };
+
     if (attentionPolicy === 'require-fp8-ping-pong') {
-      const warpSpecialized = targetUpstreams.filter(
-        u => !isLegacySynchronousAttentionUpstream(u) && isWarpSpecializedAttentionUpstream(u)
-      );
-      const excludedSync = targetUpstreams.filter(u => !warpSpecialized.includes(u));
+      const fp8PingPong = targetUpstreams.filter(u => isFp8PingPongAttentionUpstream(u));
+      const excludedSync = targetUpstreams.filter(u => !fp8PingPong.includes(u));
       steps.push({
         stage: 'flash-attention-kernel',
         detail:
-          'attentionPolicy=require-fp8-ping-pong: requiring Warp-Specialized FlashAttention-3 (WGMMA + TMA Ping-Pong) or Blackwell tcgen05 + 256KB TMEM upstreams to avoid 64:1 SFU MUFU.EX2 softmax stalls',
-        kept: warpSpecialized.map(u => u.id),
+          'attentionPolicy=require-fp8-ping-pong: requiring Warp-Specialized FP8 Ping-Pong + Walsh-Hadamard (FA3 FP8) or Blackwell tcgen05 + 256KB TMEM upstreams to avoid 64:1 SFU MUFU.EX2 softmax stalls',
+        kept: fp8PingPong.map(u => u.id),
         removed: excludedSync.map(u => u.id)
       });
-      if (warpSpecialized.length === 0) {
+      if (fp8PingPong.length === 0) {
         const err: any = new Error(
           `No Warp-Specialized FlashAttention-3 / Blackwell tcgen05+TMEM upstream available for model: ${effectiveRequest.model} (attentionPolicy: require-fp8-ping-pong)`
         );
@@ -3250,7 +3348,7 @@ export class Eluvix {
         err.attentionKernelUnavailable = true;
         throw err;
       }
-      targetUpstreams = warpSpecialized;
+      targetUpstreams = fp8PingPong;
     }
 
     if (
@@ -3260,14 +3358,9 @@ export class Eluvix {
     ) {
       const fa3Upstreams = targetUpstreams.filter(u => isWarpSpecializedAttentionUpstream(u));
       if (fa3Upstreams.length > 0) {
-        const attnScore = (u: UpstreamConfig): number => {
-          const b = u.attentionKernel?.backend;
-          if (b === 'blackwell-tcgen05-tmem') return 4;
-          if (b === 'fa3-fp8-hadamard') return 3;
-          if (b === 'fa3-wgmma-tma') return 2;
-          return 1;
-        };
-        const sortedFa3 = [...fa3Upstreams].sort((a, b) => attnScore(b) - attnScore(a));
+        const sortedFa3 = [...fa3Upstreams].sort(
+          (a, b) => computeAttentionScore(b) - computeAttentionScore(a)
+        );
         const rest = targetUpstreams.filter(u => !fa3Upstreams.includes(u));
         steps.push({
           stage: 'flash-attention-kernel',
@@ -3338,7 +3431,27 @@ export class Eluvix {
           const isPreferredRailOptimized = isCollisionFreeRailFabricUpstream(preferred);
           const cannotPromoteDueToFabric = (fabricPolicy === 'prefer-rail-optimized') && isTopRailOptimized && !isPreferredRailOptimized;
 
-          if (!cannotPromoteDueToPrefill && !cannotPromoteDueToTee && !cannotPromoteDueToQuant && !cannotPromoteDueToFabric) {
+          const isTopCrs = isNeuroSymbolicCrsUpstream(targetUpstreams[0]);
+          const isPreferredCrs = isNeuroSymbolicCrsUpstream(preferred);
+          const cannotPromoteDueToCrs =
+            (crsPolicy === 'slice-and-verify' || strategy === 'stall-escalation') &&
+            isTopCrs &&
+            !isPreferredCrs;
+
+          const cannotPromoteDueToAttention =
+            (attentionPolicy === 'prefer-fa3-warp-specialized' ||
+              attentionPolicy === 'prefer-blackwell-tmem' ||
+              attentionPolicy === 'require-fp8-ping-pong') &&
+            computeAttentionScore(preferred) < computeAttentionScore(targetUpstreams[0]);
+
+          if (
+            !cannotPromoteDueToPrefill &&
+            !cannotPromoteDueToTee &&
+            !cannotPromoteDueToQuant &&
+            !cannotPromoteDueToFabric &&
+            !cannotPromoteDueToCrs &&
+            !cannotPromoteDueToAttention
+          ) {
             targetUpstreams = [preferred, ...targetUpstreams.filter(u => u.id !== cachedUpstreamId)];
             steps.push({
               stage: 'kv-prefix-affinity',
@@ -3362,9 +3475,17 @@ export class Eluvix {
 
         const getPolicyTier = (u: UpstreamConfig): number => {
           let tier = 0;
-          if (confidentialPolicy === 'prefer-tee' && !isConfidentialEnclaveUpstream(u, 'require-tee')) tier += 100;
-          if ((quantizationPolicy === 'prefer-nvfp4-hadamard' || quantizationPolicy === 'lossless-reasoning') && !isLosslessSub4BitUpstream(u)) tier += 10;
-          if (fabricPolicy === 'prefer-rail-optimized' && !isCollisionFreeRailFabricUpstream(u)) tier += 1;
+          if (confidentialPolicy === 'prefer-tee' && !isConfidentialEnclaveUpstream(u, 'require-tee')) tier += 1000;
+          if ((quantizationPolicy === 'prefer-nvfp4-hadamard' || quantizationPolicy === 'lossless-reasoning') && !isLosslessSub4BitUpstream(u)) tier += 100;
+          if (fabricPolicy === 'prefer-rail-optimized' && !isCollisionFreeRailFabricUpstream(u)) tier += 20;
+          if ((crsPolicy === 'slice-and-verify' || strategy === 'stall-escalation') && !isNeuroSymbolicCrsUpstream(u)) tier += 10;
+          if (
+            attentionPolicy === 'prefer-fa3-warp-specialized' ||
+            attentionPolicy === 'prefer-blackwell-tmem' ||
+            attentionPolicy === 'require-fp8-ping-pong'
+          ) {
+            tier += Math.max(0, 4 - computeAttentionScore(u));
+          }
           return tier;
         };
 

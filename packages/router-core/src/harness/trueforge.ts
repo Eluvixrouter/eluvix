@@ -10,7 +10,42 @@ import {
   selectSwitchyardStepTier,
 } from './deep-guard.js';
 import { buildHarnessPrompt, isSessionGoneResponse } from './prompt.js';
-import type { HarnessApprovalPolicy, HarnessConfig } from './types.js';
+import type { HarnessApprovalPolicy, HarnessConfig, HarnessMcpServerConfig } from './types.js';
+import {
+  toHarnessMcpServerConfig,
+  resolveVectorCraftAutoApproveTools,
+} from '../vectorcraft-mcp.js';
+import {
+  toArtCraftHarnessMcpServers,
+  resolveArtCraftAutoApproveTools,
+} from '../artcraft-mcp.js';
+
+function resolveEffectiveTrueForgeMcpAndAutoApprove(
+  upstream: UpstreamConfig,
+  harnessCfg: HarnessConfig
+): { mcpServers: HarnessMcpServerConfig[]; autoApproveTools: string[] } {
+  const mcpServers: HarnessMcpServerConfig[] = Array.isArray(harnessCfg.mcpServers)
+    ? [...harnessCfg.mcpServers]
+    : [];
+  if (upstream.vectorcraft?.enabled && !mcpServers.some(s => s.name === 'vectorcraft')) {
+    mcpServers.push(toHarnessMcpServerConfig(upstream.vectorcraft));
+  }
+  if (upstream.artcraft?.enabled) {
+    for (const acSrv of toArtCraftHarnessMcpServers(upstream.artcraft)) {
+      if (!mcpServers.some(s => s.name === acSrv.name)) {
+        mcpServers.push(acSrv);
+      }
+    }
+  }
+  const autoApproveTools = Array.from(
+    new Set([
+      ...(Array.isArray(harnessCfg.autoApproveTools) ? harnessCfg.autoApproveTools : []),
+      ...(upstream.vectorcraft?.enabled ? resolveVectorCraftAutoApproveTools(upstream.vectorcraft) : []),
+      ...(upstream.artcraft?.enabled ? resolveArtCraftAutoApproveTools(upstream.artcraft) : []),
+    ])
+  );
+  return { mcpServers, autoApproveTools };
+}
 
 export function resolveSafeWorkspacePath(root: string, requestedPath: string): string {
   const safeRoot = fs.realpathSync(path.resolve(root));
@@ -122,6 +157,8 @@ export async function executeEmbeddedTrueForgeTurn(
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
   const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
+  const { mcpServers: effectiveMcpServers, autoApproveTools: effectiveAutoApproveTools } =
+    resolveEffectiveTrueForgeMcpAndAutoApprove(upstream, harnessCfg);
 
   const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
   const cacheable = reuseSession && Boolean(scope?.sessionId);
@@ -136,7 +173,7 @@ export async function executeEmbeddedTrueForgeTurn(
       agentId,
       userId: scope?.userId || 'default',
       turns: [],
-      mcpServers: (harnessCfg.mcpServers || []).map(s => `${s.name}@${s.endpoint}`),
+      mcpServers: effectiveMcpServers.map(s => `${s.name}@${s.endpoint}`),
     };
     setBounded(embeddedSessionStore, tfSessionId, sessionObj);
     if (cacheable) {
@@ -147,7 +184,7 @@ export async function executeEmbeddedTrueForgeTurn(
   const kvPrefixHash = computeHarnessKvPrefixHash(
     request.messages,
     request.tools,
-    harnessCfg.mcpServers
+    effectiveMcpServers
   );
   const fullContextPrompt = buildHarnessPrompt(request.messages || [], {
     includeHistory: sessionObj.turns.length === 0 || sessionMode === 'per-request',
@@ -231,7 +268,7 @@ export async function executeEmbeddedTrueForgeTurn(
 
   for (const t of requestedTools) {
     const tName = String(t?.function?.name || t?.name || 'unknown_tool');
-    if (isToolAutoApproved(approvalPolicy, [tName], harnessCfg.autoApproveTools)) {
+    if (isToolAutoApproved(approvalPolicy, [tName], effectiveAutoApproveTools)) {
       approvedTools.push(tName);
     } else {
       deniedTools.push(tName);
@@ -386,11 +423,15 @@ export async function forwardTrueForgeHarness(
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
   const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
+  const { mcpServers: effectiveMcpServers } = resolveEffectiveTrueForgeMcpAndAutoApprove(
+    upstream,
+    harnessCfg
+  );
 
   const kvPrefixHash = computeHarnessKvPrefixHash(
     request.messages,
     request.tools,
-    harnessCfg.mcpServers
+    effectiveMcpServers
   );
   const prompt = extractPromptFromMessages(request.messages || []);
   const synthesisTier = selectSwitchyardStepTier(1, 'final-synthesis', prompt);
@@ -431,9 +472,7 @@ export async function forwardTrueForgeHarness(
         headers,
         body: JSON.stringify({
           agentId,
-          ...(Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
-            ? { mcpServers: harnessCfg.mcpServers }
-            : {}),
+          ...(effectiveMcpServers.length > 0 ? { mcpServers: effectiveMcpServers } : {}),
           metadata: {
             eluvixUserId: scope?.userId || 'default',
             eluvixSessionId: scope?.sessionId,
@@ -479,9 +518,7 @@ export async function forwardTrueForgeHarness(
           ...(Array.isArray(request.tools) && request.tools.length > 0
             ? { tools: request.tools }
             : {}),
-          ...(Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
-            ? { mcpServers: harnessCfg.mcpServers }
-            : {}),
+          ...(effectiveMcpServers.length > 0 ? { mcpServers: effectiveMcpServers } : {}),
           kvPrefixHash,
           switchyardTier: synthesisTier.tier,
           stream: true

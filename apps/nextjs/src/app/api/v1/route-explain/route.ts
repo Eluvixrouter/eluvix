@@ -80,10 +80,19 @@ export async function POST(req: Request) {
     const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);
     const VALID_QUANT = new Set(['disabled', 'prefer-nvfp4-hadamard', 'lossless-reasoning']);
     const VALID_FABRIC = new Set(['disabled', 'prefer-rail-optimized', 'require-collision-free-fabric']);
+    const VALID_CRS = new Set(['disabled', 'slice-and-verify', 'strict-zero-false-positive']);
+    const VALID_ATTENTION = new Set([
+      'disabled',
+      'prefer-fa3-warp-specialized',
+      'prefer-blackwell-tmem',
+      'require-fp8-ping-pong'
+    ]);
 
     const confidentialPolicyHeader = req?.headers?.get('x-eluvix-confidential');
     const quantizationPolicyHeader = req?.headers?.get('x-eluvix-quantization');
     const fabricPolicyHeader = req?.headers?.get('x-eluvix-fabric');
+    const crsPolicyHeader = req?.headers?.get('x-eluvix-crs');
+    const attentionPolicyHeader = req?.headers?.get('x-eluvix-attention');
 
     const metadata: Record<string, any> = { ...(body.metadata || {}) };
     if (metadata.confidentialPolicy && !VALID_CONFIDENTIAL.has(String(metadata.confidentialPolicy))) {
@@ -95,6 +104,12 @@ export async function POST(req: Request) {
     if (metadata.fabricPolicy && !VALID_FABRIC.has(String(metadata.fabricPolicy))) {
       delete metadata.fabricPolicy;
     }
+    if (metadata.crsPolicy && !VALID_CRS.has(String(metadata.crsPolicy))) {
+      delete metadata.crsPolicy;
+    }
+    if (metadata.attentionPolicy && !VALID_ATTENTION.has(String(metadata.attentionPolicy))) {
+      delete metadata.attentionPolicy;
+    }
 
     if (confidentialPolicyHeader && VALID_CONFIDENTIAL.has(confidentialPolicyHeader)) {
       metadata.confidentialPolicy = confidentialPolicyHeader;
@@ -104,6 +119,12 @@ export async function POST(req: Request) {
     }
     if (fabricPolicyHeader && VALID_FABRIC.has(fabricPolicyHeader)) {
       metadata.fabricPolicy = fabricPolicyHeader;
+    }
+    if (crsPolicyHeader && VALID_CRS.has(crsPolicyHeader)) {
+      metadata.crsPolicy = crsPolicyHeader;
+    }
+    if (attentionPolicyHeader && VALID_ATTENTION.has(attentionPolicyHeader)) {
+      metadata.attentionPolicy = attentionPolicyHeader;
     }
 
     const explanation = router.explainRoute(

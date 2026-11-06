@@ -19,6 +19,41 @@ import type {
   HarnessMcpServerConfig,
   HarnessMidLoopGuardConfig,
 } from './types.js';
+import {
+  toHarnessMcpServerConfig,
+  resolveVectorCraftAutoApproveTools,
+} from '../vectorcraft-mcp.js';
+import {
+  toArtCraftHarnessMcpServers,
+  resolveArtCraftAutoApproveTools,
+} from '../artcraft-mcp.js';
+
+function resolveEffectiveHarnessMcpAndAutoApprove(
+  upstream: UpstreamConfig,
+  harnessCfg: HarnessConfig
+): { mcpServers: HarnessMcpServerConfig[]; autoApproveTools: string[] } {
+  const mcpServers: HarnessMcpServerConfig[] = Array.isArray(harnessCfg.mcpServers)
+    ? [...harnessCfg.mcpServers]
+    : [];
+  if (upstream.vectorcraft?.enabled && !mcpServers.some(s => s.name === 'vectorcraft')) {
+    mcpServers.push(toHarnessMcpServerConfig(upstream.vectorcraft));
+  }
+  if (upstream.artcraft?.enabled) {
+    for (const acSrv of toArtCraftHarnessMcpServers(upstream.artcraft)) {
+      if (!mcpServers.some(s => s.name === acSrv.name)) {
+        mcpServers.push(acSrv);
+      }
+    }
+  }
+  const autoApproveTools = Array.from(
+    new Set([
+      ...(Array.isArray(harnessCfg.autoApproveTools) ? harnessCfg.autoApproveTools : []),
+      ...(upstream.vectorcraft?.enabled ? resolveVectorCraftAutoApproveTools(upstream.vectorcraft) : []),
+      ...(upstream.artcraft?.enabled ? resolveArtCraftAutoApproveTools(upstream.artcraft) : []),
+    ])
+  );
+  return { mcpServers, autoApproveTools };
+}
 
 const sessionCache = new Map<string, string>();
 
@@ -87,16 +122,12 @@ export async function executeEmbeddedOpenCodeTurn(
   const harnessCfg: HarnessConfig = upstream.harness || { kind: 'opencode' };
   const agent = harnessCfg.agentId || 'build';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const { mcpServers: effectiveMcpServers, autoApproveTools: effectiveAutoApproveTools } =
+    resolveEffectiveHarnessMcpAndAutoApprove(upstream, harnessCfg);
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals ||
     harnessCfg.approvalPolicy ||
-    (Array.isArray(harnessCfg.autoApproveTools) && harnessCfg.autoApproveTools.length > 0
-      ? 'auto-approve-readonly'
-      : 'never');
-  const effectiveAutoApproveTools =
-    Array.isArray(harnessCfg.autoApproveTools)
-      ? harnessCfg.autoApproveTools
-      : [];
+    (effectiveAutoApproveTools.length > 0 ? 'auto-approve-readonly' : 'never');
 
   const cacheable = sessionMode === 'per-eluvix-session' && Boolean(scope?.sessionId);
   const cacheKey = `${upstream.id}:${scope?.userId || 'default'}:${scope?.sessionId || 'ephemeral'}`;
@@ -111,7 +142,7 @@ export async function executeEmbeddedOpenCodeTurn(
       id: ocSessionId,
       agent,
       userId: scope?.userId || 'default',
-      mcpServers: (harnessCfg.mcpServers || []).map(s => `${s.name}@${s.endpoint}`),
+      mcpServers: effectiveMcpServers.map(s => `${s.name}@${s.endpoint}`),
       messages: [],
     };
     createdFreshSession = true;
@@ -124,17 +155,15 @@ export async function executeEmbeddedOpenCodeTurn(
   const kvPrefixHash = computeHarnessKvPrefixHash(
     request.messages,
     request.tools,
-    harnessCfg.mcpServers
+    effectiveMcpServers
   );
-  const rawPrompt = buildHarnessPrompt(request.messages || [], {
-    includeHistory: sessionMode === 'per-request' || createdFreshSession,
-  });
 
-  // Inspect tool messages and prompt via mid-loop PromptGuard & PrivacyGuard
+  // Inspect tool messages via mid-loop PromptGuard & PrivacyGuard on cloned message objects
   let redactionCount = 0;
   let injectionCount = 0;
+  const clonedMessages = (request.messages || []).map(m => ({ ...m }));
 
-  for (const m of request.messages || []) {
+  for (const m of clonedMessages) {
     if (m.role === 'tool') {
       const obsText = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
       const obsCheck = inspectHarnessObservation(obsText, 'tool_observation', harnessCfg.midLoopGuard);
@@ -167,6 +196,10 @@ export async function executeEmbeddedOpenCodeTurn(
       }
     }
   }
+
+  const rawPrompt = buildHarnessPrompt(clonedMessages, {
+    includeHistory: sessionMode === 'per-request' || createdFreshSession,
+  });
 
   const promptCheck = inspectHarnessObservation(rawPrompt, 'opencode_prompt', harnessCfg.midLoopGuard);
   if (promptCheck.piiRedacted) redactionCount += promptCheck.piiTypes.length;
@@ -344,6 +377,8 @@ export async function forwardOpencodeHarness(
   const baseUrl = rawEndpoint.replace(/\/+$/, '');
   const agent = harnessCfg.agentId || 'build';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
+  const { mcpServers: effectiveMcpServers, autoApproveTools: effectiveAutoApproveTools } =
+    resolveEffectiveHarnessMcpAndAutoApprove(upstream, harnessCfg);
   const approvalPolicy: HarnessApprovalPolicy =
     harnessCfg.approvals ||
     harnessCfg.approvalPolicy ||
@@ -362,7 +397,7 @@ export async function forwardOpencodeHarness(
   const kvPrefixHash = computeHarnessKvPrefixHash(
     request.messages,
     request.tools,
-    harnessCfg.mcpServers
+    effectiveMcpServers
   );
 
   const headers: Record<string, string> = {
@@ -405,8 +440,8 @@ export async function forwardOpencodeHarness(
         headers,
         body: JSON.stringify({
           title: `Eluvix Session (${scope?.userId || 'default'})`,
-          ...(forkedMode && Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
-            ? { mcpServers: harnessCfg.mcpServers }
+          ...(forkedMode && effectiveMcpServers.length > 0
+            ? { mcpServers: effectiveMcpServers }
             : {}),
           ...(forkedMode ? { kvPrefixHash } : {}),
         }),
@@ -432,8 +467,8 @@ export async function forwardOpencodeHarness(
           ...(forkedMode && Array.isArray(request.tools) && request.tools.length > 0
             ? { tools: request.tools }
             : {}),
-          ...(forkedMode && Array.isArray(harnessCfg.mcpServers) && harnessCfg.mcpServers.length > 0
-            ? { mcpServers: harnessCfg.mcpServers }
+          ...(forkedMode && effectiveMcpServers.length > 0
+            ? { mcpServers: effectiveMcpServers }
             : {}),
           ...(forkedMode
             ? {
@@ -441,7 +476,7 @@ export async function forwardOpencodeHarness(
                   kvPrefixHash,
                   switchyardTier,
                   approvalPolicy,
-                  autoApproveTools: harnessCfg.autoApproveTools || [],
+                  autoApproveTools: effectiveAutoApproveTools,
                 },
               }
             : {}),
@@ -919,8 +954,14 @@ export function createEluvixOpenCodeServer(
         .map(p => p.text)
         .join('\n');
 
-      const policy: HarnessApprovalPolicy = defaultPolicy;
-      const autoApproveList: string[] = defaultAutoApprove;
+      const policy: HarnessApprovalPolicy =
+        body?.eluvix?.approvalPolicy || defaultPolicy;
+      const autoApproveList: string[] = Array.from(
+        new Set([
+          ...defaultAutoApprove,
+          ...(Array.isArray(body?.eluvix?.autoApproveTools) ? body.eluvix.autoApproveTools : []),
+        ])
+      );
 
       const promptGuardCheck = inspectHarnessObservation(
         promptText,

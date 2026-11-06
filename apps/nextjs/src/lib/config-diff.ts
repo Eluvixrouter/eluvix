@@ -28,6 +28,7 @@ export interface ConfigDiff {
   quantizationPolicyChanged?: boolean;
   fabricPolicyChanged?: boolean;
   crsPolicyChanged?: boolean;
+  attentionPolicyChanged?: boolean;
   vectorcraftChanged?: boolean;
   artcraftChanged?: boolean;
   strategyChanged?: boolean;
@@ -47,6 +48,9 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'models',
   'costPer1kTokens',
   'maxComplexityScore',
+  'maxContextTokens',
+  'maxParallelRequests',
+  'monthlySpendLimit',
   'tier',
   'capabilities',
   'apiKey',
@@ -61,7 +65,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'fabric',
   'crs',
   'vectorcraft',
-  'artcraft'
+  'artcraft',
+  'attentionKernel'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -170,6 +175,11 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       normalizePolicy(current?.switchyard?.crsPolicy || (current as any)?.crsPolicy),
       normalizePolicy(next.switchyard?.crsPolicy || (next as any).crsPolicy)
     ) || undefined;
+  const attentionPolicyChanged =
+    fieldDiffers(
+      normalizePolicy(current?.switchyard?.attentionPolicy || (current as any)?.attentionPolicy),
+      normalizePolicy(next.switchyard?.attentionPolicy || (next as any).attentionPolicy)
+    ) || undefined;
   const vectorcraftChanged =
     fieldDiffers((current as any)?.vectorcraft, (next as any).vectorcraft) || undefined;
   const artcraftChanged =
@@ -197,6 +207,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     quantizationPolicyChanged,
     fabricPolicyChanged,
     crsPolicyChanged,
+    attentionPolicyChanged,
     vectorcraftChanged,
     artcraftChanged,
     strategyChanged,
@@ -220,6 +231,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !quantizationPolicyChanged &&
       !fabricPolicyChanged &&
       !crsPolicyChanged &&
+      !attentionPolicyChanged &&
       !vectorcraftChanged &&
       !artcraftChanged &&
       !strategyChanged &&

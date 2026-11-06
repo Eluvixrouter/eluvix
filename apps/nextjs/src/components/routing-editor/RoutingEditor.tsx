@@ -4293,6 +4293,9 @@ export default function RoutingEditor() {
                   applyDiff.quantizationPolicyChanged ||
                   applyDiff.fabricPolicyChanged ||
                   applyDiff.crsPolicyChanged ||
+                  applyDiff.attentionPolicyChanged ||
+                  applyDiff.vectorcraftChanged ||
+                  applyDiff.artcraftChanged ||
                   applyDiff.strategyChanged ||
                   applyDiff.fallbackStrategyChanged ||
                   applyDiff.promptGuardChanged ||
@@ -4320,6 +4323,11 @@ export default function RoutingEditor() {
                       {applyDiff.crsPolicyChanged && (
                         <span className="bg-fuchsia-950/60 border border-fuchsia-500/50 text-fuchsia-200 text-xs px-2 py-0.5 rounded font-mono">
                           🧬 Neuro-Symbolic CRS Policy
+                        </span>
+                      )}
+                      {applyDiff.attentionPolicyChanged && (
+                        <span className="bg-amber-950/60 border border-amber-500/50 text-amber-200 text-xs px-2 py-0.5 rounded font-mono">
+                          ⚡ FlashAttention-3 / tcgen05 Policy
                         </span>
                       )}
                       {(applyDiff.vectorcraftChanged || applyDiff.artcraftChanged) && (

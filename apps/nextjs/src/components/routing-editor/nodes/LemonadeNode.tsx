@@ -27,6 +27,15 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
   const dataRef = useRef(data);
   dataRef.current = data;
 
+  useEffect(() => {
+    if (!data) return;
+    setEndpoint(data.endpoint || 'http://localhost:13305');
+    setPriority(data.priority ?? 25);
+    setSelectedModel(data.selectedModel || '*');
+    if (Array.isArray(data.models)) setModels(data.models);
+    if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
+  }, [data]);
+
   const syncData = useCallback((updates: Record<string, any>) => {
     if (dataRef.current) {
       Object.assign(dataRef.current, updates);
@@ -62,16 +71,24 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
           status: 'online'
         });
       } else {
-        setModels([]);
+        const preservedModels =
+          Array.isArray(dataRef.current?.models) && dataRef.current.models.length > 0
+            ? dataRef.current.models
+            : [];
+        setModels(preservedModels);
         setDetails([]);
         setStatus('offline');
-        syncData({ endpoint: targetEndpoint, models: [], status: 'offline' });
+        syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
       }
     } catch {
-      setModels([]);
+      const preservedModels =
+        Array.isArray(dataRef.current?.models) && dataRef.current.models.length > 0
+          ? dataRef.current.models
+          : [];
+      setModels(preservedModels);
       setDetails([]);
       setStatus('offline');
-      syncData({ endpoint: targetEndpoint, models: [], status: 'offline' });
+      syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
     }
   }, [endpoint, id, data?.id, syncData]);
 

@@ -22,7 +22,7 @@ describe('VectorCraft MCP Integration (@eluvix/router-core)', () => {
   it('exposes the full VectorCraft v0.19.0 MCP tool, prompt, and resource catalog', () => {
     expect(VECTORCRAFT_ALL_TOOLS.length).toBe(33);
     expect(VECTORCRAFT_READONLY_TOOLS.length).toBe(8);
-    expect(VECTORCRAFT_REMOTE_UI_ONLY_TOOLS.length).toBe(6);
+    expect(VECTORCRAFT_REMOTE_UI_ONLY_TOOLS.length).toBe(9);
     expect(VECTORCRAFT_PROMPTS.map(p => p.name)).toEqual([
       'poster',
       'icon-set',
@@ -87,7 +87,7 @@ describe('VectorCraft MCP Integration (@eluvix/router-core)', () => {
       backendMode: 'headless',
       autoApproveTier: 'full-automation'
     });
-    expect(headlessFull.length).toBe(27);
+    expect(headlessFull.length).toBe(24);
     for (const uiOnly of VECTORCRAFT_REMOTE_UI_ONLY_TOOLS) {
       expect(headlessFull).not.toContain(uiOnly);
     }

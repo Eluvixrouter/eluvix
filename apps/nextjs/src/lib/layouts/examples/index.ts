@@ -721,7 +721,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     ],
     edges: [
       { id: 'e-in-tr', source: 'input-1', target: 'task-router-1', animated: true, style: { stroke: '#eab308' } },
-      { id: 'e-tr-ag', source: 'task-router-1', sourceHandle: 'task-out', target: 'agent-gateway-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-tr-ag', source: 'task-router-1', sourceHandle: 'intent-tools', target: 'agent-gateway-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-mcp-ag', source: 'mcp-fs', sourceHandle: 'tool-out', target: 'agent-gateway-1', animated: true, style: { stroke: '#eab308' } },
       { id: 'e-ag-agy', source: 'agent-gateway-1', sourceHandle: 'ag-out', target: 'antigravity-mcp', animated: true, style: { stroke: '#06b6d4' } },
       { id: 'e-agy-obs', source: 'antigravity-mcp', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#06b6d4' } }
@@ -1022,7 +1022,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-fb-oll', source: 'fallback-chain-1', sourceHandle: 'secondary', target: 'ollama-1', animated: true, style: { stroke: '#eab308' } },
       { id: 'e-con-lem', source: 'consensus-judge-1', sourceHandle: 'candidate-1', target: 'lemonade-1', animated: true, style: { stroke: '#8b5cf6' } },
       { id: 'e-con-oll', source: 'consensus-judge-1', sourceHandle: 'candidate-2', target: 'ollama-1', animated: true, style: { stroke: '#8b5cf6' } },
-      { id: 'e-oh-sb', source: 'openhands-harness-1', sourceHandle: 'tools', target: 'sandbox-1', animated: true, style: { stroke: '#f43f5e' } },
+      { id: 'e-oh-sb', source: 'openhands-harness-1', sourceHandle: 'output', target: 'sandbox-1', animated: true, style: { stroke: '#f43f5e' } },
       { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-oll-obs', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } },
       { id: 'e-oh-obs', source: 'openhands-harness-1', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#f59e0b' } }
@@ -1365,6 +1365,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     name: 'Rail-Optimized 800G Clos Fabric (SRv6 uSID + DLB OOO-DDP)',
     description:
       'Plane-separated 8-Rail Leaf-Spine AI GPU fabric with RFC 8950 BGP Unnumbered + EVPN, 128-bit SRv6 Micro-SID (uSID) deterministic Spine pinning, and Switch DLB packet spraying with ConnectX-8 Out-of-Order Direct Data Placement (97.8% AllToAll MoE utilization, zero PFC pause storms).',
+    category: 'local',
     isExample: true,
     version: 1,
     createdAt: '2026-03-01T00:00:00.000Z',
@@ -1632,7 +1633,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     id: 'fa3-warp-specialized-hopper-blackwell-cluster',
     name: 'FlashAttention-3 Warp-Specialized & Blackwell tcgen05 TMEM Cluster',
     description: 'Hardware-co-designed attention routing across NVIDIA B200 (SM100 tcgen05.mma + 256 KB TMEM + 2-CTA cooperative KV sharing at 3,080 TFLOPS) and H100 (SM90a FlashAttention-3 FP8 Ping-Pong + 16x16 Walsh-Hadamard incoherent processing at 1,195 TFLOPS) with TMA 128B swizzling and setmaxnreg register reallocation.',
-    category: 'local-first',
+    category: 'local',
     tags: ['flashattention-3', 'wgmma', 'tma', 'blackwell', 'tcgen05', 'tmem', 'fp8', 'hadamard', 'hopper', 'cuda'],
     isExample: true,
     version: 1,
