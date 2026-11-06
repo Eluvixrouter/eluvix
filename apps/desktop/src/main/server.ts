@@ -507,7 +507,14 @@ export class DesktopRouterServer extends EventEmitter {
 
         // The desktop app is a single-user local app: its callers share
         // the owner's 'default' identity partition, passed explicitly.
+        const abortController = new AbortController();
+        req.on('close', () => {
+          if (!res.writableEnded) {
+            abortController.abort(new DOMException('Client closed connection', 'AbortError'));
+          }
+        });
         const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
+          signal: abortController.signal,
           scope: { userId: 'default', origin: 'client' }
         });
         const durationMs = Date.now() - startTime;
@@ -524,11 +531,20 @@ export class DesktopRouterServer extends EventEmitter {
         };
         this.emit('request-logged', logEntry);
 
+        const forwardedHeaders: Record<string, string> = {};
+        upstreamResponse.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+
         const contentType = upstreamResponse.headers.get('content-type') || '';
         const isSse = contentType.includes('text/event-stream');
 
         if (chatReq.stream && upstreamResponse.body && isSse) {
           res.writeHead(upstreamResponse.status, {
+            ...forwardedHeaders,
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive'
@@ -554,7 +570,10 @@ export class DesktopRouterServer extends EventEmitter {
         }
 
         const data = await upstreamResponse.json().catch(() => ({}));
-        res.writeHead(upstreamResponse.status, { 'Content-Type': 'application/json' });
+        res.writeHead(upstreamResponse.status, {
+          ...forwardedHeaders,
+          'Content-Type': 'application/json'
+        });
         res.end(JSON.stringify(data));
         return;
       }

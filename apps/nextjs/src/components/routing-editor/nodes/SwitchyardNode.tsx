@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import NodeHealthIndicator from '../NodeHealthIndicator';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
@@ -46,6 +46,21 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     data?.attentionPolicy || 'disabled'
   );
 
+  // Resynchronize local state when layout or node data reference changes
+  useEffect(() => {
+    if (!data) return;
+    setStrategy(data.strategy || 'cost-complexity');
+    setRoutes(Array.isArray(data.routes) && data.routes.length > 0 ? data.routes : DEFAULT_ROUTES);
+    setKvPrefixAffinity(data.kvPrefixAffinity ?? true);
+    setPrefillIsolationThreshold(data.prefillIsolationThresholdTokens ?? 4096);
+    setEnablePrefillIsolation(data.prefillIsolationThresholdTokens !== undefined);
+    setConfidentialPolicy(data.confidentialPolicy || 'disabled');
+    setQuantizationPolicy(data.quantizationPolicy || 'disabled');
+    setFabricPolicy(data.fabricPolicy || 'disabled');
+    setCrsPolicy(data.crsPolicy || 'disabled');
+    setAttentionPolicy(data.attentionPolicy || 'disabled');
+  }, [data]);
+
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
     if (data) {
@@ -56,15 +71,15 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     }
   }, [id, data, updateNodeData]);
 
-  // Ensure data object holds defaults
+  // Ensure data object holds defaults without overwriting new layout props with stale state
   if (data) {
-    if (!data.strategy) data.strategy = strategy;
-    if (!data.routes) data.routes = routes;
+    if (!data.strategy) data.strategy = 'cost-complexity';
+    if (!data.routes) data.routes = DEFAULT_ROUTES;
     if (data.timeoutMs === undefined) data.timeoutMs = 60000;
     if (data.retryCount === undefined) data.retryCount = 1;
     if (data.spilloverThresholdMs === undefined) data.spilloverThresholdMs = 30000;
     if (data.codeEscalation === undefined) data.codeEscalation = true;
-    if (data.kvPrefixAffinity === undefined) data.kvPrefixAffinity = kvPrefixAffinity;
+    if (data.kvPrefixAffinity === undefined) data.kvPrefixAffinity = true;
     if (!data.complexityThresholds) {
       data.complexityThresholds = { moderate: 300, heavy: 1500, frontier: 6000 };
     }

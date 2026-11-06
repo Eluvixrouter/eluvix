@@ -756,7 +756,7 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
     ],
     edges: [
       { id: 'e-in-tr', source: 'input-1', target: 'task-router-1', animated: true, style: { stroke: '#eab308' } },
-      { id: 'e-tr-ag', source: 'task-router-1', sourceHandle: 'task-out', target: 'agent-gateway-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-tr-ag', source: 'task-router-1', sourceHandle: 'intent-tools', target: 'agent-gateway-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-mcp-ag', source: 'mcp-fs', sourceHandle: 'tool-out', target: 'agent-gateway-1', animated: true, style: { stroke: '#eab308' } },
       { id: 'e-ag-agy', source: 'agent-gateway-1', sourceHandle: 'ag-out', target: 'antigravity-mcp', animated: true, style: { stroke: '#06b6d4' } },
       { id: 'e-agy-obs', source: 'antigravity-mcp', sourceHandle: 'output', target: 'observability-1', animated: true, style: { stroke: '#06b6d4' } }

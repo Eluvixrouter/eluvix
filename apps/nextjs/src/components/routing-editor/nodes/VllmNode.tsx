@@ -67,6 +67,33 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   const dataRef = useRef(data);
   dataRef.current = data;
 
+  useEffect(() => {
+    if (!data) return;
+    setEndpoint(data.endpoint || 'http://localhost:8000');
+    setPriority(data.priority ?? 22);
+    setVisionCapable(data.visionCapable ?? false);
+    setSelectedModel(data.selectedModel || '*');
+    if (Array.isArray(data.models)) setModels(data.models);
+    if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
+    setDisaggregationRole(
+      data.disaggregation?.role === 'pd-pair' ? 'pd-disaggregated' : (data.disaggregation?.role || 'colocated')
+    );
+    setKvConnector(
+      data.disaggregation?.kvConnector || (data.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
+    );
+    setKvCacheDtype(data.disaggregation?.kvCacheDtype || 'fp8_e4m3');
+    setTensorParallelSize(data.disaggregation?.tensorParallelSize ?? 4);
+    setRdmaDevice(data.disaggregation?.rdmaDevice || 'mlx5_0:1');
+    setDecodeEndpoint(data.disaggregation?.decodeEndpoint || 'http://localhost:8200');
+    setConfidentialEnabled(Boolean(data.confidential?.enabled));
+    setConfidentialArch(data.confidential?.architecture || 'sev-snp-h100-cc');
+    setQuantFormat(data.quantization?.format || 'fp8_e4m3');
+    setOutlierMitigation(data.quantization?.outlierMitigation || 'hadamard-quarot');
+    setFabricTopology(data.fabric?.topology || 'rail-dlb-oooddp');
+    setSrv6UsidCarrier(data.fabric?.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::');
+    setAttentionBackend(data.attentionKernel?.backend || 'fa3-fp8-hadamard');
+  }, [data]);
+
   const syncData = useCallback((updates: Record<string, any>) => {
     if (dataRef.current) {
       Object.assign(dataRef.current, updates);
@@ -102,16 +129,24 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
           status: 'online'
         });
       } else {
-        setModels([]);
+        const preservedModels =
+          Array.isArray(dataRef.current?.models) && dataRef.current.models.length > 0
+            ? dataRef.current.models
+            : [];
+        setModels(preservedModels);
         setDetails([]);
         setStatus('offline');
-        syncData({ endpoint: targetEndpoint, models: [], status: 'offline' });
+        syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
       }
     } catch {
-      setModels([]);
+      const preservedModels =
+        Array.isArray(dataRef.current?.models) && dataRef.current.models.length > 0
+          ? dataRef.current.models
+          : [];
+      setModels(preservedModels);
       setDetails([]);
       setStatus('offline');
-      syncData({ endpoint: targetEndpoint, models: [], status: 'offline' });
+      syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
     }
   }, [endpoint, id, data?.id, syncData]);
 

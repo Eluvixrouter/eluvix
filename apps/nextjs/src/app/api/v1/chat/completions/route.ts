@@ -109,6 +109,13 @@ export async function POST(req: Request) {
     const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);
     const VALID_QUANT = new Set(['disabled', 'prefer-nvfp4-hadamard', 'lossless-reasoning']);
     const VALID_FABRIC = new Set(['disabled', 'prefer-rail-optimized', 'require-collision-free-fabric']);
+    const VALID_CRS = new Set(['disabled', 'slice-and-verify', 'strict-zero-false-positive']);
+    const VALID_ATTENTION = new Set([
+      'disabled',
+      'prefer-fa3-warp-specialized',
+      'prefer-blackwell-tmem',
+      'require-fp8-ping-pong'
+    ]);
 
     if (body.metadata && typeof body.metadata === 'object') {
       if (body.metadata.confidentialPolicy && !VALID_CONFIDENTIAL.has(String(body.metadata.confidentialPolicy))) {
@@ -119,6 +126,12 @@ export async function POST(req: Request) {
       }
       if (body.metadata.fabricPolicy && !VALID_FABRIC.has(String(body.metadata.fabricPolicy))) {
         delete body.metadata.fabricPolicy;
+      }
+      if (body.metadata.crsPolicy && !VALID_CRS.has(String(body.metadata.crsPolicy))) {
+        delete body.metadata.crsPolicy;
+      }
+      if (body.metadata.attentionPolicy && !VALID_ATTENTION.has(String(body.metadata.attentionPolicy))) {
+        delete body.metadata.attentionPolicy;
       }
     }
 
@@ -143,6 +156,20 @@ export async function POST(req: Request) {
         fabricPolicy: fabricHeader
       };
     }
+    const crsHeader = req.headers.get('x-eluvix-crs');
+    if (crsHeader && VALID_CRS.has(crsHeader)) {
+      body.metadata = {
+        ...(body.metadata || {}),
+        crsPolicy: crsHeader
+      };
+    }
+    const attentionHeader = req.headers.get('x-eluvix-attention');
+    if (attentionHeader && VALID_ATTENTION.has(attentionHeader)) {
+      body.metadata = {
+        ...(body.metadata || {}),
+        attentionPolicy: attentionHeader
+      };
+    }
 
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {
@@ -152,54 +179,13 @@ export async function POST(req: Request) {
     });
 
     const contentType = response.headers.get('content-type') || '';
-    const upstreamHeader = response.headers.get('x-eluvix-upstream') || '';
-    const complexityHeader = response.headers.get('x-eluvix-complexity') || '';
-    const tokensHeader = response.headers.get('x-eluvix-tokens') || '';
-    const modelHeader = response.headers.get('x-eluvix-model') || '';
-    const effortHeader = response.headers.get('x-eluvix-effort') || '';
-    const memoryHeader = response.headers.get('x-eluvix-memory') || '';
-    const memoryTokensHeader = response.headers.get('x-eluvix-memory-tokens') || '';
-    const harnessHeader = response.headers.get('x-eluvix-harness') || '';
-    const sessionHeader = response.headers.get('x-eluvix-session') || '';
-    const teePostureHeader = response.headers.get('x-eluvix-tee-posture') || '';
-    const teeArchHeader = response.headers.get('x-eluvix-tee-arch') || '';
-    const ratsKbsHeader = response.headers.get('x-eluvix-rats-kbs') || '';
-    const quantFormatHeader = response.headers.get('x-eluvix-quantization-format') || '';
-    const outlierRotHeader = response.headers.get('x-eluvix-outlier-rotation') || '';
-    const tensorPtxHeader = response.headers.get('x-eluvix-tensor-core-ptx') || '';
-    const fabricTopologyHeader = response.headers.get('x-eluvix-fabric-topology') || '';
-    const rdmaTransportHeader = response.headers.get('x-eluvix-rdma-transport') || '';
-    const srv6UsidHeader = response.headers.get('x-eluvix-srv6-usid-carrier') || '';
-    const ttftHeader = response.headers.get('x-eluvix-ttft-ms') || '';
-    const itlHeader = response.headers.get('x-eluvix-itl-ms') || '';
-    const kvCacheKbHeader = response.headers.get('x-eluvix-kv-cache-kb') || '';
-    const pdRoleHeader = response.headers.get('x-eluvix-pd-role') || '';
-    const kvPrefixHashHeader = response.headers.get('x-eluvix-kv-prefix-hash') || '';
-
     const traceHeaders: Record<string, string> = {};
-    if (upstreamHeader) traceHeaders['x-eluvix-upstream'] = upstreamHeader;
-    if (complexityHeader) traceHeaders['x-eluvix-complexity'] = complexityHeader;
-    if (tokensHeader) traceHeaders['x-eluvix-tokens'] = tokensHeader;
-    if (modelHeader) traceHeaders['x-eluvix-model'] = modelHeader;
-    if (effortHeader) traceHeaders['x-eluvix-effort'] = effortHeader;
-    if (memoryHeader) traceHeaders['x-eluvix-memory'] = memoryHeader;
-    if (memoryTokensHeader) traceHeaders['x-eluvix-memory-tokens'] = memoryTokensHeader;
-    if (harnessHeader) traceHeaders['x-eluvix-harness'] = harnessHeader;
-    if (sessionHeader) traceHeaders['x-eluvix-session'] = sessionHeader;
-    if (teePostureHeader) traceHeaders['x-eluvix-tee-posture'] = teePostureHeader;
-    if (teeArchHeader) traceHeaders['x-eluvix-tee-arch'] = teeArchHeader;
-    if (ratsKbsHeader) traceHeaders['x-eluvix-rats-kbs'] = ratsKbsHeader;
-    if (quantFormatHeader) traceHeaders['x-eluvix-quantization-format'] = quantFormatHeader;
-    if (outlierRotHeader) traceHeaders['x-eluvix-outlier-rotation'] = outlierRotHeader;
-    if (tensorPtxHeader) traceHeaders['x-eluvix-tensor-core-ptx'] = tensorPtxHeader;
-    if (fabricTopologyHeader) traceHeaders['x-eluvix-fabric-topology'] = fabricTopologyHeader;
-    if (rdmaTransportHeader) traceHeaders['x-eluvix-rdma-transport'] = rdmaTransportHeader;
-    if (srv6UsidHeader) traceHeaders['x-eluvix-srv6-usid-carrier'] = srv6UsidHeader;
-    if (ttftHeader) traceHeaders['x-eluvix-ttft-ms'] = ttftHeader;
-    if (itlHeader) traceHeaders['x-eluvix-itl-ms'] = itlHeader;
-    if (kvCacheKbHeader) traceHeaders['x-eluvix-kv-cache-kb'] = kvCacheKbHeader;
-    if (pdRoleHeader) traceHeaders['x-eluvix-pd-role'] = pdRoleHeader;
-    if (kvPrefixHashHeader) traceHeaders['x-eluvix-kv-prefix-hash'] = kvPrefixHashHeader;
+    response.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      if ((lower.startsWith('x-eluvix-') || lower === 'retry-after') && value) {
+        traceHeaders[lower] = value;
+      }
+    });
 
     // If upstream or guard returned an error status, return JSON error with exact status
     if (!response.ok) {

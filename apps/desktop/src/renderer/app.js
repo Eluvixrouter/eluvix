@@ -95,11 +95,15 @@ ${keyLine}`;
             <input type="text" class="edit-name" data-index="${index}" value="${escapeHtml(upstream.name)}" placeholder="Node Name" />
             <select class="edit-type" data-index="${index}">
               <option value="vllm" ${upstream.type === 'vllm' ? 'selected' : ''}>vLLM</option>
+              <option value="sglang" ${upstream.type === 'sglang' ? 'selected' : ''}>SGLang</option>
               <option value="vllm-sr" ${upstream.type === 'vllm-sr' ? 'selected' : ''}>vLLM-sr</option>
               <option value="ollama" ${upstream.type === 'ollama' ? 'selected' : ''}>Ollama</option>
               <option value="lemonade" ${upstream.type === 'lemonade' ? 'selected' : ''}>Lemonade</option>
               <option value="switchyard" ${upstream.type === 'switchyard' ? 'selected' : ''}>Switchyard</option>
               <option value="openai-compatible" ${upstream.type === 'openai-compatible' ? 'selected' : ''}>OpenAI-compatible</option>
+              <option value="anthropic" ${upstream.type === 'anthropic' ? 'selected' : ''}>Anthropic</option>
+              <option value="antigravity" ${upstream.type === 'antigravity' ? 'selected' : ''}>Antigravity</option>
+              <option value="harness" ${upstream.type === 'harness' ? 'selected' : ''}>Harness</option>
               <option value="billama" ${upstream.type === 'billama' ? 'selected' : ''}>Billama</option>
             </select>
             <div class="header-right-controls">

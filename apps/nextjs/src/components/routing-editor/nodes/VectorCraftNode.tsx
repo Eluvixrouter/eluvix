@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 import {
   ARTCRAFT_APPS_CATALOG,
@@ -58,15 +58,47 @@ export default function VectorCraftNode({ id, data }: { id: string; data: any })
 
   const spec = ARTCRAFT_APPS_CATALOG[selectedApp] || ARTCRAFT_APPS_CATALOG.vectorcraft;
 
+  useEffect(() => {
+    if (!data) return;
+    const nextApp: ArtCraftAppId =
+      data.app && ARTCRAFT_APPS_CATALOG[data.app as ArtCraftAppId]
+        ? (data.app as ArtCraftAppId)
+        : 'vectorcraft';
+    const nextSpec = ARTCRAFT_APPS_CATALOG[nextApp];
+    setSelectedApp(nextApp);
+    setBundleMode(Array.isArray(data.enabledApps) && data.enabledApps.length > 1);
+    setEnabledApps(
+      Array.isArray(data.enabledApps) && data.enabledApps.length > 0
+        ? (data.enabledApps as ArtCraftAppId[])
+        : [nextApp]
+    );
+    setBackendMode(data.backendMode || 'auto');
+    setCliCommand(data.cliCommand || nextSpec.cliBinary);
+    setControlAddress(data.controlAddress || `127.0.0.1:${nextSpec.defaultControlPort ?? 7979}`);
+    setDefaultPromptWorkflow(data.defaultPromptWorkflow || (nextSpec.prompts[0] ?? 'none'));
+    setAutoApproveTier(data.autoApproveTier || 'canvas-draw');
+    setDefaultExportFormat(data.defaultExportFormat || nextSpec.defaultExportFormat);
+    setReadRoot(
+      Array.isArray(data.readRoots) && data.readRoots.length > 0
+        ? String(data.readRoots[0])
+        : data.readRoot || ''
+    );
+    setWriteRoot(
+      Array.isArray(data.writeRoots) && data.writeRoots.length > 0
+        ? String(data.writeRoots[0])
+        : data.writeRoot || ''
+    );
+  }, [data]);
+
   if (data) {
-    if (!data.app) data.app = selectedApp;
-    if (!data.enabledApps) data.enabledApps = enabledApps;
-    if (!data.backendMode) data.backendMode = backendMode;
-    if (!data.cliCommand) data.cliCommand = cliCommand;
-    if (!data.controlAddress) data.controlAddress = controlAddress;
-    if (!data.defaultPromptWorkflow) data.defaultPromptWorkflow = defaultPromptWorkflow;
-    if (!data.autoApproveTier) data.autoApproveTier = autoApproveTier;
-    if (!data.defaultExportFormat) data.defaultExportFormat = defaultExportFormat;
+    if (!data.app) data.app = initialApp;
+    if (!data.enabledApps) data.enabledApps = [initialApp];
+    if (!data.backendMode) data.backendMode = 'auto';
+    if (!data.cliCommand) data.cliCommand = initialSpec.cliBinary;
+    if (!data.controlAddress) data.controlAddress = `127.0.0.1:${initialSpec.defaultControlPort ?? 7979}`;
+    if (!data.defaultPromptWorkflow) data.defaultPromptWorkflow = initialSpec.prompts[0] ?? 'none';
+    if (!data.autoApproveTier) data.autoApproveTier = 'canvas-draw';
+    if (!data.defaultExportFormat) data.defaultExportFormat = initialSpec.defaultExportFormat;
     if (data.readRoots === undefined) data.readRoots = readRoot ? [readRoot] : [];
     if (data.writeRoots === undefined) data.writeRoots = writeRoot ? [writeRoot] : [];
   }

@@ -87,7 +87,10 @@ export const VECTORCRAFT_REMOTE_UI_ONLY_TOOLS: readonly string[] = [
   'type_text',
   'answer_dialog',
   'open_panel',
-  'ui_screenshot'
+  'ui_screenshot',
+  'screenshot',
+  'press_key',
+  'invoke_menu'
 ] as const;
 
 /**
@@ -258,7 +261,10 @@ export interface VectorCraftCliBuildResult {
 export function buildVectorCraftCliArgs(config: VectorCraftMcpConfig): VectorCraftCliBuildResult {
   const cliCommand = (config.cliCommand || config.cliBinary || 'vectorcraft-cli').trim() || 'vectorcraft-cli';
   const mode: VectorCraftBackendMode = config.backendMode || config.mode || 'auto';
-  const controlAddr = (config.controlAddress || config.connectAddress || '127.0.0.1:7979').trim() || '127.0.0.1:7979';
+  const rawInputControl = (config.controlAddress || config.connectAddress || '127.0.0.1:7979').trim() || '127.0.0.1:7979';
+  const barePortMatch = rawInputControl.match(/^(\d{1,5})$/);
+  const isBarePortValid = barePortMatch && Number(barePortMatch[1]) >= 1 && Number(barePortMatch[1]) <= 65535;
+  const controlAddr = isBarePortValid ? `127.0.0.1:${barePortMatch[1]}` : rawInputControl;
   const portMatch = controlAddr.match(/:(\d+)$/);
   const controlPort = portMatch ? portMatch[1] : '7979';
 

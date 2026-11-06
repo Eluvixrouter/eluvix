@@ -50,13 +50,20 @@ export interface AttentionKernelConfig {
   warpSpecialized?: boolean;
   pingPongSchedule?: boolean;
   tmaCircularStages?: number;
-  tmaSwizzle?: TmaSwizzleMode;
+  pipelineStages?: number;
+  tmaSwizzle?: TmaSwizzleMode | '128B' | '64B' | '32B' | 'none';
   producerRegisters?: number;
+  producerMaxRegs?: number;
   consumerRegisters?: number;
+  consumerMaxRegs?: number;
   fp8HadamardSmoothing?: boolean;
+  fp8HadamardIncoherent?: boolean;
+  fp8BlockHad?: boolean;
   blackwellTmemEnabled?: boolean;
+  blackwellTmem?: boolean;
   ctaClusterSize?: 1 | 2;
-  mmaPrimitive?: MmaInstructionPrimitive;
+  ctaPair2Sm?: boolean;
+  mmaPrimitive?: MmaInstructionPrimitive | 'tcgen05.mma' | 'wgmma.mma_async' | 'mma.sync';
 }
 
 export interface AttentionBenchmarkEntry {
@@ -601,10 +608,40 @@ export function generateFlashAttentionKernelLaunchScript(
   const safeModel = escapeShellArg(modelId && modelId !== '*' ? modelId : 'meta-llama/Llama-3.3-70B-Instruct');
   const backend: AttentionKernelBackend = config?.backend || 'fa3-fp8-hadamard';
   const spec = FLASH_ATTENTION_BENCHMARK_TABLE[backend] || FLASH_ATTENTION_BENCHMARK_TABLE['fa3-fp8-hadamard'];
-  const stages = sanitizePositiveInt(config?.tmaCircularStages, 3, 2, 8);
-  const prodRegs = sanitizePositiveInt(config?.producerRegisters, 40, 24, 128);
-  const consRegs = sanitizePositiveInt(config?.consumerRegisters, 232, 64, 255);
-  const ctaCluster = config?.ctaClusterSize === 1 ? 1 : 2;
+  const stages = sanitizePositiveInt(config?.tmaCircularStages ?? config?.pipelineStages, 3, 2, 8);
+  const prodRegs = sanitizePositiveInt(config?.producerRegisters ?? config?.producerMaxRegs, 40, 24, 128);
+  const consRegs = sanitizePositiveInt(config?.consumerRegisters ?? config?.consumerMaxRegs, 232, 64, 255);
+  const ctaCluster: 1 | 2 =
+    config?.ctaClusterSize === 1 || config?.ctaPair2Sm === false ? 1 : 2;
+  const effectiveSmArch: CudaSmArchitecture = config?.smArch || spec.smArch;
+  const rawSwizzle = config?.tmaSwizzle;
+  const effectiveSwizzle: TmaSwizzleMode =
+    rawSwizzle === '128B'
+      ? 'CU_TENSOR_MAP_SWIZZLE_128B'
+      : rawSwizzle === '64B'
+      ? 'CU_TENSOR_MAP_SWIZZLE_64B'
+      : rawSwizzle === '32B'
+      ? 'CU_TENSOR_MAP_SWIZZLE_32B'
+      : rawSwizzle === 'none'
+      ? 'CU_TENSOR_MAP_SWIZZLE_NONE'
+      : rawSwizzle || spec.tmaSwizzle;
+
+  const blackwellArch = analyzeBlackwellTmemArchitecture({ ctaClusterSize: ctaCluster });
+  const rawMma = config?.mmaPrimitive;
+  const effectiveMmaPrimitive: MmaInstructionPrimitive =
+    rawMma === 'tcgen05.mma'
+      ? blackwellArch.mmaInstruction
+      : rawMma === 'wgmma.mma_async'
+      ? spec.precision === 'FP8'
+        ? 'wgmma.mma_async.sync.aligned.m64n128k32.f8'
+        : 'wgmma.mma_async.sync.aligned.m64n128k16'
+      : rawMma === 'mma.sync'
+      ? 'mma.sync.aligned.m16n8k16'
+      : rawMma
+      ? rawMma
+      : backend === 'blackwell-tcgen05-tmem'
+      ? blackwellArch.mmaInstruction
+      : spec.mmaPrimitive;
 
   const regPlan = planWarpSpecializedRegisterBudget({
     producerRegsPerThread: prodRegs,
@@ -612,14 +649,14 @@ export function generateFlashAttentionKernelLaunchScript(
   });
 
   let script = `# ==============================================================================\n`;
-  script += `# Node: ${safeId} — ${spec.name} (${spec.silicon} / ${spec.smArch})\n`;
+  script += `# Node: ${safeId} — ${spec.name} (${spec.silicon} / ${effectiveSmArch})\n`;
   script += `# Measured Throughput: ${spec.measuredTflops} TFLOPS (${spec.tensorCoreUtilizationPct}% Peak, ${spec.relativeSpeedup}x vs SDPA)\n`;
-  script += `# MMA Primitive: ${spec.mmaPrimitive} | TMA Swizzle: ${spec.tmaSwizzle}\n`;
+  script += `# MMA Primitive: ${effectiveMmaPrimitive} | TMA Swizzle: ${effectiveSwizzle}\n`;
   script += `# Register Budget: WG0=${regPlan.producerRegsPerThread} regs (${regPlan.totalProducerRegisters}) | WG1/WG2=${regPlan.consumerRegsPerThread} regs (${regPlan.totalConsumerRegisters})\n`;
   script += `# ==============================================================================\n`;
 
   script += `export CUDA_DEVICE_MAX_CONNECTIONS=1\n`;
-  script += `export TORCH_CUDA_ARCH_LIST=${escapeShellArg(spec.smArch === 'sm_100a' ? '10.0a' : '9.0a')}\n`;
+  script += `export TORCH_CUDA_ARCH_LIST=${escapeShellArg(effectiveSmArch === 'sm_100a' ? '10.0a' : effectiveSmArch === 'sm_80' ? '8.0' : '9.0a')}\n`;
   script += `export ELUVIX_FA_KERNEL_BACKEND=${escapeShellArg(backend)}\n`;
   script += `export ELUVIX_TMA_RING_STAGES=${stages}\n`;
 
@@ -655,7 +692,7 @@ export function generateFlashAttentionKernelLaunchScript(
 
   script += `\n# PTX / CUTLASS 3.x Warp-Specialized Kernel Configuration Reference:\n`;
   script += `#   Producer WG0 (128 threads): ${regPlan.ptxProducerDirective} -> cp.async.bulk.tensor.2d (${stages}-stage ring)\n`;
-  script += `#   Consumer WG1/WG2 (256 threads): ${regPlan.ptxConsumerDirective} -> ${spec.mmaPrimitive}\n`;
+  script += `#   Consumer WG1/WG2 (256 threads): ${regPlan.ptxConsumerDirective} -> ${effectiveMmaPrimitive}\n`;
   if (backend === 'blackwell-tcgen05-tmem') {
     script += `#   Blackwell TMEM: 256 KB/SM (512 cols x 128 lanes) | cta_group::${ctaCluster} cooperative DSMEM MMA\n`;
   }

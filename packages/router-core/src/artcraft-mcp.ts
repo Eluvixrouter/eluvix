@@ -903,6 +903,25 @@ export interface ArtCraftCliBuildResult {
   confinementNote?: string;
 }
 
+function splitCliExtraArgs(extraArgs?: string[]): string[] {
+  if (!Array.isArray(extraArgs)) return [];
+  const tokens: string[] = [];
+  for (const raw of extraArgs) {
+    if (typeof raw !== 'string' || /[\r\n\0]/.test(raw)) continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const matches = trimmed.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+    for (const m of matches) {
+      const unquoted =
+        (m.startsWith('"') && m.endsWith('"')) || (m.startsWith("'") && m.endsWith("'"))
+          ? m.slice(1, -1)
+          : m;
+      if (unquoted) tokens.push(unquoted);
+    }
+  }
+  return tokens;
+}
+
 /**
  * Builds the exact `<app>-cli mcp` arguments for any of the 14 ArtCraft applications,
  * respecting each app's remote flag convention (`--connect`, `--bridge`, `--attach`, or headless-only)
@@ -916,7 +935,10 @@ export function buildArtCraftCliArgs(config: ArtCraftMcpConfig): ArtCraftCliBuil
   const requestedMode: ArtCraftBackendMode = config.backendMode || config.mode || 'auto';
 
   const defaultPort = spec.defaultControlPort ?? 7979;
-  const rawControl = (config.controlAddress || config.connectAddress || `127.0.0.1:${defaultPort}`).trim();
+  const rawInputControl = (config.controlAddress || config.connectAddress || `127.0.0.1:${defaultPort}`).trim();
+  const barePortMatch = rawInputControl.match(/^(\d{1,5})$/);
+  const isBarePortValid = barePortMatch && Number(barePortMatch[1]) >= 1 && Number(barePortMatch[1]) <= 65535;
+  const rawControl = isBarePortValid ? `127.0.0.1:${barePortMatch[1]}` : rawInputControl;
   const portMatch = rawControl.match(/:(\d+)$/);
   const controlPort = portMatch ? portMatch[1] : String(defaultPort);
 
@@ -946,11 +968,7 @@ export function buildArtCraftCliArgs(config: ArtCraftMcpConfig): ArtCraftCliBuil
       }
     }
 
-    if (Array.isArray(config.extraArgs)) {
-      for (const extra of config.extraArgs) {
-        if (extra.trim()) mcpArgs.push(extra.trim());
-      }
-    }
+    mcpArgs.push(...splitCliExtraArgs(config.extraArgs));
 
     return {
       app: appId,
@@ -981,12 +999,11 @@ export function buildArtCraftCliArgs(config: ArtCraftMcpConfig): ArtCraftCliBuil
     }
   }
 
-  if (appId === 'craft-anything' && (!config.extraArgs || config.extraArgs.length === 0)) {
+  const parsedExtra = splitCliExtraArgs(config.extraArgs);
+  if (appId === 'craft-anything' && parsedExtra.length === 0) {
     mcpArgs.push('--deep', '--all-tools');
-  } else if (Array.isArray(config.extraArgs)) {
-    for (const extra of config.extraArgs) {
-      if (extra.trim()) mcpArgs.push(extra.trim());
-    }
+  } else {
+    mcpArgs.push(...parsedExtra);
   }
 
   const effectiveMode: ArtCraftBackendMode =
@@ -1004,7 +1021,7 @@ export function buildArtCraftCliArgs(config: ArtCraftMcpConfig): ArtCraftCliBuil
   };
 }
 
-function resolveSelectedArtCraftApps(config: ArtCraftMcpConfig): ArtCraftAppId[] {
+export function resolveSelectedArtCraftApps(config: ArtCraftMcpConfig): ArtCraftAppId[] {
   const list = config.enabledApps || config.apps;
   if (Array.isArray(list) && list.length > 0) {
     return Array.from(new Set(list.filter(a => Boolean(ARTCRAFT_APPS_CATALOG[a]))));
@@ -1032,9 +1049,13 @@ export function resolveArtCraftAutoApproveTools(config: ArtCraftMcpConfig): stri
     } else if (tier === 'full-automation') {
       list = spec.allTools;
     } else {
-      // workspace-edit: all non-UI tools except destructive system/process tools
+      // workspace-edit: all non-UI tools except destructive system/process/save/export tools
       list = spec.allTools.filter(
-        t => !uiOnly.has(t) && !/^(save_|doc_save|export|bounce_mix|sign_document|project_delete)/.test(t)
+        t =>
+          !uiOnly.has(t) &&
+          !/^(save$|save_|doc_save|export|bounce_mix|sign_document|project_delete|render_video|render_frame|build_command_run|build_file_write|build_file_edit|frida_script_run|frida_instrument_run|native_gdb_command_run|native_rizin_session_command_run|api_Repeater_send|api_Intruder_start|web_browser_Run_action)/.test(
+            t
+          )
       );
     }
 
@@ -1053,10 +1074,9 @@ export function resolveArtCraftAutoApproveTools(config: ArtCraftMcpConfig): stri
  */
 export function toArtCraftHarnessMcpServers(config: ArtCraftMcpConfig): HarnessMcpServerConfig[] {
   const apps = resolveSelectedArtCraftApps(config);
-  const primaryApp = config.app && ARTCRAFT_APPS_CATALOG[config.app] ? config.app : 'vectorcraft';
 
   return apps.map(appId => {
-    const isPrimarySingle = apps.length === 1 && appId === primaryApp;
+    const isPrimarySingle = apps.length === 1 || appId === config.app;
     const singleCfg: ArtCraftMcpConfig = {
       ...config,
       app: appId,

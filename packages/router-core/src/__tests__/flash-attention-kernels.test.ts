@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   FLASH_ATTENTION_BENCHMARK_TABLE,
   planWarpSpecializedRegisterBudget,
@@ -11,6 +11,10 @@ import {
 } from '../index.js';
 
 describe('FlashAttention-3 & Warp-Specialized CUDA Kernels (SM90 / SM100)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('plans Warp-Specialized CTA register budgets (setmaxnreg 40 / 232) within 65,536 SM ceiling', () => {
     const plan = planWarpSpecializedRegisterBudget({
       producerWarpgroups: 1,
@@ -209,5 +213,98 @@ describe('FlashAttention-3 & Warp-Specialized CUDA Kernels (SM90 / SM100)', () =
     expect(res.headers.get('x-eluvix-attention-guard')).toBe('DENIED_SYNCHRONOUS_KERNEL');
     const body = await res.json();
     expect(body.error.type).toBe('attention_kernel_unavailable');
+  });
+
+  it('enforces require-fp8-ping-pong against BF16-only FA3 upstreams and differentiates prefer-blackwell-tmem vs prefer-fa3-warp-specialized', async () => {
+    const fetchSpy = vi.fn().mockImplementation(async (url: string) => {
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-fa3-bugfix',
+          object: 'chat.completion',
+          choices: [{ index: 0, message: { role: 'assistant', content: `routed:${url}` }, finish_reason: 'stop' }]
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    // 1. BF16-only FA3 upstream must be rejected under require-fp8-ping-pong
+    const fp8StrictRouter = new Eluvix({
+      egressPolicy: 'local-only',
+      attentionPolicy: 'require-fp8-ping-pong',
+      upstreams: [
+        {
+          id: 'h100-fa3-bf16-only',
+          name: 'H100 FA3 BF16 Only',
+          type: 'vllm',
+          endpoint: 'http://127.0.0.1:8101',
+          priority: 20,
+          models: ['*'],
+          attentionKernel: {
+            enabled: true,
+            backend: 'fa3-wgmma-tma',
+            smArch: 'sm_90a',
+            pingPongSchedule: false
+          }
+        }
+      ]
+    });
+
+    const deniedRes = await fp8StrictRouter.routeChatCompletion({
+      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      messages: [{ role: 'user', content: 'Require FP8 ping-pong' }]
+    });
+    expect(deniedRes.status).toBe(503);
+    expect(deniedRes.headers.get('x-eluvix-attention-guard')).toBe('DENIED_SYNCHRONOUS_KERNEL');
+
+    // 2. prefer-fa3-warp-specialized prefers SM90a FA3 over SM100 Blackwell when priorities are equal
+    const dualRouter = new Eluvix({
+      egressPolicy: 'local-only',
+      upstreams: [
+        {
+          id: 'b200-tmem',
+          name: 'B200 TMEM',
+          type: 'sglang',
+          endpoint: 'http://127.0.0.1:30001',
+          priority: 20,
+          models: ['*'],
+          attentionKernel: {
+            enabled: true,
+            backend: 'blackwell-tcgen05-tmem',
+            smArch: 'sm_100a'
+          }
+        },
+        {
+          id: 'h100-fa3',
+          name: 'H100 FA3',
+          type: 'vllm',
+          endpoint: 'http://127.0.0.1:8001',
+          priority: 20,
+          models: ['*'],
+          attentionKernel: {
+            enabled: true,
+            backend: 'fa3-fp8-hadamard',
+            smArch: 'sm_90a',
+            pingPongSchedule: true
+          }
+        }
+      ]
+    });
+
+    const fa3PrefRes = await dualRouter.routeChatCompletion({
+      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      attentionPolicy: 'prefer-fa3-warp-specialized',
+      messages: [{ role: 'user', content: 'Route with prefer-fa3-warp-specialized' }]
+    });
+    expect(fa3PrefRes.status).toBe(200);
+    expect(fa3PrefRes.headers.get('x-eluvix-attention-kernel')).toBe('fa3-fp8-hadamard');
+
+    const b200PrefRes = await dualRouter.routeChatCompletion({
+      model: 'meta-llama/Llama-3.3-70B-Instruct',
+      attentionPolicy: 'prefer-blackwell-tmem',
+      messages: [{ role: 'user', content: 'Route with prefer-blackwell-tmem' }]
+    });
+    expect(b200PrefRes.status).toBe(200);
+    expect(b200PrefRes.headers.get('x-eluvix-attention-kernel')).toBe('blackwell-tcgen05-tmem');
   });
 });
