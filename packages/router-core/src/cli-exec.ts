@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,14 @@ import { getAppPaths } from './paths.js';
  */
 
 export const ANTIGRAVITY_CLI_BINARIES: readonly string[] = ['agy', 'antigravity'];
+
+export const RAMALAMA_CLI_BINARIES: readonly string[] = ['ramalama'];
+
+export const ARTCRAFT_CLI_BINARIES: readonly string[] = [
+  'vectorcraft-cli',
+  'photocraft-cli',
+  'filmcraft-cli'
+];
 
 export const ACP_CLI_BINARIES: readonly string[] = [
   'goose',
@@ -172,4 +181,165 @@ export function tryResolveCliExecutable(
   } catch {
     return null;
   }
+}
+
+export interface RamalamaCliModel {
+  name: string;
+  id?: string;
+  size?: number | string;
+  modified?: string;
+}
+
+export interface RamalamaCliContainer {
+  name: string;
+  image: string;
+  status: string;
+  ports?: string;
+}
+
+export interface RamalamaCliInspectionResult {
+  installed: boolean;
+  binaryPath?: string;
+  version?: string;
+  models: RamalamaCliModel[];
+  containers: RamalamaCliContainer[];
+}
+
+export function parseRamalamaListJson(raw: string): RamalamaCliModel[] {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    const items = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.models)
+      ? parsed.models
+      : [];
+    const results: RamalamaCliModel[] = [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const name = String(item.name || item.model || item.id || '').trim();
+      if (!name) continue;
+      results.push({
+        name,
+        ...(item.id ? { id: String(item.id) } : {}),
+        ...(item.size !== undefined ? { size: item.size } : {}),
+        ...(item.modified || item.modified_at
+          ? { modified: String(item.modified || item.modified_at) }
+          : {}),
+      });
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+export function parseRamalamaContainersJson(raw: string): RamalamaCliContainer[] {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    const items = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.containers)
+      ? parsed.containers
+      : [];
+    const results: RamalamaCliContainer[] = [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const rawNames = item.Names ?? item.names ?? item.name ?? item.Id ?? item.id ?? '';
+      const name = Array.isArray(rawNames) ? String(rawNames[0] || '') : String(rawNames || '');
+      const image = String(item.Image ?? item.image ?? '').trim();
+      const status = String(item.Status ?? item.State ?? item.status ?? 'unknown').trim();
+      const portsRaw = item.Ports ?? item.ports;
+      const ports = Array.isArray(portsRaw)
+        ? portsRaw
+            .map((p: any) =>
+              typeof p === 'object' && p !== null
+                ? `${p.host_port || p.hostPort || ''}:${p.container_port || p.containerPort || ''}`
+                : String(p)
+            )
+            .filter(Boolean)
+            .join(', ')
+        : typeof portsRaw === 'string'
+        ? portsRaw
+        : undefined;
+      if (!name && !image) continue;
+      results.push({
+        name: name || image,
+        image,
+        status,
+        ...(ports ? { ports } : {}),
+      });
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+function runExecFileSafe(
+  binary: string,
+  args: string[],
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv
+): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      binary,
+      args,
+      { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, env },
+      (err, stdout) => {
+        if (err) {
+          resolve('');
+          return;
+        }
+        resolve(String(stdout || ''));
+      }
+    );
+  });
+}
+
+/**
+ * Safely inspects a locally installed `ramalama` CLI using `resolveCliExecutable`
+ * and `execFile` (no shell interpolation) to discover pulled OCI models and
+ * active containers even when `ramalama serve` is not yet listening on HTTP.
+ */
+export async function inspectRamalamaCli(options?: {
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}): Promise<RamalamaCliInspectionResult> {
+  const env = options?.env ?? process.env;
+  const timeoutMs = options?.timeoutMs ?? 4000;
+  const binaryPath = tryResolveCliExecutable('ramalama', {
+    allowedBasenames: RAMALAMA_CLI_BINARIES,
+    env,
+  });
+
+  if (!binaryPath) {
+    return {
+      installed: false,
+      models: [],
+      containers: [],
+    };
+  }
+
+  const [versionOut, listOut, containersOut] = await Promise.all([
+    runExecFileSafe(binaryPath, ['--version'], timeoutMs, env),
+    runExecFileSafe(binaryPath, ['list', '--json'], timeoutMs, env),
+    runExecFileSafe(binaryPath, ['containers', '--json'], timeoutMs, env),
+  ]);
+
+  const version = versionOut.trim().split(/\r?\n/)[0]?.trim() || undefined;
+  const models = parseRamalamaListJson(listOut);
+  const containers = parseRamalamaContainersJson(containersOut);
+
+  return {
+    installed: true,
+    binaryPath,
+    ...(version ? { version } : {}),
+    models,
+    containers,
+  };
 }

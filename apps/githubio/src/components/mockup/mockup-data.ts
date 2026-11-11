@@ -1,7 +1,7 @@
 export interface MockUpstream {
   id: string;
   name: string;
-  type: 'vllm' | 'vllm-sr' | 'ollama' | 'lemonade' | 'switchyard' | 'billama' | 'openai-compatible';
+  type: 'vllm' | 'vllm-sr' | 'ollama' | 'lemonade' | 'ramalama' | 'switchyard' | 'billama' | 'openai-compatible';
   endpoint: string;
   priority: number;
   models: string[];
@@ -56,6 +56,18 @@ export const INITIAL_UPSTREAMS: MockUpstream[] = [
     priority: 18,
     models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF'],
     latencyMs: 12,
+    status: 'online',
+    enabled: true,
+    costPer1k: 0.0,
+  },
+  {
+    id: 'local-ramalama',
+    name: 'RamaLama OCI Engine',
+    type: 'ramalama',
+    endpoint: 'http://localhost:8080',
+    priority: 17,
+    models: ['granite-code:8b', 'llama3.2:3b', 'deepseek-r1:7b'],
+    latencyMs: 15,
     status: 'online',
     enabled: true,
     costPer1k: 0.0,

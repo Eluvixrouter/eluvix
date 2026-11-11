@@ -23,6 +23,7 @@ export async function GET(req: Request) {
         up.includes('ollama') || 
         up.includes('vllm') || 
         up.includes('lemonade') ||
+        up.includes('ramalama') ||
         up.includes('switchyard')
       );
     }).length;

@@ -108,7 +108,27 @@ export interface SwitchyardConfig {
    * FlashAttention-3 Warp-Specialized (WGMMA + TMA Ping-Pong) & Blackwell tcgen05 + TMEM routing policy.
    */
   attentionPolicy?: AttentionRoutingPolicy;
+  /**
+   * Modality-aware media intent routing: when `model === 'auto'`, explicit visual/video/3D
+   * synthesis prompts automatically steer to `ComfyUINode` upstreams while standard text/code
+   * prompts isolate away from `ComfyUINode`. Defaults to true.
+   */
+  mediaIntentRouting?: boolean;
+  /**
+   * Rolling 24-hour cloud spend ceiling in USD (`> 0`). When 24h cloud spend reaches or
+   * exceeds this cap, Switchyard enforces `budgetExhaustedAction`.
+   */
+  maxDailySpendUsd?: number;
+  /**
+   * Action taken when 24h rolling cloud spend >= `maxDailySpendUsd`:
+   * - `'prefer-local'` (default): soft-failover to `$0.00` local/CLI upstreams whenever available.
+   * - `'strict-local'`: strictly restrict to `$0.00` local/CLI upstreams and fail closed (429) if none exist.
+   * - `'reject'`: immediately reject requests with HTTP 429 until rolling 24h spend drops below the cap.
+   */
+  budgetExhaustedAction?: BudgetExhaustedAction;
 }
+
+export type BudgetExhaustedAction = 'prefer-local' | 'strict-local' | 'reject';
 
 export interface ModelGatewayConfig {
   primaryModel?: string;
@@ -185,8 +205,25 @@ export * from './clos-fabric-routing.js';
 export * from './neuro-symbolic-crs.js';
 export * from './vectorcraft-mcp.js';
 export * from './artcraft-mcp.js';
+export * from './comfyui.js';
+export * from './comfyui-postprocess.js';
+export * from './modality.js';
+export * from './ssrf-guard.js';
 export * from './flash-attention-kernels.js';
 export * from './shell-utils.js';
+import {
+  ComfyUIConfig,
+  buildComfyApiWorkflow,
+  parseComfyModelsResponse,
+  executeComfyWorkflow,
+  fetchComfyMediaAsBase64
+} from './comfyui.js';
+import { executeArtCraftPostProcess } from './comfyui-postprocess.js';
+import {
+  classifyRequestModality,
+  isExplicitMediaModelId,
+  type ModalityProfile
+} from './modality.js';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -206,7 +243,7 @@ import {
   tryResolveCliExecutable,
   ANTIGRAVITY_CLI_BINARIES
 } from './cli-exec.js';
-import { logRequest, getRequestLogs } from './db.js';
+import { logRequest, getRequestLogs, getRollingSpendUsd } from './db.js';
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 import {
   type ContextProvider,
@@ -244,8 +281,10 @@ export interface RouteTraceStep {
     | 'memory'
     | 'memory-egress'
     | 'knowledge-rag'
+    | 'modality-filter'
     | 'vision-filter'
     | 'tools-filter'
+    | 'budget-guardrail'
     | 'circuit-breaker'
     | 'fallback-chain'
     | 'consensus'
@@ -271,6 +310,7 @@ export interface RouteExplanation {
   model: string;
   strategy: RoutingStrategy;
   egressPolicy?: EgressPolicy;
+  modality?: ModalityProfile;
   complexity: {
     score: number;
     label: string;
@@ -294,8 +334,25 @@ export type UpstreamType =
   | 'switchyard'
   | 'ollama'
   | 'lemonade'
+  | 'ramalama'
+  | 'comfyui'
   | 'antigravity'
   | 'harness';
+
+export interface RamalamaConfig {
+  containerEngine?: 'podman' | 'docker' | 'nocontainer';
+  runtime?: 'llama.cpp' | 'vllm' | 'mlx';
+  ociTransport?: 'oci' | 'hf' | 'ollama' | 'rlcr';
+  accelerator?: 'auto' | 'cuda' | 'rocm' | 'vulkan' | 'intel';
+  selinuxEnforcing?: boolean;
+  networkIsolation?: 'bridge' | 'none' | 'host';
+  readOnlyRootfs?: boolean;
+  tempContainer?: boolean;
+  ragOciUri?: string;
+  generateMode?: 'none' | 'quadlet' | 'kube' | 'compose';
+  ctxSize?: number;
+  ngl?: number;
+}
 
 export interface DisaggregationConfig {
   role?: 'colocated' | 'prefill' | 'decode' | 'pd-disaggregated';
@@ -358,6 +415,8 @@ export interface UpstreamConfig {
   vectorcraft?: VectorCraftMcpConfig;
   artcraft?: ArtCraftMcpConfig;
   attentionKernel?: AttentionKernelConfig;
+  ramalama?: RamalamaConfig;
+  comfyui?: ComfyUIConfig;
 }
 
 /**
@@ -666,6 +725,39 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
 }
 
 /**
+ * Computes the effective USD cost per 1,000 tokens for an upstream.
+ * Explicit `upstream.costPer1kTokens` always takes precedence; otherwise external
+ * cloud APIs (`openai-compatible`, `billama`, `anthropic`) default to `$0.005/1K`
+ * while local engines and subscription CLI agents default to `$0.00`.
+ */
+export function getEffectiveCostPer1kTokens(upstream: UpstreamConfig): number {
+  if (typeof upstream.costPer1kTokens === 'number' && Number.isFinite(upstream.costPer1kTokens)) {
+    return Math.max(0, upstream.costPer1kTokens);
+  }
+  if (
+    !isLocalUpstream(upstream) &&
+    (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic')
+  ) {
+    return 0.005;
+  }
+  return 0;
+}
+
+/**
+ * Estimates total USD spend for a completed request on `upstream`.
+ */
+export function estimateUpstreamRequestCostUsd(
+  upstream: UpstreamConfig,
+  promptTokens: number,
+  completionTokens: number
+): number {
+  const rate = getEffectiveCostPer1kTokens(upstream);
+  if (rate <= 0) return 0;
+  const totalTokens = Math.max(0, (promptTokens || 0) + (completionTokens || 0));
+  return Number(((totalTokens / 1000) * rate).toFixed(6));
+}
+
+/**
  * Whether an upstream can serve requests that contain images. An explicit
  * 'vision' capability wins; otherwise capability is inferred from the
  * provider type and the served model names — the same style of inference
@@ -678,6 +770,9 @@ export function isLocalUpstream(upstream: UpstreamConfig): boolean {
  */
 export function isVisionCapableUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
+  if (upstream.type === 'comfyui') {
+    return Boolean(upstream.capabilities?.includes('vision-input'));
+  }
   if (upstream.capabilities?.includes('vision')) return true;
   if (
     upstream.type === 'openai-compatible' ||
@@ -687,7 +782,12 @@ export function isVisionCapableUpstream(upstream: UpstreamConfig): boolean {
   ) {
     return true;
   }
-  return Array.isArray(upstream.models) && upstream.models.some(m => /gpt-4o|gpt-4-turbo|claude|gemini|llava|-vl\b|vision|omni/i.test(m));
+  return (
+    Array.isArray(upstream.models) &&
+    upstream.models.some(m =>
+      /gpt-4o|gpt-4-turbo|claude|gemini|llava|-vl\b|vision|omni|pixtral|gemma-?3|minicpm-v|internvl|molmo/i.test(m)
+    )
+  );
 }
 
 export interface PromptComplexityAssessment {
@@ -982,6 +1082,54 @@ export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeo
   const candidateUrls: string[] = [];
   const baseWithoutV1 = trimmed.replace(/\/v1$/, '');
 
+  // ComfyUI local media engine (:8188) exposes /models/checkpoints, /models/diffusion_models, /models/unet, and /object_info/CheckpointLoaderSimple
+  if (upstream.type === 'comfyui') {
+    const comfyUrls = [
+      `${baseWithoutV1}/models/checkpoints`,
+      `${baseWithoutV1}/models/diffusion_models`,
+      `${baseWithoutV1}/models/unet`,
+      `${baseWithoutV1}/object_info/CheckpointLoaderSimple`
+    ];
+    const aggregatedModels = new Set<string>();
+    const aggregatedDetails: DiscoveredModel[] = [];
+    for (const url of comfyUrls) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const folder = url.includes('diffusion_models')
+          ? 'diffusion_models'
+          : url.includes('unet')
+            ? 'unet'
+            : 'checkpoints';
+        const parsed = parseComfyModelsResponse(data, folder);
+        for (const m of parsed.models) {
+          if (!aggregatedModels.has(m)) {
+            aggregatedModels.add(m);
+            aggregatedDetails.push({
+              id: m,
+              name: m,
+              ownedBy: 'comfyui',
+              recipe: folder === 'checkpoints' ? 'comfyui:checkpoint' : `comfyui:${folder}`
+            });
+          }
+        }
+      } catch {
+        // Continue probing remaining ComfyUI endpoints
+      }
+    }
+    if (aggregatedModels.size > 0) {
+      return { models: Array.from(aggregatedModels), details: aggregatedDetails };
+    }
+  }
+
   // Determine candidate URLs based on type and endpoint structure
   if (upstream.type === 'ollama') {
     candidateUrls.push(
@@ -989,8 +1137,8 @@ export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeo
       `${baseWithoutV1}/api/tags`,
       `${baseWithoutV1}/models`
     );
-  } else if (upstream.type === 'lemonade') {
-    // Lemonade router (port 13305) supports /v1/models, /models, /api/models
+  } else if (upstream.type === 'lemonade' || upstream.type === 'ramalama') {
+    // Lemonade router (:13305) & RamaLama OCI server (:8080) support /v1/models, /models, /api/models, /api/tags
     candidateUrls.push(
       `${baseWithoutV1}/v1/models`,
       `${baseWithoutV1}/models`,
@@ -1816,6 +1964,27 @@ export class Eluvix {
           }
         );
       }
+      if (err?.budgetCapExceeded) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err.message,
+              type: 'budget_exceeded',
+              code: 'daily_spend_cap_exceeded'
+            }
+          }),
+          {
+            status: 429,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-budget-guard': 'DENIED_DAILY_SPEND_CAP',
+              ...(typeof err.rolling24hSpendUsd === 'number'
+                ? { 'x-eluvix-rolling-24h-spend-usd': err.rolling24hSpendUsd.toFixed(6) }
+                : {})
+            }
+          }
+        );
+      }
       throw err;
     }
     effectiveRequest = selection.effectiveRequest;
@@ -2385,6 +2554,7 @@ export class Eluvix {
             const kvDtype = upstream.disaggregation?.kvCacheDtype === 'bf16' ? 'bf16' : 'fp8_e4m3';
             const kvFootprint = estimateKvCacheFootprint(servedModel, promptTokens, kvDtype);
             const kvCacheKb = Number((kvFootprint.totalBytes / 1024).toFixed(1));
+            const syncCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, completionTokens);
 
             // Logging: For non-streaming, log immediately. For streaming, tee stream to log full duration and token count upon completion.
             if (!effectiveRequest.stream) {
@@ -2397,7 +2567,9 @@ export class Eluvix {
                 completion_tokens: completionTokens,
                 ttft_ms: ttftMs,
                 itl_ms: itlMs,
-                kv_cache_kb: kvCacheKb
+                kv_cache_kb: kvCacheKb,
+                cost_usd: syncCostUsd,
+                user_id: scope?.userId || 'default'
               });
             } else if (
               responseBody &&
@@ -2426,6 +2598,7 @@ export class Eluvix {
                   const finalItl = estimatedCompletion > 1
                     ? Number((finalDecode / (estimatedCompletion - 1)).toFixed(2))
                     : Number((finalDecode || finalDuration).toFixed(2));
+                  const streamCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, estimatedCompletion);
                   logRequest({
                     model: servedModel,
                     upstream_id: upstream.id,
@@ -2435,7 +2608,9 @@ export class Eluvix {
                     completion_tokens: estimatedCompletion,
                     ttft_ms: ttftMs,
                     itl_ms: finalItl,
-                    kv_cache_kb: kvCacheKb
+                    kv_cache_kb: kvCacheKb,
+                    cost_usd: streamCostUsd,
+                    user_id: scope?.userId || 'default'
                   });
                 }
               );
@@ -2451,6 +2626,13 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
+            newResponse.headers.set('x-eluvix-cost-usd', syncCostUsd.toFixed(6));
+            if (selection.budgetFallback) {
+              newResponse.headers.set('x-eluvix-budget-fallback', 'local-sovereign');
+            }
+            if (typeof selection.rolling24hSpendUsd === 'number') {
+              newResponse.headers.set('x-eluvix-rolling-24h-spend-usd', selection.rolling24hSpendUsd.toFixed(6));
+            }
             if (itlMs !== undefined) {
               newResponse.headers.set('x-eluvix-itl-ms', String(itlMs));
             }
@@ -2687,6 +2869,7 @@ export class Eluvix {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
+    const fallbackModality = classifyRequestModality(effectiveRequest);
     try {
       const selection = this.selectTargetUpstreams(effectiveRequest, {
         silent: true,
@@ -2699,6 +2882,7 @@ export class Eluvix {
         model: effectiveRequest.model,
         strategy: selection.strategy,
         egressPolicy: this.config.egressPolicy,
+        modality: selection.modality,
         complexity: {
           score: selection.complexity.score,
           label: selection.complexity.label,
@@ -2715,6 +2899,7 @@ export class Eluvix {
         model: effectiveRequest.model,
         strategy: this.config.switchyard?.strategy || this.config.strategy || 'cost-complexity',
         egressPolicy: this.config.egressPolicy,
+        modality: fallbackModality,
         complexity: { score: 0, label: 'unknown', tokenEstimate: 0, hasImages: false, hasTools: false },
         steps: err?.routeSteps ?? [],
         rankedUpstreams: [],
@@ -2727,7 +2912,7 @@ export class Eluvix {
   /**
    * The deterministic core of routing: model matching, loop guard, egress
    * enforcement, memory-egress enforcement, complexity estimation, context
-   * truncation, vision/tools filtering, and strategy ranking.
+   * truncation, modality/vision/tools filtering, and strategy ranking.
    */
   private selectTargetUpstreams(
     effectiveRequest: ResolvedChatRequest,
@@ -2743,9 +2928,12 @@ export class Eluvix {
   ): {
     effectiveRequest: ResolvedChatRequest;
     complexity: PromptComplexityAssessment;
+    modality: ModalityProfile;
     strategy: RoutingStrategy;
     targetUpstreams: UpstreamConfig[];
     steps: RouteTraceStep[];
+    budgetFallback?: boolean;
+    rolling24hSpendUsd?: number;
   } {
     const steps: RouteTraceStep[] = [];
     const fail = (message: string): never => {
@@ -2961,6 +3149,66 @@ export class Eluvix {
     }
 
     let targetUpstreams = [...matchingUpstreams];
+    const modality = classifyRequestModality({
+      ...effectiveRequest,
+      messages: messagesWithoutContext
+    });
+
+    // Modality & Diffusion Isolation Gate: prevent ComfyUI wildcard upstreams from hijacking
+    // ordinary text/code/tool chat, while steering explicit image/video/3D synthesis prompts
+    // to ComfyUI when `model === 'auto'` and `mediaIntentRouting !== false`.
+    const comfyCandidates = targetUpstreams.filter(u => u.type === 'comfyui');
+    const nonComfyCandidates = targetUpstreams.filter(u => u.type !== 'comfyui');
+    const explicitComfyModel =
+      effectiveRequest.model !== 'auto' &&
+      effectiveRequest.model !== 'default' &&
+      effectiveRequest.model !== '*' &&
+      (isExplicitMediaModelId(effectiveRequest.model) ||
+        comfyCandidates.some(
+          u =>
+            u.models?.includes(effectiveRequest.model) ||
+            (u.comfyui?.checkpoint && u.comfyui.checkpoint === effectiveRequest.model)
+        ));
+
+    if (!explicitComfyModel && comfyCandidates.length > 0) {
+      const allowMediaRouting = switchyardConfig.mediaIntentRouting !== false;
+      if (
+        modality.synthesisIntent !== 'text' &&
+        allowMediaRouting &&
+        !modality.hasToolDefinitions &&
+        !complexity.hasImages
+      ) {
+        const presetMatchScore = (u: UpstreamConfig): number => {
+          const preset = u.comfyui?.workflowPreset || 'flux-txt2img';
+          if (modality.synthesisIntent === 'video-gen') {
+            return preset === 'wan21-txt2vid' ? 2 : 0;
+          }
+          if (modality.synthesisIntent === '3d-gen') {
+            return preset === 'hunyuan3d-mesh' ? 2 : 0;
+          }
+          return preset === 'flux-txt2img' || preset === 'sdxl-txt2img' ? 2 : 1;
+        };
+        const rankedComfy = [...comfyCandidates].sort((a, b) => {
+          const diff = presetMatchScore(b) - presetMatchScore(a);
+          return diff !== 0 ? diff : b.priority - a.priority;
+        });
+        targetUpstreams = rankedComfy;
+        steps.push({
+          stage: 'modality-filter',
+          detail: `synthesisIntent=${modality.synthesisIntent}${modality.matchedTrigger ? ` ("${modality.matchedTrigger}")` : ''}: routed media synthesis request to ComfyUI engine(s)`,
+          kept: rankedComfy.map(u => u.id),
+          removed: nonComfyCandidates.map(u => u.id)
+        });
+      } else if (nonComfyCandidates.length > 0) {
+        targetUpstreams = nonComfyCandidates;
+        steps.push({
+          stage: 'modality-filter',
+          detail: 'synthesisIntent=text: excluded ComfyUI media synthesis engine(s) from text/tool chat candidate pool',
+          kept: nonComfyCandidates.map(u => u.id),
+          removed: comfyCandidates.map(u => u.id)
+        });
+      }
+    }
 
     if (complexity.hasImages) {
       const beforeVision = targetUpstreams;
@@ -2994,6 +3242,88 @@ export class Eluvix {
           removed: targetUpstreams.filter(u => !toolCapable.includes(u)).map(u => u.id)
         });
         targetUpstreams = toolCapable;
+      }
+    }
+
+    // Rolling 24-Hour Cloud Spend Guardrail (`maxDailySpendUsd`)
+    let budgetFallback = false;
+    let rolling24hSpendUsd: number | undefined = undefined;
+    if (
+      typeof switchyardConfig.maxDailySpendUsd === 'number' &&
+      Number.isFinite(switchyardConfig.maxDailySpendUsd) &&
+      switchyardConfig.maxDailySpendUsd > 0
+    ) {
+      rolling24hSpendUsd = getRollingSpendUsd(24);
+      const capUsd = switchyardConfig.maxDailySpendUsd;
+      if (rolling24hSpendUsd >= capUsd) {
+        const action: BudgetExhaustedAction = switchyardConfig.budgetExhaustedAction || 'prefer-local';
+        const zeroCostUpstreams = targetUpstreams.filter(u => getEffectiveCostPer1kTokens(u) <= 0);
+        const paidUpstreams = targetUpstreams.filter(u => getEffectiveCostPer1kTokens(u) > 0);
+
+        if (action === 'reject') {
+          steps.push({
+            stage: 'budget-guardrail',
+            detail: `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) >= maxDailySpendUsd ($${capUsd.toFixed(2)}) with action=reject: rejecting request`,
+            kept: [],
+            removed: targetUpstreams.map(u => u.id)
+          });
+          const err: any = new Error(
+            `Daily cloud spend cap exceeded ($${rolling24hSpendUsd.toFixed(4)} >= $${capUsd.toFixed(2)} over 24h; budgetExhaustedAction: reject).`
+          );
+          err.routeSteps = steps;
+          err.budgetCapExceeded = true;
+          err.rolling24hSpendUsd = rolling24hSpendUsd;
+          throw err;
+        }
+
+        if (action === 'strict-local') {
+          steps.push({
+            stage: 'budget-guardrail',
+            detail: `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) >= maxDailySpendUsd ($${capUsd.toFixed(2)}) with action=strict-local: restricting strictly to $0.00 local/sovereign upstreams`,
+            kept: zeroCostUpstreams.map(u => u.id),
+            removed: paidUpstreams.map(u => u.id)
+          });
+          if (zeroCostUpstreams.length === 0) {
+            const err: any = new Error(
+              `Daily cloud spend cap exceeded ($${rolling24hSpendUsd.toFixed(4)} >= $${capUsd.toFixed(2)} over 24h) and no $0.00 local upstream is available (budgetExhaustedAction: strict-local).`
+            );
+            err.routeSteps = steps;
+            err.budgetCapExceeded = true;
+            err.rolling24hSpendUsd = rolling24hSpendUsd;
+            throw err;
+          }
+          targetUpstreams = zeroCostUpstreams;
+          budgetFallback = paidUpstreams.length > 0;
+        } else {
+          // 'prefer-local' (default): soft-failover to $0.00 local/CLI upstreams when available
+          if (zeroCostUpstreams.length > 0 && paidUpstreams.length > 0) {
+            steps.push({
+              stage: 'budget-guardrail',
+              detail: `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) >= maxDailySpendUsd ($${capUsd.toFixed(2)}) with action=prefer-local: soft-failing over to $0.00 local/sovereign upstreams`,
+              kept: zeroCostUpstreams.map(u => u.id),
+              removed: paidUpstreams.map(u => u.id)
+            });
+            targetUpstreams = zeroCostUpstreams;
+            budgetFallback = true;
+          } else {
+            steps.push({
+              stage: 'budget-guardrail',
+              detail:
+                zeroCostUpstreams.length === 0
+                  ? `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) >= maxDailySpendUsd ($${capUsd.toFixed(2)}) with action=prefer-local, but no $0.00 local upstream matched; retaining candidate pool`
+                  : `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) >= maxDailySpendUsd ($${capUsd.toFixed(2)}): candidate pool already consists solely of $0.00 upstreams`,
+              kept: targetUpstreams.map(u => u.id),
+              removed: []
+            });
+          }
+        }
+      } else {
+        steps.push({
+          stage: 'budget-guardrail',
+          detail: `rolling 24h spend ($${rolling24hSpendUsd.toFixed(4)}) is within maxDailySpendUsd ($${capUsd.toFixed(2)})`,
+          kept: targetUpstreams.map(u => u.id),
+          removed: []
+        });
       }
     }
 
@@ -3104,6 +3434,22 @@ export class Eluvix {
       detail: `strategy "${strategy}" ranked the surviving upstreams; the first is tried first, the rest are failover order`,
       kept: targetUpstreams.map(u => u.id)
     });
+
+    // Preserve ComfyUI workflow-preset specialization (e.g., wan21-txt2vid for video-gen,
+    // hunyuan3d-mesh for 3d-gen) ahead of generic priority tie-breakers.
+    if (
+      modality.synthesisIntent !== 'text' &&
+      targetUpstreams.length > 1 &&
+      targetUpstreams.every(u => u.type === 'comfyui')
+    ) {
+      const presetRank = (u: UpstreamConfig): number => {
+        const preset = u.comfyui?.workflowPreset || 'flux-txt2img';
+        if (modality.synthesisIntent === 'video-gen') return preset === 'wan21-txt2vid' ? 2 : 0;
+        if (modality.synthesisIntent === '3d-gen') return preset === 'hunyuan3d-mesh' ? 2 : 0;
+        return preset === 'flux-txt2img' || preset === 'sdxl-txt2img' ? 2 : 1;
+      };
+      targetUpstreams = [...targetUpstreams].sort((a, b) => presetRank(b) - presetRank(a));
+    }
 
     if (confidentialPolicy === 'prefer-tee') {
       const teePreferred = targetUpstreams.filter(u => isConfidentialEnclaveUpstream(u, 'require-tee'));
@@ -3513,7 +3859,16 @@ export class Eluvix {
       }
     }
 
-    return { effectiveRequest, complexity, strategy, targetUpstreams, steps };
+    return {
+      effectiveRequest,
+      complexity,
+      modality,
+      strategy,
+      targetUpstreams,
+      steps,
+      budgetFallback,
+      rolling24hSpendUsd
+    };
   }
 
   public matchesModel(upstream: UpstreamConfig, requestedModel: string): boolean {
@@ -3528,8 +3883,16 @@ export class Eluvix {
     }
     if (upstream.models.includes('*')) {
       // Local inference engines shouldn't greedily capture explicit cloud/agent/harness models
-      if (['lemonade', 'ollama', 'vllm', 'vllm-sr', 'sglang', 'switchyard'].includes(upstream.type)) {
+      if (['lemonade', 'ollama', 'ramalama', 'comfyui', 'vllm', 'vllm-sr', 'sglang', 'switchyard'].includes(upstream.type)) {
         if (/^(gemini-|claude-|gpt-oss-120b|harness\/)/i.test(requestedModel)) return false;
+      }
+      if (
+        upstream.type === 'comfyui' &&
+        requestedModel !== '*' &&
+        requestedModel !== 'default' &&
+        !isExplicitMediaModelId(requestedModel)
+      ) {
+        return false;
       }
       return true;
     }
@@ -3572,6 +3935,10 @@ export class Eluvix {
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
       return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs);
+    }
+
+    if (upstream.type === 'comfyui') {
+      return this.forwardComfyUI(upstream, effectiveRequest, timeoutMs, clientSignal);
     }
 
     const headers: Record<string, string> = {
@@ -4275,6 +4642,449 @@ export class Eluvix {
       });
     });
   }
+
+  /**
+   * Pillar 3: Expands a short creative prompt via a connected local LLM upstream
+   * (Lemonade, Ollama, or RamaLama) before dispatching it to ComfyUI.
+   */
+  private async expandPromptWithLocalLlm(
+    prompt: string,
+    enhancerUpstreamId?: string,
+    signal?: AbortSignal
+  ): Promise<string> {
+    if (!enhancerUpstreamId) return prompt;
+    const enhancer = this.getUpstreams().find((u: UpstreamConfig) => u.id === enhancerUpstreamId);
+    if (!enhancer || enhancer.type === 'comfyui') return prompt;
+
+    try {
+      const res = await this.forwardRequest(
+        enhancer,
+        {
+          model: enhancer.models.find((m: string) => m !== '*' && m !== 'auto') || 'auto',
+          stream: false,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'You are an expert diffusion prompt engineer for ComfyUI (Flux.1 / SDXL / Wan 2.1). Expand the user prompt into a detailed, cinematic visual description with lighting, composition, lens, and texture cues. Return ONLY the expanded prompt text without quotes or commentary.'
+            },
+            { role: 'user', content: prompt }
+          ]
+        },
+        12000,
+        signal
+      );
+      if (res.ok) {
+        const json = (await res.json()) as any;
+        const expanded = json?.choices?.[0]?.message?.content;
+        if (typeof expanded === 'string' && expanded.trim().length > 0) {
+          return expanded.trim();
+        }
+      }
+    } catch {
+      // Fallback to original prompt if local enhancer is unreachable
+    }
+    return prompt;
+  }
+
+  /**
+   * Pillar 1 & 2: Dispatches a chat completion request to a ComfyUI instance (:8188)
+   * by compiling the latest user message into a ComfyUI API-format workflow DAG.
+   */
+  private async forwardComfyUI(
+    upstream: UpstreamConfig,
+    request: ResolvedChatRequest,
+    timeoutMs = 120000,
+    clientSignal?: AbortSignal
+  ): Promise<Response> {
+    const userMessages = (request.messages || []).filter(m => m.role === 'user');
+    const latestMsg = userMessages[userMessages.length - 1] || request.messages?.[request.messages.length - 1];
+    const rawPrompt =
+      typeof latestMsg?.content === 'string'
+        ? latestMsg.content
+        : Array.isArray(latestMsg?.content)
+          ? latestMsg.content.map((p: any) => p?.text || '').join(' ')
+          : 'A cinematic digital illustration';
+
+    const effectivePrompt = await this.expandPromptWithLocalLlm(
+      rawPrompt,
+      upstream.comfyui?.promptEnhancerUpstreamId,
+      clientSignal
+    );
+
+    const checkpoint =
+      request.model && request.model !== 'auto' && request.model !== '*' && request.model !== 'default'
+        ? request.model
+        : upstream.comfyui?.checkpoint || upstream.models.find((m: string) => m !== '*' && m !== 'auto');
+
+    const workflow = buildComfyApiWorkflow({
+      prompt: effectivePrompt,
+      config: upstream.comfyui,
+      modelOverride: checkpoint
+    });
+
+    let result: Awaited<ReturnType<typeof executeComfyWorkflow>>;
+    try {
+      result = await executeComfyWorkflow(upstream.endpoint, workflow, {
+        timeoutMs,
+        signal: clientSignal
+      });
+    } catch (err: any) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: err?.message || 'ComfyUI workflow execution failed',
+            type: 'comfyui_execution_error'
+          }
+        }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let artcraftResult: Awaited<ReturnType<typeof executeArtCraftPostProcess>> | undefined;
+    if (upstream.comfyui?.postProcessArtCraftApp && result.images.length > 0) {
+      artcraftResult = await executeArtCraftPostProcess({
+        app: upstream.comfyui.postProcessArtCraftApp,
+        sourceUrl: result.images[0].viewUrl,
+        filename: result.images[0].filename,
+        signal: clientSignal
+      });
+    }
+
+    const mediaMarkdown =
+      result.images.length > 0
+        ? result.images.map(o => `![${o.filename}](${o.viewUrl})`).join('\n\n')
+        : `ComfyUI queued prompt \`${result.promptId}\` on \`${upstream.endpoint}\`.`;
+
+    const artCraftNote = upstream.comfyui?.postProcessArtCraftApp
+      ? artcraftResult?.executed
+        ? `\n\n*Post-processed via ArtCraft Suite (\`${artcraftResult.cliBinary}\` → \`.${artcraftResult.outputFormat}\`).*`
+        : `\n\n*Chained to ArtCraft Suite (\`${upstream.comfyui.postProcessArtCraftApp}\` · \`${artcraftResult?.suggestedCommand || `${upstream.comfyui.postProcessArtCraftApp}-cli`}\`).*`
+      : '';
+
+    const content = `${mediaMarkdown}\n\n**Prompt:** ${effectivePrompt}${artCraftNote}`;
+    const modelName = checkpoint || upstream.comfyui?.workflowPreset || 'comfyui-diffusion';
+
+    if (request.stream) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          const chunk = {
+            id: `chatcmpl-comfy-${result.promptId}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: modelName,
+            choices: [
+              {
+                index: 0,
+                delta: { role: 'assistant', content },
+                finish_reason: 'stop'
+              }
+            ]
+          };
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`));
+          controller.close();
+        }
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'x-eluvix-upstream': upstream.name,
+          'x-eluvix-model': modelName
+        }
+      });
+    }
+
+    return new Response(
+      JSON.stringify({
+        id: `chatcmpl-comfy-${result.promptId}`,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: modelName,
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content },
+            finish_reason: 'stop'
+          }
+        ],
+        comfyui: {
+          prompt_id: result.promptId,
+          outputs: result.images,
+          revised_prompt: effectivePrompt,
+          post_process_artcraft_app: upstream.comfyui?.postProcessArtCraftApp,
+          artcraft_post_process: artcraftResult
+        },
+        usage: {
+          prompt_tokens: Math.ceil(effectivePrompt.length / 4),
+          completion_tokens: 64,
+          total_tokens: Math.ceil(effectivePrompt.length / 4) + 64
+        }
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-eluvix-upstream': upstream.name,
+          'x-eluvix-model': modelName
+        }
+      }
+    );
+  }
+
+  /**
+   * Pillar 2: OpenAI-compatible `/v1/images/generations` router entry point.
+   * Selects the highest-priority ComfyUI upstream (or falls back to a default `:8188`
+   * endpoint if requested), expands the prompt if chained to a local LLM, executes
+   * the ComfyUI DAG, supports `response_format: 'url' | 'b64_json'` and HTTPS media
+   * proxying, logs telemetry, and optionally runs ArtCraft headless post-processing.
+   */
+  public async routeImageGeneration(
+    request: {
+      prompt: string;
+      model?: string;
+      n?: number;
+      size?: string;
+      response_format?: 'url' | 'b64_json';
+      quality?: string;
+      style?: string;
+      negative_prompt?: string;
+      seed?: number;
+      steps?: number;
+      cfg?: number;
+    },
+    options?: { signal?: AbortSignal; timeoutMs?: number; proxyBaseUrl?: string; hops?: number }
+  ): Promise<Response> {
+    const hops = options?.hops ?? 0;
+    if (hops >= 2) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
+            type: 'loop_detected',
+            code: 'max_hops_exceeded'
+          }
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!request.prompt || typeof request.prompt !== 'string' || !request.prompt.trim()) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: 'A non-empty "prompt" string is required for image generation.',
+            type: 'invalid_request_error'
+          }
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (
+      request.response_format !== undefined &&
+      request.response_format !== 'url' &&
+      request.response_format !== 'b64_json'
+    ) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: 'Invalid "response_format": expected "url" or "b64_json".',
+            type: 'invalid_request_error'
+          }
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const startTime = Date.now();
+
+    // Find matching ComfyUI upstream or highest-priority healthy ComfyUI upstream
+    const allComfyUpstreams = this.getUpstreams()
+      .filter((u: UpstreamConfig) => u.type === 'comfyui')
+      .sort((a: UpstreamConfig, b: UpstreamConfig) => b.priority - a.priority);
+
+    const healthyComfyUpstreams = allComfyUpstreams.filter((u: UpstreamConfig) =>
+      globalCircuitBreaker.isAllowed(u.id)
+    );
+    const comfyPool = healthyComfyUpstreams.length > 0 ? healthyComfyUpstreams : allComfyUpstreams;
+
+    const chosen: UpstreamConfig =
+      (request.model
+        ? comfyPool.find((u: UpstreamConfig) => this.matchesModel(u, request.model!))
+        : undefined) ||
+      comfyPool[0] || {
+        id: 'default-comfyui',
+        name: 'Local ComfyUI (:8188)',
+        type: 'comfyui',
+        endpoint: 'http://127.0.0.1:8188',
+        priority: 1,
+        models: ['*']
+      };
+
+    const revisedPrompt = await this.expandPromptWithLocalLlm(
+      request.prompt.trim(),
+      chosen.comfyui?.promptEnhancerUpstreamId,
+      options?.signal
+    );
+
+    const checkpoint =
+      request.model &&
+      request.model !== 'auto' &&
+      request.model !== '*' &&
+      request.model !== 'dall-e-3' &&
+      request.model !== 'dall-e-2' &&
+      request.model !== 'gpt-image-1'
+        ? request.model
+        : chosen.comfyui?.checkpoint || chosen.models.find((m: string) => m !== '*' && m !== 'auto');
+
+    const hdStepsBoost = request.quality === 'hd' && !request.steps ? (chosen.comfyui?.steps ?? 20) + 8 : undefined;
+    const mergedConfig: ComfyUIConfig = {
+      ...chosen.comfyui,
+      ...(hdStepsBoost ? { steps: hdStepsBoost } : {}),
+      ...(request.steps ? { steps: request.steps } : {}),
+      ...(request.cfg ? { cfg: request.cfg } : {})
+    };
+
+    const workflow = buildComfyApiWorkflow({
+      prompt: revisedPrompt,
+      negativePrompt: request.negative_prompt,
+      config: mergedConfig,
+      modelOverride: checkpoint,
+      sizeOverride: request.size,
+      seedOverride: request.seed,
+      batchSizeOverride: request.n
+    });
+
+    const effectiveModelLabel = checkpoint || chosen.comfyui?.workflowPreset || 'comfyui-diffusion';
+    const estPromptTokens = Math.ceil(revisedPrompt.length / 4);
+
+    let result: Awaited<ReturnType<typeof executeComfyWorkflow>>;
+    try {
+      result = await executeComfyWorkflow(chosen.endpoint, workflow, {
+        timeoutMs: options?.timeoutMs ?? 120000,
+        signal: options?.signal
+      });
+      globalCircuitBreaker.recordSuccess(chosen.id);
+    } catch (err: any) {
+      globalCircuitBreaker.recordFailure(chosen.id);
+      const duration_ms = Date.now() - startTime;
+      try {
+        logRequest({
+          model: effectiveModelLabel,
+          upstream_id: chosen.id,
+          status: 502,
+          duration_ms,
+          prompt_tokens: estPromptTokens,
+          completion_tokens: 0
+        });
+      } catch {}
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: err?.message || 'ComfyUI image generation failed',
+            type: 'comfyui_execution_error'
+          }
+        }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let artcraftResult: Awaited<ReturnType<typeof executeArtCraftPostProcess>> | undefined;
+    if (chosen.comfyui?.postProcessArtCraftApp && result.images.length > 0) {
+      artcraftResult = await executeArtCraftPostProcess({
+        app: chosen.comfyui.postProcessArtCraftApp,
+        sourceUrl: result.images[0].viewUrl,
+        filename: result.images[0].filename,
+        signal: options?.signal
+      });
+    }
+
+    const proxyBase = options?.proxyBaseUrl ? options.proxyBaseUrl.replace(/\/+$/, '') : '';
+    const buildClientUrl = (o: (typeof result.images)[number]) => {
+      if (!proxyBase) return o.viewUrl;
+      const qs = new URLSearchParams({
+        upstream: chosen.id,
+        filename: o.filename,
+        subfolder: o.subfolder,
+        type: o.type
+      });
+      return `${proxyBase}/api/v1/images/view?${qs.toString()}`;
+    };
+
+    let data: Array<Record<string, any>>;
+    if (request.response_format === 'b64_json') {
+      try {
+        data = await Promise.all(
+          result.images.map(async o => {
+            const encoded = await fetchComfyMediaAsBase64(o.viewUrl, { signal: options?.signal });
+            return {
+              b64_json: encoded.b64Json,
+              content_type: encoded.contentType,
+              filename: o.filename,
+              subfolder: o.subfolder,
+              revised_prompt: revisedPrompt
+            };
+          })
+        );
+      } catch (err: any) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: err?.message || 'Failed to encode ComfyUI output as b64_json',
+              type: 'comfyui_execution_error'
+            }
+          }),
+          { status: 502, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    } else {
+      data = result.images.map(o => ({
+        url: buildClientUrl(o),
+        ...(proxyBase ? { comfy_view_url: o.viewUrl } : {}),
+        filename: o.filename,
+        subfolder: o.subfolder,
+        revised_prompt: revisedPrompt
+      }));
+    }
+
+    const duration_ms = Date.now() - startTime;
+    const imageCompletionTokens = Math.max(1, data.length) * 64;
+    const imageCostUsd = estimateUpstreamRequestCostUsd(chosen, estPromptTokens, imageCompletionTokens);
+    try {
+      logRequest({
+        model: effectiveModelLabel,
+        upstream_id: chosen.id,
+        status: 200,
+        duration_ms,
+        prompt_tokens: estPromptTokens,
+        completion_tokens: imageCompletionTokens,
+        ttft_ms: duration_ms,
+        cost_usd: imageCostUsd
+      });
+    } catch {}
+
+    return new Response(
+      JSON.stringify({
+        created: Math.floor(Date.now() / 1000),
+        prompt_id: result.promptId,
+        upstream: chosen.name,
+        post_process_artcraft_app: chosen.comfyui?.postProcessArtCraftApp,
+        ...(artcraftResult ? { artcraft_post_process: artcraftResult } : {}),
+        data
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-eluvix-upstream': chosen.name,
+          'x-eluvix-model': effectiveModelLabel
+        }
+      }
+    );
+  }
 }
 
 export function isAntigravitySupportedModel(modelName: string, upstreamModels: string[] = []): boolean {
@@ -4292,8 +5102,8 @@ export function isAntigravitySupportedModel(modelName: string, upstreamModels: s
     if (entry.variants.some(v => v.toLowerCase() === lower)) return true;
   }
 
-  // Gemini models: gemini-4-argon (and variants: gemini-4-argo, gemini-4-argon-high/medium/low), gemini-3.8-flash (and variants)
-  if (/^gemini-(?:4-argon|4-argo|3\.8)/i.test(modelName)) return true;
+  // Gemini models: gemini-4-carbon, gemini-4-argon (and variants: gemini-4-argo, -low/-medium/-high/-xhigh/-max), gemini-3.8-flash (and variants)
+  if (/^gemini-(?:4-carbon|4-argon|4-argo|3\.8)/i.test(modelName)) return true;
   // Claude models supported by Antigravity: claude-opus-5-5, claude-sonnet-5-5
   if (/^claude-(?:opus|sonnet)/i.test(modelName)) return true;
   // GPT-OSS: only 120b

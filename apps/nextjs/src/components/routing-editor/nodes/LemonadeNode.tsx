@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import NodeHealthIndicator from '../NodeHealthIndicator';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 interface DiscoveredModel {
@@ -123,10 +124,13 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
       {/* Node Header */}
       <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-800">
         <div className="flex items-center gap-2">
-          <span className="text-xl">🍋</span>
+          <div className="flex items-center gap-1.5">
+            <NodeHealthIndicator serviceName="lemonade" liveTelemetry={data?.liveTelemetry} />
+            <span className="text-xl">🍋</span>
+          </div>
           <div>
             <div className="font-bold text-yellow-400 text-sm flex items-center gap-1.5">
-              <span>Lemonade Engine</span>
+              <span>{data?.label || 'Lemonade Engine'}</span>
             </div>
             <div className="text-[10px] text-gray-400 font-mono">Local Multi-Model Engine</div>
           </div>

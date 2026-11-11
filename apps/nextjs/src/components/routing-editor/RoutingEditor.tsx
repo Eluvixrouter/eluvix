@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import LogViewer from './LogViewer';
 import {
   ReactFlow,
@@ -32,6 +32,8 @@ import LemonadeNode from './nodes/LemonadeNode';
 import VllmNode from './nodes/VllmNode';
 import SglangNode from './nodes/SglangNode';
 import OllamaNode from './nodes/OllamaNode';
+import RamalamaNode from './nodes/RamalamaNode';
+import ComfyUINode from './nodes/ComfyUINode';
 import AntigravityNode from './nodes/AntigravityNode';
 import CodexNode from './nodes/CodexNode';
 import ClaudeCodeNode from './nodes/ClaudeCodeNode';
@@ -49,9 +51,24 @@ import ConfidentialEnclaveNode from './nodes/ConfidentialEnclaveNode';
 import NeuroSymbolicCrsNode from './nodes/NeuroSymbolicCrsNode';
 import VectorCraftNode from './nodes/VectorCraftNode';
 import { compileGraph } from '@/lib/orchestration/compiler';
+import {
+  analyzeGraphDiagnostics,
+  applyDiagnosticFix,
+  applyAllDiagnosticFixes,
+  type GraphDiagnostic,
+} from '@/lib/orchestration/diagnostics';
+import { autoLayoutGraph } from '@/lib/orchestration/auto-layout';
+import { decompileConfigToGraph } from '@/lib/orchestration/decompiler';
+import { useCanvasTelemetry } from './useCanvasTelemetry';
+import { useGraphHistory } from './useGraphHistory';
 import { diffRouterConfigs, type ConfigDiff } from '@/lib/config-diff';
 import SaveAsModal from './SaveAsModal';
 import LayoutBrowserModal from './LayoutBrowserModal';
+import CommandPaletteModal from './CommandPaletteModal';
+import RouteSimulatorDrawer, {
+  applySimulationOverlayToEdges,
+  type SimulatedExplanation,
+} from './RouteSimulatorDrawer';
 import { LayoutMetadata } from '@/lib/layouts/types';
 
 const DEFAULT_NODE_DATA: Record<string, any> = {
@@ -179,6 +196,39 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     selectedModel: '*',
     maxContextTokens: 16384,
     maxParallelRequests: 2
+  },
+  ramalamaNode: {
+    label: 'RamaLama Engine',
+    endpoint: 'http://localhost:8080',
+    priority: 21,
+    selectedModel: '*',
+    maxContextTokens: 16384,
+    maxParallelRequests: 2,
+    ramalama: {
+      containerEngine: 'podman',
+      runtime: 'llama.cpp',
+      ociTransport: 'oci',
+      accelerator: 'auto'
+    }
+  },
+  comfyuiNode: {
+    label: 'ComfyUI Engine',
+    endpoint: 'http://localhost:8188',
+    priority: 22,
+    selectedModel: '*',
+    comfyui: {
+      workflowPreset: 'flux-txt2img',
+      steps: 20,
+      cfg: 3.5,
+      samplerName: 'euler',
+      scheduler: 'simple',
+      width: 1024,
+      height: 1024,
+      vramMode: 'normalvram',
+      reserveVramGb: 4,
+      loopbackEluvixUrl: 'http://127.0.0.1:3588/v1',
+      mcpEnabled: true
+    }
   },
   semanticGuardNode: {
     routeName: 'prompt-injection-defense',
@@ -591,6 +641,8 @@ const nodeTypes = {
   vllmNode: VllmNode,
   sglangNode: SglangNode,
   ollamaNode: OllamaNode,
+  ramalamaNode: RamalamaNode,
+  comfyuiNode: ComfyUINode,
   antigravityNode: AntigravityNode,
   codexNode: CodexNode,
   claudeCodeNode: ClaudeCodeNode,
@@ -686,12 +738,67 @@ export default function RoutingEditor() {
   const [isCreatingCluster, setIsCreatingCluster] = useState(false);
 
   const [selectedLogContainer, setSelectedLogContainer] = useState<string | null>(null);
+  const [liveTelemetryEnabled, setLiveTelemetryEnabled] = useState<boolean>(false);
+  const [showDiagnosticsPopover, setShowDiagnosticsPopover] = useState<boolean>(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
+  const [isSimulatorOpen, setIsSimulatorOpen] = useState<boolean>(false);
+  const [simulatedExplanation, setSimulatedExplanation] = useState<SimulatedExplanation | null>(null);
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
+
+  const graphHistory = useGraphHistory();
+  const { snapshot: telemetrySnapshot } = useCanvasTelemetry(liveTelemetryEnabled);
+  const graphDiagnostics = useMemo(
+    () => analyzeGraphDiagnostics(nodes, edges),
+    [nodes, edges]
+  );
+  const displayedEdges = useMemo(
+    () => applySimulationOverlayToEdges(edges, nodes, simulatedExplanation),
+    [edges, nodes, simulatedExplanation]
+  );
+
+  // Sync live telemetry onto nodes and edges when enabled
+  useEffect(() => {
+    if (!liveTelemetryEnabled) {
+      setNodes((nds) =>
+        nds.some((n) => (n.data as any)?.liveTelemetry)
+          ? nds.map((n) => {
+              if (!(n.data as any)?.liveTelemetry) return n;
+              const nextData = { ...n.data };
+              delete (nextData as any).liveTelemetry;
+              return { ...n, data: nextData };
+            })
+          : nds
+      );
+      return;
+    }
+
+    const byUp = telemetrySnapshot.byUpstreamId;
+    setNodes((nds) =>
+      nds.map((n) => {
+        const exact = byUp[n.id];
+        const prefixKey = Object.keys(byUp).find(
+          (k) =>
+            k.toLowerCase() === n.id.toLowerCase() ||
+            (n.type && k.toLowerCase().includes(n.type.replace(/Node$/i, '').toLowerCase()))
+        );
+        const matched = exact || (prefixKey ? byUp[prefixKey] : undefined);
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            liveTelemetry: matched || undefined,
+          },
+        };
+      })
+    );
+  }, [liveTelemetryEnabled, telemetrySnapshot, setNodes]);
 
   const handleNodeClick = useCallback((event: any, node: Node) => {
     switch (node.type) {
       case 'switchyardNode': setSelectedLogContainer('switchyard'); break;
       case 'semanticGuardNode': setSelectedLogContainer('vllm-sr'); break;
       case 'ollamaNode': setSelectedLogContainer('ollama'); break;
+      case 'ramalamaNode': setSelectedLogContainer('ramalama'); break;
       case 'vllmNode': setSelectedLogContainer('vllm'); break;
       case 'sglangNode': setSelectedLogContainer('sglang'); break;
       case 'taskRouterNode': setSelectedLogContainer('agent-router'); break;
@@ -727,9 +834,10 @@ export default function RoutingEditor() {
   const deleteSelectedNode = useCallback((nodeId?: string) => {
     const targetId = nodeId || nodes.find(n => n.selected)?.id;
     if (!targetId) return;
+    graphHistory.recordSnapshot(nodes, edges, 'Delete node');
     setNodes(nds => nds.filter(n => n.id !== targetId));
     setEdges(eds => eds.filter(e => e.source !== targetId && e.target !== targetId));
-  }, [nodes, setNodes, setEdges]);
+  }, [nodes, edges, graphHistory, setNodes, setEdges]);
 
   const onNodesDelete = useCallback((deletedNodes: Node[]) => {
     const deletedIds = new Set(deletedNodes.map(n => n.id));
@@ -787,6 +895,8 @@ export default function RoutingEditor() {
 
   const applyLayout = useCallback((layout: any, persisted: boolean) => {
     advanceIdCounter(layout.nodes || []);
+    graphHistory.resetHistory();
+    setSimulatedExplanation(null);
     setNodes(layout.nodes || []);
     setEdges(layout.edges || []);
     setCurrentSlug(layout.id);
@@ -798,7 +908,7 @@ export default function RoutingEditor() {
     setIsDirty(false);
     setIsPersisted(persisted);
     applyViewport(layout.viewport);
-  }, [setNodes, setEdges]);
+  }, [graphHistory, setNodes, setEdges]);
 
   const loadLayoutBySlug = useCallback(async (slug: string, opts: { activate?: boolean; skipConfirm?: boolean; silent?: boolean } = {}) => {
     const { activate = true, skipConfirm = false, silent = false } = opts;
@@ -1070,12 +1180,186 @@ export default function RoutingEditor() {
     reader.readAsText(file);
   }, [applyLayout, confirmDiscard, showToast]);
 
+  const handleSyncFromLiveConfig = useCallback(async () => {
+    if (!confirmDiscard('sync canvas from live eluvix.json configuration')) return;
+    try {
+      const res = await fetch('/api/v1/config');
+      if (!res.ok) throw new Error('Failed to fetch live router config');
+      const json = await res.json();
+      const liveCfg = json.config || json.data || json;
+      if (!liveCfg || !Array.isArray(liveCfg.upstreams)) {
+        throw new Error('Live config does not contain an upstreams array');
+      }
+      const { nodes: decompiledNodes, edges: decompiledEdges } = decompileConfigToGraph(liveCfg);
+      applyLayout(
+        {
+          id: 'live-router-config',
+          name: 'Live eluvix.json Config',
+          description: 'Decompiled from active eluvix.json router configuration',
+          category: 'custom',
+          tags: ['live', 'decompiled'],
+          nodes: decompiledNodes,
+          edges: decompiledEdges,
+        },
+        false
+      );
+      setLastSavedSnapshot('__unsaved__');
+      showToast(`Decompiled ${decompiledNodes.length} nodes from live eluvix.json`);
+    } catch (err: any) {
+      showToast(`Sync failed: ${err.message}`);
+    }
+  }, [applyLayout, confirmDiscard, showToast]);
+
+  const handleUndo = useCallback(() => {
+    const restored = graphHistory.undo(nodes, edges);
+    if (!restored) return;
+    setNodes(restored.nodes);
+    setEdges(restored.edges);
+    showToast(`Undid: ${restored.label}`);
+  }, [graphHistory, nodes, edges, setNodes, setEdges, showToast]);
+
+  const handleRedo = useCallback(() => {
+    const restored = graphHistory.redo(nodes, edges);
+    if (!restored) return;
+    setNodes(restored.nodes);
+    setEdges(restored.edges);
+    showToast(`Redid: ${restored.label}`);
+  }, [graphHistory, nodes, edges, setNodes, setEdges, showToast]);
+
+  const handleAutoLayout = useCallback(() => {
+    graphHistory.recordSnapshot(nodes, edges, 'Auto-Layout DAG');
+    const laidOut = autoLayoutGraph(nodes, edges);
+    setNodes(laidOut);
+    setTimeout(() => {
+      rfInstanceRef.current?.fitView?.({ padding: 0.16, duration: 350 });
+    }, 40);
+    showToast('Applied Sugiyama topological auto-layout');
+  }, [graphHistory, nodes, edges, setNodes, showToast]);
+
+  const handleFixSingleDiagnostic = useCallback(
+    (diag: GraphDiagnostic) => {
+      graphHistory.recordSnapshot(nodes, edges, `Auto-fix ${diag.code}`);
+      const res = applyDiagnosticFix(nodes, edges, diag);
+      setNodes(res.nodes);
+      setEdges(res.edges);
+      showToast(res.summary);
+    },
+    [graphHistory, nodes, edges, setNodes, setEdges, showToast]
+  );
+
+  const handleAutoFixAllDiagnostics = useCallback(() => {
+    if (graphDiagnostics.diagnostics.length === 0) return;
+    graphHistory.recordSnapshot(nodes, edges, 'Auto-fix all diagnostics');
+    const res = applyAllDiagnosticFixes(nodes, edges);
+    setNodes(res.nodes);
+    setEdges(res.edges);
+    showToast(
+      res.appliedCount > 0
+        ? `Applied ${res.appliedCount} diagnostic fix${res.appliedCount > 1 ? 'es' : ''}`
+        : 'No automatic fixes applicable'
+    );
+  }, [graphDiagnostics.diagnostics.length, graphHistory, nodes, edges, setNodes, setEdges, showToast]);
+
+  const handleSimulateRoute = useCallback(
+    async (params: {
+      prompt: string;
+      model: string;
+      includeVision: boolean;
+      confidentialPolicy?: string;
+    }) => {
+      setIsSimulating(true);
+      try {
+        const compiled = compileGraph(nodes as any, edges as any);
+        const previewCfg = compiled.rawRouterConfig
+          ? {
+              ...compiled.rawRouterConfig,
+              ...(params.confidentialPolicy
+                ? {
+                    confidentialComputing: {
+                      ...(compiled.rawRouterConfig.confidentialComputing || {}),
+                      policy: params.confidentialPolicy,
+                    },
+                  }
+                : {}),
+            }
+          : undefined;
+
+        const userContent = params.includeVision
+          ? [
+              { type: 'text', text: params.prompt },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+                },
+              },
+            ]
+          : params.prompt;
+
+        const res = await fetch('/api/v1/route-explain', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: params.model || 'auto',
+            messages: [{ role: 'user', content: userContent }],
+            ...(previewCfg ? { configOverride: previewCfg } : {}),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setSimulatedExplanation({
+            model: params.model || 'auto',
+            strategy: previewCfg?.strategy || 'cost-complexity',
+            complexity: {
+              score: 0,
+              label: 'error',
+              tokenEstimate: 0,
+              hasImages: params.includeVision,
+              hasTools: false,
+            },
+            steps: [],
+            rankedUpstreams: [],
+            chosenUpstreamId: null,
+            error: data.error || `HTTP ${res.status}`,
+          });
+          return;
+        }
+        setSimulatedExplanation(data);
+      } catch (err: any) {
+        setSimulatedExplanation({
+          model: params.model || 'auto',
+          strategy: 'cost-complexity',
+          complexity: {
+            score: 0,
+            label: 'error',
+            tokenEstimate: 0,
+            hasImages: params.includeVision,
+            hasTools: false,
+          },
+          steps: [],
+          rankedUpstreams: [],
+          chosenUpstreamId: null,
+          error: err.message || 'Simulation request failed',
+        });
+      } finally {
+        setIsSimulating(false);
+      }
+    },
+    [nodes, edges]
+  );
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Ctrl/Cmd+S works everywhere, including inside inputs.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         handleFastSave();
+        return;
+      }
+      // Ctrl/Cmd+K toggles the Spotlight Command Palette everywhere.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((open) => !open);
         return;
       }
       const active = document.activeElement;
@@ -1088,14 +1372,37 @@ export default function RoutingEditor() {
       ) {
         return;
       }
+      if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setIsCommandPaletteOpen(true);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        handleAutoLayout();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const selectedNodes = nodes.filter(n => n.selected);
         const selectedEdges = edges.filter(e => e.selected);
         if (selectedNodes.length > 0) {
+          graphHistory.recordSnapshot(nodes, edges, 'Delete selection');
           const selectedIds = new Set(selectedNodes.map(n => n.id));
           setNodes(nds => nds.filter(n => !selectedIds.has(n.id)));
           setEdges(eds => eds.filter(e => !selectedIds.has(e.source) && !selectedIds.has(e.target) && !e.selected));
         } else if (selectedEdges.length > 0) {
+          graphHistory.recordSnapshot(nodes, edges, 'Delete edge');
           const selectedEdgeIds = new Set(selectedEdges.map(e => e.id));
           setEdges(eds => eds.filter(e => !selectedEdgeIds.has(e.id)));
         }
@@ -1103,7 +1410,7 @@ export default function RoutingEditor() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, edges, setNodes, setEdges, handleFastSave]);
+  }, [nodes, edges, graphHistory, setNodes, setEdges, handleFastSave, handleAutoLayout, handleUndo, handleRedo]);
 
   const isValidConnection = useCallback(
     (connection: Edge | Connection) => {
@@ -1113,7 +1420,7 @@ export default function RoutingEditor() {
       if (!sourceNode || !targetNode) return false;
 
       // Define valid target types for each source type
-      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
+      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
       const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
 
       const rules: Record<string, string[]> = {
@@ -1131,7 +1438,7 @@ export default function RoutingEditor() {
         codexNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         claudeCodeNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
         harnessNode: ['agentGatewayNode', 'vectorcraftNode', 'artcraftNode', 'mcpToolNode', 'sandboxNode', 'modelGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
-        sandboxNode: ['harnessNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'agentNode', 'observabilityNode'],
+        sandboxNode: ['harnessNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'agentNode', 'ramalamaNode', 'observabilityNode'],
         agentGatewayNode: ['switchyardNode', 'sandboxNode', 'vectorcraftNode', 'artcraftNode', ...allUpstreamTargets],
         mcpToolNode: ['agentGatewayNode', 'harnessNode', 'claudeCodeNode', 'codexNode', 'antigravityNode', 'agentNode'],
         vectorcraftNode: ['agentGatewayNode', 'switchyardNode', ...allUpstreamTargets, 'observabilityNode'],
@@ -1140,10 +1447,12 @@ export default function RoutingEditor() {
         switchyardNode: [...allUpstreamTargets, 'observabilityNode'],
         consensusNode: [...allUpstreamTargets, 'observabilityNode'],
         fallbackChainNode: [...allUpstreamTargets, 'observabilityNode'],
-        lemonadeNode: ['switchyardNode', 'observabilityNode'],
-        vllmNode: ['switchyardNode', 'observabilityNode'],
-        sglangNode: ['switchyardNode', 'observabilityNode'],
-        ollamaNode: ['switchyardNode', 'observabilityNode'],
+        lemonadeNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
+        vllmNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
+        sglangNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
+        ollamaNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
+        ramalamaNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
+        comfyuiNode: ['switchyardNode', 'vectorcraftNode', 'artcraftNode', 'harnessNode', 'observabilityNode'],
         billamaNode: ['switchyardNode', 'observabilityNode'],
         openaiNode: ['switchyardNode', 'observabilityNode'],
         claudeNode: ['switchyardNode', 'observabilityNode'],
@@ -1159,6 +1468,7 @@ export default function RoutingEditor() {
   const onConnect = useCallback(
     (params: Connection) => {
       if (isValidConnection(params)) {
+        graphHistory.recordSnapshot(nodes, edges, 'Connect wire');
         setEdges((eds) =>
           addEdge(
             {
@@ -1171,31 +1481,35 @@ export default function RoutingEditor() {
         );
       }
     },
-    [setEdges, isValidConnection]
+    [nodes, edges, graphHistory, setEdges, isValidConnection]
   );
 
-  const addNode = (type: string, customData?: Record<string, any>) => {
-    const id = getId();
-    const position = reactFlowInstance
-      ? reactFlowInstance.screenToFlowPosition({
-          x: (reactFlowWrapper.current?.clientWidth || 800) / 2 + (Math.random() * 80 - 40),
-          y: (reactFlowWrapper.current?.clientHeight || 600) / 2 + (Math.random() * 80 - 40)
-        })
-      : { x: 500, y: 300 };
+  const addNode = useCallback(
+    (type: string, customData?: Record<string, any>) => {
+      graphHistory.recordSnapshot(nodes, edges, `Add ${type}`);
+      const id = getId();
+      const position = reactFlowInstance
+        ? reactFlowInstance.screenToFlowPosition({
+            x: (reactFlowWrapper.current?.clientWidth || 800) / 2 + (Math.random() * 80 - 40),
+            y: (reactFlowWrapper.current?.clientHeight || 600) / 2 + (Math.random() * 80 - 40)
+          })
+        : { x: 500, y: 300 };
 
-    const baseData = DEFAULT_NODE_DATA[type]
-      ? { ...DEFAULT_NODE_DATA[type] }
-      : { label: `${type} node` };
+      const baseData = DEFAULT_NODE_DATA[type]
+        ? { ...DEFAULT_NODE_DATA[type] }
+        : { label: `${type} node` };
 
-    const newNode = {
-      id,
-      type,
-      position,
-      data: customData ? { ...baseData, ...customData } : baseData
-    };
+      const newNode = {
+        id,
+        type,
+        position,
+        data: customData ? { ...baseData, ...customData } : baseData
+      };
 
-    setNodes((nds) => nds.concat(newNode));
-  };
+      setNodes((nds) => nds.concat(newNode));
+    },
+    [nodes, edges, graphHistory, reactFlowInstance, setNodes]
+  );
 
   const onDragStart = (event: React.DragEvent, nodeType: string) => {
     event.dataTransfer.setData('application/reactflow', nodeType);
@@ -1211,6 +1525,7 @@ export default function RoutingEditor() {
         return;
       }
 
+      graphHistory.recordSnapshot(nodes, edges, `Drop ${type}`);
       const position = reactFlowInstance.screenToFlowPosition({
         x: event.clientX,
         y: event.clientY,
@@ -1225,7 +1540,7 @@ export default function RoutingEditor() {
 
       setNodes((nds) => nds.concat(newNode));
     },
-    [reactFlowInstance, setNodes]
+    [nodes, edges, graphHistory, reactFlowInstance, setNodes]
   );
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -1405,11 +1720,27 @@ export default function RoutingEditor() {
       <ReactFlowProvider>
         {/* Sidebar */}
         <div className="w-72 border-r border-slate-800 bg-slate-900 p-4 flex flex-col gap-4 overflow-y-auto shrink-0 select-none">
-          <div className="border-b border-slate-800 pb-3">
-            <h2 className="font-bold text-lg text-slate-100 flex items-center gap-2">
-              <span>🧰</span> Node Toolbox
-            </h2>
-            <div className="text-[11px] text-slate-400 mt-0.5">Click or drag nodes onto the canvas</div>
+          <div className="border-b border-slate-800 pb-3 space-y-2">
+            <div>
+              <h2 className="font-bold text-lg text-slate-100 flex items-center gap-2">
+                <span>🧰</span> Node Toolbox
+              </h2>
+              <div className="text-[11px] text-slate-400 mt-0.5">Click or drag nodes onto the canvas</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-700/80 hover:border-sky-500/50 text-xs text-slate-300 flex items-center justify-between transition"
+              title="Open Spotlight Command Palette (Ctrl+K / Cmd+K or /)"
+            >
+              <span className="flex items-center gap-1.5 text-[11px]">
+                <span>🔎</span>
+                <span>Search nodes &amp; actions...</span>
+              </span>
+              <kbd className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-sky-400">
+                ⌘K
+              </kbd>
+            </button>
           </div>
           
           {/* Semantic & Task Routing */}
@@ -1631,6 +1962,40 @@ export default function RoutingEditor() {
                 </div>
               </div>
               <span className="text-[10px] text-gray-400 group-hover:text-purple-400">+ Add</span>
+            </div>
+
+            {/* RamaLama */}
+            <div
+              className="p-2.5 mb-2 border border-orange-500/80 bg-orange-950/20 rounded cursor-grab hover:bg-orange-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'ramalamaNode')}
+              onClick={() => addNode('ramalamaNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">📦</span>
+                <div>
+                  <div className="font-semibold text-xs text-orange-300 group-hover:text-orange-200">RamaLama Engine</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8080 • Podman / OCI Container AI</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-orange-400">+ Add</span>
+            </div>
+
+            {/* ComfyUI */}
+            <div
+              className="p-2.5 mb-2 border border-fuchsia-500/80 bg-fuchsia-950/20 rounded cursor-grab hover:bg-fuchsia-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'comfyuiNode')}
+              onClick={() => addNode('comfyuiNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🎬</span>
+                <div>
+                  <div className="font-semibold text-xs text-fuchsia-300 group-hover:text-fuchsia-200">ComfyUI Engine</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8188 • Flux / SDXL / Wan DAG</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-fuchsia-400">+ Add</span>
             </div>
           </div>
 
@@ -2088,10 +2453,187 @@ export default function RoutingEditor() {
                   {toastMessage}
                 </span>
               )}
+
+              {/* Static VRAM & Port Conflict Diagnostics Pill */}
+              <div className="relative hidden lg:block">
+                <button
+                  type="button"
+                  onClick={() => setShowDiagnosticsPopover(!showDiagnosticsPopover)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-mono transition ${
+                    graphDiagnostics.diagnostics.some((d) => d.severity === 'error')
+                      ? 'bg-red-950/70 border-red-500/60 text-red-300'
+                      : graphDiagnostics.diagnostics.length > 0
+                      ? 'bg-amber-950/70 border-amber-500/50 text-amber-300'
+                      : 'bg-slate-800/80 border-slate-700 text-slate-300 hover:text-white'
+                  }`}
+                  title="Estimated aggregate local GPU VRAM & static port diagnostics"
+                >
+                  <span>🧮</span>
+                  <span>VRAM: {graphDiagnostics.estimatedTotalVramGb} GB</span>
+                  {graphDiagnostics.diagnostics.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded bg-black/40 text-[10px] font-bold">
+                      ⚠️ {graphDiagnostics.diagnostics.length}
+                    </span>
+                  )}
+                </button>
+                {showDiagnosticsPopover && (
+                  <div className="absolute left-0 top-9 w-[420px] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-3 z-50 text-xs space-y-2">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 gap-2">
+                      <span className="font-bold text-slate-100">Canvas Diagnostics &amp; VRAM Estimator</span>
+                      <div className="flex items-center gap-1.5">
+                        {graphDiagnostics.diagnostics.some((d) => d.fixAction) && (
+                          <button
+                            type="button"
+                            onClick={handleAutoFixAllDiagnostics}
+                            className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] transition"
+                            title="Resolve all fixable port collisions, VRAM conflicts, and orphaned engines"
+                          >
+                            🩺 Fix All
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setShowDiagnosticsPopover(false)}
+                          className="text-slate-400 hover:text-white px-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-slate-300 font-mono">
+                      Estimated Local Engine Footprint: <strong className="text-sky-400">{graphDiagnostics.estimatedTotalVramGb} GB</strong>
+                    </div>
+                    {graphDiagnostics.diagnostics.length === 0 ? (
+                      <div className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-700/40 rounded p-2">
+                        ✓ No port collisions or VRAM overcommits detected across local engines.
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                        {graphDiagnostics.diagnostics.map((d) => (
+                          <div
+                            key={d.id}
+                            className={`p-2 rounded border text-[11px] space-y-1.5 ${
+                              d.severity === 'error'
+                                ? 'bg-red-950/50 border-red-500/50 text-red-200'
+                                : 'bg-amber-950/50 border-amber-500/50 text-amber-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-bold font-mono text-[10px] uppercase">{d.code}</div>
+                              {d.fixAction && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleFixSingleDiagnostic(d)}
+                                  title={d.fixAction.description}
+                                  className="px-2 py-0.5 rounded bg-slate-900/90 hover:bg-emerald-700 border border-emerald-500/50 text-emerald-200 hover:text-white font-mono text-[10px] font-semibold transition shrink-0"
+                                >
+                                  ⚡ {d.fixAction.label}
+                                </button>
+                              )}
+                            </div>
+                            <div>{d.message}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Right: Layout Operations */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {/* Undo / Redo History */}
+              <div className="hidden md:flex items-center rounded-lg border border-slate-700 bg-slate-800/80 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  disabled={!graphHistory.canUndo}
+                  className="px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-35 disabled:hover:bg-transparent transition font-mono"
+                  title={
+                    graphHistory.canUndo
+                      ? `Undo: ${graphHistory.undoLabel} (Ctrl+Z / Cmd+Z)`
+                      : 'Nothing to undo'
+                  }
+                >
+                  ↶
+                </button>
+                <div className="w-px h-4 bg-slate-700" />
+                <button
+                  type="button"
+                  onClick={handleRedo}
+                  disabled={!graphHistory.canRedo}
+                  className="px-2 py-1.5 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-35 disabled:hover:bg-transparent transition font-mono"
+                  title={
+                    graphHistory.canRedo
+                      ? `Redo: ${graphHistory.redoLabel} (Ctrl+Shift+Z / Cmd+Shift+Z)`
+                      : 'Nothing to redo'
+                  }
+                >
+                  ↷
+                </button>
+              </div>
+
+              {/* Sugiyama Topological Auto-Layout */}
+              <button
+                type="button"
+                onClick={handleAutoLayout}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-medium transition hidden lg:inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 hover:text-white"
+                title="Auto-Layout DAG into semantic ranks & minimize edge crossings (Ctrl+Shift+L / ⇧⌘L)"
+              >
+                <span>✨</span>
+                <span>Layout</span>
+              </button>
+
+              {/* Live Canvas Route Simulator */}
+              <button
+                type="button"
+                onClick={() => setIsSimulatorOpen((v) => !v)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition hidden lg:inline-flex items-center gap-1 border ${
+                  isSimulatorOpen || simulatedExplanation
+                    ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200 shadow'
+                    : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200 hover:text-white'
+                }`}
+                title="Simulate prompt routing & illuminate chosen path + backups on the live canvas"
+              >
+                <span>🧭</span>
+                <span>Simulate</span>
+              </button>
+
+              {/* Spotlight Command Palette */}
+              <button
+                type="button"
+                onClick={() => setIsCommandPaletteOpen(true)}
+                className="px-2 py-1.5 rounded-lg text-xs font-mono transition hidden md:inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 hover:text-white"
+                title="Open Spotlight Command Palette (Ctrl+K / Cmd+K)"
+              >
+                <span>🔎</span>
+                <span>⌘K</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLiveTelemetryEnabled(!liveTelemetryEnabled)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition hidden 2xl:inline-flex items-center gap-1.5 border ${
+                  liveTelemetryEnabled
+                    ? 'bg-sky-600/30 border-sky-400 text-sky-200 shadow'
+                    : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                }`}
+                title="Overlay live request latency and traffic share from /api/v1/observability"
+              >
+                <span className={liveTelemetryEnabled ? 'animate-pulse' : ''}>📡</span>
+                <span>Telemetry</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncFromLiveConfig}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 text-xs font-medium transition hidden 2xl:inline-flex items-center gap-1"
+                title="Decompile live eluvix.json configuration onto canvas"
+              >
+                <span>🔄</span>
+                <span>eluvix.json</span>
+              </button>
               <button
                 type="button"
                 onClick={handleFastSave}
@@ -2130,14 +2672,14 @@ export default function RoutingEditor() {
               <button
                 type="button"
                 onClick={handleExportJson}
-                className="px-2.5 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg text-xs transition hidden md:inline-flex"
+                className="px-2.5 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg text-xs transition hidden xl:inline-flex"
                 title="Export Layout JSON to disk"
               >
                 ⬇️ Export
               </button>
 
               <label
-                className="px-2.5 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg text-xs transition cursor-pointer hidden md:inline-flex"
+                className="px-2.5 py-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg text-xs transition cursor-pointer hidden xl:inline-flex"
                 title="Import Layout JSON from disk"
               >
                 ⬆️ Import
@@ -2166,7 +2708,7 @@ export default function RoutingEditor() {
           <div className="flex-1 relative">
             <ReactFlow
               nodes={nodes}
-              edges={edges}
+              edges={displayedEdges}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
@@ -2175,6 +2717,7 @@ export default function RoutingEditor() {
               onDrop={onDrop}
               onDragOver={onDragOver}
               onNodeClick={handleNodeClick}
+              onNodeDragStart={() => graphHistory.recordSnapshot(nodes, edges, 'Move node')}
               nodeTypes={nodeTypes}
               onNodesDelete={onNodesDelete}
               deleteKeyCode={['Backspace', 'Delete']}
@@ -2200,6 +2743,8 @@ export default function RoutingEditor() {
                  if (n.type === 'vllmNode') return '#06b6d4';
                  if (n.type === 'sglangNode') return '#10b981';
                  if (n.type === 'ollamaNode') return '#c084fc';
+                 if (n.type === 'ramalamaNode') return '#fb923c';
+                 if (n.type === 'comfyuiNode') return '#e879f9';
                  if (n.type === 'antigravityNode') return '#06b6d4';
                  if (n.type === 'codexNode') return '#10b981';
                  if (n.type === 'claudeCodeNode') return '#f59e0b';
@@ -2224,6 +2769,14 @@ export default function RoutingEditor() {
             />
             <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="#334155" />
           </ReactFlow>
+          <RouteSimulatorDrawer
+            isOpen={isSimulatorOpen}
+            onClose={() => setIsSimulatorOpen(false)}
+            explanation={simulatedExplanation}
+            onSimulate={handleSimulateRoute}
+            onClearOverlay={() => setSimulatedExplanation(null)}
+            simulating={isSimulating}
+          />
           <LogViewer containerName={selectedLogContainer} onClose={() => setSelectedLogContainer(null)} />
           </div>
         </div>
@@ -2274,6 +2827,7 @@ export default function RoutingEditor() {
                           value={(node.data.model as string) || 'gemini-3.8-flash'}
                           onChange={(e) => updateData('model', e.target.value)}
                         >
+                          <option value="gemini-4-carbon">Gemini 4 Carbon (Flagship Reasoning)</option>
                           <option value="gemini-4-argon">Gemini 4 Argon (Next-Gen Flagship)</option>
                           <option value="gemini-3.8-flash">Gemini 3.8 Flash (Fast & Reasoning)</option>
                           <option value="claude-opus-5-5">Claude Opus 5.5 (Deep Reasoning)</option>
@@ -3499,7 +4053,7 @@ export default function RoutingEditor() {
                     </div>
                   )}
 
-                  {(node.type === 'lemonadeNode' || node.type === 'vllmNode' || node.type === 'sglangNode' || node.type === 'ollamaNode') && (
+                  {(node.type === 'lemonadeNode' || node.type === 'vllmNode' || node.type === 'sglangNode' || node.type === 'ollamaNode' || node.type === 'ramalamaNode') && (
                     <div className="space-y-4">
                       <div>
                         <label className="block text-xs font-semibold text-slate-300 mb-1">Local Server Endpoint</label>
@@ -4689,6 +5243,30 @@ export default function RoutingEditor() {
                   </div>
                 )}
 
+                {compiledConfigs.ramalamaSetup && (
+                  <div>
+                    <h4 className="text-orange-400 font-bold mb-2 flex items-center justify-between">
+                      <span>RamaLama OCI Container &amp; Rootless Podman Quadlet (ramalama-quadlet.sh)</span>
+                      <span className="text-[10px] bg-orange-500/20 text-orange-300 px-2 py-0.5 rounded font-mono">Podman Quadlet / OCI</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-orange-200 overflow-x-auto border border-orange-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.ramalamaSetup}
+                    </pre>
+                  </div>
+                )}
+
+                {compiledConfigs.comfyuiSetup && (
+                  <div>
+                    <h4 className="text-fuchsia-400 font-bold mb-2 flex items-center justify-between">
+                      <span>ComfyUI Diffusion Engine, VRAM Coordinator &amp; Reverse Loopback (comfyui-launch.sh)</span>
+                      <span className="text-[10px] bg-fuchsia-500/20 text-fuchsia-300 px-2 py-0.5 rounded font-mono">ComfyUI :8188 + Loopback :3588</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-fuchsia-200 overflow-x-auto border border-fuchsia-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.comfyuiSetup}
+                    </pre>
+                  </div>
+                )}
+
               </div>
               <div className="p-4 border-t border-gray-700 bg-gray-900 flex items-center justify-between">
                 <div>
@@ -4760,6 +5338,28 @@ export default function RoutingEditor() {
             onRestoreExamples={handleRestoreExamples}
           />
         )}
+
+        <CommandPaletteModal
+          isOpen={isCommandPaletteOpen}
+          onClose={() => setIsCommandPaletteOpen(false)}
+          layouts={layoutsList}
+          canUndo={graphHistory.canUndo}
+          canRedo={graphHistory.canRedo}
+          diagnosticsCount={graphDiagnostics.diagnostics.filter((d) => d.fixAction).length}
+          simulatorOpen={isSimulatorOpen}
+          onAddNode={addNode}
+          onLoadLayout={(slug) => loadLayoutBySlug(slug)}
+          onAutoLayout={handleAutoLayout}
+          onToggleSimulator={() => setIsSimulatorOpen((v) => !v)}
+          onAutoFixAll={handleAutoFixAllDiagnostics}
+          onSyncLiveConfig={handleSyncFromLiveConfig}
+          onSave={handleFastSave}
+          onApplyToRouter={onApplyToRouter}
+          onExportJson={handleExportJson}
+          onNewCanvas={handleNewCanvas}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+        />
 
       </ReactFlowProvider>
     </div>

@@ -1,17 +1,18 @@
-# Trace Playground & Fine-Tuning Datasets
+# Playground 2.0: Streaming, Vision & Media Studio
 
-The **Trace Playground** (available at `/playground` in the Next.js dashboard) is an interactive developer workbench for experimenting with prompts, testing routing pipelines, and curating fine-tuning datasets.
+**Playground 2.0** (available at `/playground` in the Next.js dashboard) is an interactive multimodal workbench for real-time SSE streaming, routing telemetry inspection, Vision image attachments, ComfyUI media synthesis, side-by-side A/B model benchmarking, and fine-tuning dataset curation.
 
 ---
 
-## Interactive Chat & Trace Inspector
+## Interactive Workbench Modes
 
-Unlike standard LLM chat interfaces, the Trace Playground exposes the complete internal execution metadata for every interaction:
+Playground 2.0 exposes rich diagnostic metadata and specialized testing modes:
 
-- **Upstream Selected**: Shows whether the query resolved to a local GPU or escalated to a cloud fallback.
-- **Complexity Score**: Displays the complexity grade (e.g. `Tier 1: Low`, `Tier 3: Frontier`) calculated by the complexity estimator.
-- **Latency Breakdown**: Measures end-to-end response time alongside TTFT (Time to First Token).
-- **Guardrail Actions**: Indicates whether the Privacy Guard redacted any PII tokens or whether the Semantic Guard performed safety validations.
+- **Real-Time SSE Streaming Speedometer**: Streams tokens live (`stream: true`) with instantaneous **TTFT (ms)**, **throughput (tok/s)**, complexity tier, and `X-Eluvix-*` response header badges.
+- **Multimodal Vision Dropzone & Clipboard Paste**: Drag-and-drop PNG/JPEG/WEBP files onto the composer, paste screenshots directly from your clipboard, or click the `📎` attachment button to send OpenAI `image_url` payloads to vision-capable models (`gemini-4-carbon`, `gpt-4o`, `llava`, `Qwen2-VL`).
+- **Image / Media DAG Studio (`🎨 Image / Media Studio`)**: Dedicated ComfyUI synthesis mode targeting `POST /api/v1/images/generations` with workflow preset selector (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), aspect ratio pills (`1024x1024`, `1344x768`, `768x1344`), seed input, negative prompt, and one-click asset download.
+- **A/B Split Arena (`⚔️ A/B Arena`)**: Dispatches the exact same prompt in parallel to **Model A** (e.g. `gemini-4-carbon-high`) and **Model B** (e.g. local RamaLama or Ollama), comparing latency, tok/s, token count, and estimated USD cost side-by-side.
+- **Reasoning & Code Renderer**: Automatically renders collapsible `<think>...</think>` reasoning trace accordions and syntax-badged fenced code blocks with one-click copy buttons.
 
 ---
 

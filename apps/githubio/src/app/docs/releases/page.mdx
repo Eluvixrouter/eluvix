@@ -4,6 +4,58 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.0.22 — Gemini 4 Carbon, ComfyUI Media Synthesis, RamaLama OCI, Pro Studio Editor & Prometheus Spend Caps *(November 10, 2026)*
+
+### 🤖 Gemini 4 Carbon First-Class Integration (`@eluvix/router-core`)
+- **Antigravity CLI (`agy`) Model Registry**:
+  - Registered `gemini-4-carbon` as the primary flagship model with a **1,000,000-token context window**, **64,000 max output tokens**, multimodal vision, and automated thinking effort variants (`gemini-4-carbon-low`, `-medium`, `-high`, `-xhigh`, and `-max`).
+  - Supports cold-cache detection, dynamic effort escalation in Switchyard, and seamless fallback cascades.
+
+### 🎨 ComfyUI Local Media Synthesis (`:8188`) & Modality-Aware Switchyard
+- **OpenAI-Compatible `/v1/images/generations`**:
+  - Drop-in local image, video, and 3D synthesis endpoint backed by ComfyUI workflow DAGs on port `8188`.
+  - Built-in workflow presets: `flux-txt2img` (FLUX.1-dev / Schnell), `sdxl-txt2img` (SDXL 1024x1024), `wan21-txt2vid` (Wan 2.1 text-to-video), `hunyuan3d-mesh` (Hunyuan3D single-prompt geometry), and `custom-json` (arbitrary ComfyUI API JSON graphs).
+  - Reverse loopback LLM prompt enhancement, ArtCraft headless post-processing handoff, and SSRF-guarded HTTPS media proxy at `/api/v1/images/view`.
+- **Modality-Aware Media Intent Routing (`mediaIntentRouting`)**:
+  - Classifies prompts into `text`, `code`, `vision-input`, `image-gen`, `video-gen`, and `mesh-3d`.
+  - Automatically isolates ComfyUI synthesis nodes from text/code chat completions while steering generative media prompts on `model: "auto"` to matching ComfyUI workflows.
+
+### 🦙 RamaLama Rootless OCI Containers (`:8080`)
+- **Podman & Docker OCI Serving**:
+  - Direct integration with RamaLama serving GGUF models in rootless containers on port `8080`.
+  - Automated Podman Quadlet `.container` unit generation, `--rag` OCI knowledge artifact binding, SELinux confinement, and `--network=none` air-gapped container isolation.
+
+### 🔀 Eluvix Visual Node Routing Editor Pro Studio (`/editor`)
+- **Spotlight Command Palette (`Cmd/Ctrl + K`)**: Fuzzy-search and spawn 28+ node types at viewport center, switch presets, run auto-layout, compile, and trigger diagnostic healing.
+- **50-State Undo / Redo (`Cmd/Ctrl + Z` / `Shift + Z`)**: Bounded deep-cloned history stack preserving positions, parameters, and edge configurations.
+- **Deterministic Sugiyama Topological Auto-Layout**: 5-stage left-to-right topological layout (`Entry / Guards` &rarr; `Cache / Memory` &rarr; `Routers` &rarr; `Gateways` &rarr; `Upstreams / Observability`) with barycentric edge-crossing minimization.
+- **Interactive Live Route Simulator**: Non-destructive dry-run trace simulator animating winning edges in glowing emerald green and dimming bypassed paths in amber with hoverable rejection reasons.
+- **One-Click Diagnostic Auto-Fix**: Real-time graph linting with individual **"Fix Now"** actions and batch **"Fix All Issues"** auto-healing for disconnected nodes, ungrounded RAG, and cloud PII leaks.
+
+### 🧪 Playground 2.0 (`/playground`)
+- **Real-Time SSE Streaming Speedometer**: Live token-by-token streaming with instantaneous **TTFT (ms)** and throughput **(tok/s)** telemetry.
+- **Multimodal Vision Dropzone**: Drag-and-drop or clipboard-paste PNG/JPEG/WEBP attachments into OpenAI `image_url` arrays.
+- **ComfyUI Image & Media Studio**: Dedicated synthesis workbench with preset selector, aspect ratio pills, seed controls, and gallery downloads.
+- **A/B Split Arena**: Concurrent side-by-side prompt execution comparing latency, tok/s, and cost between models.
+- **Safe `<think>` Accordion & Code Renderer**: Collapsible reasoning blocks and syntax-highlighted code blocks with one-click copy buttons.
+
+### 📊 Observability 2.0: Prometheus `/api/v1/metrics` & 24h Spend Guardrails
+- **Prometheus 0.0.4 Text Exposition Endpoint (`/api/v1/metrics`)**:
+  - Standardized metrics exposition for Prometheus and Grafana scrapers, authenticated via Named `elx_` API keys or Bearer tokens.
+  - Metrics include request counts, token counters, KV-cache bytes transferred, TTFT/ITL percentiles, rolling 24h spend, spend caps, and circuit breaker status.
+- **Rolling 24h Cloud Spend Guardrails (`maxDailySpendUsd`)**:
+  - Tracks rolling 24-hour cloud expenditures in SQLite (`getRollingSpendUsd(24)`).
+  - Enforces `budgetExhaustedAction`: `'prefer-local'` (soft-fails over from paid cloud APIs to `$0.00` local sovereign engines with `X-Eluvix-Budget-Fallback: local-sovereign`), `'strict-local'`, or `'reject'` (HTTP 429).
+  - Interactive **24h Cloud Spend Meter** and **"📡 Copy Prometheus Config"** button in `/observability`.
+
+### 🛡️ Desktop Gateway Parity & Unified SSRF Guard
+- **Unified Browser-Safe SSRF & Cloud Metadata Guard (`ssrf-guard.ts`)**:
+  - Zero-`node:*` module strictly blocking IMDS (`169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`, `metadata.google.internal`), NAT64, IPv4-mapped IPv6, octal/hex/decimal IP confusion, `0.0.0.0`, and non-HTTP(S) schemes.
+- **Desktop Server Parity (`apps/desktop/src/main/server.ts`)**:
+  - Upgraded `DesktopRouterServer` with built-in `ramalama` (`:8080`) and `comfyui` (`:8188`) upstreams, `POST /v1/images/generations`, `POST /v1/route-explain`, and SSRF probe blocking.
+
+---
+
 ## v1.0.17 — FlashAttention-3 Warp-Specialization, TMA 128B Swizzling & Blackwell `tcgen05` TMEM *(November 1, 2026)*
 
 ### ⚡ Hardware-Co-Designed FlashAttention-3 & Blackwell `SM100` Kernels (`@eluvix/router-core/flash-attention-kernels`)

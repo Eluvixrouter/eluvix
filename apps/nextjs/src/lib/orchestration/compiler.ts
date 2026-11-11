@@ -28,6 +28,15 @@ import {
   generateFlashAttentionKernelLaunchScript,
   type AttentionKernelConfig
 } from '@eluvix/router-core/flash-attention-kernels';
+import {
+  generateComfyUISetupScript,
+  toComfyMcpServerConfig,
+  type ComfyUIConfig
+} from '@eluvix/router-core/comfyui';
+import {
+  analyzeGraphDiagnostics,
+  type GraphDiagnosticsReport
+} from './diagnostics';
 
 export interface CompilationResult {
   bifrostYaml: string;
@@ -45,12 +54,23 @@ export interface CompilationResult {
   crsSetup?: string;
   vectorcraftSetup?: string;
   artcraftSetup?: string;
+  ramalamaSetup?: string;
+  comfyuiSetup?: string;
+  diagnostics?: GraphDiagnosticsReport;
   rawRouterConfig: any;
 }
 
 export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
-  // 1. Extract Local Engine Nodes (Lemonade, vLLM, SGLang, Ollama) and Cloud Providers (Billama, OpenAI, Claude)
-  const localEngineNodes = nodes.filter(n => n.type === 'lemonadeNode' || n.type === 'vllmNode' || n.type === 'sglangNode' || n.type === 'ollamaNode');
+  // 1. Extract Local Engine Nodes (Lemonade, vLLM, SGLang, Ollama, RamaLama, ComfyUI) and Cloud Providers (Billama, OpenAI, Claude)
+  const localEngineNodes = nodes.filter(
+    n =>
+      n.type === 'lemonadeNode' ||
+      n.type === 'vllmNode' ||
+      n.type === 'sglangNode' ||
+      n.type === 'ollamaNode' ||
+      n.type === 'ramalamaNode' ||
+      n.type === 'comfyuiNode'
+  );
   const vllmNodes = nodes.filter(n => n.type === 'vllmNode');
   const sglangNodes = nodes.filter(n => n.type === 'sglangNode');
   const billamaNodes = nodes.filter(n => n.type === 'billamaNode');
@@ -150,6 +170,22 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     ...claudeCodeNodes
   ];
   const vcSetupScript = generateVectorCraftSetup(vectorcraftNodes, allUpstreamCapableNodes);
+  const ramalamaNodes = localEngineNodes.filter(n => n.type === 'ramalamaNode');
+  const ramalamaSetupScript = generateRamalamaSetup(
+    ramalamaNodes,
+    edges,
+    knowledgeBaseNodes,
+    sandboxNodes,
+    confidentialEnclaveNodes
+  );
+  const comfyuiNodes = localEngineNodes.filter(n => n.type === 'comfyuiNode');
+  const comfyuiSetupScript = generateComfyUISetup(
+    comfyuiNodes,
+    localEngineNodes,
+    vectorcraftNodes,
+    edges
+  );
+  const diagnostics = analyzeGraphDiagnostics(nodes, edges);
 
   return {
     bifrostYaml: bifrostConfig,
@@ -167,6 +203,9 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     crsSetup: generateCrsSetup(crsNodes, allUpstreamCapableNodes),
     vectorcraftSetup: vcSetupScript,
     artcraftSetup: vcSetupScript,
+    ramalamaSetup: ramalamaSetupScript,
+    comfyuiSetup: comfyuiSetupScript,
+    diagnostics,
     rawRouterConfig
   };
 }
@@ -448,6 +487,14 @@ function generateEluvixConfig(
       type = 'ollama';
       defaultEndpoint = 'http://localhost:11434';
       defaultName = 'Ollama Engine';
+    } else if (node.type === 'ramalamaNode') {
+      type = 'ramalama';
+      defaultEndpoint = 'http://localhost:8080';
+      defaultName = 'RamaLama Engine';
+    } else if (node.type === 'comfyuiNode') {
+      type = 'comfyui';
+      defaultEndpoint = 'http://localhost:8188';
+      defaultName = 'ComfyUI Engine';
     }
 
     const discovered = Array.isArray(node.data?.models) ? (node.data?.models as string[]) : [];
@@ -518,13 +565,163 @@ function generateEluvixConfig(
     const crsCfg = buildCrsCfgForNode(node);
     const vcCfg = buildVectorCraftCfgForNode(node);
     const acCfg = buildArtCraftCfgForNode(node);
+    const ramalamaRaw = (node.data as any)?.ramalama || {};
+    const connectedKbNode =
+      type === 'ramalama'
+        ? knowledgeBaseNodes.find(kb =>
+            edges.some(
+              e =>
+                (e.source === kb.id && e.target === node.id) ||
+                (e.target === kb.id && e.source === node.id)
+            )
+          )
+        : undefined;
+    const connectedAirgapSandbox =
+      type === 'ramalama'
+        ? sandboxNodes.some(sb => {
+            const sbPolicy = String((sb.data as any)?.networkPolicy || 'none');
+            const wired = edges.some(
+              e =>
+                (e.source === sb.id && e.target === node.id) ||
+                (e.target === sb.id && e.source === node.id)
+            );
+            return wired && sbPolicy === 'none';
+          })
+        : false;
+
+    const rawRagUri = String(
+      ramalamaRaw.ragOciUri || (node.data as any)?.ragOciUri || ''
+    ).trim();
+    let resolvedRagOciUri = rawRagUri || undefined;
+    if (!resolvedRagOciUri && connectedKbNode) {
+      const kbUri = String((connectedKbNode.data as any)?.collectionUri || '').trim();
+      if (kbUri.startsWith('oci://')) {
+        resolvedRagOciUri = kbUri;
+      } else {
+        const slug = sanitizeSafeIdentifier(
+          kbUri.replace(/^[a-z0-9+.-]+:\/\/(?:resources\/)?/i, '') || 'docs',
+          'docs'
+        ).toLowerCase();
+        resolvedRagOciUri = `oci://quay.io/eluvix/${slug}-rag:latest`;
+      }
+    }
+
+    const effectiveSelinux =
+      ramalamaRaw.selinuxEnforcing ??
+      (node.data as any)?.selinuxEnforcing ??
+      (connectedAirgapSandbox || connectedToEnclave ? true : undefined);
+    const effectiveNetIsolation =
+      ramalamaRaw.networkIsolation ||
+      (node.data as any)?.networkIsolation ||
+      (connectedAirgapSandbox || connectedToEnclave ? 'none' : undefined);
+    const effectiveReadOnly =
+      ramalamaRaw.readOnlyRootfs ??
+      (node.data as any)?.readOnlyRootfs ??
+      (connectedAirgapSandbox || connectedToEnclave ? true : undefined);
+    const effectiveTemp =
+      ramalamaRaw.tempContainer ?? (node.data as any)?.tempContainer;
+    const effectiveGenerateMode =
+      ramalamaRaw.generateMode || (node.data as any)?.generateMode;
+
+    const ramalamaCfg =
+      type === 'ramalama'
+        ? {
+            containerEngine: ramalamaRaw.containerEngine || (node.data as any)?.containerEngine || 'podman',
+            runtime: ramalamaRaw.runtime || (node.data as any)?.runtime || 'llama.cpp',
+            ociTransport: ramalamaRaw.ociTransport || (node.data as any)?.ociTransport || 'oci',
+            accelerator: ramalamaRaw.accelerator || (node.data as any)?.accelerator || 'auto',
+            ...(typeof effectiveSelinux === 'boolean'
+              ? { selinuxEnforcing: Boolean(effectiveSelinux) }
+              : {}),
+            ...(effectiveNetIsolation ? { networkIsolation: effectiveNetIsolation } : {}),
+            ...(typeof effectiveReadOnly === 'boolean'
+              ? { readOnlyRootfs: Boolean(effectiveReadOnly) }
+              : {}),
+            ...(typeof effectiveTemp === 'boolean'
+              ? { tempContainer: Boolean(effectiveTemp) }
+              : {}),
+            ...(resolvedRagOciUri ? { ragOciUri: resolvedRagOciUri } : {}),
+            ...(effectiveGenerateMode ? { generateMode: effectiveGenerateMode } : {}),
+            ...(typeof (ramalamaRaw.ctxSize ?? (node.data as any)?.ctxSize) === 'number'
+              ? { ctxSize: Number(ramalamaRaw.ctxSize ?? (node.data as any)?.ctxSize) }
+              : {}),
+            ...(typeof (ramalamaRaw.ngl ?? (node.data as any)?.ngl) === 'number'
+              ? { ngl: Number(ramalamaRaw.ngl ?? (node.data as any)?.ngl) }
+              : {}),
+          }
+        : undefined;
+
+    const comfyRaw = (node.data as any)?.comfyui || {};
+    const connectedLlmEnhancer =
+      type === 'comfyui'
+        ? localEngines.find(
+            other =>
+              other.id !== node.id &&
+              other.type !== 'comfyuiNode' &&
+              edges.some(
+                e =>
+                  (e.source === other.id && e.target === node.id) ||
+                  (e.target === other.id && e.source === node.id)
+              )
+          )
+        : undefined;
+    const connectedArtCraftForComfy =
+      type === 'comfyui' ? findConnectedArtCraftNode(node) : undefined;
+    const hasCoHostedLocalLlm =
+      type === 'comfyui' && localEngines.some(other => other.id !== node.id && other.type !== 'comfyuiNode');
+
+    const comfyuiCfg: ComfyUIConfig | undefined =
+      type === 'comfyui'
+        ? {
+            workflowPreset:
+              comfyRaw.workflowPreset || (node.data as any)?.workflowPreset || 'flux-txt2img',
+            ...(comfyRaw.checkpoint || (node.data?.selectedModel && node.data.selectedModel !== '*')
+              ? { checkpoint: String(comfyRaw.checkpoint || node.data.selectedModel) }
+              : {}),
+            steps: Number(comfyRaw.steps ?? (node.data as any)?.steps ?? 20),
+            cfg: Number(comfyRaw.cfg ?? (node.data as any)?.cfg ?? 3.5),
+            samplerName: String(comfyRaw.samplerName || (node.data as any)?.samplerName || 'euler'),
+            scheduler: String(comfyRaw.scheduler || (node.data as any)?.scheduler || 'simple'),
+            width: Number(comfyRaw.width ?? (node.data as any)?.width ?? 1024),
+            height: Number(comfyRaw.height ?? (node.data as any)?.height ?? 1024),
+            vramMode:
+              comfyRaw.vramMode ||
+              (node.data as any)?.vramMode ||
+              (hasCoHostedLocalLlm ? 'lowvram' : 'normalvram'),
+            reserveVramGb: Number(
+              comfyRaw.reserveVramGb ?? (node.data as any)?.reserveVramGb ?? (hasCoHostedLocalLlm ? 6 : 4)
+            ),
+            ...(comfyRaw.promptEnhancerUpstreamId || connectedLlmEnhancer?.id
+              ? {
+                  promptEnhancerUpstreamId: String(
+                    comfyRaw.promptEnhancerUpstreamId || connectedLlmEnhancer?.id
+                  )
+                }
+              : {}),
+            ...(comfyRaw.postProcessArtCraftApp || connectedArtCraftForComfy
+              ? {
+                  postProcessArtCraftApp: String(
+                    comfyRaw.postProcessArtCraftApp ||
+                      (connectedArtCraftForComfy?.data as any)?.app ||
+                      'vectorcraft'
+                  )
+                }
+              : {}),
+            loopbackEluvixUrl: String(
+              comfyRaw.loopbackEluvixUrl ||
+                (node.data as any)?.loopbackEluvixUrl ||
+                'http://127.0.0.1:3588/v1'
+            ),
+            mcpEnabled: comfyRaw.mcpEnabled !== false
+          }
+        : undefined;
 
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
       type,
       endpoint: String(node.data?.endpoint || defaultEndpoint),
-      priority: Number(node.data?.priority || (type === 'lemonade' ? 25 : type === 'sglang' ? 24 : type === 'vllm' ? 22 : 20)),
+      priority: Number(node.data?.priority || (type === 'lemonade' ? 25 : type === 'sglang' ? 24 : type === 'vllm' ? 22 : type === 'comfyui' ? 22 : type === 'ramalama' ? 21 : 20)),
       models: selected,
       tier: tierInfo.tierId,
       tierName: tierInfo.tierName,
@@ -541,7 +738,9 @@ function generateEluvixConfig(
       ...(attentionKernelConfig ? { attentionKernel: attentionKernelConfig } : {}),
       ...(crsCfg ? { crs: crsCfg } : {}),
       ...(vcCfg ? { vectorcraft: vcCfg } : {}),
-      ...(acCfg ? { artcraft: acCfg } : {})
+      ...(acCfg ? { artcraft: acCfg } : {}),
+      ...(ramalamaCfg ? { ramalama: ramalamaCfg } : {}),
+      ...(comfyuiCfg ? { comfyui: comfyuiCfg } : {})
     });
   });
 
@@ -584,6 +783,7 @@ function generateEluvixConfig(
 
     const agyModels = Array.from(new Set([
       String(modelId),
+      'gemini-4-carbon',
       'gemini-4-argon',
       'gemini-3.8-flash',
       'claude-opus-5-5',
@@ -914,6 +1114,25 @@ function generateEluvixConfig(
       mcpServers.push(toHarnessMcpServerConfig(harnessVc));
     }
 
+    // Pillar 3: Expose connected ComfyUINode instances as comfyui-mcp servers to agent harnesses
+    const connectedComfyNodes = localEngines.filter(
+      eng =>
+        eng.type === 'comfyuiNode' &&
+        (eng.data as any)?.comfyui?.mcpEnabled !== false &&
+        edges.some(
+          e =>
+            (e.source === eng.id && e.target === node.id) ||
+            (e.target === eng.id && e.source === node.id)
+        )
+    );
+    for (const cNode of connectedComfyNodes) {
+      const cEndpoint = String(cNode.data?.endpoint || 'http://localhost:8188');
+      const cMcp = toComfyMcpServerConfig(cNode.id, cEndpoint, (cNode.data as any)?.comfyui);
+      if (!mcpServers.some(s => s.name === cMcp.name)) {
+        mcpServers.push(cMcp);
+      }
+    }
+
     const baseApproveTools = Array.isArray(node.data?.autoApproveTools)
       ? node.data.autoApproveTools.map((t: any) => String(t))
       : [];
@@ -1022,6 +1241,7 @@ function generateEluvixConfig(
       ? Number(swData.prefillIsolationThresholdTokens)
       : undefined,
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
+    ...(swData.mediaIntentRouting !== undefined ? { mediaIntentRouting: Boolean(swData.mediaIntentRouting) } : {}),
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
     ...(resolvedFabricPolicy ? { fabricPolicy: resolvedFabricPolicy } : {}),
@@ -1032,7 +1252,16 @@ function generateEluvixConfig(
       heavy: Number(thresholds.heavy ?? 1500),
       frontier: Number(thresholds.frontier ?? 6000),
     },
-    maxCostPerRequest: swData.maxCostPerRequest !== undefined ? Number(swData.maxCostPerRequest) : 0.05
+    maxCostPerRequest: swData.maxCostPerRequest !== undefined ? Number(swData.maxCostPerRequest) : 0.05,
+    ...(swData.maxDailySpendUsd !== undefined && Number(swData.maxDailySpendUsd) > 0
+      ? {
+          maxDailySpendUsd: Number(swData.maxDailySpendUsd),
+          budgetExhaustedAction: (swData.budgetExhaustedAction || 'prefer-local') as
+            | 'prefer-local'
+            | 'strict-local'
+            | 'reject',
+        }
+      : {})
   } : undefined;
 
   const mgNode = modelGateways[0];
@@ -1326,11 +1555,17 @@ function generateBifrostYaml(
       ? 'vllm'
       : node.type === 'sglangNode'
       ? 'sglang'
+      : node.type === 'ramalamaNode'
+      ? 'ramalama'
+      : node.type === 'comfyuiNode'
+      ? 'comfyui'
       : 'ollama';
     const endpoint = data.endpoint || (
       type === 'lemonade' ? 'http://localhost:13305' :
       type === 'vllm' ? 'http://localhost:8000' :
       type === 'sglang' ? 'http://localhost:30000' :
+      type === 'ramalama' ? 'http://localhost:8080' :
+      type === 'comfyui' ? 'http://localhost:8188' :
       'http://localhost:11434'
     );
     const selected = data.selectedModel || '*';
@@ -1339,6 +1574,18 @@ function generateBifrostYaml(
     yaml += `    api_base: ${endpoint}\n`;
     yaml += `    selected_model: "${selected}"\n`;
     yaml += `    priority: ${data.priority || 20}\n`;
+    if (type === 'ramalama') {
+      const rCfg = (data.ramalama || {}) as Record<string, any>;
+      yaml += `    container_engine: ${rCfg.containerEngine || data.containerEngine || 'podman'}\n`;
+      yaml += `    runtime: ${rCfg.runtime || data.runtime || 'llama.cpp'}\n`;
+      yaml += `    oci_transport: ${rCfg.ociTransport || data.ociTransport || 'oci'}\n`;
+      yaml += `    accelerator: ${rCfg.accelerator || data.accelerator || 'auto'}\n`;
+    }
+    if (type === 'comfyui') {
+      const cCfg = (data.comfyui || {}) as Record<string, any>;
+      yaml += `    workflow_preset: ${cCfg.workflowPreset || 'flux-txt2img'}\n`;
+      yaml += `    vram_mode: ${cCfg.vramMode || 'normalvram'}\n`;
+    }
     if (data.maxContextTokens) {
       yaml += `    max_context_tokens: ${data.maxContextTokens}\n`;
     }
@@ -2363,4 +2610,245 @@ function generateVectorCraftSetup(
     writeRoots
   });
 }
+
+function generateRamalamaSetup(
+  ramalamaNodes: Node[],
+  edges: Edge[] = [],
+  knowledgeBaseNodes: Node[] = [],
+  sandboxNodes: Node[] = [],
+  confidentialEnclaveNodes: Node[] = []
+): string {
+  if (ramalamaNodes.length === 0) {
+    return '# No RamaLama OCI Engine node configured on canvas.';
+  }
+
+  const sections: string[] = [
+    '#!/usr/bin/env bash',
+    '# ============================================================================',
+    '# Eluvix — RamaLama (containers/ramalama) OCI Container & Podman Quadlet Setup',
+    '# Rootless Podman / Docker OCI Model Serving, RAG Artifacts & SELinux Hardening',
+    '# ============================================================================',
+    'set -euo pipefail',
+    ''
+  ];
+
+  ramalamaNodes.forEach((node, idx) => {
+    const data = (node.data || {}) as Record<string, any>;
+    const rRaw = (data.ramalama || {}) as Record<string, any>;
+    const safeId = sanitizeSafeIdentifier(String(node.id || `ramalama-${idx + 1}`), `ramalama-${idx + 1}`);
+    const label = String(data.label || 'RamaLama Engine');
+    const endpoint = String(data.endpoint || 'http://localhost:8080');
+    let port = 8080;
+    try {
+      const u = new URL(endpoint);
+      if (u.port) port = sanitizePositiveInt(u.port, 8080, 1, 65535);
+    } catch {}
+
+    const engine = sanitizeSafeIdentifier(
+      String(rRaw.containerEngine || data.containerEngine || 'podman'),
+      'podman'
+    );
+    const runtime = String(rRaw.runtime || data.runtime || 'llama.cpp');
+    const safeRuntime = runtime === 'vllm' || runtime === 'mlx' ? runtime : 'llama.cpp';
+    const transport = sanitizeSafeIdentifier(
+      String(rRaw.ociTransport || data.ociTransport || 'oci'),
+      'oci'
+    );
+    const accel = sanitizeSafeIdentifier(
+      String(rRaw.accelerator || data.accelerator || 'auto'),
+      'auto'
+    );
+
+    const connectedKb = knowledgeBaseNodes.find(kb =>
+      edges.some(
+        e =>
+          (e.source === kb.id && e.target === node.id) ||
+          (e.target === kb.id && e.source === node.id)
+      )
+    );
+    const connectedAirgap =
+      sandboxNodes.some(sb =>
+        edges.some(
+          e =>
+            (e.source === sb.id && e.target === node.id) ||
+            (e.target === sb.id && e.source === node.id)
+        )
+      ) ||
+      confidentialEnclaveNodes.some(ce =>
+        edges.some(
+          e =>
+            (e.source === ce.id && e.target === node.id) ||
+            (e.target === ce.id && e.source === node.id)
+        )
+      );
+
+    const selinux = Boolean(rRaw.selinuxEnforcing ?? data.selinuxEnforcing ?? true);
+    const netIsolation = String(
+      rRaw.networkIsolation || data.networkIsolation || (connectedAirgap ? 'none' : 'bridge')
+    );
+    const tempContainer = Boolean(rRaw.tempContainer ?? data.tempContainer ?? false);
+    const generateMode = String(rRaw.generateMode || data.generateMode || 'quadlet');
+
+    let ragUri = String(rRaw.ragOciUri || data.ragOciUri || '').trim();
+    if (!ragUri && connectedKb) {
+      const kbUri = String((connectedKb.data as any)?.collectionUri || '').trim();
+      if (kbUri.startsWith('oci://')) {
+        ragUri = kbUri;
+      } else {
+        const slug = sanitizeSafeIdentifier(
+          kbUri.replace(/^[a-z0-9+.-]+:\/\/(?:resources\/)?/i, '') || 'docs',
+          'docs'
+        ).toLowerCase();
+        ragUri = `oci://quay.io/eluvix/${slug}-rag:latest`;
+      }
+    }
+
+    const rawModel = String(data.selectedModel && data.selectedModel !== '*' ? data.selectedModel : 'llama3.2:3b');
+    const modelTarget = rawModel.includes('://') ? rawModel : `${transport}://${rawModel}`;
+    const imageTag =
+      accel === 'cuda'
+        ? 'quay.io/ramalama/cuda:latest'
+        : accel === 'rocm'
+        ? 'quay.io/ramalama/rocm:latest'
+        : accel === 'vulkan'
+        ? 'quay.io/ramalama/vulkan:latest'
+        : accel === 'intel'
+        ? 'quay.io/ramalama/intel-gpu:latest'
+        : 'quay.io/ramalama/ramalama:latest';
+
+    sections.push(`# --- Node [${safeId}]: ${label} (:${port}) ---`);
+
+    if (ragUri) {
+      sections.push(
+        `# 1. Build & package OCI RAG Vector Database Artifact (--rag)`,
+        `# ramalama rag ./docs ${escapeShellArg(ragUri)}`,
+        ''
+      );
+    }
+
+    const cmdParts: string[] = ['ramalama'];
+    if (engine === 'nocontainer') {
+      cmdParts.push('--nocontainer');
+    } else {
+      cmdParts.push('--engine', escapeShellArg(engine));
+    }
+    if (safeRuntime !== 'llama.cpp') {
+      cmdParts.push('--runtime', escapeShellArg(safeRuntime));
+    }
+    if (accel !== 'auto') {
+      cmdParts.push('--image', escapeShellArg(imageTag));
+    }
+    if (engine !== 'nocontainer' && selinux) {
+      cmdParts.push('--selinux=true');
+    }
+    cmdParts.push('serve');
+    if (engine !== 'nocontainer' && netIsolation === 'none') {
+      cmdParts.push('--network=none');
+    }
+    if (tempContainer) {
+      cmdParts.push('--temp');
+    }
+    if (ragUri) {
+      cmdParts.push('--rag', escapeShellArg(ragUri));
+    }
+    if (generateMode && generateMode !== 'none') {
+      cmdParts.push(`--generate=${escapeShellArg(generateMode)}`);
+    }
+    cmdParts.push('--port', String(port), '--host', '0.0.0.0', escapeShellArg(modelTarget));
+
+    sections.push(`# Launch Command (${generateMode !== 'none' ? `Generator: ${generateMode}` : 'Direct'}):`);
+    sections.push(cmdParts.join(' '));
+    sections.push('');
+
+    // Synthesize Rootless Podman Quadlet (.container) Unit
+    const unitName = `eluvix-${safeId}`;
+    sections.push(`# Rootless Systemd Quadlet: ~/.config/containers/systemd/${unitName}.container`);
+    sections.push(`cat << 'EOF' > "\${HOME}/.config/containers/systemd/${unitName}.container"`);
+    sections.push(`[Unit]`);
+    sections.push(`Description=Eluvix RamaLama OCI Inference Service (${safeId})`);
+    sections.push(`After=network-online.target`);
+    sections.push(``);
+    sections.push(`[Container]`);
+    sections.push(`Image=${imageTag}`);
+    sections.push(`ContainerName=${unitName}`);
+    sections.push(`PublishPort=${port}:8080`);
+    sections.push(`AddDevice=/dev/dri`);
+    if (accel === 'rocm' || accel === 'auto') {
+      sections.push(`AddDevice=/dev/kfd`);
+    }
+    if (selinux) {
+      sections.push(`SecurityLabelType=container_engine_t`);
+    }
+    if (netIsolation === 'none') {
+      sections.push(`Network=none`);
+    }
+    sections.push(`ReadOnly=true`);
+    sections.push(`Exec=ramalama serve --port 8080 --host 0.0.0.0 ${ragUri ? `--rag ${ragUri} ` : ''}${modelTarget}`);
+    sections.push(``);
+    sections.push(`[Install]`);
+    sections.push(`WantedBy=default.target`);
+    sections.push(`EOF`);
+    sections.push(`# systemctl --user daemon-reload && systemctl --user enable --now ${unitName}.service`);
+    sections.push('');
+  });
+
+  return sections.join('\n');
+}
+
+function generateComfyUISetup(
+  comfyuiNodes: Node[],
+  localEngineNodes: Node[],
+  vectorcraftNodes: Node[],
+  edges: Edge[]
+): string {
+  if (comfyuiNodes.length === 0) return '';
+
+  const sections: string[] = [];
+  comfyuiNodes.forEach(node => {
+    const data = (node.data || {}) as Record<string, any>;
+    const cCfg = (data.comfyui || {}) as ComfyUIConfig;
+    const endpoint = String(data.endpoint || 'http://localhost:8188');
+
+    const connectedLlm = localEngineNodes.find(
+      other =>
+        other.id !== node.id &&
+        other.type !== 'comfyuiNode' &&
+        edges.some(
+          e =>
+            (e.source === other.id && e.target === node.id) ||
+            (e.target === other.id && e.source === node.id)
+        )
+    );
+    const connectedAc = vectorcraftNodes.find(vc =>
+      edges.some(
+        e =>
+          (e.source === vc.id && e.target === node.id) ||
+          (e.target === vc.id && e.source === node.id)
+      )
+    );
+    const hasCoHostedLlm = localEngineNodes.some(
+      other => other.id !== node.id && other.type !== 'comfyuiNode'
+    );
+
+    const mergedConfig: ComfyUIConfig = {
+      ...cCfg,
+      checkpoint:
+        cCfg.checkpoint ||
+        (data.selectedModel && data.selectedModel !== '*' ? String(data.selectedModel) : undefined),
+      vramMode: cCfg.vramMode || (hasCoHostedLlm ? 'lowvram' : 'normalvram'),
+      reserveVramGb: cCfg.reserveVramGb ?? (hasCoHostedLlm ? 6 : 4),
+      promptEnhancerUpstreamId: cCfg.promptEnhancerUpstreamId || connectedLlm?.id,
+      postProcessArtCraftApp:
+        cCfg.postProcessArtCraftApp ||
+        (connectedAc ? String((connectedAc.data as any)?.app || 'vectorcraft') : undefined),
+      loopbackEluvixUrl: cCfg.loopbackEluvixUrl || 'http://127.0.0.1:3588/v1'
+    };
+
+    sections.push(generateComfyUISetupScript(node.id, endpoint, mergedConfig));
+  });
+
+  return sections.join('\n\n');
+}
+
+
 

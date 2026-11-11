@@ -38,7 +38,30 @@ The web dashboard provides real-time operational intelligence with sub-second re
 | **Latency Distribution Tiers** | Latency tracked across models and upstreams, classified into speed tiers (`< 500ms Ultra-Fast`, `500-2000ms Standard`, `> 2000ms Deep Thinking`). |
 | **Token Throughput** | Total tokens processed, segmented into prompt tokens and completion tokens. |
 | **Local Cost Savings** | Running calculation of financial savings achieved by routing queries to local $0 hardware instead of commercial frontier APIs. |
-| **Upstream Health Matrix** | Real-time ping status for Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
+| **24h Cloud Spend Meter** | Live rolling 24-hour cloud expenditure bar against Switchyard `maxDailySpendUsd`, highlighting active `prefer-local`, `strict-local`, or `reject` budget guardrails. |
+| **Upstream Health Matrix** | Real-time ping status for RamaLama, ComfyUI, Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
+
+---
+
+## Native Prometheus Scrape Endpoint (`/api/v1/metrics`)
+
+Eluvix exposes a standards-compliant Prometheus `0.0.4` text exposition endpoint at `GET /api/v1/metrics` supporting both session authentication and Named `elx_` API Key Bearer tokens. Click **"📡 Copy Prometheus Config"** in `/observability` to copy a ready-to-use `prometheus.yml` job:
+
+```yaml
+scrape_configs:
+  - job_name: 'eluvix-gateway'
+    metrics_path: '/api/v1/metrics'
+    scheme: 'https'
+    tls_config:
+      insecure_skip_verify: true
+    authorization:
+      type: Bearer
+      credentials: '<YOUR_ELX_API_KEY>'
+    static_configs:
+      - targets: ['127.0.0.1:3588']
+```
+
+Exported metric families include `eluvix_requests_total`, `eluvix_tokens_total`, `eluvix_kv_cache_transferred_bytes_total`, `eluvix_latency_p50_ms`, `eluvix_ttft_p50_ms`, `eluvix_ttft_p99_ms`, `eluvix_itl_p50_ms`, `eluvix_rolling_24h_spend_usd`, `eluvix_daily_spend_cap_usd`, `eluvix_upstreams_configured_total`, and `eluvix_circuit_breaker_open`.
 
 ---
 

@@ -123,12 +123,12 @@ export default function OllamaNode({ id, data }: { id: string; data: any }) {
       <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-800">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5">
-            <NodeHealthIndicator serviceName="ollama" />
+            <NodeHealthIndicator serviceName="ollama" liveTelemetry={data?.liveTelemetry} />
             <span className="text-xl">🦙</span>
           </div>
           <div>
             <div className="font-bold text-purple-300 text-sm flex items-center gap-1.5">
-              <span>Ollama Engine</span>
+              <span>{data?.label || 'Ollama Engine'}</span>
             </div>
             <div className="text-[10px] text-gray-400 font-mono">Local GGUF / Llama Runner</div>
           </div>

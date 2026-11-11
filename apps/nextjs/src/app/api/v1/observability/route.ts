@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { getRequestLogs, getDb, getCachedAntigravityModels } from '@eluvix/router-core';
-import { getRouter } from '@/lib/router';
+import { getRequestLogs, getDb, getCachedAntigravityModels, getRollingSpendUsd } from '@eluvix/router-core';
+import { getConfig, getRouter } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 import { spawn } from 'node:child_process';
 
@@ -219,11 +219,20 @@ export async function GET(req: Request) {
         up.includes('vllm') ||
         up.includes('sglang') ||
         up.includes('lemonade') ||
+        up.includes('ramalama') ||
+        up.includes('comfyui') ||
         up.includes('switchyard') ||
         up.includes('antigravity')
       );
     }).length;
     const estimatedSavings = (localRequestsCount * 0.005).toFixed(3);
+    const activeCfg = getConfig();
+    const rolling24hSpendUsd = getRollingSpendUsd(24, isAdmin ? undefined : (caller.ok ? caller.userId : 'anonymous'));
+    const maxDailySpendUsd =
+      typeof activeCfg.switchyard?.maxDailySpendUsd === 'number' && activeCfg.switchyard.maxDailySpendUsd > 0
+        ? activeCfg.switchyard.maxDailySpendUsd
+        : 0;
+    const budgetExhaustedAction = activeCfg.switchyard?.budgetExhaustedAction || 'prefer-local';
 
     return NextResponse.json({
       success: true,
@@ -238,6 +247,9 @@ export async function GET(req: Request) {
           completionTokens,
           totalTokens,
           estimatedSavings,
+          rolling24hSpendUsd,
+          maxDailySpendUsd,
+          budgetExhaustedAction,
           p50TtftMs,
           p99TtftMs,
           p50ItlMs,

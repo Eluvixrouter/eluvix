@@ -129,28 +129,41 @@ pnpm dev`,
   },
   {
     id: 'editor',
-    title: 'Visual Node Routing Editor',
+    title: 'Eluvix Visual Node Routing Editor',
     category: 'Core Architecture',
     icon: '🔀',
-    summary: 'Design, wire, and compile graph execution topologies with 8 node categories using an ergonomic React Flow canvas.',
+    badge: 'PRO STUDIO',
+    summary: 'Design, auto-layout, live-simulate, auto-heal, and compile graph execution topologies with 28+ specialized nodes using an ergonomic React Flow Pro Studio.',
     content: {
-      overview: 'The Visual Routing Editor (at /editor) provides an interactive canvas where operators visually wire models, security filters, tool servers, agent harnesses, and memory engines into a compiled RouterConfig.',
+      overview: 'The Eluvix Visual Node Routing Editor (at /editor) provides an interactive Pro Studio canvas where operators visually wire local and cloud models, ComfyUI media synthesis DAGs, RamaLama OCI containers, security filters, tool servers, agent harnesses, and memory engines into a compiled RouterConfig.',
       subsections: [
         {
-          title: 'Canvas Capabilities',
-          body: 'The canvas features enlarged snap handles, color-coded SVG wires, dynamic multi-port intent handles (#intent-code, #intent-reasoning, #intent-fast), and in-card controls for immediate property adjustment.',
+          title: 'Pro Studio Capabilities',
+          body: 'The Eluvix Visual Node Routing Editor includes keyboard-driven orchestration, deterministic layout, live trace simulation, and automated graph healing:',
+          table: {
+            headers: ['Feature', 'Shortcut / Trigger', 'Capability'],
+            rows: [
+              ['Spotlight Command Palette', 'Cmd/Ctrl + K', 'Fuzzy-search 28+ node types, switch presets, trigger auto-layout, compile, or heal diagnostics without touching the mouse'],
+              ['50-State Undo / Redo', 'Cmd/Ctrl + Z / Shift + Z', 'Full snapshot history across node additions, property edits, edge rewiring, and auto-layout transforms'],
+              ['Sugiyama Auto-Layout', 'Toolbar / Palette', 'Deterministic 5-stage left-to-right topological layout (Entry/Guards -> Cache/Memory -> Routers -> Gateways -> Upstreams/Observability)'],
+              ['Live Route Simulator', 'Simulate Panel', 'Runs non-destructive dry-run traces via /api/v1/route-explain, highlighting selected edges in animated emerald and skipped paths in amber'],
+              ['One-Click Diagnostic Auto-Fix', 'Fix Now / Fix All', 'Automatically heals disconnected nodes, ungrounded RAG pipelines, missing fallbacks, cloud PII leaks, and cycle loops'],
+            ],
+          },
         },
         {
           title: 'Supported Node Types',
-          body: 'The editor includes 13 specialized node categories across pre-routing, routing, execution, and observability:',
+          body: 'The editor includes specialized node categories across pre-routing, routing, local/cloud execution, media synthesis, and observability:',
           table: {
             headers: ['Node Type', 'Identifier', 'Key Parameters'],
             rows: [
-              ['Router', 'switchyardNode', 'Strategy (cost-complexity, lowest-latency, round-robin), spillover ms, max cost cap'],
+              ['Router', 'switchyardNode', 'Strategy, modality-aware mediaIntentRouting, spillover ms, maxCostPerRequest, 24h maxDailySpendUsd & budgetExhaustedAction'],
               ['Task Router', 'taskRouterNode', 'Dynamic intent handles (#intent-code, #intent-reasoning, #intent-fast)'],
+              ['RamaLama Container', 'ramalamaNode', 'Rootless OCI / Podman runtime (:8080), OCI/HF/Ollama URI, --rag OCI artifact, SELinux & airgap --network=none, Quadlet .container export'],
+              ['ComfyUI Synthesis', 'comfyuiNode', 'Local diffusion & 3D mesh DAG engine (:8188), workflowPreset (flux-txt2img, sdxl-txt2img, wan21-txt2vid, hunyuan3d-mesh), VRAM policy, LLM prompt enhancer'],
               ['Knowledge Base (RAG)', 'knowledgeBaseNode', 'Backend (lightrag, openviking-resources, qdrant, sqlite-fts), collectionUri, topK, retrievalMode'],
               ['Semantic Cache', 'semanticCacheNode', 'Backend (sqlite-fts, qdrant), similarityThreshold, ttlSeconds, hit/miss handles'],
-              ['Upstream', 'modelGatewayNode / local / cloud', 'Endpoint URL, API key, model family, context window, priority'],
+              ['Upstream', 'modelGatewayNode / local / cloud', 'Endpoint URL, API key, model family (including Gemini 4 Carbon), context window, priority'],
               ['Privacy Guard', 'privacyGuardNode', 'Redaction style (token, asterisk, hash), entity filters, whitelist'],
               ['Semantic Guard', 'semanticGuardNode', 'Classifier model, sensitivity slider (0.50-0.99), action (block, strip, divert)'],
               ['Agent Harness', 'harnessNode', 'Runtime (trueforge, openhands, mastra, letta, a2a, opencode, acp, hermes), approval policy'],
@@ -200,9 +213,9 @@ pnpm dev`,
     title: 'Switchyard Routing Engine',
     category: 'Core Architecture',
     icon: '⚡',
-    summary: 'Cost and complexity router that evaluates prompt difficulty, manages fallback cascades, and enforces budget caps.',
+    summary: 'Modality-aware cost and complexity router that evaluates prompt difficulty, isolates media synthesis engines, manages fallback cascades, and enforces 24h rolling cloud spend caps.',
     content: {
-      overview: 'Switchyard is the intelligent core of Eluvix. It analyzes incoming queries, grades their technical difficulty, and routes each prompt to the most cost-effective model capable of answering it correctly.',
+      overview: 'Switchyard is the intelligent Layer-7 core of Eluvix. It classifies request modality (text, code, vision-input, image-gen, video-gen, mesh-3d), grades technical difficulty, and routes each prompt to the optimal local or cloud upstream while enforcing sovereign budget guardrails.',
       subsections: [
         {
           title: 'Complexity Tiers',
@@ -211,9 +224,25 @@ pnpm dev`,
             headers: ['Tier', 'Heuristic Signature', 'Selected Engine Target'],
             rows: [
               ['simple', '< 150 tokens, conversational greeting, basic FAQ', 'Local fast model (e.g. llama3.2:1b, qwen2.5:0.5b)'],
-              ['moderate', '150-800 tokens, summarization, general text', 'Local workhorse (e.g. llama3.1:8b, mistral:7b)'],
-              ['heavy', 'Complex code refactoring, AST transforms, logic', 'Specialized coding engine (e.g. qwen2.5-coder:14b/32b)'],
-              ['frontier', 'Multi-step proofs, ambiguous constraints', 'Frontier cloud model (e.g. Claude 3.5 Sonnet, GPT-4o)'],
+              ['moderate', '150-800 tokens, summarization, general text', 'Local workhorse (e.g. llama3.1:8b, mistral:7b, RamaLama OCI)'],
+              ['heavy', 'Complex code refactoring, AST transforms, logic', 'Specialized coding engine (e.g. qwen2.5-coder:32b, gemini-4-carbon-high)'],
+              ['frontier', 'Multi-step proofs, 1M-token repo synthesis, ambiguous constraints', 'Frontier cloud or agent model (e.g. gemini-4-carbon-max, Claude 3.7 Sonnet)'],
+            ],
+          },
+        },
+        {
+          title: 'Modality-Aware Media Intent Routing',
+          body: 'When mediaIntentRouting is enabled (default true), Switchyard inspects every model: "auto" request before ranking upstreams. Standard text, coding, tool-calling, and vision-input chat completions automatically exclude synthesis-only ComfyUI nodes so text queries never hit a diffusion endpoint. Conversely, explicit generative synthesis prompts (image-gen, video-gen, mesh-3d) steer directly to matching ComfyUI workflow presets (flux-txt2img, wan21-txt2vid, hunyuan3d-mesh).',
+        },
+        {
+          title: 'Rolling 24h Cloud Spend Guardrails',
+          body: 'In addition to per-request caps (maxCostPerRequest), Switchyard tracks rolling 24-hour cloud spend in SQLite (getRollingSpendUsd(24)) and enforces maxDailySpendUsd according to budgetExhaustedAction:',
+          table: {
+            headers: ['Budget Action', 'Behavior When 24h Spend >= Cap', 'Response Headers'],
+            rows: [
+              ['prefer-local (Default)', 'Soft-fails over from paid cloud APIs to $0.00 local sovereign engines (Ollama, vLLM, RamaLama, Lemonade)', 'x-eluvix-budget-fallback: local-sovereign, x-eluvix-rolling-24h-spend-usd'],
+              ['strict-local', 'Restricts candidate pool strictly to $0.00 local upstreams; returns HTTP 429 if no local engine is configured', 'x-eluvix-budget-guard: DENIED_DAILY_SPEND_CAP (when no local available)'],
+              ['reject', 'Immediately halts completions with HTTP 429 budget_exceeded_error until the rolling 24h window cools down', 'x-eluvix-budget-guard: DENIED_DAILY_SPEND_CAP'],
             ],
           },
         },
@@ -405,20 +434,31 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   },
   {
     id: 'multimodal',
-    title: 'Multimodal Vision Routing',
+    title: 'Multimodal Vision & ComfyUI Media Synthesis',
     category: 'Core Architecture',
     icon: '👁️',
-    summary: 'Inspect prompt image attachments, calculate visual token overhead, and route seamlessly to vision-capable local and cloud models.',
+    badge: 'VISION + COMFYUI',
+    summary: 'Route visual understanding inputs to VLM backends and synthesize sovereign local images, video clips, and 3D meshes through ComfyUI (:8188).',
     content: {
-      overview: 'Eluvix natively detects multimodal message structures (OpenAI image_url blocks and raw Base64 data). It bypasses text-only models and routes visual queries to vision-specialized local or cloud backends.',
+      overview: 'Eluvix natively supports both directions of multimodal AI: analyzing visual inputs (OpenAI image_url blocks) on vision-capable LLMs and synthesizing high-resolution images, video clips, and 3D assets via local ComfyUI workflow DAGs.',
       subsections: [
         {
-          title: 'Image Extraction & Token Overhead',
-          body: 'When a request contains image inputs, Eluvix automatically parses high-detail vs low-detail dimensions, calculates the estimated vision token budget, and directs the query through the #intent-vision port.',
+          title: 'Image Extraction & Vision Input Routing',
+          body: 'When a chat request contains image_url inputs, Eluvix parses high-detail vs low-detail dimensions, calculates visual token overhead, filters out text-only models, and routes to vision-capable engines such as Ollama (llava, llama3.2-vision), vLLM (Qwen2-VL, Pixtral), Gemini 4 Carbon, GPT-4o, or Claude.',
         },
         {
-          title: 'Supported Vision Engines',
-          body: 'Supported local vision engines include Ollama (llava, llama3.2-vision), vLLM (Qwen2-VL, Pixtral), and cloud providers (GPT-4o, Claude 3.5 Sonnet).',
+          title: 'ComfyUI Local Media Synthesis (:8188)',
+          body: 'Eluvix exposes an OpenAI-compatible POST /api/v1/images/generations endpoint backed by local ComfyUI servers on port 8188, complete with optional local LLM prompt expansion, ArtCraft headless post-processing, and an HTTPS-safe media proxy (/api/v1/images/view):',
+          table: {
+            headers: ['Workflow Preset', 'Target Modality', 'Pipeline Highlights'],
+            rows: [
+              ['flux-txt2img', 'Image Generation', 'FLUX.1-dev / Schnell DualCLIPLoader + FluxGuidance + KSampler high-fidelity synthesis'],
+              ['sdxl-txt2img', 'Image Generation', 'SDXL 1024x1024 base checkpoint KSampler + VAEDecode workflow'],
+              ['wan21-txt2vid', 'Video Synthesis', 'Wan 2.1 text-to-video latent sequence generation on local VRAM'],
+              ['hunyuan3d-mesh', '3D Mesh Asset', 'Hunyuan3D single-prompt 3D geometry/mesh generation'],
+              ['custom-json', 'Custom ComfyUI API DAG', 'Inject any exported ComfyUI API format JSON with {{POSITIVE_PROMPT}}, {{SEED}}, {{WIDTH}}, {{HEIGHT}} tokens'],
+            ],
+          },
         },
       ],
     },
@@ -449,16 +489,27 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   },
   {
     id: 'playground',
-    title: 'Trace Playground & Datasets',
+    title: 'Playground 2.0: Streaming, Vision & Media Studio',
     category: 'Hardware & Platform',
     icon: '🧪',
-    summary: 'Interactive prompt testing workbench with live latency traces, token counters, memory simulation, and dataset benchmarks.',
+    badge: '2.0',
+    summary: 'Real-time SSE streaming workbench with live TTFT & tok/s speedometer, Vision drag-and-drop, ComfyUI Image/Media Studio, and A/B Split Arena.',
     content: {
-      overview: 'The Trace Playground (at /playground) lets developers test model responses, inspect routing decisions, and evaluate memory recall live without external API clients.',
+      overview: 'Playground 2.0 (at /playground) is a multimodal evaluation studio for streaming completions, inspecting routing headers, testing Vision attachments, generating ComfyUI media, and running side-by-side A/B model benchmarks.',
       subsections: [
         {
-          title: 'Workbench Features',
-          body: 'The Playground provides real-time streaming token counters, latency percentiles, system prompt injections, memory recall simulation (inspecting what <recalled_context> would be fetched), and exportable session logs.',
+          title: 'Playground 2.0 Workbench Modes',
+          body: 'Switch seamlessly between interactive testing modes directly from the Playground header:',
+          table: {
+            headers: ['Feature', 'Mode / Control', 'Description'],
+            rows: [
+              ['Real-Time SSE Speedometer', 'Chat Mode (stream: true)', 'Live token-by-token streaming with instantaneous TTFT (ms), throughput (tok/s), and X-Eluvix-* header badges'],
+              ['Multimodal Vision Dropzone', 'Drag & Drop / Paste / 📎', 'Attach PNG/JPEG/WEBP images via drag-and-drop or clipboard paste to dispatch OpenAI image_url content arrays'],
+              ['Image / Media DAG Studio', '🎨 Image / Media Studio', 'Invoke POST /api/v1/images/generations with preset selector (Flux, SDXL, Wan 2.1, Hunyuan3D), aspect ratios, seed, and gallery download'],
+              ['A/B Split Arena', '⚔️ A/B Arena Toggle', 'Fire identical prompts concurrently to Model A (e.g. gemini-4-carbon-high) vs Model B (e.g. local RamaLama/Ollama) comparing latency, tok/s, and cost'],
+              ['Reasoning & Code Renderer', 'Built-in Parser', 'Collapsible <think> reasoning trace accordions and copyable fenced code blocks with language badges'],
+            ],
+          },
         },
       ],
     },
@@ -468,9 +519,9 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
     title: 'OpenAI-Compatible API Reference',
     category: 'Integration & API',
     icon: '🔌',
-    summary: 'Complete REST endpoint specifications for chat completions, models, memory, layouts, docker, and custom response headers.',
+    summary: 'Complete REST endpoint specifications for chat completions, ComfyUI image/media generations, route explain, Prometheus metrics, memory, layouts, and custom headers.',
     content: {
-      overview: 'Eluvix provides a drop-in replacement for OpenAI client libraries, plus sovereign endpoints for memory, topologies, and hardware orchestration.',
+      overview: 'Eluvix provides a drop-in replacement for OpenAI chat and image generation SDKs, plus sovereign endpoints for route simulation, Prometheus telemetry, memory, topologies, and hardware orchestration.',
       subsections: [
         {
           title: 'Endpoint Overview',
@@ -479,6 +530,11 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
             headers: ['Path', 'Method', 'Description'],
             rows: [
               ['/api/v1/chat/completions', 'POST', 'OpenAI-compatible streaming SSE and non-streaming chat completions'],
+              ['/api/v1/images/generations', 'POST', 'OpenAI-compatible local image, video, and 3D synthesis via ComfyUI (:8188)'],
+              ['/api/v1/images/view', 'GET', 'SSRF-guarded HTTPS proxy for ComfyUI generated outputs (PNG, WEBP, MP4, GLB)'],
+              ['/api/v1/comfyui/status', 'GET', 'Live ComfyUI reachability, GPU device name, free/total VRAM, and queue depth'],
+              ['/api/v1/route-explain', 'POST', 'Dry-run Switchyard trace explaining modality, complexity, budget guards, and chosen upstream'],
+              ['/api/v1/metrics', 'GET', 'Prometheus 0.0.4 text exposition endpoint (supports Named elx_ API keys)'],
               ['/api/v1/models', 'GET', 'Lists all active local and cloud models with capability tags'],
               ['/api/v1/memory', 'GET / POST', 'Search, add, commit, or clear user memory records'],
               ['/api/v1/layouts', 'GET / POST', 'Read and save visual routing canvas topologies'],
@@ -490,12 +546,15 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
         },
         {
           title: 'Custom Response Headers',
-          body: 'Every chat completion includes diagnostic headers detailing execution metadata:',
+          body: 'Every completion includes diagnostic headers detailing routing, performance, and financial governance metadata:',
           table: {
             headers: ['Header', 'Value Description'],
             rows: [
-              ['X-Eluvix-Selected-Upstream', 'ID of the upstream engine that executed the request (e.g. ollama-local, openai-cloud)'],
-              ['X-Eluvix-Complexity-Tier', 'Complexity grade assigned by Switchyard (simple, moderate, heavy, frontier)'],
+              ['X-Eluvix-Upstream', 'ID of the upstream engine that executed the request (e.g. ramalama, comfyui, ollama, openai-cloud)'],
+              ['X-Eluvix-Complexity', 'Complexity grade assigned by Switchyard (1-4: simple, moderate, heavy, frontier)'],
+              ['X-Eluvix-Cost-USD', 'Estimated USD cost recorded in SQLite telemetry for this request'],
+              ['X-Eluvix-Rolling-24h-Spend-USD', 'Current rolling 24-hour cumulative cloud spend in USD when maxDailySpendUsd is active'],
+              ['X-Eluvix-Budget-Fallback', 'Emits local-sovereign when Switchyard soft-fails over to $0 local hardware due to 24h spend cap'],
               ['X-Eluvix-Cache', 'HIT if returned from semantic cache; MISS if routed upstream'],
               ['X-Eluvix-Memory', 'Active context memory provider (openviking, mem0, sqlite, none)'],
               ['X-Eluvix-Memory-Tokens', 'Count of recalled context tokens prepended to system instructions'],
@@ -527,13 +586,26 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   },
   {
     id: 'local-engines',
-    title: 'Local Engines & Hardware Acceleration',
+    title: 'Local Engines, RamaLama & ComfyUI',
     category: 'Hardware & Platform',
     icon: '🖥️',
-    summary: 'Hardware profiles for NVIDIA CUDA, AMD ROCm, and CPU inference, with Docker Compose overlays and detection scripts.',
+    summary: 'Hardware profiles for NVIDIA CUDA, AMD ROCm, RamaLama rootless OCI containers (:8080), and ComfyUI media DAG servers (:8188).',
     content: {
-      overview: 'Eluvix orchestrates on-premises hardware across NVIDIA CUDA, AMD ROCm, and CPU inference engines with automatic capability tagging.',
+      overview: 'Eluvix orchestrates on-premises hardware across NVIDIA CUDA, AMD ROCm, Apple Metal, and CPU inference engines, including rootless RamaLama OCI containers and ComfyUI generative workflows.',
       subsections: [
+        {
+          title: 'RamaLama Rootless OCI Containers (:8080)',
+          body: 'Eluvix integrates natively with RamaLama to package and serve GGUF/Safetensor models inside rootless Podman or Docker containers on port 8080. Configure OCI model URIs (ollama://, hf://, oci://), attach OCI --rag artifacts, enforce SELinux container isolation (--selinux=true) and air-gapped inference (--network=none), and export systemd Podman Quadlet .container units directly from the compiler.',
+          code: {
+            language: 'bash',
+            content: `# Serve a model in a rootless, air-gapped SELinux container on port 8080
+ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:7b`,
+          },
+        },
+        {
+          title: 'ComfyUI Diffusion & 3D Media Engine (:8188)',
+          body: 'Point Eluvix at any local or LAN ComfyUI server on port 8188 to unlock sovereign image, video, and 3D mesh generation through /api/v1/images/generations. Supports --lowvram and --reserve-vram flags so ComfyUI coexists peacefully on the same GPU alongside Ollama, vLLM, or RamaLama.',
+        },
         {
           title: 'Hardware Profiles & Modular Docker Compose',
           body: 'Eluvix provides a split pick-and-choose compose architecture in docker/compose/ allowing individual subsystems to be launched independently:',
@@ -562,20 +634,21 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   },
   {
     id: 'cloud-providers',
-    title: 'Cloud Providers & Agent CLI',
+    title: 'Cloud Providers, Gemini 4 Carbon & Agent CLI',
     category: 'Integration & API',
     icon: '☁️',
-    summary: 'Direct integrations with OpenAI, Anthropic, Billama Cloud, Google Antigravity (agy), and Claude Code CLI.',
+    badge: 'GEMINI 4 CARBON',
+    summary: 'Direct integrations with Gemini 4 Carbon (1M context), OpenAI, Anthropic, Billama Cloud, Google Antigravity (agy), and Claude Code CLI.',
     content: {
-      overview: 'Eluvix connects seamlessly to public cloud foundation models and terminal coding agents as resilient upstreams.',
+      overview: 'Eluvix connects seamlessly to public cloud foundation models and terminal coding agents—including first-class support for Google Gemini 4 Carbon—as resilient upstreams.',
       subsections: [
         {
-          title: 'Supported Cloud Providers',
-          body: 'Eluvix connects to OpenAI Direct (GPT-4o, o1, o3-mini), Anthropic Direct (Claude 3.5 Sonnet / Haiku), and Billama Cloud.',
+          title: 'Gemini 4 Carbon & Antigravity Agent CLI (agy)',
+          body: 'Eluvix ships first-class model registry metadata and Switchyard effort-routing for Gemini 4 Carbon (gemini-4-carbon) via the Google Antigravity CLI (agy), featuring a 1,000,000-token context window, 64,000 max output tokens, multimodal vision, and granular thinking effort variants (gemini-4-carbon-low, -medium, -high, -xhigh, and -max).',
         },
         {
-          title: 'Antigravity Agent CLI (agy)',
-          body: 'Eluvix provides a native upstream adapter for the Google Antigravity CLI (agy), enabling sub-agent dispatching and local shell coding tasks right through the OpenAI chat completion API.',
+          title: 'Supported Cloud Providers',
+          body: 'Eluvix also connects directly to OpenAI Direct (GPT-4o, o1, o3-mini), Anthropic Direct (Claude 3.7 Sonnet / 3.5 Haiku), and Billama Cloud.',
         },
       ],
     },
@@ -624,16 +697,35 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   },
   {
     id: 'observability',
-    title: 'Observability & Activity',
+    title: 'Observability, Prometheus & Spend Guardrails',
     category: 'Hardware & Platform',
     icon: '📊',
-    summary: 'Monitor token throughput, latency percentiles, cost savings, and stream traces to SQLite, OpenTelemetry, or Langfuse.',
+    badge: 'PROMETHEUS',
+    summary: 'Monitor token throughput, TTFT/ITL percentiles, 24h rolling cloud spend caps, and scrape native Prometheus 0.0.4 metrics via /api/v1/metrics.',
     content: {
-      overview: 'Inspect real-time metrics, audit logs, and cost efficiency in the Observability Dashboard (/observability).',
+      overview: 'Inspect real-time metrics, 24-hour cloud budget burn, audit logs, and cost efficiency in the Observability Dashboard (/observability) or export live counters to Prometheus and Grafana.',
       subsections: [
         {
-          title: 'Key Metrics Tracked',
-          body: 'The dashboard computes real-time statistics including total requests, average response latency (ms), token consumption by model tier, semantic cache hit ratios, and estimated cost savings from routing simple prompts to free local hardware instead of frontier cloud models.',
+          title: 'Key Metrics & 24h Cloud Spend Meter',
+          body: 'The dashboard computes real-time statistics including total requests, p50/p99 TTFT and ITL latency percentiles, token consumption by upstream, KV-cache bytes transferred, local sovereign cost savings, and a live 24h Cloud Spend Meter showing rolling spend against Switchyard maxDailySpendUsd.',
+        },
+        {
+          title: 'Native Prometheus Scrape Endpoint (/api/v1/metrics)',
+          body: 'Eluvix exposes a standards-compliant Prometheus text exposition endpoint (text/plain; version=0.0.4) at GET /api/v1/metrics supporting Bearer elx_ Named API Key authentication. Use the "Copy Prometheus Config" button in /observability to generate a ready-to-paste prometheus.yml scrape job.',
+          code: {
+            language: 'yaml',
+            content: `scrape_configs:
+  - job_name: 'eluvix-gateway'
+    metrics_path: '/api/v1/metrics'
+    scheme: 'https'
+    tls_config:
+      insecure_skip_verify: true
+    authorization:
+      type: Bearer
+      credentials: '<YOUR_ELX_API_KEY>'
+    static_configs:
+      - targets: ['127.0.0.1:3588']`,
+          },
         },
         {
           title: 'Telemetry Exporters',
@@ -641,10 +733,10 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
           table: {
             headers: ['Exporter', 'Protocol', 'Target'],
             rows: [
-              ['Embedded SQLite', 'Native node:sqlite', 'Local persistent audit file (~/.config/eluvix/telemetry.db)'],
+              ['Embedded SQLite', 'Native node:sqlite', 'Local persistent audit file (~/.local/share/eluvix/eluvix.db)'],
+              ['Prometheus', 'GET /api/v1/metrics (0.0.4)', 'Counters & gauges for requests, tokens, TTFT/ITL, 24h spend, and circuit breakers'],
               ['OpenTelemetry', 'OTLP/gRPC', 'Compatible with Datadog, Jaeger, Grafana Tempo'],
               ['Langfuse', 'HTTP REST', 'Prompt tracing and LLM lifecycle evaluation'],
-              ['Prometheus', 'HTTP /metrics', 'Scraped metrics for alerting and Kubernetes dashboards'],
             ],
           },
         },
@@ -656,13 +748,13 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
     title: 'Desktop Application',
     category: 'Hardware & Platform',
     icon: '💻',
-    summary: 'Electron shell wrapper with native system tray daemon, GPU monitoring, and background gateway control.',
+    summary: 'Electron shell wrapper with native system tray daemon, full gateway parity (RamaLama, ComfyUI, Route Explain), GPU monitoring, and SSRF protection.',
     content: {
-      overview: 'The desktop edition of Eluvix (in apps/desktop) packages the entire server and dashboard into a native cross-platform application for Linux, macOS, and Windows.',
+      overview: 'The desktop edition of Eluvix (in apps/desktop) packages the entire router server and dashboard into a native cross-platform application for Linux, macOS, and Windows.',
       subsections: [
         {
-          title: 'Native Features',
-          body: 'The desktop app includes a native system tray icon with quick actions (Start/Stop Gateway, Toggle Provider, Copy OpenAI API Env), GPU VRAM temperature gauges, and automated OS boot launch.',
+          title: 'Native Features & Gateway Parity',
+          body: 'The desktop daemon includes a native system tray icon with quick actions, GPU VRAM temperature gauges, automated OS boot launch, and full DesktopRouterServer parity: built-in RamaLama (:8080) and ComfyUI (:8188) upstreams, POST /v1/images/generations, POST /v1/route-explain, and unified cloud-metadata SSRF protection.',
         },
       ],
     },

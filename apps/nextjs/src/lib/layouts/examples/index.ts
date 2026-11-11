@@ -1786,6 +1786,243 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-b200-obs', source: 'sglang-blackwell-1', target: 'observability-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-h100-obs', source: 'vllm-hopper-fa3-1', target: 'observability-1', animated: true, style: { stroke: '#06b6d4' } }
     ]
+  },
+
+  // 21. Sovereign OCI Container Triad: RamaLama + Lemonade + Ollama
+  {
+    id: 'sovereign-oci-ramalama-lemonade-ollama-triad',
+    name: 'Sovereign OCI Container Triad (RamaLama + Lemonade + Ollama)',
+    description:
+      'Airgapped local triad combining Lemonade (:13305 NPU/Hybrid fast path), RamaLama (:8080 rootless Podman OCI container with SELinux enforcing & --rag OCI vector artifact), and Ollama (:11434 GGUF reasoning).',
+    category: 'local',
+    tags: ['ramalama', 'podman', 'oci', 'lemonade', 'ollama', 'airgapped', 'rag', 'quadlet'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.8 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Client Input' } },
+      {
+        id: 'privacy-guard-1',
+        type: 'privacyGuardNode',
+        position: { x: 280, y: 120 },
+        data: {
+          action: 'anonymize',
+          redactionStyle: 'token',
+          detectPii: { apiKey: true, ssn: true, creditCard: true, email: true, phone: true }
+        }
+      },
+      {
+        id: 'semantic-guard-1',
+        type: 'semanticGuardNode',
+        position: { x: 580, y: 120 },
+        data: { routeName: 'sovereign-firewall', encoder: 'deberta-v3-injection', threshold: 0.85 }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 900, y: 180 },
+        data: {
+          strategy: 'cost-complexity',
+          failover: 'enabled',
+          routes: [
+            { id: 'tier-1', name: 'Tier 1: Lemonade NPU Fast', costLabel: '$0.00' },
+            { id: 'tier-2', name: 'Tier 2: RamaLama OCI + Ollama Heavy', costLabel: '$0.00' }
+          ]
+        }
+      },
+      {
+        id: 'kb-oci-rag-1',
+        type: 'knowledgeBaseNode',
+        position: { x: 900, y: 470 },
+        data: {
+          label: 'OCI Container RAG Artifact',
+          provider: 'openviking',
+          collectionUri: 'oci://quay.io/eluvix/codebase-rag:latest',
+          retrievalMode: 'hybrid',
+          citationMode: 'bracket',
+          topK: 5,
+          allowCloudEgress: false
+        }
+      },
+      {
+        id: 'lemonade-triad-1',
+        type: 'lemonadeNode',
+        position: { x: 1300, y: 40 },
+        data: {
+          label: 'Lemonade NPU/Hybrid Engine',
+          endpoint: 'http://localhost:13305',
+          priority: 30,
+          selectedModel: 'Qwen3.5-4B-MTP-GGUF',
+          models: ['Qwen3.5-4B-MTP-GGUF', 'llama3.2-1b-FLM']
+        }
+      },
+      {
+        id: 'ramalama-triad-1',
+        type: 'ramalamaNode',
+        position: { x: 1300, y: 260 },
+        data: {
+          label: 'RamaLama Podman OCI Runner',
+          endpoint: 'http://localhost:8080',
+          priority: 26,
+          selectedModel: 'granite-code:8b',
+          models: ['granite-code:8b', 'llama3.2:3b', 'deepseek-r1:7b'],
+          ramalama: {
+            containerEngine: 'podman',
+            runtime: 'vllm',
+            ociTransport: 'oci',
+            accelerator: 'cuda',
+            selinuxEnforcing: true,
+            networkIsolation: 'none',
+            readOnlyRootfs: true,
+            generateMode: 'quadlet',
+            ctxSize: 16384,
+            ngl: 99
+          }
+        }
+      },
+      {
+        id: 'ollama-triad-1',
+        type: 'ollamaNode',
+        position: { x: 1300, y: 500 },
+        data: {
+          label: 'Ollama GGUF Reasoning',
+          endpoint: 'http://localhost:11434',
+          priority: 22,
+          selectedModel: 'deepseek-r1:14b',
+          models: ['deepseek-r1:14b', 'qwen2.5-coder:7b']
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1740, y: 260 },
+        data: {
+          projectName: 'eluvix-sovereign-oci-triad',
+          captureInputs: true,
+          scrubPii: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-priv', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#22c55e' } },
+      { id: 'e-priv-sem', source: 'privacy-guard-1', sourceHandle: 'clean', target: 'semantic-guard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e-sem-sw', source: 'semantic-guard-1', sourceHandle: 'match', target: 'switchyard-1', animated: true, style: { stroke: '#f97316' } },
+      { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-triad-1', animated: true, style: { stroke: '#eab308', strokeWidth: 3 } },
+      { id: 'e-sw-rama', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'ramalama-triad-1', animated: true, style: { stroke: '#fb923c', strokeWidth: 3 } },
+      { id: 'e-sw-oll', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'ollama-triad-1', animated: true, style: { stroke: '#c084fc', strokeWidth: 2.5 } },
+      { id: 'e-kb-rama', source: 'kb-oci-rag-1', target: 'ramalama-triad-1', animated: true, style: { stroke: '#6366f1' } },
+      { id: 'e-lem-obs', source: 'lemonade-triad-1', target: 'observability-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e-rama-obs', source: 'ramalama-triad-1', target: 'observability-1', animated: true, style: { stroke: '#fb923c' } },
+      { id: 'e-oll-obs', source: 'ollama-triad-1', target: 'observability-1', animated: true, style: { stroke: '#c084fc' } }
+    ]
+  },
+
+  // 22. ComfyUI + Local LLM + ArtCraft Creative Studio Pipeline
+  {
+    id: 'comfyui-flux-artcraft-creative-pipeline',
+    name: 'ComfyUI + Local LLM + ArtCraft Creative Studio',
+    description:
+      'End-to-end sovereign creative pipeline: Lemonade (:13305) expands prompts via local LLM, ComfyUI (:8188) renders Flux.1 / Wan 2.1 media with shared GPU VRAM coordination (--lowvram --reserve-vram 6) and reverse loopback (:3588/v1), and VectorCraft (:7979) vectorizes outputs into SVG.',
+    category: 'local',
+    tags: ['comfyui', 'flux', 'diffusion', 'artcraft', 'vectorcraft', 'lemonade', 'creative'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.72 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 240 }, data: { label: 'Creative Prompt / /v1/images' } },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 360, y: 200 },
+        data: {
+          strategy: 'cost-complexity',
+          failover: 'enabled',
+          routes: [
+            { id: 'tier-1', name: 'Tier 1: Lemonade Prompt Enhancer', costLabel: '$0.00' },
+            { id: 'tier-2', name: 'Tier 2: ComfyUI Flux.1 Diffusion DAG', costLabel: '$0.00' }
+          ]
+        }
+      },
+      {
+        id: 'lemonade-enhancer-1',
+        type: 'lemonadeNode',
+        position: { x: 780, y: 60 },
+        data: {
+          label: 'Lemonade Prompt Enhancer',
+          endpoint: 'http://localhost:13305',
+          priority: 28,
+          selectedModel: 'Qwen3.5-4B-MTP-GGUF',
+          models: ['Qwen3.5-4B-MTP-GGUF']
+        }
+      },
+      {
+        id: 'comfyui-studio-1',
+        type: 'comfyuiNode',
+        position: { x: 1180, y: 220 },
+        data: {
+          label: 'ComfyUI Flux.1 Studio',
+          endpoint: 'http://localhost:8188',
+          priority: 25,
+          selectedModel: 'flux1-dev-fp8.safetensors',
+          models: [
+            'flux1-dev-fp8.safetensors',
+            'sd_xl_base_1.0.safetensors',
+            'wan2.1_t2v_14B_fp8_e4m3fn.safetensors'
+          ],
+          comfyui: {
+            workflowPreset: 'flux-txt2img',
+            checkpoint: 'flux1-dev-fp8.safetensors',
+            steps: 20,
+            cfg: 3.5,
+            samplerName: 'euler',
+            scheduler: 'simple',
+            width: 1024,
+            height: 1024,
+            vramMode: 'lowvram',
+            reserveVramGb: 6,
+            promptEnhancerUpstreamId: 'lemonade-enhancer-1',
+            postProcessArtCraftApp: 'vectorcraft',
+            loopbackEluvixUrl: 'http://127.0.0.1:3588/v1',
+            mcpEnabled: true
+          }
+        }
+      },
+      {
+        id: 'vectorcraft-post-1',
+        type: 'vectorcraftNode',
+        position: { x: 1580, y: 120 },
+        data: {
+          label: 'VectorCraft SVG Post-Process',
+          app: 'vectorcraft',
+          enabledApps: ['vectorcraft', 'photocraft', 'filmcraft'],
+          cliCommand: 'vectorcraft-cli',
+          controlAddress: '127.0.0.1:7979',
+          defaultExportFormat: 'svg',
+          defaultPromptWorkflow: 'poster'
+        }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1580, y: 360 },
+        data: {
+          projectName: 'eluvix-comfyui-creative-studio',
+          captureInputs: true
+        }
+      }
+    ],
+    edges: [
+      { id: 'e-in-sw', source: 'input-1', target: 'switchyard-1', animated: true, style: { stroke: '#22c55e' } },
+      { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-enhancer-1', animated: true, style: { stroke: '#eab308', strokeWidth: 3 } },
+      { id: 'e-sw-comfy', source: 'switchyard-1', sourceHandle: 'tier-2', target: 'comfyui-studio-1', animated: true, style: { stroke: '#e879f9', strokeWidth: 3.5 } },
+      { id: 'e-lem-comfy', source: 'lemonade-enhancer-1', target: 'comfyui-studio-1', animated: true, style: { stroke: '#10b981', strokeWidth: 3 } },
+      { id: 'e-comfy-vc', source: 'comfyui-studio-1', target: 'vectorcraft-post-1', animated: true, style: { stroke: '#f472b6', strokeWidth: 3 } },
+      { id: 'e-comfy-obs', source: 'comfyui-studio-1', target: 'observability-1', animated: true, style: { stroke: '#e879f9' } }
+    ]
   }
 ];
 

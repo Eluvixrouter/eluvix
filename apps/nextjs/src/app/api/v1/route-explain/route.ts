@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
+import { Eluvix, resolveBearerToken, type RequestScope, type RouterConfig } from '@eluvix/router-core';
 import { getRouter, getConfig } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
@@ -73,8 +73,20 @@ export async function POST(req: Request) {
         : parseInt(req?.headers?.get('x-eluvix-hops') || '0', 10) || 0
     );
 
-    const router = getRouter();
-    const routerConfig = getConfig();
+    // Optional ephemeral preview config from the Eluvix Visual Node Routing Editor simulator
+    // (evaluated strictly in-memory via explainRoute() with zero disk writes or upstream network I/O)
+    const canOverrideConfig =
+      identity.ok && (identity.role === 'admin' || identity.role === 'operator');
+    const previewConfig: RouterConfig | null =
+      canOverrideConfig &&
+      body.configOverride &&
+      typeof body.configOverride === 'object' &&
+      Array.isArray(body.configOverride.upstreams)
+        ? (body.configOverride as RouterConfig)
+        : null;
+
+    const router = previewConfig ? new Eluvix(previewConfig) : getRouter();
+    const routerConfig = previewConfig || getConfig();
     const defaultModel = routerConfig.modelGateway?.primaryModel || routerConfig.defaultModel || 'auto';
 
     const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);

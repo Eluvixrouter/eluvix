@@ -99,6 +99,7 @@ ${keyLine}`;
               <option value="vllm-sr" ${upstream.type === 'vllm-sr' ? 'selected' : ''}>vLLM-sr</option>
               <option value="ollama" ${upstream.type === 'ollama' ? 'selected' : ''}>Ollama</option>
               <option value="lemonade" ${upstream.type === 'lemonade' ? 'selected' : ''}>Lemonade</option>
+              <option value="ramalama" ${upstream.type === 'ramalama' ? 'selected' : ''}>RamaLama</option>
               <option value="switchyard" ${upstream.type === 'switchyard' ? 'selected' : ''}>Switchyard</option>
               <option value="openai-compatible" ${upstream.type === 'openai-compatible' ? 'selected' : ''}>OpenAI-compatible</option>
               <option value="anthropic" ${upstream.type === 'anthropic' ? 'selected' : ''}>Anthropic</option>

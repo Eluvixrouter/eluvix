@@ -353,6 +353,34 @@ export function MockupEditor() {
                 </div>
                 <span className="text-[10px] text-slate-400 group-hover:text-purple-400 font-mono font-bold">+ Add</span>
               </div>
+
+              <div
+                onClick={() => handleAddNode('ramalamaNode', 'RamaLama Engine')}
+                className="p-2 border border-orange-500/60 bg-orange-950/20 hover:bg-orange-900/30 rounded-lg cursor-pointer transition flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">📦</span>
+                  <div>
+                    <div className="font-semibold text-xs text-orange-300">RamaLama Engine</div>
+                    <div className="text-[9px] text-slate-400 font-mono">:8080 • Podman / OCI AI</div>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-orange-400 font-mono font-bold">+ Add</span>
+              </div>
+
+              <div
+                onClick={() => handleAddNode('comfyuiNode', 'ComfyUI Engine')}
+                className="p-2 border border-fuchsia-500/60 bg-fuchsia-950/20 hover:bg-fuchsia-900/30 rounded-lg cursor-pointer transition flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎬</span>
+                  <div>
+                    <div className="font-semibold text-xs text-fuchsia-300">ComfyUI Engine</div>
+                    <div className="text-[9px] text-slate-400 font-mono">:8188 • Flux / SDXL / Wan DAG</div>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-fuchsia-400 font-mono font-bold">+ Add</span>
+              </div>
             </div>
           </div>
 
@@ -698,6 +726,48 @@ export function MockupEditor() {
                     </div>
                   )}
 
+                  {node.type === 'ramalamaNode' && (
+                    <div className="bg-gray-900 border-2 border-orange-500 rounded-lg p-3 w-72 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">📦</span>
+                          <div>
+                            <div className="font-bold text-orange-400 text-xs">{node.data?.label || 'RamaLama Engine'}</div>
+                            <div className="text-[9px] text-gray-400 font-mono">{node.data?.endpoint || ':8080'}</div>
+                          </div>
+                        </div>
+                        <span className="text-[9px] bg-orange-500/20 text-orange-300 px-1 py-0.2 rounded font-mono font-bold">
+                          PODMAN / OCI
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-300">
+                        Model: <strong className="text-orange-300">{node.data?.selectedModel || '*'}</strong>
+                        <div className="text-[9px] text-emerald-400 mt-1">✓ Containerized OCI AI ($0)</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'comfyuiNode' && (
+                    <div className="bg-gray-900 border-2 border-fuchsia-500 rounded-lg p-3 w-72 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">🎬</span>
+                          <div>
+                            <div className="font-bold text-fuchsia-300 text-xs">{node.data?.label || 'ComfyUI Engine'}</div>
+                            <div className="text-[9px] text-gray-400 font-mono">{node.data?.endpoint || ':8188'}</div>
+                          </div>
+                        </div>
+                        <span className="text-[9px] bg-fuchsia-500/20 text-fuchsia-300 px-1 py-0.2 rounded font-mono font-bold">
+                          DIFFUSION DAG
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-300">
+                        Preset: <strong className="text-fuchsia-300">{node.data?.comfyui?.workflowPreset || 'flux-txt2img'}</strong>
+                        <div className="text-[9px] text-emerald-400 mt-1">✓ /v1/images + ArtCraft &amp; :3588 Loopback</div>
+                      </div>
+                    </div>
+                  )}
+
                   {node.type === 'vllmNode' && (
                     <div className="bg-gray-900 border-2 border-cyan-500 rounded-lg p-3 w-72 shadow-2xl">
                       <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
@@ -797,7 +867,7 @@ export function MockupEditor() {
                   )}
 
                   {/* Fallback for other node types */}
-                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'lemonadeNode', 'ollamaNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'inputNode'].includes(node.type) && (
+                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'lemonadeNode', 'ollamaNode', 'ramalamaNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'inputNode'].includes(node.type) && (
                     <div className="bg-gray-900 border-2 border-slate-700 rounded-lg p-3 w-64 shadow-xl">
                       <div className="font-bold text-xs text-white">{node.data?.label || node.type}</div>
                       <div className="text-[10px] font-mono text-slate-400">{node.type}</div>

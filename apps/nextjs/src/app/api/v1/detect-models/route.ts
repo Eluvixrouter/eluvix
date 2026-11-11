@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { detectUpstreamModelDetails, UpstreamConfig } from '@eluvix/router-core';
+import { detectUpstreamModelDetails, inspectRamalamaCli, UpstreamConfig } from '@eluvix/router-core';
 import { getRouter, getConfig, saveConfig } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
@@ -155,6 +155,35 @@ export async function POST(req: Request) {
     }
 
     const discovery = await detectUpstreamModelDetails(targetUpstream, 5000);
+
+    if (discovery.models.length === 0 && targetUpstream.type === 'ramalama') {
+      const cliResult = await inspectRamalamaCli({ timeoutMs: 3500 });
+      if (cliResult.installed && cliResult.models.length > 0) {
+        const cliModels = cliResult.models.map((m) => m.name);
+        const cliDetails = cliResult.models.map((m) => ({
+          id: m.name,
+          name: m.name,
+          size:
+            typeof m.size === 'number'
+              ? `${(m.size / (1024 * 1024 * 1024)).toFixed(1)} GB`
+              : m.size,
+          recipe: 'ramalama-oci',
+          labels: ['OCI Store'],
+        }));
+        return NextResponse.json({
+          success: true,
+          id: targetUpstream.id,
+          endpoint: targetUpstream.endpoint,
+          models: cliModels,
+          details: cliDetails,
+          count: cliModels.length,
+          offlineCached: true,
+          cliVersion: cliResult.version,
+          containers: cliResult.containers,
+          message: `Discovered ${cliModels.length} locally pulled OCI model(s) via ramalama CLI.`,
+        });
+      }
+    }
 
     return NextResponse.json({
       success: true,

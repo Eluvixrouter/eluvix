@@ -927,7 +927,7 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                 <div>
                   <h2 className="text-xl font-bold text-slate-100">Local &amp; Custom Upstreams</h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Configure local nodes (vLLM, vLLM-sr, Ollama, Lemonade, Switchyard, TrueForge) or upstream providers. Edit any endpoint URL below.
+                    Configure local nodes (vLLM, vLLM-sr, Ollama, Lemonade, RamaLama, Switchyard, TrueForge) or upstream providers. Edit any endpoint URL below.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -972,6 +972,8 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                           <option value="vllm-sr">vLLM-sr</option>
                           <option value="ollama">Ollama</option>
                           <option value="lemonade">Lemonade</option>
+                          <option value="ramalama">RamaLama (OCI)</option>
+                          <option value="comfyui">ComfyUI (:8188)</option>
                           <option value="switchyard">Switchyard</option>
                           <option value="harness">TrueForge / Agent Harness</option>
                           <option value="openai-compatible">OpenAI-compatible</option>

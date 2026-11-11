@@ -44,6 +44,21 @@
       "types": "./dist/flash-attention-kernels.d.ts",
       "import": "./dist/flash-attention-kernels.js",
       "default": "./dist/flash-attention-kernels.js"
+    },
+    "./comfyui": {
+      "types": "./dist/comfyui.d.ts",
+      "import": "./dist/comfyui.js",
+      "default": "./dist/comfyui.js"
+    },
+    "./modality": {
+      "types": "./dist/modality.d.ts",
+      "import": "./dist/modality.js",
+      "default": "./dist/modality.js"
+    },
+    "./ssrf-guard": {
+      "types": "./dist/ssrf-guard.d.ts",
+      "import": "./dist/ssrf-guard.js",
+      "default": "./dist/ssrf-guard.js"
     }
   },
   "type": "module",

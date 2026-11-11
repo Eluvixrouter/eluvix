@@ -38,7 +38,7 @@ Integrates the Google Gemini-powered Antigravity agent CLI (`agy`):
   - **CLI via `agy`** *(Recommended)*: Spawns the local `agy --print` binary non-interactively without opening external network ports.
   - **Agent Router Daemon**: Routes through `eluvix-agent-router` on port `8002`.
   - **HTTP Bridge**: Routes to external agent server instances.
-- **Models**: `gemini-3.8-flash`, `gemini-3.8-pro`, or custom models.
+- **Models**: First-class support for **`gemini-4-carbon`** (`1,000,000`-token context window, `64,000` max output tokens, multimodal vision, and effort tiers `gemini-4-carbon-low`, `-medium`, `-high`, `-xhigh`, `-max`), plus `gemini-4-argon`, `gemini-3.8-flash`, or custom models.
 - **Extended Thinking**: Configurable reasoning token budget (512–8,192 tokens).
 - **Toolchain Controls**: Toggles for write tools, subagents, and network access.
 - **Compilation Output**: Serializes to `antigravity.yaml`.

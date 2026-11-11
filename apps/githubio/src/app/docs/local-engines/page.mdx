@@ -4,15 +4,34 @@ Eluvix is built to orchestrate and harness local hardware, providing deep integr
 
 ---
 
-## Supported Local Inference Backends
+## Supported Local Inference & Media Backends
 
 Eluvix connects out-of-the-box with:
 
-1. **Ollama**: Seamless discovery of models served on `http://127.0.0.1:11434`.
-2. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000` (NVIDIA CUDA or AMD ROCm).
-3. **Lemonade**: Local hardware and private enclave inference runtimes.
-4. **OpenViking**: Hierarchical context and memory engine on `http://127.0.0.1:1933`.
-5. **TrueForge**: Autonomous agent harness runtime on `http://127.0.0.1:8790`.
+1. **Ollama**: Seamless discovery of GGUF models served on `http://127.0.0.1:11434`.
+2. **RamaLama**: Rootless OCI container inference via Podman or Docker on `http://127.0.0.1:8080`, supporting `ollama://`, `hf://`, and `oci://` model URIs, `--rag` OCI artifacts, `--selinux=true`, `--network=none` air-gapping, and systemd Podman Quadlet `.container` unit generation.
+3. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000` (NVIDIA CUDA or AMD ROCm).
+4. **ComfyUI**: Local diffusion, video, and 3D mesh workflow DAG engine on `http://127.0.0.1:8188` (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`).
+5. **Lemonade**: Local hardware and private NPU/GPU enclave inference runtimes on `http://127.0.0.1:13305`.
+6. **OpenViking**: Hierarchical context and memory engine on `http://127.0.0.1:1933`.
+7. **TrueForge**: Autonomous agent harness runtime on `http://127.0.0.1:8790`.
+
+---
+
+## RamaLama Rootless OCI Containers & Quadlets (`:8080`)
+
+When a **RamaLama Node** (`ramalamaNode`) is placed in the **Eluvix Visual Node Routing Editor**, the multi-target compiler generates both exact CLI commands and a production-ready systemd Podman Quadlet (`eluvix-ramalama.container`) for rootless background serving:
+
+```bash
+# Serve a local coding model in an air-gapped, SELinux-confined rootless container
+ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:7b
+```
+
+---
+
+## ComfyUI Local Media Coexistence (`:8188`)
+
+ComfyUI shares local GPU VRAM peacefully alongside text inference servers using `--lowvram` or `--reserve-vram` flags. Eluvix continuously monitors live GPU memory and queue depth via `GET /api/v1/comfyui/status`.
 
 ---
 
@@ -20,9 +39,9 @@ Eluvix connects out-of-the-box with:
 
 Eluvix includes a discovery API at `/api/v1/detect-models`:
 
-- It actively probes standard local ports (11434 for Ollama, 8000 for vLLM, 1933 for OpenViking, 8790 for TrueForge).
-- It queries the engine's model list and tags each model with inferred capabilities (`vision`, `code`, `chat`).
-- Discovered models appear automatically as available options in the Visual Routing Editor.
+- It actively probes standard local ports (`11434` for Ollama, `8080` for RamaLama, `8000` for vLLM, `8188` for ComfyUI, `1933` for OpenViking, `8790` for TrueForge) with unified SSRF/cloud-metadata protection.
+- It queries each engine's model list and tags discovered models with inferred capabilities (`vision`, `code`, `chat`, `image-gen`).
+- Discovered models appear automatically as selectable targets in the **Eluvix Visual Node Routing Editor**.
 
 ---
 

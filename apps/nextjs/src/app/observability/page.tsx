@@ -15,6 +15,7 @@ interface RequestLog {
   ttft_ms?: number;
   itl_ms?: number;
   kv_cache_kb?: number;
+  cost_usd?: number;
 }
 
 interface UpstreamHealth {
@@ -39,6 +40,9 @@ interface ObservabilityData {
     completionTokens: number;
     totalTokens: number;
     estimatedSavings: string;
+    rolling24hSpendUsd?: number;
+    maxDailySpendUsd?: number;
+    budgetExhaustedAction?: string;
     p50TtftMs?: number;
     p99TtftMs?: number;
     p50ItlMs?: number;
@@ -145,6 +149,33 @@ export default function ObservabilityPage() {
     URL.revokeObjectURL(url);
   };
 
+  const handleCopyPrometheusScrape = async () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3588';
+    const scrapeYaml = [
+      'scrape_configs:',
+      '  - job_name: "eluvix-router"',
+      '    scrape_interval: 15s',
+      '    metrics_path: "/api/v1/metrics"',
+      '    authorization:',
+      '      type: Bearer',
+      '      credentials: "elx_YOUR_ELUVIX_API_KEY"',
+      '    static_configs:',
+      `      - targets: ["${origin.replace(/^https?:\/\//, '')}"]`,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(scrapeYaml);
+      setActionNotice({
+        message: '✓ Copied prometheus.yml scrape config for /api/v1/metrics to clipboard.',
+      });
+    } catch {
+      setActionNotice({
+        message: 'Could not access clipboard — scrape endpoint is GET /api/v1/metrics.',
+        error: true,
+      });
+    }
+    setTimeout(() => setActionNotice(null), 4500);
+  };
+
   // Filter logs by search query
   const filteredLogs = useMemo(() => {
     if (!data) return [];
@@ -245,6 +276,15 @@ export default function ObservabilityPage() {
               title="Manual Refresh"
             >
               🔄 Refresh
+            </button>
+
+            <button
+              onClick={handleCopyPrometheusScrape}
+              className="bg-amber-950/70 hover:bg-amber-900/70 text-amber-300 font-semibold text-xs px-3 py-1.5 rounded-lg border border-amber-700/60 transition flex items-center gap-1.5"
+              title="Copy Prometheus scrape_configs YAML for GET /api/v1/metrics"
+            >
+              <span>📡</span>
+              <span>Copy Prometheus Config</span>
             </button>
 
             <button
@@ -357,7 +397,7 @@ export default function ObservabilityPage() {
             </div>
           </div>
 
-          {/* Estimated Local Savings */}
+          {/* Estimated Local Savings & 24h Cloud Spend Meter */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl flex flex-col justify-between">
             <div className="flex justify-between items-start">
               <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Local Cost Savings</span>
@@ -367,6 +407,39 @@ export default function ObservabilityPage() {
               <div className="text-3xl font-extrabold text-emerald-400">${summary.estimatedSavings}</div>
               <div className="text-xs text-slate-400 mt-1">
                 Saved vs commercial cloud APIs ($0.005/req)
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-slate-800/80">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">24h Cloud Spend</span>
+                  <span className="font-mono font-bold text-slate-200">
+                    ${(summary.rolling24hSpendUsd ?? 0).toFixed(4)}
+                    {(summary.maxDailySpendUsd ?? 0) > 0
+                      ? ` / $${(summary.maxDailySpendUsd ?? 0).toFixed(2)}`
+                      : ' (Uncapped)'}
+                  </span>
+                </div>
+                {(summary.maxDailySpendUsd ?? 0) > 0 && (
+                  <div className="mt-1.5">
+                    <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${
+                          (summary.rolling24hSpendUsd ?? 0) >= (summary.maxDailySpendUsd ?? 0)
+                            ? 'bg-amber-400'
+                            : 'bg-emerald-500'
+                        }`}
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.round(((summary.rolling24hSpendUsd ?? 0) / (summary.maxDailySpendUsd || 1)) * 100)
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-1">
+                      Cap policy: <span className="text-emerald-400 font-mono">{summary.budgetExhaustedAction || 'prefer-local'}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

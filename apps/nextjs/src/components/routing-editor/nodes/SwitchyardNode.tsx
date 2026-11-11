@@ -24,6 +24,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [routes, setRoutes] = useState<SwitchyardRoute[]>(data?.routes || DEFAULT_ROUTES);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [kvPrefixAffinity, setKvPrefixAffinity] = useState<boolean>(data?.kvPrefixAffinity ?? true);
+  const [mediaIntentRouting, setMediaIntentRouting] = useState<boolean>(data?.mediaIntentRouting ?? true);
   const [prefillIsolationThreshold, setPrefillIsolationThreshold] = useState<number>(
     data?.prefillIsolationThresholdTokens ?? 4096
   );
@@ -45,6 +46,12 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
   const [attentionPolicy, setAttentionPolicy] = useState<string>(
     data?.attentionPolicy || 'disabled'
   );
+  const [maxDailySpendUsd, setMaxDailySpendUsd] = useState<number>(
+    typeof data?.maxDailySpendUsd === 'number' ? data.maxDailySpendUsd : 0
+  );
+  const [budgetExhaustedAction, setBudgetExhaustedAction] = useState<string>(
+    data?.budgetExhaustedAction || 'prefer-local'
+  );
 
   // Resynchronize local state when layout or node data reference changes
   useEffect(() => {
@@ -52,6 +59,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     setStrategy(data.strategy || 'cost-complexity');
     setRoutes(Array.isArray(data.routes) && data.routes.length > 0 ? data.routes : DEFAULT_ROUTES);
     setKvPrefixAffinity(data.kvPrefixAffinity ?? true);
+    setMediaIntentRouting(data.mediaIntentRouting ?? true);
     setPrefillIsolationThreshold(data.prefillIsolationThresholdTokens ?? 4096);
     setEnablePrefillIsolation(data.prefillIsolationThresholdTokens !== undefined);
     setConfidentialPolicy(data.confidentialPolicy || 'disabled');
@@ -59,6 +67,8 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     setFabricPolicy(data.fabricPolicy || 'disabled');
     setCrsPolicy(data.crsPolicy || 'disabled');
     setAttentionPolicy(data.attentionPolicy || 'disabled');
+    setMaxDailySpendUsd(typeof data.maxDailySpendUsd === 'number' ? data.maxDailySpendUsd : 0);
+    setBudgetExhaustedAction(data.budgetExhaustedAction || 'prefer-local');
   }, [data]);
 
   // Synchronize with node data
@@ -274,6 +284,22 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
             />
           </label>
 
+          <label
+            className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer"
+            title="Auto-steer image/video/3D prompts to ComfyUI & isolate text/code/tool chat away from diffusion engines"
+          >
+            <span className="font-semibold text-fuchsia-300">🎨 Modality &amp; Synthesis Steering</span>
+            <input
+              type="checkbox"
+              className="nodrag accent-fuchsia-500 w-3.5 h-3.5 cursor-pointer"
+              checked={mediaIntentRouting}
+              onChange={(e) => {
+                setMediaIntentRouting(e.target.checked);
+                syncData({ mediaIntentRouting: e.target.checked });
+              }}
+            />
+          </label>
+
           <label className="flex items-center justify-between text-[11px] text-gray-300 cursor-pointer">
             <span className="font-semibold text-blue-300">Prefill-Decode Isolation</span>
             <input
@@ -400,6 +426,41 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
               <option value="prefer-blackwell-tmem">🚀 Prefer Blackwell SM100 tcgen05 + 256KB TMEM</option>
               <option value="require-fp8-ping-pong">🛡️ Require FP8 Ping-Pong + Hadamard (Block FA2/SDPA)</option>
             </select>
+          </div>
+
+          <div className="pt-1.5 border-t border-gray-800 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-semibold text-emerald-400">
+                💵 24h Cloud Spend Cap (USD)
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={maxDailySpendUsd}
+                placeholder="0 = off"
+                onChange={(e) => {
+                  const val = Math.max(0, Number(e.target.value) || 0);
+                  setMaxDailySpendUsd(val);
+                  syncData({ maxDailySpendUsd: val > 0 ? val : undefined });
+                }}
+                className="nodrag w-20 bg-gray-900 border border-gray-700 focus:border-emerald-500 rounded px-1.5 py-0.5 text-[10px] text-emerald-300 font-mono text-right outline-none"
+              />
+            </div>
+            {maxDailySpendUsd > 0 && (
+              <select
+                className="nodrag w-full bg-gray-900 border border-gray-700 focus:border-emerald-500 rounded p-1 text-white text-[10px] outline-none"
+                value={budgetExhaustedAction}
+                onChange={(e) => {
+                  setBudgetExhaustedAction(e.target.value);
+                  syncData({ budgetExhaustedAction: e.target.value });
+                }}
+              >
+                <option value="prefer-local">🌱 Soft-Failover to $0 Local Engines (Default)</option>
+                <option value="strict-local">🔒 Strict $0 Local Only (429 if no local)</option>
+                <option value="reject">🛑 Hard Reject All Traffic (HTTP 429)</option>
+              </select>
+            )}
           </div>
         </div>
 

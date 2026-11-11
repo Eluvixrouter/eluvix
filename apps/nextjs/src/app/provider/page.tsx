@@ -885,6 +885,8 @@ export default function ProviderPage() {
                     <option value="ollama">Ollama (Default :11434)</option>
                     <option value="vllm">vLLM (:8000)</option>
                     <option value="lemonade">Lemonade Router (:13305)</option>
+                    <option value="ramalama">RamaLama OCI (:8080)</option>
+                    <option value="comfyui">ComfyUI Diffusion (:8188)</option>
                     <option value="openai-compatible">Custom OpenAI Compatible</option>
                   </select>
                 </div>

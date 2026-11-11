@@ -83,13 +83,24 @@ Monitors recent telemetry logs. If a local engine's average response time exceed
 
 ---
 
-## Financial Governance: Budget Ceilings
+## Financial Governance & Modality Isolation
 
-### Max Cost per Request (`maxCostPerRequest`)
-Enforces a strict financial spending cap per completion (e.g. `$0.05`). 
+### 1. Max Cost per Request (`maxCostPerRequest`)
+Enforces a strict financial spending cap per completion (e.g. `\$0.05`). 
 - Switchyard estimates upstream cost using `(prompt_tokens / 1000) * costPer1kTokens`.
-- Any candidate engine exceeding this cap is automatically bypassed in favor of $0 local models.
+- Any candidate engine exceeding this cap is automatically bypassed in favor of `\$0` local models.
 - If no affordable candidate is found, Switchyard returns an explicit budget rejection, preventing runaway API bills from autonomous agent loops.
+
+### 2. Rolling 24h Cloud Spend Guardrails (`maxDailySpendUsd`)
+Tracks cumulative USD spend across a rolling 24-hour window in SQLite (`getRollingSpendUsd(24)`) and enforces `maxDailySpendUsd` according to `budgetExhaustedAction`:
+- **`prefer-local` *(Default)***: Soft-fails over from paid commercial APIs to `\$0.00` local sovereign engines (Ollama, vLLM, RamaLama, Lemonade) and emits `X-Eluvix-Budget-Fallback: local-sovereign` alongside `X-Eluvix-Rolling-24h-Spend-USD`.
+- **`strict-local`**: Restricts candidates exclusively to `\$0.00` local engines; returns HTTP `429` (`X-Eluvix-Budget-Guard: DENIED_DAILY_SPEND_CAP`) if no local engine is healthy.
+- **`reject`**: Immediately rejects requests with HTTP `429` until rolling 24-hour expenditure drops below the ceiling.
+
+### 3. Modality-Aware Media Intent Routing (`mediaIntentRouting`)
+When `mediaIntentRouting` is enabled (default `true`), Switchyard classifies every `model: "auto"` prompt across `text`, `code`, `vision-input`, `image-gen`, `video-gen`, and `mesh-3d`:
+- Conversational, coding, tool-calling, and vision-input chat completions automatically **exclude** synthesis-only ComfyUI nodes.
+- Generative synthesis prompts automatically steer to matching ComfyUI workflow presets (`flux-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`).
 
 ---
 

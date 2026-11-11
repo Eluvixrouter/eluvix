@@ -21,6 +21,22 @@ export interface AgyModelEntry {
 
 export const DEFAULT_AGY_MODELS: AgyModelEntry[] = [
   {
+    baseId: 'gemini-4-carbon',
+    displayName: 'Gemini 4 Carbon',
+    efforts: ['low', 'medium', 'high'],
+    defaultEffort: 'high',
+    variants: [
+      'gemini-4-carbon-low',
+      'gemini-4-carbon-medium',
+      'gemini-4-carbon-high',
+      'gemini-4-carbon-xhigh',
+      'gemini-4-carbon-max'
+    ],
+    tier: 'Frontier',
+    contextLimit: 2097152,
+    outputLimit: 65536
+  },
+  {
     baseId: 'gemini-4-argon',
     displayName: 'Gemini 4 Argon',
     efforts: ['low', 'medium', 'high'],
@@ -89,7 +105,7 @@ export function inferModelMetadata(baseId: string): {
   outputLimit: number;
 } {
   const lower = baseId.toLowerCase();
-  if (lower.includes('4-argon') || lower.includes('4-argo')) {
+  if (lower.includes('4-carbon') || lower.includes('4-argon') || lower.includes('4-argo')) {
     return { tier: 'Frontier', contextLimit: 2097152, outputLimit: 65536 };
   }
   if (lower.includes('gemini-3.8') || lower.includes('flash')) {
@@ -339,10 +355,14 @@ export function resolveAntigravityEffort(
   let baseModel = requestedModel;
   let explicitSuffixEffort: 'low' | 'medium' | 'high' | null = null;
 
-  const suffixMatch = requestedModel.match(/^(.+?)-(low|medium|high)$/i);
+  const suffixMatch = requestedModel.match(/^(.+?)-(low|medium|high|xhigh|max)$/i);
   if (suffixMatch) {
     baseModel = suffixMatch[1];
-    explicitSuffixEffort = suffixMatch[2].toLowerCase() as 'low' | 'medium' | 'high';
+    const rawEffort = suffixMatch[2].toLowerCase();
+    explicitSuffixEffort =
+      rawEffort === 'xhigh' || rawEffort === 'max'
+        ? 'high'
+        : (rawEffort as 'low' | 'medium' | 'high');
   }
 
   // Normalize gemini-4-argo alias to gemini-4-argon for CLI invocation

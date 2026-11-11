@@ -1,12 +1,12 @@
-# Multimodal (Vision) Routing
+# Multimodal Vision & ComfyUI Media Synthesis
 
-Eluvix natively understands multimodal payloads conforming to OpenAI's structured image content specifications.
+Eluvix natively supports bidirectional multimodal workloads: routing structured visual understanding payloads (`image_url`) to Vision-Language Models (VLMs) and synthesizing sovereign local images, video clips, and 3D meshes via **ComfyUI (`:8188`)**.
 
 ---
 
-## Multimodal Payload Format
+## 1. Multimodal Vision Input Payload Format
 
-Incoming requests can interleave textual content and base64 or URL-referenced images in the standard chat completions payload:
+Incoming chat completion requests can interleave textual content and Base64 or URL-referenced images:
 
 ```json
 {
@@ -45,5 +45,40 @@ When a request reaches the Switchyard router:
 ## Routing Benefits
 
 - **Prevents Model Crashes**: Standard text-only models (such as `llama3:8b` or `mistral`) crash or return validation errors when supplied with raw image URLs. By filtering upstreams, Eluvix prevents these avoidable failures.
-- **Cost Optimization**: Text-only tasks remain routed to compact, efficient text models, while multimodal tasks are directed to vision-capable engines such as `gpt-4o`, `claude-3-opus`, or local `llava` instances.
+- **Cost Optimization**: Text-only tasks remain routed to compact, efficient text models, while multimodal tasks are directed to vision-capable engines such as `gemini-4-carbon`, `gpt-4o`, `claude-3-7-sonnet`, or local `llava` / `Qwen2-VL` instances.
 - **Seamless Fallback**: If a local vision model runs out of VRAM, the request cascades to the next configured multimodal provider without client interruption.
+
+---
+
+## 2. ComfyUI Local Media Synthesis (`:8188`)
+
+Eluvix exposes an OpenAI-compatible `POST /api/v1/images/generations` endpoint backed by local ComfyUI workflow DAGs on port `8188`:
+
+```bash
+curl -k -X POST https://127.0.0.1:3588/api/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(jq -r .adminPassword ~/.config/eluvix/auth.json)" \
+  -d '{
+    "model": "flux-txt2img",
+    "prompt": "Isometric brutalist AI datacenter glowing with emerald fiber optics",
+    "size": "1024x1024",
+    "response_format": "url"
+  }'
+```
+
+### Built-In ComfyUI Workflow Presets
+
+| Preset ID | Target Modality | Description |
+| :--- | :--- | :--- |
+| `flux-txt2img` | Image Generation | FLUX.1-dev / Schnell DualCLIPLoader + FluxGuidance + KSampler pipeline |
+| `sdxl-txt2img` | Image Generation | SDXL 1024x1024 base checkpoint KSampler + VAEDecode workflow |
+| `wan21-txt2vid` | Video Generation | Wan 2.1 text-to-video latent frame synthesis |
+| `hunyuan3d-mesh` | 3D Mesh Asset | Hunyuan3D single-prompt 3D geometry generation |
+| `custom-json` | Custom API Graph | Custom exported ComfyUI API JSON using `{{POSITIVE_PROMPT}}`, `{{NEGATIVE_PROMPT}}`, `{{SEED}}`, `{{WIDTH}}`, and `{{HEIGHT}}` placeholders |
+
+### Modality-Aware Switchyard Isolation
+
+When Switchyard `mediaIntentRouting` is enabled (default `true`):
+- Standard text, coding, tool-calling, and vision-input chat completions (`model: "auto"`) **automatically exclude** synthesis-only ComfyUI upstreams so conversational prompts never hit a diffusion endpoint.
+- Generative media prompts on `model: "auto"` (e.g. `"Generate an architectural render..."`, `"Create a 5-second video..."`, `"Generate a 3D GLB mesh..."`) automatically steer to matching ComfyUI workflow nodes.
+- Generated assets are served over TLS through `/api/v1/images/view` with SSRF/IMDS protection, eliminating browser mixed-content warnings, and support optional local LLM prompt enhancement and headless ArtCraft post-processing.

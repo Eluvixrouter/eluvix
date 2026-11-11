@@ -7,6 +7,7 @@ The Eluvix Desktop client (located in `apps/desktop`) packages the full Eluvix r
 ## Features
 
 - **System Tray Integration**: Run Eluvix in the background with quick access to server logs and status.
+- **Full Gateway Parity (`DesktopRouterServer`)**: Built-in support for `ramalama` (`:8080`), `comfyui` (`:8188`), `POST /v1/images/generations`, `POST /v1/route-explain`, and unified cloud-metadata SSRF protection (`169.254.169.254` / IMDSv2 / Alibaba / IPv4-mapped IPv6).
 - **Dedicated Environment**: Isolates your routing console from browser tabs, extensions, and cache conflicts.
 - **Local IPC Hooks**: Communicates directly with the local Switchyard core and local filesystem storage.
 

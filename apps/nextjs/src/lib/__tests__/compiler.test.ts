@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { compileGraph } from '../orchestration/compiler';
+import { analyzeGraphDiagnostics } from '../orchestration/diagnostics';
+import { decompileConfigToGraph } from '../orchestration/decompiler';
+import { EXAMPLE_LAYOUTS } from '../layouts/examples';
 import { Node } from '@xyflow/react';
 
 describe('Eluvix Canvas Compiler', () => {
@@ -608,6 +611,214 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(result.disaggregatedSetup).toContain('setmaxnreg.dec.sync.aligned.u32 40');
       expect(result.disaggregatedSetup).toContain('setmaxnreg.inc.sync.aligned.u32 232');
       expect(result.disaggregatedSetup).toContain('CU_TENSOR_MAP_SWIZZLE_128B');
+    });
+
+    it('compiles ramalamaNode alongside lemonadeNode and ollamaNode with OCI container & runtime settings', () => {
+      const nodes: Node[] = [
+        switchyardNode,
+        {
+          id: 'ramalama-1',
+          type: 'ramalamaNode',
+          position: { x: 100, y: 100 },
+          data: {
+            label: 'RamaLama OCI Runner',
+            endpoint: 'http://localhost:8080',
+            selectedModel: 'granite-code:8b',
+            priority: 21,
+            ramalama: {
+              containerEngine: 'podman',
+              runtime: 'vllm',
+              ociTransport: 'oci',
+              accelerator: 'cuda',
+              selinuxEnforcing: true,
+              ctxSize: 16384,
+              ngl: 99,
+            },
+          },
+        },
+      ];
+      const edges = [{ id: 'e-rama', source: 'sw-1', target: 'ramalama-1', sourceHandle: 'tier-1' } as any];
+      const result = compileGraph(nodes, edges);
+
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'ramalama-1');
+      expect(upstream).toBeDefined();
+      expect(upstream.type).toBe('ramalama');
+      expect(upstream.name).toBe('RamaLama OCI Runner');
+      expect(upstream.endpoint).toBe('http://localhost:8080');
+      expect(upstream.models).toEqual(['granite-code:8b']);
+      expect(upstream.tier).toBe('tier-1');
+      expect(upstream.maxComplexityScore).toBe(4);
+      expect(upstream.ramalama).toEqual({
+        containerEngine: 'podman',
+        runtime: 'vllm',
+        ociTransport: 'oci',
+        accelerator: 'cuda',
+        selinuxEnforcing: true,
+        ctxSize: 16384,
+        ngl: 99,
+      });
+      expect(result.rawRouterConfig.egressPolicy).toBe('local-only');
+      expect(result.bifrostYaml).toContain('type: ramalama');
+      expect(result.bifrostYaml).toContain('container_engine: podman');
+      expect(result.bifrostYaml).toContain('runtime: vllm');
+      expect(result.bifrostYaml).toContain('oci_transport: oci');
+      expect(result.ramalamaSetup).toContain('[Container]');
+      expect(result.ramalamaSetup).toContain('Image=quay.io/ramalama/cuda:latest');
+      expect(result.ramalamaSetup).toContain('SecurityLabelType=container_engine_t');
+      expect(result.ramalamaSetup).toContain('PublishPort=8080:8080');
+    });
+
+    it('wires knowledgeBaseNode (--rag) and airgapped sandboxNode (--network=none) into ramalamaNode and Quadlet output', () => {
+      const nodes: Node[] = [
+        switchyardNode,
+        {
+          id: 'kb-1',
+          type: 'knowledgeBaseNode',
+          position: { x: 100, y: 300 },
+          data: {
+            provider: 'openviking',
+            collectionUri: 'oci://quay.io/eluvix/docs-rag:v1',
+          },
+        },
+        {
+          id: 'sb-1',
+          type: 'sandboxNode',
+          position: { x: 100, y: 420 },
+          data: {
+            networkPolicy: 'none',
+          },
+        },
+        {
+          id: 'ramalama-rag-1',
+          type: 'ramalamaNode',
+          position: { x: 400, y: 200 },
+          data: {
+            label: 'Airgapped RamaLama RAG',
+            endpoint: 'http://localhost:8080',
+            selectedModel: 'llama3.2:3b',
+          },
+        },
+      ];
+      const edges = [
+        { id: 'e-sw', source: 'sw-1', target: 'ramalama-rag-1', sourceHandle: 'tier-1' },
+        { id: 'e-kb', source: 'kb-1', target: 'ramalama-rag-1' },
+        { id: 'e-sb', source: 'sb-1', target: 'ramalama-rag-1' },
+      ] as any;
+
+      const result = compileGraph(nodes, edges);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'ramalama-rag-1');
+      expect(upstream.ramalama.ragOciUri).toBe('oci://quay.io/eluvix/docs-rag:v1');
+      expect(upstream.ramalama.networkIsolation).toBe('none');
+      expect(upstream.ramalama.selinuxEnforcing).toBe(true);
+      expect(upstream.ramalama.readOnlyRootfs).toBe(true);
+      expect(result.ramalamaSetup).toContain("--rag 'oci://quay.io/eluvix/docs-rag:v1'");
+      expect(result.ramalamaSetup).toContain('--network=none');
+      expect(result.ramalamaSetup).toContain('Network=none');
+    });
+
+    it('compiles Sovereign OCI Container Triad layout (Bundled Example 21) and round-trips via decompileConfigToGraph', async () => {
+      const { EXAMPLE_LAYOUTS } = await import('../layouts/examples/index');
+      const triadLayout = EXAMPLE_LAYOUTS.find(
+        (l) => l.id === 'sovereign-oci-ramalama-lemonade-ollama-triad'
+      );
+      expect(triadLayout).toBeDefined();
+
+      const result = compileGraph(triadLayout!.nodes, triadLayout!.edges);
+      expect(result.rawRouterConfig.egressPolicy).toBe('local-only');
+
+      const ramaUp = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'ramalama-triad-1');
+      const lemUp = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'lemonade-triad-1');
+      const ollUp = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'ollama-triad-1');
+      expect(ramaUp?.type).toBe('ramalama');
+      expect(ramaUp?.ramalama?.ragOciUri).toBe('oci://quay.io/eluvix/codebase-rag:latest');
+      expect(lemUp?.type).toBe('lemonade');
+      expect(ollUp?.type).toBe('ollama');
+
+      // Decompile back to React Flow graph
+      const decompiled = decompileConfigToGraph(result.rawRouterConfig);
+      expect(decompiled.nodes.some((n) => n.type === 'ramalamaNode' && n.id === 'ramalama-triad-1')).toBe(true);
+      expect(decompiled.nodes.some((n) => n.type === 'lemonadeNode' && n.id === 'lemonade-triad-1')).toBe(true);
+      expect(decompiled.nodes.some((n) => n.type === 'ollamaNode' && n.id === 'ollama-triad-1')).toBe(true);
+      expect(decompiled.nodes.some((n) => n.type === 'privacyGuardNode')).toBe(true);
+      expect(decompiled.nodes.some((n) => n.type === 'semanticGuardNode')).toBe(true);
+      expect(decompiled.nodes.some((n) => n.type === 'knowledgeBaseNode')).toBe(true);
+    });
+
+    it('detects port collisions across distinct engine types while permitting shared ports for the same engine type', () => {
+      const collisionNodes: Node[] = [
+        {
+          id: 'rama-1',
+          type: 'ramalamaNode',
+          position: { x: 0, y: 0 },
+          data: { endpoint: 'http://localhost:8000', selectedModel: 'granite:8b' },
+        },
+        {
+          id: 'vllm-1',
+          type: 'vllmNode',
+          position: { x: 0, y: 200 },
+          data: { endpoint: 'http://127.0.0.1:8000', selectedModel: 'llama3:70b' },
+        },
+        {
+          id: 'lem-a',
+          type: 'lemonadeNode',
+          position: { x: 0, y: 400 },
+          data: { endpoint: 'http://localhost:13305', selectedModel: 'qwen:7b' },
+        },
+        {
+          id: 'lem-b',
+          type: 'lemonadeNode',
+          position: { x: 0, y: 500 },
+          data: { endpoint: 'http://localhost:13305', selectedModel: 'llama:3b' },
+        },
+      ];
+
+      const report = analyzeGraphDiagnostics(collisionNodes, [], 24);
+      const portCollisions = report.diagnostics.filter((d) => d.code === 'PORT_COLLISION');
+      expect(portCollisions).toHaveLength(1);
+      expect(portCollisions[0].details?.hostPort).toBe('localhost:8000');
+      expect(portCollisions[0].nodeIds).toEqual(['rama-1', 'vllm-1']);
+
+      const vramWarnings = report.diagnostics.filter((d) => d.code === 'VRAM_OVERCOMMIT');
+      expect(vramWarnings).toHaveLength(1);
+      expect(report.estimatedTotalVramGb).toBeGreaterThan(24);
+    });
+
+    it('compiles ComfyUINode with LLM Prompt Enhancer, ArtCraft Post-Processing, Harness MCP, and Reverse Loopback (4 Pillars)', () => {
+      const comfyLayout = EXAMPLE_LAYOUTS.find(
+        (l) => l.id === 'comfyui-flux-artcraft-creative-pipeline'
+      );
+      expect(comfyLayout).toBeDefined();
+
+      const result = compileGraph(comfyLayout!.nodes, comfyLayout!.edges);
+      const comfyUp = result.rawRouterConfig.upstreams.find(
+        (u: any) => u.id === 'comfyui-studio-1'
+      );
+      expect(comfyUp).toBeDefined();
+      expect(comfyUp.type).toBe('comfyui');
+      expect(comfyUp.endpoint).toBe('http://localhost:8188');
+      expect(comfyUp.comfyui.workflowPreset).toBe('flux-txt2img');
+      expect(comfyUp.comfyui.promptEnhancerUpstreamId).toBe('lemonade-enhancer-1');
+      expect(comfyUp.comfyui.postProcessArtCraftApp).toBe('vectorcraft');
+      expect(comfyUp.comfyui.loopbackEluvixUrl).toBe('http://127.0.0.1:3588/v1');
+      expect(comfyUp.comfyui.vramMode).toBe('lowvram');
+      expect(comfyUp.comfyui.reserveVramGb).toBe(6);
+
+      expect(result.comfyuiSetup).toContain('--lowvram');
+      expect(result.comfyuiSetup).toContain('--reserve-vram 6');
+      expect(result.comfyuiSetup).toContain("OPENAI_API_BASE='http://127.0.0.1:3588/v1'");
+      expect(result.bifrostYaml).toContain('type: comfyui');
+      expect(result.bifrostYaml).toContain('workflow_preset: flux-txt2img');
+
+      // Decompile and verify comfyuiNode + prompt enhancer edge round-trip
+      const decompiled = decompileConfigToGraph(result.rawRouterConfig);
+      expect(
+        decompiled.nodes.some((n) => n.type === 'comfyuiNode' && n.id === 'comfyui-studio-1')
+      ).toBe(true);
+      expect(
+        decompiled.edges.some(
+          (e) => e.source === 'lemonade-enhancer-1' && e.target === 'comfyui-studio-1'
+        )
+      ).toBe(true);
     });
   });
 });

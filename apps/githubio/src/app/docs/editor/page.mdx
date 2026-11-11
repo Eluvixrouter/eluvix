@@ -1,17 +1,18 @@
-# Visual Routing Editor
+# Eluvix Visual Node Routing Editor
 
-The Eluvix Visual Routing Editor (accessible at `/editor`) is an interactive, graph-based canvas powered by React Flow for designing, inspecting, and compiling multimodal routing topologies, agent gateways, and security guardrails.
+The **Eluvix Visual Node Routing Editor** (accessible at `/editor`) is an interactive, Pro Studio graph-based canvas powered by React Flow for designing, auto-laying out, live-simulating, auto-healing, and compiling multimodal routing topologies, agent gateways, and security guardrails.
 
 ---
 
-## Canvas Interface & Usability
+## Pro Studio Capabilities
 
-The editor provides a modern, dark-slate visual development environment with ergonomic design enhancements:
-- **Ergonomic Node Handles**: Enlarged, color-coded grab handles with extended hitboxes for effortless connection wiring.
-- **High-Visibility SVG Wires**: Thicker bezier connection wires with distinct color-coding based on the source port's operational layer.
-- **Dynamic Port Handles**: Nodes such as the **Task Router** and **Switchyard** dynamically project multiple semantic output ports (e.g. `#intent-code`, `#intent-reasoning`, `#tier-local`, `#tier-cloud`).
-- **Interactive In-Card Controls**: Direct on-canvas toggles, sliders, and inputs for immediate adjustments without opening deep modal menus.
-- **Properties Inspector Panel**: Selecting any node on the canvas opens a dedicated inspector panel on the right sidebar for fine-grained configuration.
+The **Eluvix Visual Node Routing Editor** combines tactile graph wiring with keyboard-first studio tooling:
+- **Spotlight Command Palette (`Cmd/Ctrl + K`)**: Fuzzy-search and spawn any of the 28+ node types at viewport center, switch starter presets, run auto-layout, trigger compilation, or auto-heal graph diagnostics.
+- **50-State Undo / Redo (`Cmd/Ctrl + Z` / `Cmd/Ctrl + Shift + Z`)**: Full snapshot history stack across node insertions, parameter edits, edge wiring, deletions, and layout transforms.
+- **Deterministic Sugiyama Topological Auto-Layout**: One-click 5-stage left-to-right hierarchical graph layout (`Entry / Guards` &rarr; `Cache / Memory / RAG` &rarr; `Routers / Judges` &rarr; `Gateways / Harnesses` &rarr; `Local & Cloud Upstreams / Observability`) with barycentric edge-crossing minimization.
+- **Interactive Live Canvas Route Simulator**: Dry-run prompts with modality, token count, and confidential flags directly on the canvas via `POST /api/v1/route-explain`—animating the winning path in emerald green and dimming bypassed edges in amber with hoverable rejection reasons.
+- **One-Click Diagnostic Auto-Fix**: Actionable **"Fix Now"** buttons per lint warning and **"Fix All Issues"** batch healing for disconnected nodes, ungrounded Knowledge Bases, single-point-of-failure upstreams, unguarded cloud PII paths, and circular routing loops.
+- **Ergonomic Node Handles & Dynamic Ports**: Enlarged color-coded grab handles, semantic intent ports (`#intent-code`, `#intent-reasoning`, `#tier-local`, `#tier-cloud`), and direct in-card controls.
 
 ```text
 [ Client Entrypoint ]
@@ -59,10 +60,10 @@ The Routing Editor organizes nodes into functional categories:
 ### 2. Routing & Intent Dispatchers
 - **Switchyard Router (`switchyardNode`)**:
   - Layer 7 adaptive balancer supporting 5 routing strategies (`cost-complexity`, `cascade-cost`, `lowest-cost`, `lowest-latency`, `round-robin`).
-  - Configurable latency spillover circuit breaker (`spilloverThresholdMs`).
-  - Upstream network timeout (`timeoutMs`) and retry counts.
+  - Modality-aware media intent routing (`mediaIntentRouting`) isolating ComfyUI synthesis nodes from text chat while steering generative media prompts.
+  - Configurable latency spillover circuit breaker (`spilloverThresholdMs`), upstream timeout (`timeoutMs`), and retry counts.
   - Token complexity boundaries and automatic code escalation.
-  - Financial spending cap (`maxCostPerRequest`).
+  - Financial governance: per-request cap (`maxCostPerRequest`) and rolling 24-hour cloud spend cap (`maxDailySpendUsd` with `budgetExhaustedAction`: `prefer-local`, `strict-local`, or `reject`).
 - **Task Router (`taskRouterNode`)**:
   - Dispatches queries based on semantic intent using Heuristic Regex, FastEmbed Similarity, or Micro-LLM classification.
   - Dynamic intent target handles: `#intent-code`, `#intent-reasoning`, `#intent-fast`, `#intent-tools`, `#intent-default`.
@@ -107,28 +108,30 @@ The Routing Editor organizes nodes into functional categories:
   - Context and long-term memory providers: `openviking`, `mem0`, `sqlite`.
   - Configurable max memory token budget (100–2,000 tokens) prepended in `<recalled_context>`.
   - Privacy Egress Firewall: `cloudMode: "filter"` or `cloudMode: "strip"` to safeguard private memory from third-party cloud leakage.
-- **Local Engine Nodes (`lemonadeNode`, `vllmNode`, `ollamaNode`)**:
-  - Local GPU/NPU-accelerated runtimes.
-  - Priority scoring, max parallel concurrency, and context window limits.
+- **Local Engine & Synthesis Nodes (`ramalamaNode`, `comfyuiNode`, `lemonadeNode`, `vllmNode`, `ollamaNode`)**:
+  - **RamaLama (`ramalamaNode`)**: Rootless Podman/Docker OCI inference (`:8080`) with `--rag` artifacts, SELinux isolation, `--network=none` air-gapping, and systemd Quadlet `.container` unit generation.
+  - **ComfyUI (`comfyuiNode`)**: Local diffusion, video, and 3D mesh DAG engine (`:8188`) with workflow presets (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), live VRAM status, local LLM prompt enhancer, and ArtCraft post-processing.
+  - **Ollama / vLLM / Lemonade**: Local GPU/NPU-accelerated runtimes with priority scoring, max parallel concurrency, and context window limits.
 - **Cloud Providers & Agent CLI Nodes**:
-  - Billama Cloud, OpenAI Direct, Anthropic Claude Direct, Google Antigravity AGY, OpenAI Codex, Claude Code.
+  - Google Antigravity AGY (with first-class **Gemini 4 Carbon** `1M` context & `-low`/`-medium`/`-high`/`-xhigh`/`-max` effort tiers), Billama Cloud, OpenAI Direct, Anthropic Claude Direct, OpenAI Codex, Claude Code.
 
 ---
 
 ## Multi-Target Compiler (`compiler.ts`)
 
-Clicking **"Compile & Save"** converts visual graph connections into 10 synchronized configuration artifacts:
+Clicking **"Compile & Save"** converts visual graph connections into synchronized configuration artifacts:
 
 | Configuration Artifact | Target System | Description |
 | :--- | :--- | :--- |
-| `eluvix.json` | `@eluvix/router-core` | Master runtime routing, guard, and caching configuration |
+| `eluvix.json` | `@eluvix/router-core` | Master runtime routing, modality policies, spend caps, guards, and caching |
 | `bifrost.yaml` | Bifrost Proxy | Upstream model routing, caching, rate limits, and fallback policies |
+| `eluvix-ramalama.container` | Podman Quadlet / systemd | Rootless OCI container unit generated when `ramalamaNode` is present |
 | `agent-router.json` | Agent Router | Intent classification engines, routing preference, and intent targets |
 | `semantic-router.ts` | Semantic Router | Embedding classifier routes, sensitivity thresholds, and threat vectors |
 | `privacy-guard.ts` | Privacy Guard | PII entity detection, redaction styles, whitelist, and custom regex |
 | `agent-gateway.json` | Agent Gateway | MCP access policies, tool filter lists, timeouts, and sanitization |
 | `observability.ts` | OpenTelemetry / Braintrust | Telemetry collector endpoints, sampling rates, and SLA alerts |
-| `antigravity.yaml` | Google AGY | Antigravity agent CLI execution mode, thinking budget, and sandboxes |
+| `antigravity.yaml` | Google AGY | Antigravity agent CLI execution mode, Gemini 4 Carbon effort, and sandboxes |
 | `codex.json` | OpenAI Codex | Codex CLI toolchain, reasoning effort, and approval policies |
 | `claudecode.json` | Claude Code | Claude Code permissions, tool toggles, and token budgets |
 

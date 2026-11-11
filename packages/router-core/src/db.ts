@@ -17,6 +17,7 @@ export interface RequestLog {
   ttft_ms?: number;
   itl_ms?: number;
   kv_cache_kb?: number;
+  cost_usd?: number;
   user_id?: string;
 }
 
@@ -30,6 +31,7 @@ export interface SqliteDb {
 }
 
 let dbInstance: SqliteDb | null = null;
+let dbInstancePath: string | null = null;
 
 function initSchema(db: SqliteDb) {
   db.exec(`
@@ -44,7 +46,8 @@ function initSchema(db: SqliteDb) {
       completion_tokens INTEGER DEFAULT 0,
       ttft_ms INTEGER,
       itl_ms REAL,
-      kv_cache_kb REAL
+      kv_cache_kb REAL,
+      cost_usd REAL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS chat_history (
@@ -151,22 +154,25 @@ function initSchema(db: SqliteDb) {
   if (!reqCols.some(c => c.name === 'kv_cache_kb')) {
     db.exec('ALTER TABLE request_logs ADD COLUMN kv_cache_kb REAL');
   }
+  if (!reqCols.some(c => c.name === 'cost_usd')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN cost_usd REAL DEFAULT 0');
+  }
   if (!reqCols.some(c => c.name === 'user_id')) {
     db.exec("ALTER TABLE request_logs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_user ON request_logs(user_id, id DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp DESC)');
 }
 
 export function getDb(): SqliteDb {
-  if (dbInstance) return dbInstance;
-
   const { dataDir } = getAppPaths('eluvix');
+  const dbPath = path.join(dataDir, 'eluvix.db');
+
+  if (dbInstance && dbInstancePath === dbPath) return dbInstance;
 
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
-
-  const dbPath = path.join(dataDir, 'eluvix.db');
 
   // Try native node:sqlite first (Node.js 22.8+ built-in, no binary addon issues)
   try {
@@ -176,6 +182,7 @@ export function getDb(): SqliteDb {
       db.exec('PRAGMA journal_mode = WAL;');
       initSchema(db);
       dbInstance = db;
+      dbInstancePath = dbPath;
       return db;
     }
   } catch (err: any) {
@@ -189,6 +196,7 @@ export function getDb(): SqliteDb {
     db.exec('PRAGMA journal_mode = WAL;');
     initSchema(db);
     dbInstance = db;
+    dbInstancePath = dbPath;
     return db;
   } catch (err: any) {
     console.error('[Eluvix DB] Failed to initialize SQLite backend:', err.message);
@@ -200,8 +208,8 @@ export function logRequest(log: RequestLog) {
   try {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb, cost_usd, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -214,10 +222,34 @@ export function logRequest(log: RequestLog) {
       log.ttft_ms ?? null,
       log.itl_ms ?? null,
       log.kv_cache_kb ?? null,
+      typeof log.cost_usd === 'number' && Number.isFinite(log.cost_usd) ? log.cost_usd : 0,
       log.user_id || 'default'
     );
   } catch (err: any) {
     console.error('Failed to log request to DB:', err.message);
+  }
+}
+
+export function getRollingSpendUsd(windowHours = 24, userId?: string): number {
+  try {
+    const db = getDb();
+    const safeHours = Math.max(0.01, Number(windowHours) || 24);
+    const modifier = `-${safeHours} hours`;
+    if (userId) {
+      const row = db
+        .prepare(
+          "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_logs WHERE user_id = ? AND timestamp >= datetime('now', ?)"
+        )
+        .get(userId, modifier) as { total?: number } | undefined;
+      return Number(Number(row?.total || 0).toFixed(6));
+    }
+    const row = db
+      .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_logs WHERE timestamp >= datetime('now', ?)")
+      .get(modifier) as { total?: number } | undefined;
+    return Number(Number(row?.total || 0).toFixed(6));
+  } catch (err: any) {
+    console.error('Failed to query rolling spend from DB:', err.message);
+    return 0;
   }
 }
 

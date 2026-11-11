@@ -78,6 +78,8 @@ export async function middleware(req: NextRequest) {
       if (
         /^elx_[A-Za-z]{24,64}$/.test(token) &&
         (pathname.startsWith('/api/v1/chat') ||
+          pathname.startsWith('/api/v1/images') ||
+          pathname.startsWith('/api/v1/metrics') ||
           pathname.startsWith('/api/v1/memory') ||
           pathname.startsWith('/api/v1/models') ||
           pathname.startsWith('/api/v1/route-explain') ||

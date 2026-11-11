@@ -17,7 +17,8 @@ import {
   isAllowedLocalHost,
   desktopTokenEquals,
   extractDesktopToken,
-  DESKTOP_TOKEN_HEADER
+  DESKTOP_TOKEN_HEADER,
+  validateUpstreamHttpEndpoint
 } from '@eluvix/router-core';
 import EventEmitter from 'node:events';
 
@@ -89,6 +90,14 @@ export class DesktopRouterServer extends EventEmitter {
           models: ['llama3', 'llama3.1', 'qwen2.5-coder', 'mistral']
         },
         {
+          id: 'ramalama',
+          name: 'Local RamaLama OCI',
+          type: 'ramalama',
+          endpoint: 'http://localhost:8080',
+          priority: 19,
+          models: ['llama3.2:latest', 'qwen2.5-coder:7b']
+        },
+        {
           id: 'lemonade',
           name: 'Lemonade Router',
           type: 'lemonade',
@@ -97,10 +106,22 @@ export class DesktopRouterServer extends EventEmitter {
           models: ['llama3.2-1b-FLM', 'Qwen3.5-4B-MTP-GGUF']
         },
         {
+          id: 'comfyui',
+          name: 'Local ComfyUI Studio',
+          type: 'comfyui',
+          endpoint: 'http://localhost:8188',
+          priority: 16,
+          models: ['flux1-dev-fp8.safetensors', '*'],
+          comfyui: {
+            workflowPreset: 'flux-txt2img',
+            vramMode: 'lowvram'
+          }
+        },
+        {
           id: 'switchyard',
           name: 'Local Switchyard Node',
           type: 'switchyard',
-          endpoint: 'http://localhost:8080',
+          endpoint: 'http://localhost:8090',
           priority: 15,
           models: ['deepseek-ai/deepseek-coder-6.7b', 'codellama/CodeLlama-7b-hf']
         },
@@ -408,6 +429,20 @@ export class DesktopRouterServer extends EventEmitter {
 
         let targetUpstream = this.config.upstreams.find(u => u.id === body.id);
         if (!targetUpstream && body.endpoint) {
+          const endpointGuard = validateUpstreamHttpEndpoint(String(body.endpoint), {
+            allowLoopbackAndLan: true
+          });
+          if (!endpointGuard.ok) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: endpointGuard.reason || 'Blocked unsafe endpoint URL',
+                code: 'ssrf_blocked'
+              })
+            );
+            return;
+          }
           targetUpstream = {
             id: body.id || 'custom-detect',
             name: body.name || 'Custom Node',
@@ -423,6 +458,27 @@ export class DesktopRouterServer extends EventEmitter {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, error: 'Upstream not found' }));
           return;
+        }
+
+        if (
+          targetUpstream.endpoint &&
+          !targetUpstream.endpoint.startsWith('cli://') &&
+          !targetUpstream.endpoint.startsWith('acp://')
+        ) {
+          const targetGuard = validateUpstreamHttpEndpoint(targetUpstream.endpoint, {
+            allowLoopbackAndLan: true
+          });
+          if (!targetGuard.ok) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: targetGuard.reason || 'Blocked unsafe upstream endpoint',
+                code: 'ssrf_blocked'
+              })
+            );
+            return;
+          }
         }
 
         const detected = await detectUpstreamModels(targetUpstream, 5000);
@@ -575,6 +631,105 @@ export class DesktopRouterServer extends EventEmitter {
           'Content-Type': 'application/json'
         });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      // OpenAI-compatible Image & Media Generation (`/v1/images/generations`)
+      if (
+        (pathname === '/v1/images/generations' || pathname === '/api/v1/images/generations') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(30000);
+        const startTime = Date.now();
+        const bodyStr = await this.readBody(req);
+        const imgReq = JSON.parse(bodyStr || '{}');
+
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const abortController = new AbortController();
+        req.on('close', () => {
+          if (!res.writableEnded) {
+            abortController.abort(new DOMException('Client closed connection', 'AbortError'));
+          }
+        });
+
+        const imgResponse = await this.router.routeImageGeneration(imgReq, {
+          signal: abortController.signal,
+          hops
+        });
+        const durationMs = Date.now() - startTime;
+        const actualUpstream = imgResponse.headers.get('x-eluvix-upstream') || 'ComfyUI';
+        const servedModel = imgResponse.headers.get('x-eluvix-model') || imgReq.model || 'comfyui-diffusion';
+
+        const logEntry: RequestLog = {
+          id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          timestamp: new Date().toLocaleTimeString(),
+          model: servedModel,
+          upstream: actualUpstream,
+          status: imgResponse.status,
+          durationMs,
+          streaming: false
+        };
+        this.emit('request-logged', logEntry);
+
+        const forwardedHeaders: Record<string, string> = {};
+        imgResponse.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+
+        const payload = await imgResponse.json().catch(() => ({}));
+        res.writeHead(imgResponse.status, {
+          ...forwardedHeaders,
+          'Content-Type': 'application/json'
+        });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
+      // Deterministic Non-Executing Route Explain (`/v1/route-explain`)
+      if (
+        (pathname === '/v1/route-explain' || pathname === '/api/v1/route-explain') &&
+        req.method === 'POST'
+      ) {
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        if (!Array.isArray(body.messages) || body.messages.length === 0) {
+          this.rejectJson(res, 400, 'Request must include a non-empty messages array.', 'missing_required_parameter');
+          return;
+        }
+
+        const activeRouter =
+          body.configOverride && Array.isArray(body.configOverride.upstreams)
+            ? new Eluvix(body.configOverride as RouterConfig)
+            : this.router;
+
+        const explanation = activeRouter.explainRoute(
+          {
+            model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined,
+            messages: body.messages,
+            tools: Array.isArray(body.tools) ? body.tools : undefined,
+            confidentialPolicy: body.confidentialPolicy,
+            quantizationPolicy: body.quantizationPolicy,
+            fabricPolicy: body.fabricPolicy,
+            crsPolicy: body.crsPolicy,
+            attentionPolicy: body.attentionPolicy,
+            metadata: body.metadata
+          },
+          {
+            scope: { userId: 'default', origin: body.origin === 'harness' ? 'harness' : 'client' },
+            hops: typeof body.hops === 'number' ? body.hops : 0,
+            memoryTainted: Boolean(body.memoryTainted),
+            memoryTokens: typeof body.memoryTokens === 'number' ? body.memoryTokens : 0
+          }
+        );
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(explanation));
         return;
       }
 

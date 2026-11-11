@@ -12,6 +12,12 @@
 
 ## 🌟 Key Capabilities
 
+- **Gemini 4 Carbon First-Class Support (1M Context & Granular Effort)**: Flagship integration for `gemini-4-carbon` via Google Antigravity (`agy`) with 1,000,000-token context, 64,000 max output tokens, multimodal vision, and automated thinking effort variants (`-low`, `-medium`, `-high`, `-xhigh`, `-max`).
+- **ComfyUI Local Media Synthesis (`:8188`) & Modality-Aware Switchyard**: Generates sovereign images, video clips, and 3D meshes via an OpenAI-compatible `POST /v1/images/generations` endpoint backed by ComfyUI workflow DAGs (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), with automated modality intent isolation on `model: "auto"` and an SSRF-guarded HTTPS media proxy.
+- **RamaLama Rootless OCI Containers (`:8080`)**: Deploys GGUF models inside rootless Podman/Docker containers with systemd Quadlet `.container` unit generation, `--rag` OCI knowledge binding, SELinux confinement, and `--network=none` air-gapping.
+- **Eluvix Visual Node Routing Editor Pro Studio (`/editor`)**: 28+ specialized nodes with **Spotlight Command Palette (`Cmd+K`)**, **50-state deep Undo/Redo (`Cmd+Z`)**, **Deterministic Sugiyama Topological Auto-Layout**, **Interactive Live Route Simulator** (emerald/amber animated edge overlays), and **One-Click Diagnostic Auto-Fix**.
+- **Playground 2.0**: Multimodal evaluation studio with **real-time SSE streaming speedometer (TTFT ms & tok/s)**, **drag-and-drop/clipboard Vision attachments**, **ComfyUI Image & Media Studio**, **A/B Split Arena**, and collapsible `<think>` reasoning accordions.
+- **Observability 2.0 & Rolling 24h Cloud Spend Guardrails**: Native **Prometheus `0.0.4` metrics exposition (`/api/v1/metrics`)**, rolling 24-hour cloud spend caps in SQLite (`maxDailySpendUsd`), `prefer-local` / `strict-local` / `reject` guardrails, `X-Eluvix-Budget-Fallback: local-sovereign` headers, and a live 24h Spend Meter in `/observability`.
 - **Zero-Trust Confidential Silicon (AMD SEV-SNP / Intel TDX / NVIDIA H100 & B200 CC)**: Enforces hardware-attested TEE routing (`require-dual-attestation`, `require-tee`, `prefer-tee`), verifying **VMPL 0**, **Restricted Injection (`#HV`)**, **384-bit Launch Measurements**, **NVIDIA SPDM 1.2 RIMs**, and **512-bit `REPORT_DATA` binding** (`SHA512(nonce || ephemeral_pubkey)`) with fail-closed HTTP 503 protection and encrypted `tmpfs` model weight unsealing.
 - **Disaggregated LLM Serving (RDMA / RoCEv2)**: Separates compute-bound prompt Prefill ($>2,048\text{ FLOPs/Byte}$) from memory-bound auto-regressive Decode ($16\text{–}32\text{ FLOPs/Byte}$) across 100G/200G/400G/800G fabrics using **vLLM NIXL** and **SGLang Mooncake** layer-pipelined connectors.
 - **DeepSeek MLA & GQA KV-Cache Modeling**: Built-in KV-footprint math modeling Grouped-Query Attention ($160\text{ KiB/tok}$ in FP8) vs. DeepSeek Multi-Head Latent Attention ($34.3\text{ KiB/tok}$ in FP8, a **$4.66\times$ compression**).
@@ -146,10 +152,10 @@ docker compose \
 Eluvix maintains a comprehensive test suite across the monorepo:
 
 ```bash
-# Test router core (17 test files, 169 tests)
+# Test router core (31 test files, 285 tests)
 pnpm --filter @eluvix/router-core test
 
-# Test Next.js application & layout store (12 test files, 121 tests)
+# Test Next.js application & visual editor (16 test files, 153 tests)
 pnpm --filter nextjs test
 
 # Run full monorepo production build

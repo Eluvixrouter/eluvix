@@ -32,7 +32,7 @@ export interface ProviderAgentConfig {
   nodeName?: string;
   publicIp?: string;
   engineUrl: string;
-  engineType: 'ollama' | 'vllm' | 'lemonade' | 'openai-compatible';
+  engineType: 'ollama' | 'vllm' | 'lemonade' | 'ramalama' | 'comfyui' | 'openai-compatible';
   pricingMode: 'market' | 'floor';
   floorPriceIn?: number;
   floorPriceOut?: number;
@@ -610,7 +610,7 @@ export async function probeLocalEngineModels(
 }
 
 /**
- * Queries local inference engine (Ollama, vLLM, Lemonade) for loaded/available models.
+ * Queries local inference engine (Ollama, vLLM, Lemonade, RamaLama) for loaded/available models.
  *
  * Legacy convenience wrapper: when no probe succeeds (or the engine reports
  * no models) it returns plausible fallback defaults for display purposes.

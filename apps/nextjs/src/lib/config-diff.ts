@@ -66,7 +66,9 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'crs',
   'vectorcraft',
   'artcraft',
-  'attentionKernel'
+  'attentionKernel',
+  'ramalama',
+  'comfyui'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [

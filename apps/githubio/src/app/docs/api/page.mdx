@@ -106,6 +106,9 @@ Authorization: Bearer <ADMIN_PASSWORD_OR_NAMED_KEY>
 - `X-Eluvix-Fabric-Topology`: Active GPU cluster fabric (`rail-dlb-oooddp`, `rail-srv6-usid`, `rail-pxn-ecmp`, `tor-static-ecmp`).
 - `X-Eluvix-RDMA-Transport`: Active RoCEv2 transport mode (`rocev2-dlb-oooddp`, `rocev2-srv6-usid`, `rocev2-pxn-4qp`, `rocev2-static-ecmp`).
 - `X-Eluvix-SRv6-uSID-Carrier`: 128-bit SRv6 Micro-SID carrier address (e.g. `fcbb:bb00:0202:0104:0040::`).
+- `X-Eluvix-Cost-USD`: Estimated USD cost recorded in SQLite telemetry for the request.
+- `X-Eluvix-Rolling-24h-Spend-USD`: Rolling 24-hour cumulative cloud spend in USD when `maxDailySpendUsd` is active.
+- `X-Eluvix-Budget-Fallback`: Set to `local-sovereign` when Switchyard soft-fails over to $0 local hardware due to the 24-hour spend ceiling.
 - `X-Eluvix-Hops`: Incremented hop count returned to the caller.
 
 #### Request Example (cURL)
@@ -177,6 +180,25 @@ Returns detailed real-time telemetry:
 Executes operational maintenance tasks:
 - `{"action": "ping"}`: Sends a lightweight synthetic completion to verify end-to-end pipeline health.
 - `{"action": "purge"}`: Clears historical entries from `request_logs`.
+
+### `GET /api/v1/metrics`
+Returns Prometheus `0.0.4` text exposition metrics (`text/plain; version=0.0.4; charset=utf-8`), including request counters, token counters, TTFT/ITL gauges, rolling 24-hour cloud spend (`eluvix_rolling_24h_spend_usd`), daily spend cap (`eluvix_daily_spend_cap_usd`), and circuit breaker states. Supports `Authorization: Bearer elx_...` Named API Keys.
+
+### `POST /api/v1/route-explain`
+Executes a non-destructive Switchyard dry-run trace and returns modality classification, complexity tier, budget guardrail evaluation, candidate scores, and the winning upstream without invoking any model.
+
+---
+
+## 4b. ComfyUI Media Synthesis & Status
+
+### `POST /api/v1/images/generations`
+OpenAI-compatible local image, video, and 3D mesh generation endpoint backed by ComfyUI (`:8188`). Supports `model` workflow presets (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), `prompt`, `negative_prompt`, `size` (e.g. `"1024x1024"`), `seed`, and `response_format` (`"url"` or `"b64_json"`).
+
+### `GET /api/v1/images/view`
+SSRF-guarded HTTPS media proxy that streams generated PNG, WEBP, MP4, or GLB files from the configured ComfyUI `/view` endpoint without mixed-content warnings.
+
+### `GET /api/v1/comfyui/status`
+Probes the active ComfyUI server (`:8188/system_stats` and `/queue`) and returns GPU device name, free/total VRAM in GiB, and running/pending queue counts.
 
 ---
 

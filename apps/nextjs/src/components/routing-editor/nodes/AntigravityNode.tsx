@@ -36,6 +36,7 @@ interface PresetOption {
 }
 
 const DEFAULT_MODEL_PRESETS: PresetOption[] = [
+  { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon (Flagship Reasoning & Systems Architecture)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon (Next-Gen Flagship & Deep Thinking)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Fast & Extended Reasoning)', tier: 'Standard', efforts: ['low', 'medium', 'high'] },
   { id: 'claude-opus-5-5', name: 'Claude Opus 5.5 (Deep Reasoning & Architecture)', tier: 'Frontier', efforts: ['low', 'medium', 'high'] },

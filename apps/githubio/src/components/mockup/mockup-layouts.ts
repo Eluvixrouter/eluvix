@@ -815,5 +815,66 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e-sw-lem', source: 'switchyard-1', sourceHandle: 'tier-1', target: 'lemonade-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e-lem-obs', source: 'lemonade-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+
+  // 13. Sovereign OCI Container Triad: RamaLama + Lemonade + Ollama
+  {
+    id: 'sovereign-oci-ramalama-lemonade-ollama-triad',
+    name: 'Sovereign OCI Container Triad (RamaLama + Lemonade + Ollama)',
+    description:
+      'Airgapped local triad combining Lemonade (:13305 NPU/Hybrid), RamaLama (:8080 rootless Podman OCI container), and Ollama (:11434 GGUF reasoning).',
+    category: 'local',
+    tags: ['ramalama', 'podman', 'oci', 'lemonade', 'ollama', 'airgapped'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.8 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 220 }, data: { label: 'Client Input' } },
+      { id: 'privacy-guard-1', type: 'privacyGuardNode', position: { x: 260, y: 120 }, data: { action: 'anonymize' } },
+      { id: 'switchyard-1', type: 'switchyardNode', position: { x: 580, y: 180 }, data: { strategy: 'cost-complexity' } },
+      { id: 'lemonade-1', type: 'lemonadeNode', position: { x: 960, y: 40 }, data: { label: 'Lemonade Engine', endpoint: ':13305', priority: 30, selectedModel: 'Qwen3.5-4B-MTP-GGUF' } },
+      { id: 'ramalama-1', type: 'ramalamaNode', position: { x: 960, y: 200 }, data: { label: 'RamaLama OCI Engine', endpoint: ':8080', priority: 26, selectedModel: 'granite-code:8b' } },
+      { id: 'ollama-1', type: 'ollamaNode', position: { x: 960, y: 360 }, data: { label: 'Ollama Engine', endpoint: ':11434', priority: 22, selectedModel: 'deepseek-r1:14b' } },
+      { id: 'observability-1', type: 'observabilityNode', position: { x: 1320, y: 200 }, data: { projectName: 'eluvix-oci-triad' } }
+    ],
+    edges: [
+      { id: 'e1', source: 'input-1', target: 'privacy-guard-1', animated: true, style: { stroke: '#22c55e' } },
+      { id: 'e2', source: 'privacy-guard-1', target: 'switchyard-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e3', source: 'switchyard-1', target: 'lemonade-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e4', source: 'switchyard-1', target: 'ramalama-1', animated: true, style: { stroke: '#fb923c' } },
+      { id: 'e5', source: 'switchyard-1', target: 'ollama-1', animated: true, style: { stroke: '#c084fc' } },
+      { id: 'e6', source: 'ramalama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
+  },
+
+  // 14. ComfyUI + Local LLM + ArtCraft Creative Studio Pipeline
+  {
+    id: 'comfyui-flux-artcraft-creative-pipeline',
+    name: 'ComfyUI + Local LLM + ArtCraft Creative Studio',
+    description:
+      'End-to-end sovereign creative pipeline: Lemonade (:13305) expands prompts via local LLM, ComfyUI (:8188) renders Flux.1 / Wan 2.1 media with shared GPU VRAM coordination, and VectorCraft vectorizes outputs into SVG.',
+    category: 'local',
+    tags: ['comfyui', 'flux', 'diffusion', 'artcraft', 'vectorcraft', 'lemonade'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.8 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 200 }, data: { label: 'Creative Prompt / /v1/images' } },
+      { id: 'switchyard-1', type: 'switchyardNode', position: { x: 340, y: 180 }, data: { strategy: 'cost-complexity' } },
+      { id: 'lemonade-1', type: 'lemonadeNode', position: { x: 680, y: 60 }, data: { label: 'Lemonade Prompt Enhancer', endpoint: ':13305', priority: 28, selectedModel: 'Qwen3.5-4B-MTP-GGUF' } },
+      { id: 'comfyui-1', type: 'comfyuiNode', position: { x: 1020, y: 200 }, data: { label: 'ComfyUI Flux.1 Studio', endpoint: ':8188', priority: 25, comfyui: { workflowPreset: 'flux-txt2img' } } },
+      { id: 'observability-1', type: 'observabilityNode', position: { x: 1360, y: 200 }, data: { projectName: 'eluvix-comfyui-studio' } }
+    ],
+    edges: [
+      { id: 'e1', source: 'input-1', target: 'switchyard-1', animated: true, style: { stroke: '#22c55e' } },
+      { id: 'e2', source: 'switchyard-1', target: 'lemonade-1', animated: true, style: { stroke: '#eab308' } },
+      { id: 'e3', source: 'switchyard-1', target: 'comfyui-1', animated: true, style: { stroke: '#e879f9' } },
+      { id: 'e4', source: 'lemonade-1', target: 'comfyui-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e5', source: 'comfyui-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];
