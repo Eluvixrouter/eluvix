@@ -4,6 +4,14 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['@eluvix/router-core', 'better-sqlite3'],
   },
+  async rewrites() {
+    return [
+      {
+        source: '/v1/:path*',
+        destination: '/api/v1/:path*',
+      },
+    ];
+  },
 };
 
 export default nextConfig;

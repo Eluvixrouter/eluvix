@@ -381,6 +381,20 @@ export function MockupEditor() {
                 </div>
                 <span className="text-[10px] text-slate-400 group-hover:text-fuchsia-400 font-mono font-bold">+ Add</span>
               </div>
+
+              <div
+                onClick={() => handleAddNode('audioVoiceNode', 'Sovereign Audio & Voice')}
+                className="p-2 border border-teal-500/60 bg-teal-950/20 hover:bg-teal-900/30 rounded-lg cursor-pointer transition flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎙️</span>
+                  <div>
+                    <div className="font-semibold text-xs text-teal-300">Sovereign Audio &amp; Voice</div>
+                    <div className="text-[9px] text-slate-400 font-mono">:8005 STT • :8880 Kokoro TTS</div>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-teal-400 font-mono font-bold">+ Add</span>
+              </div>
             </div>
           </div>
 
@@ -452,10 +466,24 @@ export function MockupEditor() {
                   <span className="text-base">⚡</span>
                   <div>
                     <div className="font-semibold text-xs text-blue-300">Switchyard Router</div>
-                    <div className="text-[9px] text-slate-400 font-mono">Cost &amp; Latency Arbiter</div>
+                    <div className="text-[9px] text-slate-400 font-mono">Cost &amp; Bandit Arbiter</div>
                   </div>
                 </div>
                 <span className="text-[10px] text-slate-400 group-hover:text-blue-400 font-mono font-bold">+ Add</span>
+              </div>
+
+              <div
+                onClick={() => handleAddNode('speculativeCascadeNode', 'Speculative Cascade')}
+                className="p-2 border border-indigo-500/60 bg-indigo-950/20 hover:bg-indigo-900/30 rounded-lg cursor-pointer transition flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🚀</span>
+                  <div>
+                    <div className="font-semibold text-xs text-indigo-300">Speculative Cascade</div>
+                    <div className="text-[9px] text-slate-400 font-mono">#draft ➔ #verifier + Shadow DPO</div>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-indigo-400 font-mono font-bold">+ Add</span>
               </div>
 
               <div
@@ -768,6 +796,48 @@ export function MockupEditor() {
                     </div>
                   )}
 
+                  {node.type === 'audioVoiceNode' && (
+                    <div className="bg-gray-900 border-2 border-teal-500 rounded-lg p-3 w-72 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">🎙️</span>
+                          <div>
+                            <div className="font-bold text-teal-300 text-xs">{node.data?.label || 'Sovereign Audio & Voice'}</div>
+                            <div className="text-[9px] text-gray-400 font-mono">:8005 Speaches • :8880 Kokoro</div>
+                          </div>
+                        </div>
+                        <span className="text-[9px] bg-teal-500/20 text-teal-300 px-1 py-0.2 rounded font-mono font-bold">
+                          STT + TTS
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-300">
+                        Voice: <strong className="text-teal-300">af_heart (Kokoro 82M)</strong>
+                        <div className="text-[9px] text-emerald-400 mt-1">✓ Headless /v1/audio/* ($0.00)</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {node.type === 'speculativeCascadeNode' && (
+                    <div className="bg-gray-900 border-2 border-indigo-500 rounded-lg p-3 w-72 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">🚀</span>
+                          <div>
+                            <div className="font-bold text-indigo-300 text-xs">{node.data?.label || 'Speculative Cascade'}</div>
+                            <div className="text-[9px] text-gray-400 font-mono">Buffer-Verify Gate (0.78)</div>
+                          </div>
+                        </div>
+                        <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-1 py-0.2 rounded font-mono font-bold">
+                          CASCADE
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-300">
+                        Handles: <strong className="text-emerald-300">#draft</strong> · <strong className="text-sky-300">#verifier</strong> · <strong className="text-amber-300">#shadow-student</strong>
+                        <div className="text-[9px] text-emerald-400 mt-1">✓ Zero Half-Stream Corruption + DPO</div>
+                      </div>
+                    </div>
+                  )}
+
                   {node.type === 'vllmNode' && (
                     <div className="bg-gray-900 border-2 border-cyan-500 rounded-lg p-3 w-72 shadow-2xl">
                       <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
@@ -867,7 +937,7 @@ export function MockupEditor() {
                   )}
 
                   {/* Fallback for other node types */}
-                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'lemonadeNode', 'ollamaNode', 'ramalamaNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'inputNode'].includes(node.type) && (
+                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'speculativeCascadeNode', 'lemonadeNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'audioVoiceNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'inputNode'].includes(node.type) && (
                     <div className="bg-gray-900 border-2 border-slate-700 rounded-lg p-3 w-64 shadow-xl">
                       <div className="font-bold text-xs text-white">{node.data?.label || node.type}</div>
                       <div className="text-[10px] font-mono text-slate-400">{node.type}</div>

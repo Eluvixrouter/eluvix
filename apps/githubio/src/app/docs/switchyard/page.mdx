@@ -33,27 +33,51 @@ Incoming Chat Request (model: "auto")
 
 ## Routing Strategies
 
-Switchyard provides five configurable execution strategies selectable per-graph or dynamically per-request:
+Switchyard provides six configurable execution strategies selectable per-graph or dynamically per-request:
 
 ### 1. Cost & Complexity Matrix (`cost-complexity`) *(Default)*
 The primary intelligent routing mode. Switchyard computes an in-flight complexity score from prompt token counts, code blocks (` ``` `), structured schema definitions, and reasoning keywords.
-- **Low Complexity** (&lt; Moderate threshold): Dispatches to local $0 models (e.g. Llama 3 8B, Qwen 2.5 Coder 7B).
+- **Low Complexity** (&lt; Moderate threshold): Dispatches to local `\$0` models (e.g. Llama 3 8B, Qwen 2.5 Coder 7B).
 - **Moderate Complexity** (between Moderate and Heavy): Routes to local high-parameter models or high-throughput CLI agents (Antigravity AGY).
-- **High Complexity** (&gt; Heavy threshold or code-escalated): Escalates to frontier cloud models (OpenAI o3-mini, Anthropic Claude 3.7 Sonnet).
+- **High Complexity** (&gt; Heavy threshold or code-escalated): Escalates to frontier cloud models (`gemini-4-carbon-high`, OpenAI o3-mini, Anthropic Claude 3.7 Sonnet).
 
-### 2. Strict Cost Escalation (`cascade-cost`)
+### 2. Online Contextual Thompson Bandit (`thompson-bandit`)
+Self-optimizing multi-armed bandit strategy backed by persistent Beta posteriors `(alpha, beta)`, EWMA TTFT/ITL latency, and 5%-per-hour decay in SQLite `bandit_arms`:
+- Samples `(upstreamId, complexityTier)` arms via exact Marsaglia-Tsang Gamma/Beta variates, combining empirical reliability with latency and `\$0.00` sovereign local cost bonuses.
+- Automatically shifts traffic away from degraded or rate-limited providers within a handful of requests and gently re-probes recovered arms over time.
+
+### 3. Strict Cost Escalation (`cascade-cost`)
 Sequential tier progression designed to minimize cloud expenditures:
-- Always executes against local $0 engines first.
+- Always executes against local `\$0` engines first.
 - If all local nodes fail, timeout, or report out-of-memory (OOM), Switchyard escalates sequentially to the next tier without dropping client requests.
 
-### 3. Lowest Cost First (`lowest-cost`)
-Sorts available upstreams strictly by estimated cost per 1k tokens. $0 local nodes always take top priority; when local nodes are saturated or unavailable, the cheapest commercial API candidate is chosen.
+### 4. Lowest Cost First (`lowest-cost`)
+Sorts available upstreams strictly by estimated cost per 1k tokens. `\$0` local nodes always take top priority; when local nodes are saturated or unavailable, the cheapest commercial API candidate is chosen.
 
-### 4. Lowest Latency (`lowest-latency`)
+### 5. Lowest Latency (`lowest-latency`)
 Continuously tracks rolling round-trip response times in the local SQLite database (`request_logs`). Dispatches queries to the engine with the lowest measured ping and inference latency.
 
-### 5. Round Robin (`round-robin`)
+### 6. Round Robin (`round-robin`)
 Distributes requests uniformly across all healthy upstreams meeting capability tags, ideal for load balancing multiple parallel local GPU workers.
+
+---
+
+## Speculative Buffer-Verify Cascades, Vendor Aliasing & Distillation
+
+### 1. Speculative Buffer-Verify Cascades (`speculativeCascadeNode`)
+When `speculativeCascade` is wired via `#draft` and `#verifier`:
+1. Switchyard executes the fast `\$0.00` local `#draft` engine first and buffers tokens internally while scoring structural completeness, refusal/hedging absence, tool JSON validity, and repetition entropy against `minConfidence` (default `0.75`).
+2. If confidence passes, buffered tokens flush immediately over SSE (`X-Eluvix-Cascade: draft-accepted`)—eliminating corrupted half-streams.
+3. If confidence falls below `minConfidence`, Switchyard discards the draft buffer cleanly and streams from the `#verifier` frontier model (`X-Eluvix-Cascade: verifier-escalated`).
+
+### 2. Capability-Tier Vendor Model Aliasing
+External tools that hardcode vendor model strings (such as Claude Code or Codex CLI) are automatically mapped to sovereign capability tiers unless `strictModelMatch: true` is set:
+- `claude-*-opus*`, `o1*`, `o3*`, `gpt-5*` &rarr; `frontier`
+- `claude-*-sonnet*`, `gpt-4o`, `gemini-*-pro*` &rarr; `heavy`
+- `claude-*-haiku*`, `gpt-4o-mini`, `gemini-*-flash*` &rarr; `simple` (eligible for `\$0.00` local sovereign execution, emitting `X-Eluvix-Model-Alias`).
+
+### 3. Async `#shadow-student` SFT & DPO Distillation Flywheel
+When a `#shadow-student` handle is connected on `speculativeCascadeNode`, frontier teacher completions asynchronously mirror the prompt in fire-and-forget background mode (`x-eluvix-hops` incremented) to the local student model, scrub PII via `PrivacyGuard`, and persist `{ prompt, chosen, rejected }` preference pairs to SQLite `distillation_pairs` for one-command export via `GET /api/v1/export?format=sft|dpo`.
 
 ---
 

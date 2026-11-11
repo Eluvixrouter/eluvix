@@ -1,7 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { getAppPaths } from './paths.js';
+import type { BanditArmStats } from './cascade.js';
 
 const require = createRequire(import.meta.url);
 
@@ -128,6 +130,52 @@ function initSchema(db: SqliteDb) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_harness_sessions_user_updated ON harness_sessions(user_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS response_store (
+      id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      previous_response_id TEXT,
+      model TEXT NOT NULL,
+      messages_json TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_response_store_user_created ON response_store(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS bandit_arms (
+      arm_key TEXT PRIMARY KEY,
+      upstream_id TEXT NOT NULL,
+      complexity_tier TEXT NOT NULL,
+      alpha REAL NOT NULL DEFAULT 2.0,
+      beta REAL NOT NULL DEFAULT 1.0,
+      ewma_ttft_ms REAL,
+      ewma_itl_ms REAL,
+      total_pulls INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bandit_arms_tier ON bandit_arms(complexity_tier);
+
+    CREATE TABLE IF NOT EXISTS distillation_pairs (
+      id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      source TEXT NOT NULL DEFAULT 'shadow',
+      teacher_upstream_id TEXT NOT NULL,
+      student_upstream_id TEXT NOT NULL,
+      teacher_model TEXT NOT NULL,
+      student_model TEXT NOT NULL,
+      prompt_messages_json TEXT NOT NULL,
+      chosen_text TEXT NOT NULL,
+      rejected_text TEXT NOT NULL,
+      judge_score REAL NOT NULL DEFAULT 1.0,
+      privacy_scrubbed INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_distillation_pairs_user_score ON distillation_pairs(user_id, judge_score DESC, created_at DESC);
   `);
 
   // Migration for databases created before chat_history carried a user
@@ -825,4 +873,362 @@ export function clearUserMemories(userId = 'default'): number {
     return 0;
   }
 }
+
+export interface StoredResponseRecord {
+  id: string;
+  user_id: string;
+  previous_response_id: string | null;
+  model: string;
+  messages: Array<Record<string, any>>;
+  response: Record<string, any>;
+  created_at: string;
+}
+
+export function saveStoredResponse(input: {
+  id: string;
+  userId?: string;
+  previousResponseId?: string | null;
+  model: string;
+  messages: Array<Record<string, any>>;
+  response: Record<string, any>;
+}): boolean {
+  try {
+    const db = getDb();
+    const userId = input.userId || 'default';
+    db.prepare(`
+      INSERT OR REPLACE INTO response_store (
+        id, user_id, previous_response_id, model, messages_json, response_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      userId,
+      input.previousResponseId ?? null,
+      input.model || 'auto',
+      JSON.stringify(input.messages || []),
+      JSON.stringify(input.response || {})
+    );
+    return true;
+  } catch (err: any) {
+    console.error('Failed to save stored response:', err.message);
+    return false;
+  }
+}
+
+export function getStoredResponse(
+  id: string,
+  userId = 'default'
+): StoredResponseRecord | null {
+  try {
+    const db = getDb();
+    const row = db
+      .prepare('SELECT * FROM response_store WHERE id = ? AND user_id = ?')
+      .get(id, userId) as
+      | {
+          id: string;
+          user_id: string;
+          previous_response_id: string | null;
+          model: string;
+          messages_json: string;
+          response_json: string;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    let messages: Array<Record<string, any>> = [];
+    let response: Record<string, any> = {};
+    try {
+      messages = JSON.parse(row.messages_json);
+    } catch {}
+    try {
+      response = JSON.parse(row.response_json);
+    } catch {}
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      previous_response_id: row.previous_response_id,
+      model: row.model,
+      messages,
+      response,
+      created_at: row.created_at,
+    };
+  } catch (err: any) {
+    console.error('Failed to get stored response:', err.message);
+    return null;
+  }
+}
+
+export function deleteStoredResponse(id: string, userId = 'default'): boolean {
+  try {
+    const db = getDb();
+    const res = db
+      .prepare('DELETE FROM response_store WHERE id = ? AND user_id = ?')
+      .run(id, userId);
+    return Number(res?.changes || 0) > 0;
+  } catch (err: any) {
+    console.error('Failed to delete stored response:', err.message);
+    return false;
+  }
+}
+
+function mapBanditArmRow(row: any): BanditArmStats {
+  return {
+    armKey: row.arm_key,
+    upstreamId: row.upstream_id,
+    complexityTier: row.complexity_tier,
+    alpha: Number(row.alpha ?? 2.0),
+    beta: Number(row.beta ?? 1.0),
+    ewmaTtftMs: row.ewma_ttft_ms != null ? Number(row.ewma_ttft_ms) : null,
+    ewmaItlMs: row.ewma_itl_ms != null ? Number(row.ewma_itl_ms) : null,
+    totalPulls: Number(row.total_pulls ?? 0),
+    updatedAt: row.updated_at,
+  };
+}
+
+export function getBanditArmsForTier(complexityTier: string): BanditArmStats[] {
+  try {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT * FROM bandit_arms WHERE complexity_tier = ? ORDER BY total_pulls DESC')
+      .all(complexityTier);
+    return rows.map(mapBanditArmRow);
+  } catch (err: any) {
+    console.error('Failed to query bandit arms:', err.message);
+    return [];
+  }
+}
+
+export function listBanditArms(): BanditArmStats[] {
+  try {
+    const db = getDb();
+    const rows = db
+      .prepare('SELECT * FROM bandit_arms ORDER BY complexity_tier ASC, alpha / (alpha + beta) DESC')
+      .all();
+    return rows.map(mapBanditArmRow);
+  } catch (err: any) {
+    console.error('Failed to list bandit arms:', err.message);
+    return [];
+  }
+}
+
+export function recordBanditArmOutcome(input: {
+  upstreamId: string;
+  complexityTier: string;
+  success: boolean;
+  weight?: number;
+  ttftMs?: number;
+  itlMs?: number;
+  decayFactor?: number;
+}): BanditArmStats | null {
+  try {
+    const db = getDb();
+    const tier = input.complexityTier || 'simple';
+    const armKey = `${input.upstreamId}::${tier}`;
+    const weight = Math.max(0.1, Number.isFinite(input.weight) ? Number(input.weight) : 1.0);
+    // Exponential forgetting toward baseline Beta(1, 1) so previously degraded nodes recover
+    const decay = Math.max(0.8, Math.min(1.0, input.decayFactor ?? 0.985));
+
+    const existing = db
+      .prepare('SELECT * FROM bandit_arms WHERE arm_key = ?')
+      .get(armKey) as any;
+
+    const prevAlpha = existing ? Number(existing.alpha ?? 2.0) : 2.0;
+    const prevBeta = existing ? Number(existing.beta ?? 1.0) : 1.0;
+    const decayedAlpha = 1.0 + (prevAlpha - 1.0) * decay;
+    const decayedBeta = 1.0 + (prevBeta - 1.0) * decay;
+
+    const nextAlpha = Number((decayedAlpha + (input.success ? weight : 0)).toFixed(4));
+    const nextBeta = Number((decayedBeta + (input.success ? 0 : weight)).toFixed(4));
+
+    let nextEwmaTtft: number | null =
+      existing?.ewma_ttft_ms != null ? Number(existing.ewma_ttft_ms) : null;
+    if (typeof input.ttftMs === 'number' && Number.isFinite(input.ttftMs) && input.ttftMs >= 0) {
+      nextEwmaTtft =
+        nextEwmaTtft == null
+          ? input.ttftMs
+          : Number((0.75 * nextEwmaTtft + 0.25 * input.ttftMs).toFixed(2));
+    }
+
+    let nextEwmaItl: number | null =
+      existing?.ewma_itl_ms != null ? Number(existing.ewma_itl_ms) : null;
+    if (typeof input.itlMs === 'number' && Number.isFinite(input.itlMs) && input.itlMs >= 0) {
+      nextEwmaItl =
+        nextEwmaItl == null
+          ? input.itlMs
+          : Number((0.75 * nextEwmaItl + 0.25 * input.itlMs).toFixed(2));
+    }
+
+    const nextPulls = (existing ? Number(existing.total_pulls ?? 0) : 0) + 1;
+
+    db.prepare(`
+      INSERT INTO bandit_arms (
+        arm_key, upstream_id, complexity_tier, alpha, beta, ewma_ttft_ms, ewma_itl_ms, total_pulls, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(arm_key) DO UPDATE SET
+        alpha = excluded.alpha,
+        beta = excluded.beta,
+        ewma_ttft_ms = excluded.ewma_ttft_ms,
+        ewma_itl_ms = excluded.ewma_itl_ms,
+        total_pulls = excluded.total_pulls,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(
+      armKey,
+      input.upstreamId,
+      tier,
+      nextAlpha,
+      nextBeta,
+      nextEwmaTtft,
+      nextEwmaItl,
+      nextPulls
+    );
+
+    const updated = db.prepare('SELECT * FROM bandit_arms WHERE arm_key = ?').get(armKey);
+    return updated ? mapBanditArmRow(updated) : null;
+  } catch (err: any) {
+    console.error('Failed to record bandit arm outcome:', err.message);
+    return null;
+  }
+}
+
+export interface DistillationPairRecord {
+  id: string;
+  user_id: string;
+  source: 'shadow' | 'cascade-escalation' | 'arena-vote';
+  teacher_upstream_id: string;
+  student_upstream_id: string;
+  teacher_model: string;
+  student_model: string;
+  prompt_messages: Array<Record<string, any>>;
+  chosen_text: string;
+  rejected_text: string;
+  judge_score: number;
+  privacy_scrubbed: boolean;
+  created_at: string;
+}
+
+export function saveDistillationPair(input: {
+  id?: string;
+  userId?: string;
+  source?: 'shadow' | 'cascade-escalation' | 'arena-vote';
+  teacherUpstreamId: string;
+  studentUpstreamId: string;
+  teacherModel: string;
+  studentModel: string;
+  promptMessages: Array<Record<string, any>>;
+  chosenText: string;
+  rejectedText: string;
+  judgeScore?: number;
+  privacyScrubbed?: boolean;
+}): DistillationPairRecord | null {
+  try {
+    const db = getDb();
+    const id = input.id || `distill_${crypto.randomBytes(10).toString('hex')}`;
+    const userId = input.userId || 'default';
+    const source = input.source || 'shadow';
+    const judgeScore =
+      typeof input.judgeScore === 'number' && Number.isFinite(input.judgeScore)
+        ? Number(Math.max(0, Math.min(1, input.judgeScore)).toFixed(4))
+        : 1.0;
+    const privacyScrubbed = input.privacyScrubbed !== false ? 1 : 0;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO distillation_pairs (
+        id, user_id, source, teacher_upstream_id, student_upstream_id,
+        teacher_model, student_model, prompt_messages_json,
+        chosen_text, rejected_text, judge_score, privacy_scrubbed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      userId,
+      source,
+      input.teacherUpstreamId,
+      input.studentUpstreamId,
+      input.teacherModel || 'auto',
+      input.studentModel || 'auto',
+      JSON.stringify(input.promptMessages || []),
+      input.chosenText || '',
+      input.rejectedText || '',
+      judgeScore,
+      privacyScrubbed
+    );
+
+    const row = db
+      .prepare('SELECT * FROM distillation_pairs WHERE user_id = ? AND id = ?')
+      .get(userId, id) as any;
+    if (!row) return null;
+    let promptMessages: Array<Record<string, any>> = [];
+    try {
+      promptMessages = JSON.parse(row.prompt_messages_json);
+    } catch {}
+    return {
+      id: row.id,
+      user_id: row.user_id,
+      source: row.source,
+      teacher_upstream_id: row.teacher_upstream_id,
+      student_upstream_id: row.student_upstream_id,
+      teacher_model: row.teacher_model,
+      student_model: row.student_model,
+      prompt_messages: promptMessages,
+      chosen_text: row.chosen_text,
+      rejected_text: row.rejected_text,
+      judge_score: Number(row.judge_score ?? 1.0),
+      privacy_scrubbed: Boolean(row.privacy_scrubbed),
+      created_at: row.created_at,
+    };
+  } catch (err: any) {
+    console.error('Failed to save distillation pair:', err.message);
+    return null;
+  }
+}
+
+export function listDistillationPairs(
+  userId = 'default',
+  options?: { minScore?: number; limit?: number; source?: string }
+): DistillationPairRecord[] {
+  try {
+    const db = getDb();
+    const minScore =
+      typeof options?.minScore === 'number' && Number.isFinite(options.minScore)
+        ? options.minScore
+        : 0;
+    const limit = Math.max(1, Math.min(5000, options?.limit ?? 500));
+
+    const rows = options?.source
+      ? (db
+          .prepare(
+            'SELECT * FROM distillation_pairs WHERE user_id = ? AND judge_score >= ? AND source = ? ORDER BY created_at DESC LIMIT ?'
+          )
+          .all(userId, minScore, options.source, limit) as any[])
+      : (db
+          .prepare(
+            'SELECT * FROM distillation_pairs WHERE user_id = ? AND judge_score >= ? ORDER BY created_at DESC LIMIT ?'
+          )
+          .all(userId, minScore, limit) as any[]);
+
+    return rows.map((row) => {
+      let promptMessages: Array<Record<string, any>> = [];
+      try {
+        promptMessages = JSON.parse(row.prompt_messages_json);
+      } catch {}
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        source: row.source,
+        teacher_upstream_id: row.teacher_upstream_id,
+        student_upstream_id: row.student_upstream_id,
+        teacher_model: row.teacher_model,
+        student_model: row.student_model,
+        prompt_messages: promptMessages,
+        chosen_text: row.chosen_text,
+        rejected_text: row.rejected_text,
+        judge_score: Number(row.judge_score ?? 1.0),
+        privacy_scrubbed: Boolean(row.privacy_scrubbed),
+        created_at: row.created_at,
+      };
+    });
+  } catch (err: any) {
+    console.error('Failed to list distillation pairs:', err.message);
+    return [];
+  }
+}
+
 

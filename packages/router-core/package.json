@@ -4,6 +4,10 @@
   "description": "Core routing logic for Eluvix",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "eluvix-mcp": "./dist/mcp-stdio.js",
+    "eluvix-eval": "./dist/eval-cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -59,6 +63,26 @@
       "types": "./dist/ssrf-guard.d.ts",
       "import": "./dist/ssrf-guard.js",
       "default": "./dist/ssrf-guard.js"
+    },
+    "./protocol-adapters": {
+      "types": "./dist/protocol-adapters.d.ts",
+      "import": "./dist/protocol-adapters.js",
+      "default": "./dist/protocol-adapters.js"
+    },
+    "./audio": {
+      "types": "./dist/audio.d.ts",
+      "import": "./dist/audio.js",
+      "default": "./dist/audio.js"
+    },
+    "./cascade": {
+      "types": "./dist/cascade.d.ts",
+      "import": "./dist/cascade.js",
+      "default": "./dist/cascade.js"
+    },
+    "./eval-types": {
+      "types": "./dist/eval-types.d.ts",
+      "import": "./dist/eval-types.js",
+      "default": "./dist/eval-types.js"
     }
   },
   "type": "module",

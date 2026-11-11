@@ -11,7 +11,7 @@ Playground 2.0 exposes rich diagnostic metadata and specialized testing modes:
 - **Real-Time SSE Streaming Speedometer**: Streams tokens live (`stream: true`) with instantaneous **TTFT (ms)**, **throughput (tok/s)**, complexity tier, and `X-Eluvix-*` response header badges.
 - **Multimodal Vision Dropzone & Clipboard Paste**: Drag-and-drop PNG/JPEG/WEBP files onto the composer, paste screenshots directly from your clipboard, or click the `📎` attachment button to send OpenAI `image_url` payloads to vision-capable models (`gemini-4-carbon`, `gpt-4o`, `llava`, `Qwen2-VL`).
 - **Image / Media DAG Studio (`🎨 Image / Media Studio`)**: Dedicated ComfyUI synthesis mode targeting `POST /api/v1/images/generations` with workflow preset selector (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), aspect ratio pills (`1024x1024`, `1344x768`, `768x1344`), seed input, negative prompt, and one-click asset download.
-- **A/B Split Arena (`⚔️ A/B Arena`)**: Dispatches the exact same prompt in parallel to **Model A** (e.g. `gemini-4-carbon-high`) and **Model B** (e.g. local RamaLama or Ollama), comparing latency, tok/s, token count, and estimated USD cost side-by-side.
+- **A/B Split Arena (`⚔️ A/B Arena`) & DPO Preference Voting**: Dispatches the exact same prompt in parallel to **Model A** (e.g. `gemini-4-carbon-high`) and **Model B** (e.g. local RamaLama or Ollama), comparing latency, tok/s, token count, and estimated USD cost side-by-side—with one-click **`👍 Prefer Model A`** / **`👍 Prefer Model B`** buttons that submit `PrivacyGuard`-scrubbed human preference pairs (`POST /api/v1/distillation/vote`) into SQLite `distillation_pairs`.
 - **Reasoning & Code Renderer**: Automatically renders collapsible `<think>...</think>` reasoning trace accordions and syntax-badged fenced code blocks with one-click copy buttons.
 
 ---
@@ -27,26 +27,32 @@ You can:
 
 ---
 
-## Exporting Fine-Tuning Datasets (JSONL)
+## Exporting Fine-Tuning, SFT & DPO Datasets (JSONL)
 
-High-quality local conversations can be converted into ready-to-train datasets with a single click or API call.
+High-quality local conversations, `#shadow-student` distillation pairs, and A/B Arena human preference votes can be exported into ready-to-train datasets with a single click or API call.
 
 ### One-Click UI Export
 
-In the Playground, click **"Export Dataset"** to download an `.jsonl` file formatted to the OpenAI Fine-Tuning standard:
+In the Playground, click **"Export Dataset"** to download `.jsonl` files formatted for OpenAI Fine-Tuning (`format=chat`), Supervised Fine-Tuning (`format=sft`), or Direct Preference Optimization (`format=dpo`):
 
 ```json
 {"messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Explain latency spillover."}, {"role": "assistant", "content": "Latency spillover routes requests..."}]}
 ```
 
-### Programmatic Export Endpoint
+### Programmatic Export Endpoint (`chat` / `sft` / `dpo`)
 
-You can also fetch exported datasets via the REST API:
+You can also fetch exported datasets via `GET /api/v1/export`:
 
 ```bash
-curl -k https://127.0.0.1:3588/api/v1/export \
+# Export chat history (OpenAI format)
+curl -k "https://127.0.0.1:3588/api/v1/export?format=chat" \
   -H "Authorization: Bearer <ADMIN_PASSWORD>" \
   -o fine_tuning_dataset.jsonl
+
+# Export DPO preference triples ({ prompt, chosen, rejected }) with minScore >= 0.8
+curl -k "https://127.0.0.1:3588/api/v1/export?format=dpo&minScore=0.8" \
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \
+  -o dpo_preferences.jsonl
 ```
 
-The resulting file can be fed directly into fine-tuning pipelines (such as Axolotl, Unsloth, LLaMA-Factory, or OpenAI fine-tuning) to distill cloud model outputs into small local models.
+The resulting files can be fed directly into Unsloth, Axolotl, TRL, LLaMA-Factory, or OpenAI fine-tuning pipelines to distill frontier teacher outputs into `\$0.00` sovereign local models.

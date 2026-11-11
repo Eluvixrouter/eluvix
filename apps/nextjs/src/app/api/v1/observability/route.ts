@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getRequestLogs, getDb, getCachedAntigravityModels, getRollingSpendUsd } from '@eluvix/router-core';
+import {
+  getRequestLogs,
+  getDb,
+  getCachedAntigravityModels,
+  getRollingSpendUsd,
+  getVramArbiterStats,
+  listBanditArms,
+} from '@eluvix/router-core';
 import { getConfig, getRouter } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 import { spawn } from 'node:child_process';
@@ -262,6 +269,8 @@ export async function GET(req: Request) {
         modelDistribution,
         upstreamDistribution,
         upstreams: upstreamsHealth,
+        vramArbiter: getVramArbiterStats(),
+        banditArms: listBanditArms(),
         logs,
       }
     });

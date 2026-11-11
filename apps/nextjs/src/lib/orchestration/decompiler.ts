@@ -12,6 +12,11 @@ function upstreamToNodeType(u: UpstreamConfig): string {
       return 'ramalamaNode';
     case 'comfyui':
       return 'comfyuiNode';
+    case 'audio':
+    case 'whisper':
+    case 'speaches':
+    case 'kokoro-tts':
+      return 'audioVoiceNode';
     case 'vllm':
     case 'vllm-sr':
       return 'vllmNode';
@@ -225,6 +230,8 @@ export function decompileConfigToGraph(config: RouterConfig): {
       ...(u.crs ? { crs: { ...u.crs } } : {}),
       ...(u.vectorcraft ? { vectorcraft: { ...u.vectorcraft } } : {}),
       ...(u.artcraft ? { artcraft: { ...u.artcraft } } : {}),
+      ...(u.comfyui ? { comfyui: { ...u.comfyui } } : {}),
+      ...(u.audio ? { audio: { ...u.audio } } : {}),
     };
 
     if (nodeType === 'antigravityNode' && u.antigravity) {
@@ -337,6 +344,52 @@ export function decompileConfigToGraph(config: RouterConfig): {
       },
     });
     overlayY += 200;
+  }
+
+  if (config.cascade?.enabled) {
+    const casId = config.cascade.id || 'speculative-cascade-1';
+    nodes.push({
+      id: casId,
+      type: 'speculativeCascadeNode',
+      position: { x: 920, y: 460 },
+      data: {
+        label: 'Speculative Cascade',
+        ...config.cascade,
+      },
+    });
+    edges.push({
+      id: `e-${prevPipelineNodeId}-${casId}`,
+      source: prevPipelineNodeId,
+      target: casId,
+      animated: true,
+    });
+    if (config.cascade.draftUpstreamId) {
+      edges.push({
+        id: `e-${casId}-draft-${config.cascade.draftUpstreamId}`,
+        source: casId,
+        sourceHandle: 'draft',
+        target: config.cascade.draftUpstreamId,
+        animated: true,
+      });
+    }
+    if (config.cascade.verifierUpstreamId) {
+      edges.push({
+        id: `e-${casId}-verifier-${config.cascade.verifierUpstreamId}`,
+        source: casId,
+        sourceHandle: 'verifier',
+        target: config.cascade.verifierUpstreamId,
+        animated: true,
+      });
+    }
+    if (config.cascade.shadowStudentUpstreamId) {
+      edges.push({
+        id: `e-${casId}-shadow-${config.cascade.shadowStudentUpstreamId}`,
+        source: casId,
+        sourceHandle: 'shadow-student',
+        target: config.cascade.shadowStudentUpstreamId,
+        animated: true,
+      });
+    }
   }
 
   return { nodes: autoLayoutGraph(nodes, edges), edges };

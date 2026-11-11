@@ -172,6 +172,7 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
             <option value="lowest-cost">🪙 Lowest Cost First ($0 Local First)</option>
             <option value="lowest-latency">⚡ Lowest Latency</option>
             <option value="round-robin">🔄 Round Robin Multi-Provider</option>
+            <option value="thompson-bandit">🎰 Contextual Thompson Bandit (Online RL)</option>
             <option value="stall-escalation">🧬 Neuro-Symbolic Stall Escalation</option>
           </select>
         </div>

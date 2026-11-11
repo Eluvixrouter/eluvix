@@ -25,6 +25,7 @@ const NODE_CARD_HEIGHT_ESTIMATE: Record<string, number> = {
   agentGatewayNode: 300,
   mcpToolNode: 250,
   switchyardNode: 580,
+  speculativeCascadeNode: 360,
   consensusNode: 320,
   fallbackChainNode: 300,
   lemonadeNode: 350,
@@ -33,6 +34,7 @@ const NODE_CARD_HEIGHT_ESTIMATE: Record<string, number> = {
   vllmNode: 360,
   sglangNode: 390,
   comfyuiNode: 470,
+  audioVoiceNode: 390,
   antigravityNode: 440,
   codexNode: 360,
   claudeCodeNode: 360,
@@ -51,6 +53,7 @@ const UPSTREAM_RANK_4_TYPES = new Set([
   'lemonadeNode',
   'ollamaNode',
   'ramalamaNode',
+  'audioVoiceNode',
   'vllmNode',
   'sglangNode',
   'antigravityNode',
@@ -91,7 +94,12 @@ export function getSemanticBaseRank(node: Node, incomingSources: Node[]): number
     return 2;
   }
 
-  if (t === 'switchyardNode' || t === 'consensusNode' || t === 'fallbackChainNode') {
+  if (
+    t === 'switchyardNode' ||
+    t === 'speculativeCascadeNode' ||
+    t === 'consensusNode' ||
+    t === 'fallbackChainNode'
+  ) {
     return 3;
   }
 
@@ -128,6 +136,9 @@ function parseHandleOrder(sourceHandle?: string | null): number {
   if (!sourceHandle) return 0;
   const tierMatch = sourceHandle.match(/tier-(\d+)/i);
   if (tierMatch) return parseInt(tierMatch[1], 10) * 10;
+  if (sourceHandle === 'draft') return 10;
+  if (sourceHandle === 'verifier') return 20;
+  if (sourceHandle === 'shadow-student') return 30;
   if (sourceHandle === 'clean' || sourceHandle === 'safe' || sourceHandle === 'hit') return -5;
   if (sourceHandle === 'blocked' || sourceHandle === 'divert' || sourceHandle === 'miss') return 25;
   return 0;

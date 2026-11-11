@@ -4,6 +4,39 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.1.0 — Universal Wire-Protocol Gateway, Speculative Cascades, Thompson Bandit, SFT/DPO Distillation, Sovereign MCP Server, Cooperative VRAM Arbiter & Golden Evals *(November 11, 2026)*
+
+### 🌐 Universal Wire-Protocol Gateway (`/v1/messages`, `/v1/responses`, `/v1/embeddings`)
+- **Native Anthropic Messages Protocol (`POST /api/v1/messages`)**:
+  - Drop-in `ANTHROPIC_BASE_URL` gateway supporting `x-api-key` + `Authorization: Bearer` two-layer authentication, top-level `system` arrays, `thinking` (`budget_tokens` &harr; `<think>`), `tool_use` / `tool_result` blocks, base64/URL `image` blocks, and full Anthropic SSE event framing (`message_start`, `content_block_start`, `content_block_delta`, `message_delta`, `message_stop`).
+- **OpenAI Stateful Responses API (`POST/GET/DELETE /api/v1/responses(/:id)`)**:
+  - Multi-turn `previous_response_id` state chaining persisted in SQLite `response_store` (strictly partitioned by `userId`), honoring `store: false` for zero-retention sessions, and streaming typed `response.created` / `response.output_text.delta` / `response.completed` SSE frames.
+- **Matryoshka Dimension-Pinned Embeddings (`POST /api/v1/embeddings`) & Vendor Tier Aliasing**:
+  - Routes embedding batches across local Ollama (`nomic-embed-text`, `bge-m3`), RamaLama, vLLM, and cloud APIs with `PrivacyGuard` scrubbing and L2-normalized Matryoshka dimension pinning (`X-Eluvix-Embedding-Dimensions`).
+  - Automatically maps hardcoded vendor model IDs (`claude-*-opus*`/`o3*` &rarr; `frontier`, `claude-*-sonnet*`/`gpt-4o` &rarr; `heavy`, `claude-*-haiku*`/`*-mini` &rarr; `\$0.00` local `simple`, emitting `X-Eluvix-Model-Alias`) unless `strictModelMatch: true`.
+
+### 🎙️ Headless Sovereign Audio (`AudioVoiceNode`: STT & TTS)
+- **OpenAI-Compatible Audio Routes**:
+  - Added `POST /api/v1/audio/transcriptions` (Speaches Faster-Whisper `:8005` & `whisper.cpp`) and `POST /api/v1/audio/speech` (Kokoro-FastAPI `:8880` & Piper TTS) with `PrivacyGuard` PII scrubbing and `audioVoiceNode` in the **Eluvix Visual Node Routing Editor**.
+
+### ⚡ Speculative Cascades, Online Contextual Bandit & SFT/DPO Distillation Flywheel
+- **Buffer-Verify Speculative Cascades (`speculativeCascadeNode`)**:
+  - Executes fast `\$0.00` local `#draft` models first, verifies structural/refusal/JSON/entropy confidence (`minConfidence`) before flushing SSE chunks (zero corrupted half-streams), and escalates low-confidence drafts cleanly to `#verifier` (`X-Eluvix-Cascade`, `X-Eluvix-Cascade-Confidence`).
+- **Online Contextual Thompson Bandit (`thompson-bandit`)**:
+  - Self-learning `(upstreamId, complexityTier)` Beta posteriors `(alpha, beta)` with EWMA TTFT/ITL tracking and hourly decay in SQLite `bandit_arms`.
+- **Cloud-to-Local SFT & DPO Distillation (`distillation_pairs`)**:
+  - Asynchronous fire-and-forget `#shadow-student` mirroring, Playground 2.0 A/B Arena preference voting (`POST /api/v1/distillation/vote`), `PrivacyGuard` scrubbing prior to persistence, and JSONL export (`GET /api/v1/export?format=chat|sft|dpo&minScore=...`).
+
+### 🔌 Sovereign MCP `2025-06-18` Server, Cooperative GPU VRAM Arbiter & Golden Eval Suites
+- **Dual-Transport Sovereign MCP Server (`POST /api/v1/mcp` & `eluvix-mcp` stdio CLI)**:
+  - Exposes 7 sovereign tools (`eluvix_route_explain`, `eluvix_list_models`, `eluvix_smart_complete`, `eluvix_memory_query`, `eluvix_memory_store`, `eluvix_privacy_scrub`, `eluvix_generate_image`) and redacted `eluvix://` resources with `x-eluvix-hops` loop protection (`hops >= 2` blocked).
+- **Cooperative GPU VRAM Arbiter (`vram-arbiter.ts`)**:
+  - Seamlessly coordinates single-GPU VRAM between local LLMs and ComfyUI—unloading idle Ollama models via `keep_alive: 0` before media synthesis and freeing idle ComfyUI VRAM via `POST /free` before LLM inference **without ever stopping or killing running containers** (`eluvix_vram_evictions_total`, `eluvix_vram_active_workloads`).
+- **Golden Eval Suites (`POST /api/v1/evals/run`, `eluvix-eval` CLI & `EvalGateDrawer`) & Full Desktop Parity**:
+  - Run `\$0.00` `dry-run` and `live` regression suites from CI/CD (`npx eluvix-eval run suite.json`, exit `0`/`1`) or inside the **Eluvix Visual Node Routing Editor** (`🧪 Evals` & `Verify Before Apply`), backed by full protocol parity in `DesktopRouterServer` and **53 Vitest suites (461 passing tests)**.
+
+---
+
 ## v1.0.22 — Gemini 4 Carbon, ComfyUI Media Synthesis, RamaLama OCI, Pro Studio Editor & Prometheus Spend Caps *(November 10, 2026)*
 
 ### 🤖 Gemini 4 Carbon First-Class Integration (`@eluvix/router-core`)

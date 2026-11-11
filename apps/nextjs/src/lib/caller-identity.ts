@@ -75,17 +75,32 @@ export async function resolveSessionUserId(req: Request): Promise<string | null>
 }
 
 /**
- * Resolve WHO is calling, for per-user data scoping. The identity comes
- * only from credentials the caller actually proved:
- *
- *   - a named `elx_` API key → the userId bound to that key;
- *   - the admin password as a Bearer token → the admin's 'default' store;
- *   - the NextAuth session cookie → the proved user's store (ldap:<uid> or 'default').
+ * Extract raw API token from `Authorization: Bearer <token>` or `x-api-key: <token>`.
  */
-export async function resolveCallerIdentity(req: Request): Promise<CallerIdentityResult> {
+export function extractApiTokenFromHeaders(req: Request): string | null {
   const authHeader = req.headers.get('authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
+    if (token) return token;
+  }
+  const xApiKey = req.headers.get('x-api-key');
+  if (xApiKey && xApiKey.trim()) {
+    return xApiKey.trim();
+  }
+  return null;
+}
+
+/**
+ * Resolve WHO is calling, for per-user data scoping. The identity comes
+ * only from credentials the caller actually proved:
+ *
+ *   - a named `elx_` API key (`Bearer` or `x-api-key`) → the userId bound to that key;
+ *   - the admin password (`Bearer` or `x-api-key`) → the admin's 'default' store;
+ *   - the NextAuth session cookie → the proved user's store (ldap:<uid> or 'default').
+ */
+export async function resolveCallerIdentity(req: Request): Promise<CallerIdentityResult> {
+  const token = extractApiTokenFromHeaders(req);
+  if (token !== null) {
     if (token.startsWith('elx_')) {
       const resolved = resolveBearerToken(token);
       return resolved.valid

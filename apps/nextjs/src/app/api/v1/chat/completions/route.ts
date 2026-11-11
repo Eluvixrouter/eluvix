@@ -1,35 +1,32 @@
 import { NextResponse } from 'next/server';
 import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionUserId } from '@/lib/caller-identity';
+import { resolveSessionUserId, extractApiTokenFromHeaders } from '@/lib/caller-identity';
 import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
-  // Verify named elx_ API key if used
+  // Verify named elx_ API key if used (Authorization: Bearer or x-api-key)
   let keyUserId: string | undefined;
   let keyOrigin: RequestScope['origin'] | undefined;
-  const authHeader = req.headers.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      if (!resolved.valid) {
-        return NextResponse.json(
-          {
-            error: {
-              message: 'Incorrect API key provided.',
-              type: 'invalid_request_error',
-              code: 'invalid_api_key'
-            }
-          },
-          { status: 401 }
-        );
-      }
-      keyUserId = resolved.userId;
-      keyOrigin = resolved.origin;
+  const rawToken = extractApiTokenFromHeaders(req);
+  if (rawToken && rawToken.startsWith('elx_')) {
+    const resolved = resolveBearerToken(rawToken);
+    if (!resolved.valid) {
+      return NextResponse.json(
+        {
+          error: {
+            message: 'Incorrect API key provided.',
+            type: 'invalid_request_error',
+            code: 'invalid_api_key'
+          }
+        },
+        { status: 401 }
+      );
     }
+    keyUserId = resolved.userId;
+    keyOrigin = resolved.origin;
   }
 
   let body: any;

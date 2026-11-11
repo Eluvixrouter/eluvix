@@ -6,6 +6,7 @@ import {
   RouterConfig,
   UpstreamConfig,
   ChatRequest,
+  ChatMessage,
   detectUpstreamModels,
   getOrCreateLocalCert,
   TlsCertificates,
@@ -18,7 +19,29 @@ import {
   desktopTokenEquals,
   extractDesktopToken,
   DESKTOP_TOKEN_HEADER,
-  validateUpstreamHttpEndpoint
+  validateUpstreamHttpEndpoint,
+  anthropicToOpenAiChatRequest,
+  openAiToAnthropicMessageResponse,
+  transformOpenAiSseToAnthropicSse,
+  responsesInputToChatRequest,
+  openAiChatToResponsesObject,
+  transformOpenAiSseToResponsesSse,
+  getStoredResponse,
+  saveStoredResponse,
+  deleteStoredResponse,
+  getDb,
+  listDistillationPairs,
+  formatDistillationAsSftJsonl,
+  formatDistillationAsDpoJsonl,
+  captureDistillationPair,
+  recordBanditArmOutcome,
+  estimatePromptComplexity,
+  ELUVIX_MCP_PROTOCOL_VERSION,
+  ELUVIX_MCP_TOOLS,
+  ELUVIX_MCP_RESOURCES,
+  handleEluvixMcpPayload,
+  runEvalSuite,
+  STARTER_GOLDEN_EVAL_SUITES,
 } from '@eluvix/router-core';
 import EventEmitter from 'node:events';
 
@@ -115,6 +138,23 @@ export class DesktopRouterServer extends EventEmitter {
           comfyui: {
             workflowPreset: 'flux-txt2img',
             vramMode: 'lowvram'
+          }
+        },
+        {
+          id: 'audio-voice',
+          name: 'Local Sovereign Audio (Whisper + Kokoro)',
+          type: 'audio',
+          endpoint: 'http://localhost:8005',
+          priority: 16,
+          models: ['Systran/faster-whisper-large-v3-turbo', 'kokoro', 'whisper-1', 'tts-1'],
+          audio: {
+            mode: 'both',
+            sttBackend: 'speaches',
+            ttsBackend: 'kokoro',
+            ttsEndpoint: 'http://localhost:8880',
+            defaultVoice: 'af_heart',
+            responseFormat: 'mp3',
+            scrubTranscriptPii: true
           }
         },
         {
@@ -733,6 +773,676 @@ export class DesktopRouterServer extends EventEmitter {
         return;
       }
 
+      // Anthropic Messages Wire Protocol (`/v1/messages` & `/api/v1/messages`)
+      if (
+        (pathname === '/v1/messages' || pathname === '/api/v1/messages') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(30000);
+        const startTime = Date.now();
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+
+        if (!Array.isArray(body.messages) || body.messages.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: "Missing required parameter: 'messages' must be a non-empty array."
+              }
+            })
+          );
+          return;
+        }
+
+        const requestedModel =
+          typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'claude-3-7-sonnet';
+        const chatReq = anthropicToOpenAiChatRequest({ ...body, model: requestedModel }) as unknown as ChatRequest;
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const abortController = new AbortController();
+        req.on('close', () => {
+          if (!res.writableEnded) {
+            abortController.abort(new DOMException('Client closed connection', 'AbortError'));
+          }
+        });
+
+        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
+          signal: abortController.signal,
+          scope: { userId: 'default', origin: 'client' },
+          hops
+        });
+        const durationMs = Date.now() - startTime;
+        const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || 'unknown';
+
+        this.emit('request-logged', {
+          id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          timestamp: new Date().toLocaleTimeString(),
+          model: requestedModel,
+          upstream: actualUpstream,
+          status: upstreamResponse.status,
+          durationMs,
+          streaming: Boolean(chatReq.stream)
+        });
+
+        const forwardedHeaders: Record<string, string> = {};
+        upstreamResponse.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+
+        if (upstreamResponse.status >= 400) {
+          const errData = await upstreamResponse.json().catch(() => ({}));
+          res.writeHead(upstreamResponse.status, {
+            ...forwardedHeaders,
+            'Content-Type': 'application/json'
+          });
+          res.end(
+            JSON.stringify({
+              type: 'error',
+              error: {
+                type: upstreamResponse.status === 429 ? 'rate_limit_error' : 'api_error',
+                message: errData?.error?.message || `Upstream status ${upstreamResponse.status}`
+              }
+            })
+          );
+          return;
+        }
+
+        const contentType = upstreamResponse.headers.get('content-type') || '';
+        if (chatReq.stream && upstreamResponse.body && contentType.includes('text/event-stream')) {
+          const anthropicStream = transformOpenAiSseToAnthropicSse(
+            upstreamResponse.body,
+            requestedModel
+          );
+          await this.pipeWebStream(req, res, anthropicStream, upstreamResponse.status, {
+            ...forwardedHeaders,
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive'
+          });
+          return;
+        }
+
+        const openAiJson = await upstreamResponse.json().catch(() => ({}));
+        const anthropicMsg = openAiToAnthropicMessageResponse(openAiJson, requestedModel);
+        res.writeHead(upstreamResponse.status, {
+          ...forwardedHeaders,
+          'Content-Type': 'application/json'
+        });
+        res.end(JSON.stringify(anthropicMsg));
+        return;
+      }
+
+      // OpenAI Stateful Responses API (`/v1/responses` & `/api/v1/responses`)
+      if (
+        (pathname === '/v1/responses' || pathname === '/api/v1/responses') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(30000);
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        if (body.input === undefined || body.input === null) {
+          this.rejectJson(res, 400, "Missing required parameter: 'input' is required.", 'missing_required_parameter');
+          return;
+        }
+
+        let priorMessages: Array<Record<string, any>> = [];
+        const previousResponseId =
+          typeof body.previous_response_id === 'string' && body.previous_response_id.trim()
+            ? body.previous_response_id.trim()
+            : null;
+        if (previousResponseId) {
+          const prior = getStoredResponse(previousResponseId, 'default');
+          if (!prior) {
+            this.rejectJson(
+              res,
+              404,
+              `Previous response '${previousResponseId}' not found.`,
+              'previous_response_not_found'
+            );
+            return;
+          }
+          priorMessages = Array.isArray(prior.messages) ? prior.messages : [];
+        }
+
+        const { chatRequest } = responsesInputToChatRequest(body, priorMessages);
+        const chatReq = chatRequest as unknown as ChatRequest;
+        const shouldStore = body.store !== false;
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const abortController = new AbortController();
+        req.on('close', () => {
+          if (!res.writableEnded) {
+            abortController.abort(new DOMException('Client closed connection', 'AbortError'));
+          }
+        });
+
+        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
+          signal: abortController.signal,
+          scope: { userId: 'default', origin: 'client' },
+          hops
+        });
+
+        const forwardedHeaders: Record<string, string> = {};
+        upstreamResponse.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+
+        if (upstreamResponse.status >= 400) {
+          const errPayload = await upstreamResponse.json().catch(() => ({}));
+          res.writeHead(upstreamResponse.status, {
+            ...forwardedHeaders,
+            'Content-Type': 'application/json'
+          });
+          res.end(JSON.stringify(errPayload));
+          return;
+        }
+
+        const servedModel =
+          upstreamResponse.headers.get('x-eluvix-model') || chatReq.model || body.model || 'eluvix-default';
+        const contentType = upstreamResponse.headers.get('content-type') || '';
+
+        if (chatReq.stream && upstreamResponse.body && contentType.includes('text/event-stream')) {
+          const responsesStream = transformOpenAiSseToResponsesSse({
+            openAiStream: upstreamResponse.body,
+            requestedModel: servedModel,
+            previousResponseId,
+            store: shouldStore,
+            onCompleted: ({ responseObject, assistantMessage }) => {
+              if (!shouldStore) return;
+              saveStoredResponse({
+                id: responseObject.id,
+                userId: 'default',
+                previousResponseId,
+                model: servedModel,
+                messages: [...chatRequest.messages, assistantMessage],
+                response: responseObject
+              });
+            }
+          });
+          await this.pipeWebStream(req, res, responsesStream, upstreamResponse.status, {
+            ...forwardedHeaders,
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive'
+          });
+          return;
+        }
+
+        const openAiJson = await upstreamResponse.json().catch(() => ({}));
+        const { responseObject, assistantMessage } = openAiChatToResponsesObject({
+          chatJson: openAiJson,
+          requestedModel: servedModel,
+          previousResponseId,
+          store: shouldStore
+        });
+        if (shouldStore) {
+          saveStoredResponse({
+            id: responseObject.id,
+            userId: 'default',
+            previousResponseId,
+            model: servedModel,
+            messages: [...chatRequest.messages, assistantMessage],
+            response: responseObject
+          });
+        }
+        res.writeHead(upstreamResponse.status, {
+          ...forwardedHeaders,
+          'Content-Type': 'application/json'
+        });
+        res.end(JSON.stringify(responseObject));
+        return;
+      }
+
+      // Retrieve / Delete Stored Response (`/v1/responses/:id` & `/api/v1/responses/:id`)
+      if (
+        (pathname.startsWith('/v1/responses/') || pathname.startsWith('/api/v1/responses/')) &&
+        (req.method === 'GET' || req.method === 'DELETE')
+      ) {
+        const respId = decodeURIComponent(
+          pathname.replace(/^\/(?:api\/)?v1\/responses\//, '')
+        ).trim();
+        if (!respId) {
+          this.rejectJson(res, 400, 'Response ID is required.', 'invalid_request');
+          return;
+        }
+        if (req.method === 'GET') {
+          const stored = getStoredResponse(respId, 'default');
+          if (!stored) {
+            this.rejectJson(res, 404, `Response '${respId}' not found.`, 'response_not_found');
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(stored.response));
+          return;
+        }
+        const deleted = deleteStoredResponse(respId, 'default');
+        if (!deleted) {
+          this.rejectJson(res, 404, `Response '${respId}' not found.`, 'response_not_found');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: respId, object: 'response.deleted', deleted: true }));
+        return;
+      }
+
+      // OpenAI Embeddings Router (`/v1/embeddings` & `/api/v1/embeddings`)
+      if (
+        (pathname === '/v1/embeddings' || pathname === '/api/v1/embeddings') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(15000);
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        if (body.input === undefined || body.input === null) {
+          this.rejectJson(res, 400, "Missing required parameter: 'input' is required.", 'missing_required_parameter');
+          return;
+        }
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const embResponse = await this.router.routeEmbeddings(body, {
+          scope: { userId: 'default', origin: 'client' },
+          hops
+        });
+        const forwardedHeaders: Record<string, string> = {};
+        embResponse.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+        const payload = await embResponse.json().catch(() => ({}));
+        res.writeHead(embResponse.status, {
+          ...forwardedHeaders,
+          'Content-Type': 'application/json'
+        });
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
+      // Sovereign Headless Audio STT (`/v1/audio/transcriptions` & `/api/v1/audio/transcriptions`)
+      if (
+        (pathname === '/v1/audio/transcriptions' || pathname === '/api/v1/audio/transcriptions') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(30000);
+        const contentType = req.headers['content-type'] || '';
+        const rawBuf = await this.readBodyBuffer(req);
+        const syntheticReq = new Request('http://127.0.0.1/upload', {
+          method: 'POST',
+          headers: { 'content-type': contentType },
+          body: new Uint8Array(rawBuf)
+        });
+        const formData = await syntheticReq.formData();
+        const fileField = formData.get('file');
+        if (!fileField || typeof fileField === 'string') {
+          this.rejectJson(res, 400, "Missing required multipart field: 'file'.", 'missing_required_parameter');
+          return;
+        }
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const model = formData.get('model');
+        const language = formData.get('language');
+        const prompt = formData.get('prompt');
+        const responseFormat = formData.get('response_format');
+
+        const sttRes = await this.router.routeAudioTranscription(
+          {
+            file: fileField as Blob,
+            filename: (fileField as File).name || 'audio.wav',
+            mimeType: (fileField as Blob).type || 'audio/wav',
+            ...(typeof model === 'string' && model.trim() ? { model: model.trim() } : {}),
+            ...(typeof language === 'string' && language.trim() ? { language: language.trim() } : {}),
+            ...(typeof prompt === 'string' && prompt.trim() ? { prompt: prompt.trim() } : {}),
+            ...(typeof responseFormat === 'string' && responseFormat.trim()
+              ? { response_format: responseFormat.trim() as any }
+              : {})
+          },
+          {
+            scope: { userId: 'default', origin: 'client' },
+            hops
+          }
+        );
+        const forwardedHeaders: Record<string, string> = {
+          'Content-Type': sttRes.headers.get('content-type') || 'application/json'
+        };
+        sttRes.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+        const outBytes = Buffer.from(await sttRes.arrayBuffer());
+        res.writeHead(sttRes.status, forwardedHeaders);
+        res.end(outBytes);
+        return;
+      }
+
+      // Sovereign Headless Audio TTS (`/v1/audio/speech` & `/api/v1/audio/speech`)
+      if (
+        (pathname === '/v1/audio/speech' || pathname === '/api/v1/audio/speech') &&
+        req.method === 'POST'
+      ) {
+        this.providerAgent.notifyConsumerActive(30000);
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        if (typeof body.input !== 'string' || !body.input.trim()) {
+          this.rejectJson(res, 400, "Missing required parameter: 'input' must be a non-empty string.", 'missing_required_parameter');
+          return;
+        }
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+
+        const ttsRes = await this.router.routeAudioSpeech(body, {
+          scope: { userId: 'default', origin: 'client' },
+          hops
+        });
+        const forwardedHeaders: Record<string, string> = {
+          'Content-Type': ttsRes.headers.get('content-type') || 'audio/mpeg'
+        };
+        ttsRes.headers.forEach((value, key) => {
+          const lower = key.toLowerCase();
+          if (lower.startsWith('x-eluvix-') || lower === 'retry-after') {
+            forwardedHeaders[key] = value;
+          }
+        });
+        const outBytes = Buffer.from(await ttsRes.arrayBuffer());
+        res.writeHead(ttsRes.status, forwardedHeaders);
+        res.end(outBytes);
+        return;
+      }
+
+      // Dataset & Distillation Export (`/v1/export` & `/api/v1/export`)
+      if ((pathname === '/v1/export' || pathname === '/api/v1/export') && req.method === 'GET') {
+        const format = (url.searchParams.get('format') || 'chat').toLowerCase();
+        const minScoreRaw = url.searchParams.get('minScore');
+        const minScore =
+          minScoreRaw !== null && Number.isFinite(parseFloat(minScoreRaw))
+            ? Math.max(0, Math.min(1, parseFloat(minScoreRaw)))
+            : format === 'dpo'
+            ? 0.75
+            : 0.6;
+        const limitRaw = url.searchParams.get('limit');
+        const limit =
+          limitRaw !== null && Number.isFinite(parseInt(limitRaw, 10))
+            ? Math.max(1, Math.min(5000, parseInt(limitRaw, 10)))
+            : 1000;
+
+        if (format === 'sft') {
+          const pairs = listDistillationPairs('default', { minScore, limit });
+          const rawJsonl = formatDistillationAsSftJsonl(pairs);
+          res.writeHead(200, {
+            'Content-Type': 'application/jsonl',
+            'x-eluvix-export-format': 'sft',
+            'x-eluvix-export-count': String(pairs.length),
+          });
+          res.end(rawJsonl ? `${rawJsonl}\n` : '');
+          return;
+        }
+        if (format === 'dpo') {
+          const pairs = listDistillationPairs('default', { minScore, limit });
+          const rawJsonl = formatDistillationAsDpoJsonl(pairs);
+          const count = rawJsonl ? rawJsonl.split('\n').filter(Boolean).length : 0;
+          res.writeHead(200, {
+            'Content-Type': 'application/jsonl',
+            'x-eluvix-export-format': 'dpo',
+            'x-eluvix-export-count': String(count),
+          });
+          res.end(rawJsonl ? `${rawJsonl}\n` : '');
+          return;
+        }
+        if (format !== 'chat') {
+          this.rejectJson(res, 400, `Unsupported export format "${format}".`, 'invalid_format');
+          return;
+        }
+        const db = getDb();
+        const messages = db
+          .prepare(
+            'SELECT session_id, role, content FROM chat_history WHERE user_id = ? ORDER BY session_id, id ASC'
+          )
+          .all('default') as Array<{ session_id: string; role: string; content: string }>;
+        const sessions = new Map<string, any[]>();
+        for (const msg of messages) {
+          if (!sessions.has(msg.session_id)) sessions.set(msg.session_id, []);
+          sessions.get(msg.session_id)!.push({ role: msg.role, content: msg.content });
+        }
+        let jsonl = '';
+        for (const msgs of Array.from(sessions.values())) {
+          if (msgs.length > 0) jsonl += JSON.stringify({ messages: msgs }) + '\n';
+        }
+        res.writeHead(200, { 'Content-Type': 'application/jsonl' });
+        res.end(jsonl);
+        return;
+      }
+
+      // Arena Human Preference Vote (`/v1/distillation/vote` & `/api/v1/distillation/vote`)
+      if (
+        (pathname === '/v1/distillation/vote' || pathname === '/api/v1/distillation/vote') &&
+        req.method === 'POST'
+      ) {
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        const chosenText = typeof body.chosenText === 'string' ? body.chosenText.trim() : '';
+        const rejectedText = typeof body.rejectedText === 'string' ? body.rejectedText.trim() : '';
+        if (!chosenText || !rejectedText) {
+          this.rejectJson(
+            res,
+            400,
+            'Both chosenText and rejectedText must be non-empty strings.',
+            'missing_required_parameter'
+          );
+          return;
+        }
+        const promptMessages = Array.isArray(body.messages)
+          ? body.messages
+          : typeof body.prompt === 'string' && body.prompt.trim()
+          ? [{ role: 'user', content: body.prompt }]
+          : [];
+        if (promptMessages.length === 0) {
+          this.rejectJson(res, 400, 'prompt or messages[] is required.', 'missing_required_parameter');
+          return;
+        }
+        const winnerUpstreamId = String(body.winnerUpstreamId || body.winnerModel || 'arena-winner');
+        const loserUpstreamId = String(body.loserUpstreamId || body.loserModel || 'arena-loser');
+        const complexity = estimatePromptComplexity(promptMessages as any);
+        const tier = String(body.complexityTier || complexity.label);
+
+        const winnerArm = recordBanditArmOutcome({
+          upstreamId: winnerUpstreamId,
+          complexityTier: tier,
+          success: true,
+          weight: 2.0,
+        });
+        const loserArm =
+          loserUpstreamId !== winnerUpstreamId
+            ? recordBanditArmOutcome({
+                upstreamId: loserUpstreamId,
+                complexityTier: tier,
+                success: false,
+                weight: 1.5,
+              })
+            : null;
+        const pair = captureDistillationPair({
+          userId: 'default',
+          source: 'arena-vote',
+          teacherUpstreamId: winnerUpstreamId,
+          studentUpstreamId: loserUpstreamId,
+          teacherModel: String(body.winnerModel || winnerUpstreamId),
+          studentModel: String(body.loserModel || loserUpstreamId),
+          promptMessages,
+          chosenText,
+          rejectedText,
+          privacyConfig: this.config.privacyGuard,
+          judgeScoreOverride: 1.0,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, pairId: pair?.id ?? null, winnerArm, loserArm }));
+        return;
+      }
+
+      // Streamable-HTTP Model Context Protocol (`/v1/mcp` & `/api/v1/mcp`)
+      if (pathname === '/v1/mcp' || pathname === '/api/v1/mcp') {
+        if (req.method === 'GET') {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'mcp-protocol-version': ELUVIX_MCP_PROTOCOL_VERSION,
+          });
+          res.end(
+            JSON.stringify({
+              name: 'eluvix-sovereign-ai-os',
+              protocolVersion: ELUVIX_MCP_PROTOCOL_VERSION,
+              transport: 'streamable-http',
+              tools: ELUVIX_MCP_TOOLS.map((t) => ({ name: t.name, description: t.description })),
+              resources: ELUVIX_MCP_RESOURCES,
+            })
+          );
+          return;
+        }
+
+        if (req.method === 'POST') {
+          this.providerAgent.notifyConsumerActive(30000);
+          const rawHops = req.headers['x-eluvix-hops'];
+          const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+          const incomingHops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+          if (incomingHops >= 2) {
+            res.writeHead(429, {
+              'Content-Type': 'application/json',
+              'mcp-protocol-version': ELUVIX_MCP_PROTOCOL_VERSION,
+            });
+            res.end(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: null,
+                error: {
+                  code: -32000,
+                  message: `MCP recursion loop blocked (x-eluvix-hops=${incomingHops} >= 2).`,
+                },
+              })
+            );
+            return;
+          }
+
+          const bodyStr = await this.readBody(req);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(bodyStr || '{}');
+          } catch {
+            res.writeHead(400, {
+              'Content-Type': 'application/json',
+              'mcp-protocol-version': ELUVIX_MCP_PROTOCOL_VERSION,
+            });
+            res.end(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: null,
+                error: { code: -32700, message: 'Parse error: invalid JSON body' },
+              })
+            );
+            return;
+          }
+
+          const rpcResponse = await handleEluvixMcpPayload(parsed, {
+            router: this.router,
+            config: this.config,
+            scope: { userId: 'default', origin: 'client' },
+            hops: incomingHops,
+          });
+
+          if (rpcResponse === null) {
+            res.writeHead(202, { 'mcp-protocol-version': ELUVIX_MCP_PROTOCOL_VERSION });
+            res.end();
+            return;
+          }
+
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'mcp-protocol-version': ELUVIX_MCP_PROTOCOL_VERSION,
+            'x-eluvix-hops': String(incomingHops + 1),
+          });
+          res.end(JSON.stringify(rpcResponse));
+          return;
+        }
+      }
+
+      // Golden Eval Suite Runner (`/v1/evals/run` & `/api/v1/evals/run`)
+      if (
+        (pathname === '/v1/evals/run' || pathname === '/api/v1/evals/run') &&
+        req.method === 'POST'
+      ) {
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        const mode = body?.mode === 'live' ? 'live' : 'dry-run';
+
+        const suite =
+          body?.suite && typeof body.suite === 'object' && Array.isArray(body.suite.cases)
+            ? body.suite
+            : typeof body?.suiteId === 'string'
+              ? STARTER_GOLDEN_EVAL_SUITES.find((s) => s.id === body.suiteId)
+              : STARTER_GOLDEN_EVAL_SUITES[0];
+
+        if (!suite || !Array.isArray(suite.cases) || suite.cases.length === 0) {
+          this.rejectJson(
+            res,
+            400,
+            'A valid Golden Eval suite (with non-empty cases[]) or suiteId is required.',
+            'missing_required_parameter'
+          );
+          return;
+        }
+
+        let effectiveConfig: RouterConfig = this.config;
+        if (body?.configOverride && typeof body.configOverride === 'object') {
+          if (!Array.isArray(body.configOverride.upstreams)) {
+            this.rejectJson(res, 400, 'configOverride.upstreams must be an array.', 'invalid_request_error');
+            return;
+          }
+          for (const u of body.configOverride.upstreams) {
+            if (u?.endpoint && /^https?:\/\//i.test(u.endpoint)) {
+              const check = validateUpstreamHttpEndpoint(u.endpoint, { allowLoopbackAndLan: true });
+              if (!check.ok) {
+                this.rejectJson(
+                  res,
+                  400,
+                  `Unsafe upstream endpoint in configOverride ("${u.id}"): ${check.reason}`,
+                  'ssrf_blocked'
+                );
+                return;
+              }
+            }
+          }
+          effectiveConfig = body.configOverride as RouterConfig;
+        }
+
+        const report = await runEvalSuite(suite, effectiveConfig, {
+          mode,
+          scope: { userId: 'default', origin: 'playground' },
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'x-eluvix-eval-passed': String(report.passed),
+          'x-eluvix-eval-mode': report.mode,
+        });
+        res.end(JSON.stringify(report));
+        return;
+      }
+
       // Not found
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: `Route ${pathname} not found on Eluvix Desktop`, type: 'invalid_request_error' } }));
@@ -745,11 +1455,37 @@ export class DesktopRouterServer extends EventEmitter {
     }
   }
 
-  private readBody(req: IncomingMessage): Promise<string> {
-    // Bounded body read (audit L-12): the previous implementation
-    // accumulated chunks with no size limit and no timeout, so any local
-    // process (or website, via the old unauthenticated path) could stream
-    // an unbounded body and exhaust the desktop process's memory.
+  private async pipeWebStream(
+    req: IncomingMessage,
+    res: ServerResponse,
+    stream: ReadableStream<Uint8Array>,
+    status: number,
+    headers: Record<string, string>
+  ): Promise<void> {
+    res.writeHead(status, headers);
+    const reader = stream.getReader();
+    let closed = false;
+    req.on('close', () => {
+      closed = true;
+      try {
+        reader.cancel();
+      } catch {}
+    });
+    try {
+      while (!closed) {
+        const { done, value } = await reader.read();
+        if (done || closed) break;
+        res.write(value);
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {}
+      if (!closed && !res.writableEnded) res.end();
+    }
+  }
+
+  private readBodyBuffer(req: IncomingMessage): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -757,8 +1493,6 @@ export class DesktopRouterServer extends EventEmitter {
       let settled = false;
 
       const timer = setTimeout(() => {
-        // A stalled body gets its socket torn down; there is no live
-        // response channel left to report the 408 on, and that is fine.
         fail(Object.assign(new Error('Request body read timed out'), { statusCode: 408 }), true);
       }, BODY_READ_TIMEOUT_MS);
       timer.unref?.();
@@ -768,7 +1502,9 @@ export class DesktopRouterServer extends EventEmitter {
         settled = true;
         clearTimeout(timer);
         if (destroy) {
-          try { req.destroy(); } catch {}
+          try {
+            req.destroy();
+          } catch {}
         }
         reject(err);
       };
@@ -776,8 +1512,6 @@ export class DesktopRouterServer extends EventEmitter {
       req.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > MAX_BODY_BYTES) {
-          // Over the cap: keep draining but discard, so memory stays
-          // bounded AND the socket survives to deliver the 413.
           overflow = true;
           return;
         }
@@ -791,9 +1525,13 @@ export class DesktopRouterServer extends EventEmitter {
         }
         settled = true;
         clearTimeout(timer);
-        resolve(Buffer.concat(chunks).toString('utf8'));
+        resolve(Buffer.concat(chunks));
       });
       req.on('error', (err) => fail(err));
     });
+  }
+
+  private readBody(req: IncomingMessage): Promise<string> {
+    return this.readBodyBuffer(req).then((buf) => buf.toString('utf8'));
   }
 }

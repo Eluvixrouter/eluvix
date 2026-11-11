@@ -21,6 +21,7 @@ export const PALETTE_NODE_CATALOG: PaletteNodeSpec[] = [
   { type: 'vllmNode', title: 'vLLM Engine', subtitle: 'PagedAttention GPU Server (:8000)', icon: '⚡', category: 'Local Engine', keywords: 'cuda rocm speculative decoding nvfp4 fa3' },
   { type: 'sglangNode', title: 'SGLang Engine', subtitle: 'RadixAttention & Mooncake RDMA (:30000)', icon: '🚀', category: 'Local Engine', keywords: 'disaggregated prefill decode kv cache blackwell' },
   { type: 'comfyuiNode', title: 'ComfyUI Media DAG Engine', subtitle: 'Flux.1 / SDXL / Wan 2.1 Video / Hunyuan3D (:8188)', icon: '🎬', category: 'Media Synthesis', keywords: 'diffusion image video 3d mesh glb artcraft' },
+  { type: 'audioVoiceNode', title: 'Sovereign Audio & Voice Engine', subtitle: 'Headless Whisper STT (:8005) + Kokoro/Piper TTS (:8880)', icon: '🎙️', category: 'Media Synthesis', keywords: 'audio voice whisper speaches kokoro piper stt tts transcription speech' },
 
   // Frontier & Autonomous Agent Harnesses
   { type: 'antigravityNode', title: 'Google Antigravity Agent (Gemini 4 Carbon)', subtitle: 'Autonomous CLI & Extended Thinking (cli://agy)', icon: '🚀', category: 'Agent CLI', keywords: 'gemini 4 carbon argon flash agy subagents', customData: { model: 'gemini-4-carbon' } },
@@ -34,7 +35,8 @@ export const PALETTE_NODE_CATALOG: PaletteNodeSpec[] = [
 
   // Balancers, Routers & Gateways
   { type: 'inputNode', title: 'Client Input Entrypoint', subtitle: 'OpenAI /v1/chat & /v1/images Gateway (:3588)', icon: '🔌', category: 'Entrypoint', keywords: 'client request input sdk' },
-  { type: 'switchyardNode', title: 'Switchyard Balancer', subtitle: 'Cost, Complexity & Modality Router', icon: '🔀', category: 'Balancer', keywords: 'router tiers failover kv affinity modality' },
+  { type: 'switchyardNode', title: 'Switchyard Balancer', subtitle: 'Cost, Complexity & Modality Router', icon: '🔀', category: 'Balancer', keywords: 'router tiers failover kv affinity modality thompson bandit' },
+  { type: 'speculativeCascadeNode', title: 'Speculative Cascade (Buffer-Verify)', subtitle: '$0 Local Draft Verification ➔ Frontier Escalation & Shadow DPO', icon: '⚡', category: 'Balancer', keywords: 'speculative cascade draft verifier buffer verify shadow student distillation dpo sft' },
   { type: 'consensusNode', title: 'Consensus Judge / Arena', subtitle: 'Parallel N-Model Fan-Out & Rubric Judge', icon: '🏛️', category: 'Balancer', keywords: 'ensemble quorum judge voting arena' },
   { type: 'fallbackChainNode', title: 'Resilient Fallback Chain', subtitle: 'Circuit Breaker & Hedged Retries', icon: '⛓️', category: 'Balancer', keywords: 'retry circuit breaker hedging 429 5xx' },
   { type: 'taskRouterNode', title: 'Task Router', subtitle: 'Intent Classification Dispatcher', icon: '🧭', category: 'Gateway', keywords: 'intent code math creative' },
@@ -77,10 +79,12 @@ interface CommandPaletteModalProps {
   canRedo: boolean;
   diagnosticsCount: number;
   simulatorOpen: boolean;
+  evalGateOpen?: boolean;
   onAddNode: (type: string, customData?: Record<string, any>) => void;
   onLoadLayout: (slug: string) => void;
   onAutoLayout: () => void;
   onToggleSimulator: () => void;
+  onToggleEvalGate?: () => void;
   onAutoFixAll: () => void;
   onSyncLiveConfig: () => void;
   onSave: () => void;
@@ -99,10 +103,12 @@ export default function CommandPaletteModal({
   canRedo,
   diagnosticsCount,
   simulatorOpen,
+  evalGateOpen,
   onAddNode,
   onLoadLayout,
   onAutoLayout,
   onToggleSimulator,
+  onToggleEvalGate,
   onAutoFixAll,
   onSyncLiveConfig,
   onSave,
@@ -154,6 +160,23 @@ export default function CommandPaletteModal({
           onClose();
         },
       },
+      ...(onToggleEvalGate
+        ? [
+            {
+              id: 'act-eval-gate',
+              group: 'Canvas Actions' as const,
+              title: evalGateOpen ? 'Hide Golden Eval Gate' : 'Open Golden Eval Gate',
+              subtitle: 'Run $0.00 deterministic or live Golden Eval assertions against unsaved canvas',
+              icon: '🧪',
+              badge: 'Evals',
+              searchText: 'golden eval suite regression gate assertions dry-run verify',
+              onSelect: () => {
+                onToggleEvalGate();
+                onClose();
+              },
+            },
+          ]
+        : []),
       ...(diagnosticsCount > 0
         ? [
             {
@@ -301,10 +324,12 @@ export default function CommandPaletteModal({
     canRedo,
     diagnosticsCount,
     simulatorOpen,
+    evalGateOpen,
     onAddNode,
     onLoadLayout,
     onAutoLayout,
     onToggleSimulator,
+    onToggleEvalGate,
     onAutoFixAll,
     onSyncLiveConfig,
     onSave,

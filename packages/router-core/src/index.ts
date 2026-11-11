@@ -36,7 +36,8 @@ export type RoutingStrategy =
   | 'round-robin' 
   | 'priority'
   | 'prefill-isolation'
-  | 'stall-escalation';
+  | 'stall-escalation'
+  | 'thompson-bandit';
 
 export type ConfidentialPolicy =
   | 'disabled'
@@ -126,6 +127,12 @@ export interface SwitchyardConfig {
    * - `'reject'`: immediately reject requests with HTTP 429 until rolling 24h spend drops below the cap.
    */
   budgetExhaustedAction?: BudgetExhaustedAction;
+  /**
+   * When true, disables automatic capability-tier aliasing for unconfigured foreign
+   * vendor model IDs (`claude-*`, `gpt-4o*`, `o1*`, `o3*`) and requires an explicit
+   * or wildcard upstream match. Defaults to false.
+   */
+  strictModelMatch?: boolean;
 }
 
 export type BudgetExhaustedAction = 'prefer-local' | 'strict-local' | 'reject';
@@ -181,6 +188,8 @@ export interface RouterConfig {
   sandbox?: SandboxConfig;
   consensusGroups?: ConsensusGroupConfig[];
   fallbackChains?: FallbackChainConfig[];
+  cascade?: SpeculativeCascadeConfig;
+  vramArbiter?: VramArbiterConfig;
   vectorcraft?: VectorCraftMcpConfig;
   artcraft?: ArtCraftMcpConfig;
 }
@@ -211,6 +220,38 @@ export * from './modality.js';
 export * from './ssrf-guard.js';
 export * from './flash-attention-kernels.js';
 export * from './shell-utils.js';
+export * from './protocol-adapters.js';
+export * from './audio.js';
+export * from './cascade.js';
+export * from './distillation.js';
+export * from './vram-arbiter.js';
+export * from './mcp-server.js';
+export * from './evals.js';
+import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
+import { globalVramArbiter, type VramArbiterConfig } from './vram-arbiter.js';
+import {
+  evaluateDraftQuality,
+  extractChoiceLogprobs,
+  synthesizeOpenAiSseFromText,
+  rankUpstreamsWithThompsonBandit,
+  type SpeculativeCascadeConfig,
+} from './cascade.js';
+import { captureDistillationPair } from './distillation.js';
+import {
+  resolveVirtualVendorModel,
+  normalizeEmbeddingVector,
+  encodeFloat32VectorBase64,
+  type VendorModelAliasResult,
+} from './protocol-adapters.js';
+import {
+  type AudioVoiceConfig,
+  type AudioResponseFormat,
+  type TranscriptionResponseFormat,
+  STT_BACKEND_PRESETS,
+  TTS_BACKEND_PRESETS,
+  isDedicatedAudioUpstreamType,
+  inferAudioMimeType,
+} from './audio.js';
 import {
   ComfyUIConfig,
   buildComfyApiWorkflow,
@@ -243,7 +284,36 @@ import {
   tryResolveCliExecutable,
   ANTIGRAVITY_CLI_BINARIES
 } from './cli-exec.js';
-import { logRequest, getRequestLogs, getRollingSpendUsd } from './db.js';
+import * as dbModule from './db.js';
+
+function logRequest(...args: Parameters<typeof dbModule.logRequest>) {
+  return dbModule.logRequest(...args);
+}
+function getRequestLogs(...args: Parameters<typeof dbModule.getRequestLogs>) {
+  return dbModule.getRequestLogs(...args);
+}
+function getRollingSpendUsd(...args: Parameters<typeof dbModule.getRollingSpendUsd>) {
+  return dbModule.getRollingSpendUsd(...args);
+}
+function getBanditArmsForTier(tier: string) {
+  try {
+    if (typeof (dbModule as any).getBanditArmsForTier === 'function') {
+      return dbModule.getBanditArmsForTier(tier);
+    }
+  } catch {
+    // Tolerate partial ../db.js mocks in unit tests
+  }
+  return [];
+}
+function recordBanditArmOutcome(params: Parameters<typeof dbModule.recordBanditArmOutcome>[0]) {
+  try {
+    if (typeof (dbModule as any).recordBanditArmOutcome === 'function') {
+      dbModule.recordBanditArmOutcome(params);
+    }
+  } catch {
+    // Tolerate partial ../db.js mocks in unit tests
+  }
+}
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
 import {
   type ContextProvider,
@@ -290,6 +360,7 @@ export interface RouteTraceStep {
     | 'consensus'
     | 'prefill-isolation'
     | 'kv-prefix-affinity'
+    | 'speculative-cascade'
     | 'ranking';
   detail: string;
   /** Upstream ids surviving this stage, when the stage filters. */
@@ -336,6 +407,10 @@ export type UpstreamType =
   | 'lemonade'
   | 'ramalama'
   | 'comfyui'
+  | 'audio'
+  | 'whisper'
+  | 'speaches'
+  | 'kokoro-tts'
   | 'antigravity'
   | 'harness';
 
@@ -417,6 +492,7 @@ export interface UpstreamConfig {
   attentionKernel?: AttentionKernelConfig;
   ramalama?: RamalamaConfig;
   comfyui?: ComfyUIConfig;
+  audio?: AudioVoiceConfig;
 }
 
 /**
@@ -770,6 +846,7 @@ export function estimateUpstreamRequestCostUsd(
  */
 export function isVisionCapableUpstream(upstream: UpstreamConfig): boolean {
   if (!upstream) return false;
+  if (isDedicatedAudioUpstreamType(upstream.type)) return false;
   if (upstream.type === 'comfyui') {
     return Boolean(upstream.capabilities?.includes('vision-input'));
   }
@@ -2411,6 +2488,340 @@ export class Eluvix {
     let budgetExhausted = false;
     const activeChain = this.config.fallbackChains?.[0];
 
+    const cascadeCfg = this.config.cascade;
+    const expectJsonForCascade =
+      effectiveRequest.response_format?.type === 'json_object' ||
+      effectiveRequest.response_format?.type === 'json_schema';
+    const expectCodeForCascade =
+      complexity.features.some(f => f.includes('code')) ||
+      /\b(?:write|implement|function|class|typescript|python|rust|golang|sql|bash)\b/i.test(lastUserQuery);
+
+    let cascadeHeaderStatus: string | null = null;
+    let cascadeEscalationReason: string | null = null;
+    let rejectedDraftCapture: {
+      upstreamId: string;
+      model: string;
+      text: string;
+      reason: string;
+    } | null = null;
+
+    // Buffer-Verify Speculative Cascade (`#draft` -> `#verifier`)
+    if (
+      cascadeCfg?.enabled &&
+      hops === 0 &&
+      selection.modality.synthesisIntent === 'text' &&
+      cascadeCfg.draftUpstreamId &&
+      cascadeCfg.verifierUpstreamId
+    ) {
+      const draftUpstream = targetUpstreams.find(u => u.id === cascadeCfg.draftUpstreamId);
+      const verifierUpstream = targetUpstreams.find(u => u.id === cascadeCfg.verifierUpstreamId);
+
+      if (draftUpstream && verifierUpstream && draftUpstream.id !== verifierUpstream.id) {
+        if (globalCircuitBreaker.isAllowed(draftUpstream.id)) {
+          let draftReq: ResolvedChatRequest = {
+            ...effectiveRequest,
+            stream: false,
+          };
+          if (
+            memoryTainted &&
+            !this.config.memory?.allowCloudEgress &&
+            this.config.memory?.cloudMode === 'strip' &&
+            !isLocalUpstream(draftUpstream) &&
+            draftReq.messages
+          ) {
+            draftReq = { ...draftReq, messages: stripMemoryFromMessages(draftReq.messages) };
+          }
+          if (
+            knowledgeTainted &&
+            !this.config.knowledge?.allowCloudEgress &&
+            this.config.knowledge?.cloudMode === 'strip' &&
+            !isLocalUpstream(draftUpstream) &&
+            draftReq.messages
+          ) {
+            draftReq = { ...draftReq, messages: stripKnowledgeFromMessages(draftReq.messages) };
+          }
+
+          const draftBudgetMs = Math.max(250, cascadeCfg.maxDraftLatencyMs ?? 2500);
+          const draftStart = Date.now();
+          try {
+            const draftRes = await this.forwardRequest(
+              draftUpstream,
+              draftReq,
+              draftBudgetMs,
+              options?.signal,
+              complexity.score,
+              scope,
+              hops + 1
+            );
+            const draftDurationMs = Date.now() - draftStart;
+            if (draftRes.ok) {
+              const rawDraftBody = await draftRes.text();
+              let parsedDraft: any = null;
+              try {
+                parsedDraft = JSON.parse(rawDraftBody);
+              } catch {}
+              const draftText =
+                typeof parsedDraft?.choices?.[0]?.message?.content === 'string'
+                  ? parsedDraft.choices[0].message.content
+                  : '';
+              const finishReason = parsedDraft?.choices?.[0]?.finish_reason ?? null;
+              const hasToolCalls =
+                Array.isArray(parsedDraft?.choices?.[0]?.message?.tool_calls) &&
+                parsedDraft.choices[0].message.tool_calls.length > 0;
+              const tokenLogprobs = extractChoiceLogprobs(parsedDraft);
+              const draftServedModel =
+                draftRes.headers.get('x-eluvix-model') || parsedDraft?.model || effectiveRequest.model;
+
+              const verification = hasToolCalls
+                ? { passed: true, confidence: 0.9, reasons: [] }
+                : evaluateDraftQuality(draftText, {
+                    confidenceThreshold: cascadeCfg.confidenceThreshold ?? 0.78,
+                    validateJsonSchema: cascadeCfg.validateJsonSchema !== false,
+                    validateCodeFences: cascadeCfg.validateCodeFences !== false,
+                    expectJson: expectJsonForCascade,
+                    jsonSchema: effectiveRequest.response_format?.json_schema || null,
+                    expectCode: expectCodeForCascade,
+                    tokenLogprobs,
+                    finishReason,
+                  });
+
+              if (verification.passed && parsedDraft) {
+                globalCircuitBreaker.recordSuccess(draftUpstream.id);
+                const draftPromptTokens =
+                  parsedDraft.usage?.prompt_tokens ?? complexity.tokenEstimate;
+                const draftCompletionTokens =
+                  parsedDraft.usage?.completion_tokens ??
+                  Math.max(1, Math.ceil(draftText.length / 4));
+                const draftCostUsd = estimateUpstreamRequestCostUsd(
+                  draftUpstream,
+                  draftPromptTokens,
+                  draftCompletionTokens
+                );
+                recordBanditArmOutcome({
+                  upstreamId: draftUpstream.id,
+                  complexityTier: complexity.label,
+                  success: true,
+                  ttftMs: draftDurationMs,
+                });
+                logRequest({
+                  model: draftServedModel,
+                  upstream_id: draftUpstream.id,
+                  status: 200,
+                  duration_ms: draftDurationMs,
+                  prompt_tokens: draftPromptTokens,
+                  completion_tokens: draftCompletionTokens,
+                  ttft_ms: draftDurationMs,
+                  cost_usd: draftCostUsd,
+                  user_id: scope?.userId || 'default',
+                });
+
+                if (cacheConfig?.enabled && cacheKey && !effectiveRequest.stream) {
+                  this.setCachedResponse(cacheKey, parsedDraft, lastUserQuery);
+                }
+                if (canRemember && draftText.trim().length > 0 && this.contextProvider) {
+                  void this.contextProvider
+                    .remember(
+                      { user: { role: 'user', content: lastUserQuery }, assistant: draftText },
+                      scope
+                    )
+                    .catch(() => {});
+                }
+
+                const acceptedHeaders = new Headers(draftRes.headers);
+                acceptedHeaders.set('x-eluvix-upstream', draftUpstream.id);
+                acceptedHeaders.set('x-eluvix-model', draftServedModel);
+                acceptedHeaders.set('x-eluvix-cascade', 'draft-accepted');
+                acceptedHeaders.set('x-eluvix-cascade-confidence', String(verification.confidence));
+                acceptedHeaders.set('x-eluvix-complexity', complexity.score.toString());
+                acceptedHeaders.set('x-eluvix-tokens', String(draftPromptTokens));
+                acceptedHeaders.set('x-eluvix-ttft-ms', String(draftDurationMs));
+                acceptedHeaders.set('x-eluvix-cost-usd', draftCostUsd.toFixed(6));
+                if (selection.vendorAlias?.aliasApplied) {
+                  acceptedHeaders.set(
+                    'x-eluvix-model-alias',
+                    `${selection.vendorAlias.originalModel}->${draftServedModel} (tier:${selection.vendorAlias.targetTier || 'auto'})`
+                  );
+                }
+
+                if (effectiveRequest.stream && !hasToolCalls) {
+                  acceptedHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
+                  acceptedHeaders.set('Cache-Control', 'no-cache');
+                  const sseStream = synthesizeOpenAiSseFromText({
+                    text: draftText,
+                    model: draftServedModel,
+                    id: parsedDraft.id,
+                    finishReason: finishReason || 'stop',
+                    usage: parsedDraft.usage,
+                  });
+                  return new Response(sseStream, { status: 200, headers: acceptedHeaders });
+                }
+
+                acceptedHeaders.set('Content-Type', 'application/json');
+                return new Response(rawDraftBody, { status: 200, headers: acceptedHeaders });
+              }
+
+              // Draft failed quality/confidence gate: escalate cleanly to `#verifier`
+              recordBanditArmOutcome({
+                upstreamId: draftUpstream.id,
+                complexityTier: complexity.label,
+                success: false,
+                weight: 0.5,
+              });
+              cascadeHeaderStatus = 'escalated-verifier';
+              cascadeEscalationReason = verification.primaryReason || 'below_confidence_threshold';
+              if (draftText.trim().length > 0) {
+                rejectedDraftCapture = {
+                  upstreamId: draftUpstream.id,
+                  model: draftServedModel,
+                  text: draftText,
+                  reason: cascadeEscalationReason,
+                };
+              }
+            } else {
+              try {
+                await draftRes.text();
+              } catch {}
+              globalCircuitBreaker.recordFailure(draftUpstream.id, activeChain?.failureThreshold ?? 3);
+              recordBanditArmOutcome({
+                upstreamId: draftUpstream.id,
+                complexityTier: complexity.label,
+                success: false,
+              });
+              cascadeHeaderStatus = 'escalated-verifier';
+              cascadeEscalationReason = `draft_http_${draftRes.status}`;
+            }
+          } catch {
+            globalCircuitBreaker.recordFailure(draftUpstream.id, activeChain?.failureThreshold ?? 3);
+            recordBanditArmOutcome({
+              upstreamId: draftUpstream.id,
+              complexityTier: complexity.label,
+              success: false,
+            });
+            cascadeHeaderStatus = 'escalated-verifier';
+            cascadeEscalationReason = 'draft_timeout_or_error';
+          }
+
+          // Remove `#draft` from remaining candidates and promote `#verifier` to front
+          targetUpstreams = [
+            verifierUpstream,
+            ...targetUpstreams.filter(u => u.id !== draftUpstream.id && u.id !== verifierUpstream.id),
+          ];
+        } else {
+          cascadeHeaderStatus = 'escalated-verifier';
+          cascadeEscalationReason = 'draft_circuit_open';
+          targetUpstreams = [
+            verifierUpstream,
+            ...targetUpstreams.filter(u => u.id !== draftUpstream.id && u.id !== verifierUpstream.id),
+          ];
+        }
+      } else if (!draftUpstream && verifierUpstream) {
+        cascadeHeaderStatus = 'bypassed-draft-incapable';
+        targetUpstreams = [
+          verifierUpstream,
+          ...targetUpstreams.filter(u => u.id !== verifierUpstream.id),
+        ];
+      }
+    }
+
+    const maybeTriggerAsyncDistillation = (
+      teacherUpstream: UpstreamConfig,
+      teacherModel: string,
+      teacherText: string
+    ) => {
+      if (hops > 0 || !teacherText || teacherText.trim().length === 0) return;
+
+      // 1. If we escalated from a non-empty `#draft`, persist `(prompt, verifierChosen, draftRejected)` immediately
+      if (rejectedDraftCapture && rejectedDraftCapture.upstreamId !== teacherUpstream.id) {
+        const draftRef = rejectedDraftCapture;
+        queueMicrotask(() => {
+          try {
+            captureDistillationPair({
+              userId: scope.userId,
+              source: 'cascade-escalation',
+              teacherUpstreamId: teacherUpstream.id,
+              studentUpstreamId: draftRef.upstreamId,
+              teacherModel,
+              studentModel: draftRef.model,
+              promptMessages: (request.messages || []) as Array<Record<string, any>>,
+              chosenText: teacherText,
+              rejectedText: draftRef.text,
+              privacyConfig: this.config.privacyGuard,
+              expectJson: expectJsonForCascade,
+              expectCode: expectCodeForCascade,
+            });
+          } catch {}
+        });
+      }
+
+      // 2. Async `#shadow-student` background mirroring
+      const studentId = cascadeCfg?.shadowStudentUpstreamId;
+      const sampleRate = cascadeCfg?.shadowSampleRate ?? 0;
+      if (
+        !studentId ||
+        sampleRate <= 0 ||
+        studentId === teacherUpstream.id ||
+        studentId === rejectedDraftCapture?.upstreamId
+      ) {
+        return;
+      }
+      if (sampleRate < 1 && Math.random() >= sampleRate) {
+        return;
+      }
+      const studentUpstream = this.config.upstreams.find(u => u.id === studentId);
+      if (!studentUpstream) return;
+      if (this.config.egressPolicy === 'local-only' && !isLocalUpstream(studentUpstream)) return;
+      if (!globalCircuitBreaker.isAllowed(studentUpstream.id)) return;
+
+      const shadowMessages = stripKnowledgeFromMessages(
+        stripMemoryFromMessages(effectiveRequest.messages || [])
+      );
+      const shadowReq: ResolvedChatRequest = {
+        model: 'auto',
+        messages: shadowMessages,
+        temperature: effectiveRequest.temperature,
+        response_format: effectiveRequest.response_format,
+        stream: false,
+      };
+
+      queueMicrotask(() => {
+        void this.forwardRequest(
+          studentUpstream,
+          shadowReq,
+          15000,
+          undefined,
+          complexity.score,
+          { ...scope, origin: 'harness' },
+          hops + 1
+        )
+          .then(async (studentRes) => {
+            if (!studentRes.ok) return;
+            const studentRaw = await studentRes.text();
+            const studentJson = JSON.parse(studentRaw);
+            const studentText =
+              typeof studentJson?.choices?.[0]?.message?.content === 'string'
+                ? studentJson.choices[0].message.content
+                : '';
+            const studentModel =
+              studentRes.headers.get('x-eluvix-model') || studentJson?.model || 'student';
+            captureDistillationPair({
+              userId: scope.userId,
+              source: 'shadow',
+              teacherUpstreamId: teacherUpstream.id,
+              studentUpstreamId: studentUpstream.id,
+              teacherModel,
+              studentModel,
+              promptMessages: (request.messages || []) as Array<Record<string, any>>,
+              chosenText: teacherText,
+              rejectedText: studentText,
+              privacyConfig: this.config.privacyGuard,
+              expectJson: expectJsonForCascade,
+              expectCode: expectCodeForCascade,
+            });
+          })
+          .catch(() => {});
+      });
+    };
+
     // Attempt the highest priority upstream first with retry and budget guardrails
     for (const upstream of targetUpstreams) {
       if (attemptsMade > 0 && Date.now() - routeStartTime >= failoverBudgetMs) {
@@ -2557,7 +2968,17 @@ export class Eluvix {
             const syncCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, completionTokens);
 
             // Logging: For non-streaming, log immediately. For streaming, tee stream to log full duration and token count upon completion.
+            const slaThresholdMs = switchyardConfig.spilloverThresholdMs ?? 30000;
             if (!effectiveRequest.stream) {
+              recordBanditArmOutcome({
+                upstreamId: upstream.id,
+                complexityTier: complexity.label,
+                success: duration_ms <= slaThresholdMs,
+                weight: duration_ms <= slaThresholdMs ? 1.0 : 0.4,
+                ttftMs,
+                itlMs,
+              });
+              maybeTriggerAsyncDistillation(upstream, servedModel, assistantOutputText);
               logRequest({
                 model: servedModel,
                 upstream_id: upstream.id,
@@ -2599,6 +3020,15 @@ export class Eluvix {
                     ? Number((finalDecode / (estimatedCompletion - 1)).toFixed(2))
                     : Number((finalDecode || finalDuration).toFixed(2));
                   const streamCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, estimatedCompletion);
+                  recordBanditArmOutcome({
+                    upstreamId: upstream.id,
+                    complexityTier: complexity.label,
+                    success: finalDuration <= slaThresholdMs,
+                    weight: finalDuration <= slaThresholdMs ? 1.0 : 0.4,
+                    ttftMs,
+                    itlMs: finalItl,
+                  });
+                  maybeTriggerAsyncDistillation(upstream, servedModel, fullAssistantText);
                   logRequest({
                     model: servedModel,
                     upstream_id: upstream.id,
@@ -2623,6 +3053,18 @@ export class Eluvix {
             });
             newResponse.headers.set('x-eluvix-upstream', upstream.id);
             newResponse.headers.set('x-eluvix-model', servedModel);
+            if (cascadeHeaderStatus) {
+              newResponse.headers.set('x-eluvix-cascade', cascadeHeaderStatus);
+              if (cascadeEscalationReason) {
+                newResponse.headers.set('x-eluvix-cascade-reason', cascadeEscalationReason);
+              }
+            }
+            if (selection.vendorAlias?.aliasApplied) {
+              newResponse.headers.set(
+                'x-eluvix-model-alias',
+                `${selection.vendorAlias.originalModel}->${servedModel} (tier:${selection.vendorAlias.targetTier || 'auto'})`
+              );
+            }
             newResponse.headers.set('x-eluvix-complexity', complexity.score.toString());
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
@@ -2829,6 +3271,11 @@ export class Eluvix {
             return newResponse;
           } else {
             globalCircuitBreaker.recordFailure(upstream.id, activeChain?.failureThreshold ?? 3);
+            recordBanditArmOutcome({
+              upstreamId: upstream.id,
+              complexityTier: complexity.label,
+              success: false,
+            });
             console.warn(`Upstream ${upstream.name} failed with status ${response.status}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}`);
             try {
               await response.text();
@@ -2839,6 +3286,11 @@ export class Eluvix {
           }
         } catch (err) {
           globalCircuitBreaker.recordFailure(upstream.id, activeChain?.failureThreshold ?? 3);
+          recordBanditArmOutcome({
+            upstreamId: upstream.id,
+            complexityTier: complexity.label,
+            success: false,
+          });
           console.error(`Error connecting to upstream ${upstream.name}${retryCount > 1 ? ` (attempt ${attempt}/${retryCount})` : ''}:`, err);
         }
       }
@@ -2934,6 +3386,7 @@ export class Eluvix {
     steps: RouteTraceStep[];
     budgetFallback?: boolean;
     rolling24hSpendUsd?: number;
+    vendorAlias?: VendorModelAliasResult;
   } {
     const steps: RouteTraceStep[] = [];
     const fail = (message: string): never => {
@@ -2941,18 +3394,60 @@ export class Eluvix {
       err.routeSteps = steps;
       throw err;
     };
+    const strictModelMatch =
+      Boolean(this.config.switchyard?.strictModelMatch) ||
+      Boolean(effectiveRequest.metadata?.strictModelMatch);
+    let vendorAlias: VendorModelAliasResult | undefined;
+
     let matchingUpstreams = this.config.upstreams.filter(u =>
       this.matchesModel(u, effectiveRequest.model)
     );
-    steps.push({
-      stage: 'model-match',
-      detail: `model "${effectiveRequest.model}" matched ${matchingUpstreams.length} of ${this.config.upstreams.length} upstreams`,
-      kept: matchingUpstreams.map(u => u.id),
-      removed: this.config.upstreams.filter(u => !matchingUpstreams.includes(u)).map(u => u.id)
-    });
+    const hasExplicitMatch = this.config.upstreams.some(
+      u =>
+        u.models?.includes(effectiveRequest.model) ||
+        (u.type === 'harness' && u.harness?.kind && effectiveRequest.model === `harness/${u.harness.kind}`) ||
+        ((u.type === 'antigravity' || u.endpoint?.startsWith('cli://')) &&
+          isAntigravitySupportedModel(effectiveRequest.model, u.models))
+    );
+    const usableUnderEgress =
+      this.config.egressPolicy === 'local-only'
+        ? matchingUpstreams.filter(u => isLocalUpstream(u))
+        : matchingUpstreams;
+
+    if (
+      !strictModelMatch &&
+      (matchingUpstreams.length === 0 || (usableUnderEgress.length === 0 && !hasExplicitMatch))
+    ) {
+      const candidateAlias = resolveVirtualVendorModel(effectiveRequest.model);
+      if (candidateAlias.aliasApplied) {
+        vendorAlias = candidateAlias;
+        effectiveRequest = {
+          ...effectiveRequest,
+          model: candidateAlias.resolvedModel,
+        };
+        matchingUpstreams = this.config.upstreams.filter(u =>
+          this.matchesModel(u, effectiveRequest.model)
+        );
+        steps.push({
+          stage: 'model-match',
+          detail: `virtual vendor alias "${candidateAlias.originalModel}" -> "${candidateAlias.resolvedModel}" (tier=${candidateAlias.targetTier}) matched ${matchingUpstreams.length} of ${this.config.upstreams.length} upstreams`,
+          kept: matchingUpstreams.map(u => u.id),
+          removed: this.config.upstreams.filter(u => !matchingUpstreams.includes(u)).map(u => u.id)
+        });
+      }
+    }
+
+    if (!vendorAlias) {
+      steps.push({
+        stage: 'model-match',
+        detail: `model "${effectiveRequest.model}" matched ${matchingUpstreams.length} of ${this.config.upstreams.length} upstreams`,
+        kept: matchingUpstreams.map(u => u.id),
+        removed: this.config.upstreams.filter(u => !matchingUpstreams.includes(u)).map(u => u.id)
+      });
+    }
 
     if (matchingUpstreams.length === 0) {
-      fail(`No upstream available for model: ${effectiveRequest.model}`);
+      fail(`No upstream available for model: ${vendorAlias?.originalModel || effectiveRequest.model}`);
     }
 
     // Loop Guard: requests originating from an agent harness (or with hops > 0)
@@ -3109,6 +3604,17 @@ export class Eluvix {
     if (options?.memoryTokens && options.memoryTokens > 0) {
       complexity.tokenEstimate += options.memoryTokens;
     }
+    if (vendorAlias?.aliasApplied) {
+      if (vendorAlias.preferLocal) {
+        complexity.score = 1;
+        complexity.label = 'simple';
+        complexity.features.push(`vendor-alias:${vendorAlias.originalModel}->simple`);
+      } else if (vendorAlias.complexityFloor && complexity.score < vendorAlias.complexityFloor) {
+        complexity.score = vendorAlias.complexityFloor;
+        complexity.label = vendorAlias.targetTier || complexity.label;
+        complexity.features.push(`vendor-alias:${vendorAlias.originalModel}->${complexity.label}`);
+      }
+    }
     if (!options?.silent) console.log(
       `[Switchyard Balancer] Routing Strategy: ${strategy} | Prompt Complexity: Score ${complexity.score} (${complexity.label}, tokens ~${complexity.tokenEstimate}, features: [${complexity.features.join(', ')}])`
     );
@@ -3153,6 +3659,22 @@ export class Eluvix {
       ...effectiveRequest,
       messages: messagesWithoutContext
     });
+
+    // Dedicated Audio Engine Isolation Gate: prevent STT/TTS audio upstreams (`AudioVoiceNode`)
+    // from hijacking text/code/vision chat completions.
+    const dedicatedAudio = targetUpstreams.filter(u => isDedicatedAudioUpstreamType(u.type));
+    const nonAudioCandidates = targetUpstreams.filter(u => !isDedicatedAudioUpstreamType(u.type));
+    if (dedicatedAudio.length > 0 && nonAudioCandidates.length > 0) {
+      targetUpstreams = nonAudioCandidates;
+      steps.push({
+        stage: 'modality-filter',
+        detail: 'excluded dedicated STT/TTS audio engine(s) from text/chat completion pool',
+        kept: nonAudioCandidates.map(u => u.id),
+        removed: dedicatedAudio.map(u => u.id)
+      });
+    } else if (dedicatedAudio.length > 0 && nonAudioCandidates.length === 0) {
+      fail(`No text chat upstream available for model: ${effectiveRequest.model} (only dedicated audio STT/TTS engines are configured)`);
+    }
 
     // Modality & Diffusion Isolation Gate: prevent ComfyUI wildcard upstreams from hijacking
     // ordinary text/code/tool chat, while steering explicit image/video/3D synthesis prompts
@@ -3418,6 +3940,17 @@ export class Eluvix {
         this.roundRobinIndex++;
       }
       targetUpstreams = [...targetUpstreams.slice(idx), ...targetUpstreams.slice(0, idx)];
+    } else if (strategy === 'thompson-bandit') {
+      const arms = getBanditArmsForTier(complexity.label);
+      const { ranked } = rankUpstreamsWithThompsonBandit(targetUpstreams, arms, {
+        complexityScore: complexity.score,
+        deterministicMean: Boolean(options?.silent),
+        exactModelChecker:
+          effectiveRequest.model !== 'auto'
+            ? (u) => Boolean(hasExactModelMatch(u, effectiveRequest.model))
+            : undefined,
+      });
+      targetUpstreams = ranked;
     } else {
       targetUpstreams.sort((a, b) => {
         if (effectiveRequest.model !== 'auto') {
@@ -3434,6 +3967,26 @@ export class Eluvix {
       detail: `strategy "${strategy}" ranked the surviving upstreams; the first is tried first, the rest are failover order`,
       kept: targetUpstreams.map(u => u.id)
     });
+
+    if (
+      this.config.cascade?.enabled &&
+      hops === 0 &&
+      modality.synthesisIntent === 'text' &&
+      this.config.cascade.draftUpstreamId &&
+      this.config.cascade.verifierUpstreamId
+    ) {
+      const draftU = targetUpstreams.find(u => u.id === this.config.cascade!.draftUpstreamId);
+      const verifierU = targetUpstreams.find(u => u.id === this.config.cascade!.verifierUpstreamId);
+      if (draftU && verifierU && draftU.id !== verifierU.id) {
+        const others = targetUpstreams.filter(u => u.id !== draftU.id && u.id !== verifierU.id);
+        targetUpstreams = [draftU, verifierU, ...others];
+        steps.push({
+          stage: 'speculative-cascade',
+          detail: `buffer-verify cascade armed: draft "${draftU.id}" (threshold=${this.config.cascade.confidenceThreshold ?? 0.78}, budget=${this.config.cascade.maxDraftLatencyMs ?? 2500}ms) -> verifier "${verifierU.id}"`,
+          kept: targetUpstreams.map(u => u.id)
+        });
+      }
+    }
 
     // Preserve ComfyUI workflow-preset specialization (e.g., wan21-txt2vid for video-gen,
     // hunyuan3d-mesh for 3d-gen) ahead of generic priority tie-breakers.
@@ -3867,7 +4420,8 @@ export class Eluvix {
       targetUpstreams,
       steps,
       budgetFallback,
-      rolling24hSpendUsd
+      rolling24hSpendUsd,
+      vendorAlias
     };
   }
 
@@ -3882,6 +4436,10 @@ export class Eluvix {
       return isAntigravitySupportedModel(requestedModel, upstream.models);
     }
     if (upstream.models.includes('*')) {
+      // Dedicated audio STT/TTS nodes should never wildcard-capture arbitrary chat model IDs
+      if (isDedicatedAudioUpstreamType(upstream.type) && requestedModel !== '*' && requestedModel !== 'default') {
+        return false;
+      }
       // Local inference engines shouldn't greedily capture explicit cloud/agent/harness models
       if (['lemonade', 'ollama', 'ramalama', 'comfyui', 'vllm', 'vllm-sr', 'sglang', 'switchyard'].includes(upstream.type)) {
         if (/^(gemini-|claude-|gpt-oss-120b|harness\/)/i.test(requestedModel)) return false;
@@ -3985,6 +4543,9 @@ export class Eluvix {
       }, { once: true });
     }
 
+    const releaseVramLease = await globalVramArbiter.acquireLease(upstream, this.config);
+    let streamHoldsLease = false;
+
     // Initial connection / TTFT timeout
     resetTimeout(timeoutMs, `Connection or first token timed out after ${timeoutMs}ms`);
     const fetchStartTime = Date.now();
@@ -4020,6 +4581,7 @@ export class Eluvix {
         }
 
         const ttftMs = Date.now() - fetchStartTime;
+        streamHoldsLease = true;
 
         // Successfully received first chunk!
         const idleTimeoutMs = Math.max(60000, timeoutMs);
@@ -4034,6 +4596,7 @@ export class Eluvix {
                 const { done, value } = await reader.read();
                 if (done) {
                   if (timeoutTimer) clearTimeout(timeoutTimer);
+                  releaseVramLease();
                   streamController.close();
                   break;
                 }
@@ -4041,11 +4604,13 @@ export class Eluvix {
               }
             } catch (err) {
               if (timeoutTimer) clearTimeout(timeoutTimer);
+              releaseVramLease();
               streamController.error(err);
             }
           },
           cancel(reason) {
             if (timeoutTimer) clearTimeout(timeoutTimer);
+            releaseVramLease();
             reader.cancel(reason).catch(() => {});
             controller.abort(reason);
           }
@@ -4083,6 +4648,10 @@ export class Eluvix {
     } catch (err) {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       throw err;
+    } finally {
+      if (!streamHoldsLease) {
+        releaseVramLease();
+      }
     }
   }
 
@@ -4723,6 +5292,7 @@ export class Eluvix {
       modelOverride: checkpoint
     });
 
+    const releaseComfyLease = await globalVramArbiter.acquireLease(upstream, this.config);
     let result: Awaited<ReturnType<typeof executeComfyWorkflow>>;
     try {
       result = await executeComfyWorkflow(upstream.endpoint, workflow, {
@@ -4739,6 +5309,8 @@ export class Eluvix {
         }),
         { status: 502, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      releaseComfyLease();
     }
 
     let artcraftResult: Awaited<ReturnType<typeof executeArtCraftPostProcess>> | undefined;
@@ -4961,6 +5533,7 @@ export class Eluvix {
     const effectiveModelLabel = checkpoint || chosen.comfyui?.workflowPreset || 'comfyui-diffusion';
     const estPromptTokens = Math.ceil(revisedPrompt.length / 4);
 
+    const releaseImageLease = await globalVramArbiter.acquireLease(chosen, this.config);
     let result: Awaited<ReturnType<typeof executeComfyWorkflow>>;
     try {
       result = await executeComfyWorkflow(chosen.endpoint, workflow, {
@@ -4990,6 +5563,8 @@ export class Eluvix {
         }),
         { status: 502, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      releaseImageLease();
     }
 
     let artcraftResult: Awaited<ReturnType<typeof executeArtCraftPostProcess>> | undefined;
@@ -5083,6 +5658,913 @@ export class Eluvix {
           'x-eluvix-model': effectiveModelLabel
         }
       }
+    );
+  }
+
+  /**
+   * Sovereign Embeddings Router (`/v1/embeddings`).
+   * Scrubs input strings through `PrivacyGuard` before egress, routes across local
+   * (`ollama` `/api/embed` + `/v1/embeddings`, `ramalama`, `lemonade`, `vllm`, `sglang`)
+   * and cloud upstreams with SSRF validation, and enforces vector dimension pinning
+   * plus Matryoshka L2-normalized prefix slicing so failover never corrupts vector DBs.
+   */
+  public async routeEmbeddings(
+    request: {
+      model?: string;
+      input: string | string[];
+      dimensions?: number;
+      encoding_format?: 'float' | 'base64';
+      user?: string;
+    },
+    options?: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      scope?: Partial<RequestScope>;
+      hops?: number;
+    }
+  ): Promise<Response> {
+    const hops = options?.hops ?? 0;
+    if (hops >= 2) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
+            type: 'loop_detected',
+            code: 'max_hops_exceeded',
+          },
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const rawInputs = Array.isArray(request.input)
+      ? request.input
+      : typeof request.input === 'string'
+      ? [request.input]
+      : [];
+
+    if (rawInputs.length === 0 || rawInputs.some((item) => typeof item !== 'string')) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: 'Missing or invalid "input": expected a non-empty string or array of strings.',
+            type: 'invalid_request_error',
+            code: 'invalid_embedding_input',
+          },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 1. PrivacyGuard PII scrubbing before embedding generation / egress
+    let inputs = [...rawInputs];
+    if (this.config.privacyGuard?.enabled) {
+      const scrubbed: string[] = [];
+      for (const text of inputs) {
+        const check = applyPrivacyGuard([{ role: 'user', content: text }], {
+          enabled: true,
+          action: this.config.privacyGuard.action || 'anonymize',
+          detectPii: this.config.privacyGuard.detectPii,
+          customPatterns: this.config.privacyGuard.customPatterns,
+          redactionStyle: this.config.privacyGuard.redactionStyle,
+          whitelist: this.config.privacyGuard.whitelist,
+          auditLogging: this.config.privacyGuard.auditLogging,
+        });
+        if (!check.passed) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: check.reason || 'Embedding input blocked by Privacy Guard',
+                type: 'privacy_guard_violation',
+                code: 'pii_leakage_detected',
+              },
+            }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const mod = check.modifiedMessages[0]?.content;
+        scrubbed.push(typeof mod === 'string' ? mod : text);
+      }
+      inputs = scrubbed;
+    }
+
+    // 2. Filter candidate embedding-capable upstreams
+    const requestedModel = (request.model || 'auto').trim();
+    let candidates = this.getUpstreams().filter(
+      (u) =>
+        u.type !== 'comfyui' &&
+        u.type !== 'antigravity' &&
+        u.type !== 'harness' &&
+        u.type !== 'anthropic' &&
+        !isDedicatedAudioUpstreamType(u.type) &&
+        !u.endpoint?.startsWith('cli://') &&
+        !u.endpoint?.startsWith('acp://')
+    );
+
+    if (this.config.egressPolicy === 'local-only') {
+      candidates = candidates.filter((u) => isLocalUpstream(u));
+      if (candidates.length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: `No local embedding upstream available for model: ${requestedModel} (egressPolicy: local-only).`,
+              type: 'invalid_request_error',
+              code: 'egress_policy_local_only',
+            },
+          }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // Enforce 24h rolling cloud spend guardrail
+    const switchyardConfig = this.config.switchyard || {};
+    if (
+      typeof switchyardConfig.maxDailySpendUsd === 'number' &&
+      Number.isFinite(switchyardConfig.maxDailySpendUsd) &&
+      switchyardConfig.maxDailySpendUsd > 0
+    ) {
+      const rolling24h = getRollingSpendUsd(24);
+      if (rolling24h >= switchyardConfig.maxDailySpendUsd) {
+        const action = switchyardConfig.budgetExhaustedAction || 'prefer-local';
+        if (action === 'reject') {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: `Daily cloud spend cap exceeded ($${rolling24h.toFixed(4)} >= $${switchyardConfig.maxDailySpendUsd.toFixed(2)}).`,
+                type: 'budget_exceeded',
+                code: 'daily_spend_cap_exceeded',
+              },
+            }),
+            { status: 429, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        const zeroCost = candidates.filter((u) => getEffectiveCostPer1kTokens(u) <= 0);
+        if (action === 'strict-local' && zeroCost.length === 0) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                message: 'Daily spend cap exceeded and no $0.00 local embedding upstream is available.',
+                type: 'budget_exceeded',
+                code: 'daily_spend_cap_exceeded',
+              },
+            }),
+            { status: 429, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (zeroCost.length > 0) {
+          candidates = zeroCost;
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `No embedding-capable upstream available for model: ${requestedModel}.`,
+            type: 'invalid_request_error',
+            code: 'no_embedding_upstream',
+          },
+        }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Rank: exact model match > explicit embedding capability > $0.00 local > priority
+    candidates.sort((a, b) => {
+      const exactA = requestedModel !== 'auto' && a.models?.includes(requestedModel) ? 1 : 0;
+      const exactB = requestedModel !== 'auto' && b.models?.includes(requestedModel) ? 1 : 0;
+      if (exactA !== exactB) return exactB - exactA;
+      const costA = getEffectiveCostPer1kTokens(a);
+      const costB = getEffectiveCostPer1kTokens(b);
+      if (costA !== costB) return costA - costB;
+      return b.priority - a.priority;
+    });
+
+    const timeoutMs = options?.timeoutMs ?? switchyardConfig.timeoutMs ?? 30000;
+    const pinnedDimensions =
+      typeof request.dimensions === 'number' && request.dimensions > 0
+        ? Math.floor(request.dimensions)
+        : undefined;
+    const encodingFormat = request.encoding_format === 'base64' ? 'base64' : 'float';
+    const estTokens = Math.max(
+      1,
+      Math.ceil(inputs.reduce((sum, s) => sum + s.length, 0) / 4)
+    );
+
+    let lastDimensionError: string | null = null;
+    let lastError: string | null = null;
+
+    for (const upstream of candidates) {
+      const endpointCheck = validateUpstreamHttpEndpoint(upstream.endpoint, {
+        allowLoopbackAndLan: true,
+      });
+      if (!endpointCheck.ok) {
+        lastError = endpointCheck.reason || `Blocked unsafe upstream endpoint: ${upstream.endpoint}`;
+        continue;
+      }
+
+      const effectiveModel =
+        requestedModel !== 'auto' &&
+        (upstream.models?.includes(requestedModel) ||
+          upstream.models?.includes('*') ||
+          !isLocalUpstream(upstream))
+          ? requestedModel
+          : upstream.models?.find((m) => /embed|bge|nomic|mxbai|e5|gte/i.test(m)) ||
+            (upstream.type === 'ollama' ? 'nomic-embed-text' : requestedModel !== 'auto' ? requestedModel : 'text-embedding-3-small');
+
+      const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
+      const baseWithoutV1 = trimmed.replace(/\/v1$/, '');
+      const startTime = Date.now();
+
+      try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (upstream.apiKey) {
+          headers['Authorization'] = `Bearer ${upstream.apiKey}`;
+        }
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        if (options?.signal) {
+          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+
+        let res = await fetch(
+          trimmed.endsWith('/v1') ? `${trimmed}/embeddings` : `${trimmed}/v1/embeddings`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              model: effectiveModel,
+              input: inputs,
+              ...(pinnedDimensions ? { dimensions: pinnedDimensions } : {}),
+            }),
+            signal: controller.signal,
+          }
+        );
+
+        // Fallback to native Ollama `/api/embed` when `/v1/embeddings` returns 404
+        if (!res.ok && res.status === 404 && upstream.type === 'ollama') {
+          res = await fetch(`${baseWithoutV1}/api/embed`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              model: effectiveModel,
+              input: inputs,
+            }),
+            signal: controller.signal,
+          });
+        }
+
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          lastError = `Upstream ${upstream.name} returned HTTP ${res.status}`;
+          continue;
+        }
+
+        const payload = (await res.json()) as Record<string, any>;
+        const rawVectors: number[][] = Array.isArray(payload.data)
+          ? payload.data.map((d: any) => d.embedding)
+          : Array.isArray(payload.embeddings)
+          ? payload.embeddings
+          : Array.isArray(payload.embedding)
+          ? [payload.embedding]
+          : [];
+
+        if (rawVectors.length === 0) {
+          lastError = `Upstream ${upstream.name} returned no embedding vectors`;
+          continue;
+        }
+
+        let anySliced = false;
+        let resolvedDims = 0;
+        const formattedData = rawVectors.map((vec, index) => {
+          const norm = normalizeEmbeddingVector(vec, pinnedDimensions);
+          if (norm.sliced) anySliced = true;
+          resolvedDims = norm.dimensions;
+          return {
+            object: 'embedding',
+            index,
+            embedding:
+              encodingFormat === 'base64'
+                ? encodeFloat32VectorBase64(norm.vector)
+                : norm.vector,
+          };
+        });
+
+        const duration_ms = Date.now() - startTime;
+        const promptTokens = Number(payload?.usage?.prompt_tokens ?? estTokens);
+        const costUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, 0);
+
+        logRequest({
+          model: effectiveModel,
+          upstream_id: upstream.id,
+          status: 200,
+          duration_ms,
+          prompt_tokens: promptTokens,
+          completion_tokens: 0,
+          ttft_ms: duration_ms,
+          cost_usd: costUsd,
+          user_id: options?.scope?.userId || 'default',
+        });
+
+        return new Response(
+          JSON.stringify({
+            object: 'list',
+            data: formattedData,
+            model: effectiveModel,
+            usage: {
+              prompt_tokens: promptTokens,
+              total_tokens: promptTokens,
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+              'x-eluvix-upstream': upstream.id,
+              'x-eluvix-model': effectiveModel,
+              'x-eluvix-embedding-dims': String(resolvedDims),
+              'x-eluvix-cost-usd': costUsd.toFixed(6),
+              ...(anySliced ? { 'x-eluvix-matryoshka-sliced': 'true' } : {}),
+            },
+          }
+        );
+      } catch (err: any) {
+        if (err?.dimensionMismatch) {
+          lastDimensionError = err.message;
+          continue;
+        }
+        lastError = err?.message || `Failed to reach embedding upstream ${upstream.name}`;
+      }
+    }
+
+    if (lastDimensionError) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: lastDimensionError,
+            type: 'invalid_request_error',
+            code: 'embedding_dimension_mismatch',
+          },
+        }),
+        { status: 422, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: lastError || 'All embedding upstreams failed.',
+          type: 'upstream_error',
+          code: 'embedding_failed',
+        },
+      }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  /**
+   * Sovereign Audio Speech-to-Text Router (`/v1/audio/transcriptions`).
+   * Routes multipart audio blobs across local `Speaches` (Faster-Whisper `:8005`),
+   * `whisper.cpp` (`:8086`), `Lemonade` (`:13305`), or cloud Whisper upstreams,
+   * with SSRF guard validation and optional `PrivacyGuard` post-transcription PII scrubbing.
+   */
+  public async routeAudioTranscription(
+    request: {
+      file: Blob | Uint8Array;
+      filename?: string;
+      mimeType?: string;
+      model?: string;
+      language?: string;
+      prompt?: string;
+      response_format?: TranscriptionResponseFormat;
+      temperature?: number;
+    },
+    options?: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      scope?: Partial<RequestScope>;
+      hops?: number;
+    }
+  ): Promise<Response> {
+    const hops = options?.hops ?? 0;
+    if (hops >= 2) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
+            type: 'loop_detected',
+            code: 'max_hops_exceeded',
+          },
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!request.file) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: 'Missing required multipart field "file" for audio transcription.',
+            type: 'invalid_request_error',
+            code: 'missing_audio_file',
+          },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const allUpstreams = this.getUpstreams();
+    let candidates = allUpstreams.filter((u) => {
+      if (u.type === 'kokoro-tts') return false;
+      if (isDedicatedAudioUpstreamType(u.type)) {
+        return u.audio?.mode !== 'tts';
+      }
+      if (u.audio && u.audio.mode !== 'tts') return true;
+      if (u.type === 'lemonade' || u.type === 'openai-compatible') return true;
+      return false;
+    });
+
+    if (this.config.egressPolicy === 'local-only') {
+      candidates = candidates.filter((u) => {
+        const effEndpoint = u.audio?.sttEndpoint || u.endpoint;
+        return isLocalUpstream({ ...u, endpoint: effEndpoint });
+      });
+      if (candidates.length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'No local STT audio upstream available (egressPolicy: local-only).',
+              type: 'invalid_request_error',
+              code: 'egress_policy_local_only',
+            },
+          }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    if (candidates.length === 0) {
+      // Sovereign local default fallback to Speaches (:8005)
+      candidates = [
+        {
+          id: 'default-speaches-stt',
+          name: 'Local Speaches Faster-Whisper (:8005)',
+          type: 'speaches',
+          endpoint: 'http://127.0.0.1:8005',
+          priority: 1,
+          models: ['*'],
+          audio: {
+            mode: 'stt',
+            sttBackend: 'speaches',
+            defaultSttModel: STT_BACKEND_PRESETS.speaches.defaultModel,
+          },
+        },
+      ];
+    }
+
+    // Rank dedicated audio STT nodes ahead of generic OpenAI-compatible nodes, then $0.00 local first
+    candidates.sort((a, b) => {
+      const dedA = isDedicatedAudioUpstreamType(a.type) || Boolean(a.audio) ? 1 : 0;
+      const dedB = isDedicatedAudioUpstreamType(b.type) || Boolean(b.audio) ? 1 : 0;
+      if (dedA !== dedB) return dedB - dedA;
+      const costA = getEffectiveCostPer1kTokens(a);
+      const costB = getEffectiveCostPer1kTokens(b);
+      if (costA !== costB) return costA - costB;
+      return b.priority - a.priority;
+    });
+
+    const fileBlob =
+      request.file instanceof Blob
+        ? request.file
+        : new Blob([request.file as any], { type: request.mimeType || 'audio/wav' });
+    const filename = request.filename || 'audio.wav';
+    const responseFormat: TranscriptionResponseFormat = request.response_format || 'json';
+    const timeoutMs = options?.timeoutMs ?? this.config.switchyard?.timeoutMs ?? 60000;
+    let lastError = 'All STT audio upstreams failed.';
+
+    for (const upstream of candidates) {
+      const rawTargetEndpoint = upstream.audio?.sttEndpoint || upstream.endpoint;
+      const endpointCheck = validateUpstreamHttpEndpoint(rawTargetEndpoint, {
+        allowLoopbackAndLan: true,
+      });
+      if (!endpointCheck.ok) {
+        lastError = endpointCheck.reason || `Blocked unsafe STT endpoint: ${rawTargetEndpoint}`;
+        continue;
+      }
+
+      const sttPreset = upstream.audio?.sttBackend || (upstream.type === 'lemonade' ? 'lemonade' : isLocalUpstream(upstream) ? 'speaches' : 'openai');
+      const effectiveModel =
+        request.model &&
+        request.model !== 'auto' &&
+        request.model !== '*' &&
+        !(isLocalUpstream(upstream) && request.model === 'whisper-1' && upstream.audio?.defaultSttModel)
+          ? request.model
+          : upstream.audio?.defaultSttModel || STT_BACKEND_PRESETS[sttPreset]?.defaultModel || 'whisper-1';
+
+      const trimmed = rawTargetEndpoint.trim().replace(/\/+$/, '');
+      const url = trimmed.endsWith('/v1')
+        ? `${trimmed}/audio/transcriptions`
+        : `${trimmed}/v1/audio/transcriptions`;
+
+      const form = new FormData();
+      form.append('file', fileBlob, filename);
+      form.append('model', effectiveModel);
+      if (request.language) form.append('language', request.language);
+      if (request.prompt) form.append('prompt', request.prompt);
+      if (request.response_format) form.append('response_format', request.response_format);
+      if (typeof request.temperature === 'number') {
+        form.append('temperature', String(request.temperature));
+      }
+
+      const headers: Record<string, string> = {};
+      if (upstream.apiKey) {
+        headers['Authorization'] = `Bearer ${upstream.apiKey}`;
+      }
+
+      const startTime = Date.now();
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        if (options?.signal) {
+          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: form,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          lastError = `STT upstream ${upstream.name} returned HTTP ${res.status}`;
+          continue;
+        }
+
+        const shouldScrub =
+          Boolean(this.config.privacyGuard?.enabled) ||
+          Boolean(upstream.audio?.scrubTranscriptPii);
+
+        const scrubString = (raw: string): string => {
+          if (!shouldScrub || !raw) return raw;
+          const check = applyPrivacyGuard([{ role: 'user', content: raw }], {
+            enabled: true,
+            action: 'anonymize',
+            detectPii: this.config.privacyGuard?.detectPii,
+            customPatterns: this.config.privacyGuard?.customPatterns,
+            redactionStyle: this.config.privacyGuard?.redactionStyle || 'token',
+            whitelist: this.config.privacyGuard?.whitelist,
+            auditLogging: false,
+          });
+          const mod = check.modifiedMessages[0]?.content;
+          return typeof mod === 'string' ? mod : raw;
+        };
+
+        const duration_ms = Date.now() - startTime;
+
+        if (responseFormat === 'text' || responseFormat === 'srt' || responseFormat === 'vtt') {
+          const rawText = await res.text();
+          const finalText = scrubString(rawText);
+          const completionTokens = Math.max(1, Math.ceil(finalText.length / 4));
+          const costUsd = estimateUpstreamRequestCostUsd(upstream, 64, completionTokens);
+          logRequest({
+            model: effectiveModel,
+            upstream_id: upstream.id,
+            status: 200,
+            duration_ms,
+            prompt_tokens: 64,
+            completion_tokens: completionTokens,
+            ttft_ms: duration_ms,
+            cost_usd: costUsd,
+            user_id: options?.scope?.userId || 'default',
+          });
+          return new Response(finalText, {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'x-eluvix-upstream': upstream.id,
+              'x-eluvix-model': effectiveModel,
+              'x-eluvix-cost-usd': costUsd.toFixed(6),
+            },
+          });
+        }
+
+        const jsonPayload = (await res.json()) as Record<string, any>;
+        if (typeof jsonPayload.text === 'string') {
+          jsonPayload.text = scrubString(jsonPayload.text);
+        }
+        const completionTokens = Math.max(
+          1,
+          Math.ceil(String(jsonPayload.text || '').length / 4)
+        );
+        const costUsd = estimateUpstreamRequestCostUsd(upstream, 64, completionTokens);
+
+        logRequest({
+          model: effectiveModel,
+          upstream_id: upstream.id,
+          status: 200,
+          duration_ms,
+          prompt_tokens: 64,
+          completion_tokens: completionTokens,
+          ttft_ms: duration_ms,
+          cost_usd: costUsd,
+          user_id: options?.scope?.userId || 'default',
+        });
+
+        return new Response(JSON.stringify(jsonPayload), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-eluvix-upstream': upstream.id,
+            'x-eluvix-model': effectiveModel,
+            'x-eluvix-cost-usd': costUsd.toFixed(6),
+          },
+        });
+      } catch (err: any) {
+        lastError = err?.message || `Failed to reach STT upstream ${upstream.name}`;
+      }
+    }
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: lastError,
+          type: 'upstream_error',
+          code: 'audio_transcription_failed',
+        },
+      }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  /**
+   * Sovereign Audio Text-to-Speech Router (`/v1/audio/speech`).
+   * Routes TTS synthesis across local `Kokoro-FastAPI` / `Piper` (`:8880`),
+   * `Lemonade` (`:13305`), or OpenAI TTS upstreams with SSRF validation and
+   * `PrivacyGuard` input scrubbing.
+   */
+  public async routeAudioSpeech(
+    request: {
+      input: string;
+      model?: string;
+      voice?: string;
+      response_format?: AudioResponseFormat;
+      speed?: number;
+    },
+    options?: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      scope?: Partial<RequestScope>;
+      hops?: number;
+    }
+  ): Promise<Response> {
+    const hops = options?.hops ?? 0;
+    if (hops >= 2) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
+            type: 'loop_detected',
+            code: 'max_hops_exceeded',
+          },
+        }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (typeof request.input !== 'string' || !request.input.trim()) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: 'Missing required non-empty "input" text for speech synthesis.',
+            type: 'invalid_request_error',
+            code: 'missing_speech_input',
+          },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let speechInput = request.input;
+    if (this.config.privacyGuard?.enabled) {
+      const check = applyPrivacyGuard([{ role: 'user', content: speechInput }], {
+        enabled: true,
+        action: this.config.privacyGuard.action || 'anonymize',
+        detectPii: this.config.privacyGuard.detectPii,
+        customPatterns: this.config.privacyGuard.customPatterns,
+        redactionStyle: this.config.privacyGuard.redactionStyle,
+        whitelist: this.config.privacyGuard.whitelist,
+        auditLogging: this.config.privacyGuard.auditLogging,
+      });
+      if (!check.passed) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: check.reason || 'Speech input blocked by Privacy Guard',
+              type: 'privacy_guard_violation',
+              code: 'pii_leakage_detected',
+            },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      const mod = check.modifiedMessages[0]?.content;
+      if (typeof mod === 'string') speechInput = mod;
+    }
+
+    let candidates = this.getUpstreams().filter((u) => {
+      if (u.type === 'whisper' || u.type === 'speaches') {
+        return Boolean(u.audio && u.audio.mode !== 'stt' && u.audio.ttsEndpoint);
+      }
+      if (isDedicatedAudioUpstreamType(u.type)) {
+        return u.audio?.mode !== 'stt';
+      }
+      if (u.audio && u.audio.mode !== 'stt') return true;
+      if (u.type === 'lemonade' || u.type === 'openai-compatible') return true;
+      return false;
+    });
+
+    if (this.config.egressPolicy === 'local-only') {
+      candidates = candidates.filter((u) => {
+        const effEndpoint = u.audio?.ttsEndpoint || u.endpoint;
+        return isLocalUpstream({ ...u, endpoint: effEndpoint });
+      });
+      if (candidates.length === 0) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'No local TTS speech upstream available (egressPolicy: local-only).',
+              type: 'invalid_request_error',
+              code: 'egress_policy_local_only',
+            },
+          }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    if (candidates.length === 0) {
+      candidates = [
+        {
+          id: 'default-kokoro-tts',
+          name: 'Local Kokoro-FastAPI TTS (:8880)',
+          type: 'kokoro-tts',
+          endpoint: 'http://127.0.0.1:8880',
+          priority: 1,
+          models: ['*'],
+          audio: {
+            mode: 'tts',
+            ttsBackend: 'kokoro',
+            defaultTtsModel: TTS_BACKEND_PRESETS.kokoro.defaultModel,
+            defaultVoice: TTS_BACKEND_PRESETS.kokoro.defaultVoice,
+          },
+        },
+      ];
+    }
+
+    candidates.sort((a, b) => {
+      const dedA = isDedicatedAudioUpstreamType(a.type) || Boolean(a.audio) ? 1 : 0;
+      const dedB = isDedicatedAudioUpstreamType(b.type) || Boolean(b.audio) ? 1 : 0;
+      if (dedA !== dedB) return dedB - dedA;
+      const costA = getEffectiveCostPer1kTokens(a);
+      const costB = getEffectiveCostPer1kTokens(b);
+      if (costA !== costB) return costA - costB;
+      return b.priority - a.priority;
+    });
+
+    const timeoutMs = options?.timeoutMs ?? this.config.switchyard?.timeoutMs ?? 60000;
+    const estPromptTokens = Math.max(1, Math.ceil(speechInput.length / 4));
+    let lastError = 'All TTS speech upstreams failed.';
+
+    for (const upstream of candidates) {
+      const rawTargetEndpoint =
+        upstream.audio?.ttsEndpoint ||
+        (upstream.audio?.mode === 'both' &&
+        upstream.audio?.ttsBackend &&
+        upstream.audio.ttsBackend !== 'openai' &&
+        upstream.audio.ttsBackend !== 'lemonade' &&
+        upstream.endpoint.includes(':8005')
+          ? 'http://localhost:8880'
+          : upstream.endpoint);
+
+      const endpointCheck = validateUpstreamHttpEndpoint(rawTargetEndpoint, {
+        allowLoopbackAndLan: true,
+      });
+      if (!endpointCheck.ok) {
+        lastError = endpointCheck.reason || `Blocked unsafe TTS endpoint: ${rawTargetEndpoint}`;
+        continue;
+      }
+
+      const ttsPreset =
+        upstream.audio?.ttsBackend ||
+        (upstream.type === 'lemonade'
+          ? 'lemonade'
+          : isLocalUpstream({ ...upstream, endpoint: rawTargetEndpoint })
+          ? 'kokoro'
+          : 'openai');
+      const effectiveModel =
+        request.model &&
+        request.model !== 'auto' &&
+        request.model !== '*' &&
+        !(
+          isLocalUpstream({ ...upstream, endpoint: rawTargetEndpoint }) &&
+          (request.model === 'tts-1' || request.model === 'tts-1-hd' || request.model === 'gpt-4o-mini-tts') &&
+          upstream.audio?.defaultTtsModel
+        )
+          ? request.model
+          : upstream.audio?.defaultTtsModel || TTS_BACKEND_PRESETS[ttsPreset]?.defaultModel || 'kokoro';
+
+      const effectiveVoice =
+        request.voice ||
+        upstream.audio?.defaultVoice ||
+        TTS_BACKEND_PRESETS[ttsPreset]?.defaultVoice ||
+        'af_heart';
+      const format: AudioResponseFormat =
+        request.response_format || upstream.audio?.responseFormat || 'mp3';
+
+      const trimmed = rawTargetEndpoint.trim().replace(/\/+$/, '');
+      const url = trimmed.endsWith('/v1')
+        ? `${trimmed}/audio/speech`
+        : `${trimmed}/v1/audio/speech`;
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (upstream.apiKey) {
+        headers['Authorization'] = `Bearer ${upstream.apiKey}`;
+      }
+
+      const startTime = Date.now();
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        if (options?.signal) {
+          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: effectiveModel,
+            input: speechInput,
+            voice: effectiveVoice,
+            response_format: format,
+            ...(typeof request.speed === 'number' ? { speed: request.speed } : {}),
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        if (!res.ok) {
+          lastError = `TTS upstream ${upstream.name} returned HTTP ${res.status}`;
+          continue;
+        }
+
+        const audioBytes = await res.arrayBuffer();
+        const duration_ms = Date.now() - startTime;
+        const costUsd = estimateUpstreamRequestCostUsd(upstream, estPromptTokens, 0);
+
+        logRequest({
+          model: effectiveModel,
+          upstream_id: upstream.id,
+          status: 200,
+          duration_ms,
+          prompt_tokens: estPromptTokens,
+          completion_tokens: 0,
+          ttft_ms: duration_ms,
+          cost_usd: costUsd,
+          user_id: options?.scope?.userId || 'default',
+        });
+
+        const mimeType = res.headers.get('content-type') || inferAudioMimeType(format);
+        return new Response(audioBytes, {
+          status: 200,
+          headers: {
+            'Content-Type': mimeType,
+            'x-eluvix-upstream': upstream.id,
+            'x-eluvix-model': effectiveModel,
+            'x-eluvix-audio-voice': effectiveVoice,
+            'x-eluvix-cost-usd': costUsd.toFixed(6),
+          },
+        });
+      } catch (err: any) {
+        lastError = err?.message || `Failed to reach TTS upstream ${upstream.name}`;
+      }
+    }
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: lastError,
+          type: 'upstream_error',
+          code: 'audio_speech_failed',
+        },
+      }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }

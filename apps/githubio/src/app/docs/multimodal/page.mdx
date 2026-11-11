@@ -82,3 +82,27 @@ When Switchyard `mediaIntentRouting` is enabled (default `true`):
 - Standard text, coding, tool-calling, and vision-input chat completions (`model: "auto"`) **automatically exclude** synthesis-only ComfyUI upstreams so conversational prompts never hit a diffusion endpoint.
 - Generative media prompts on `model: "auto"` (e.g. `"Generate an architectural render..."`, `"Create a 5-second video..."`, `"Generate a 3D GLB mesh..."`) automatically steer to matching ComfyUI workflow nodes.
 - Generated assets are served over TLS through `/api/v1/images/view` with SSRF/IMDS protection, eliminating browser mixed-content warnings, and support optional local LLM prompt enhancement and headless ArtCraft post-processing.
+
+---
+
+## 3. Headless Sovereign Audio (`AudioVoiceNode`: STT & TTS)
+
+Eluvix provides drop-in OpenAI-compatible headless audio endpoints orchestrated via the **Audio / Voice (`audioVoiceNode`)** in the **Eluvix Visual Node Routing Editor**:
+
+- **Speech-to-Text (`POST /api/v1/audio/transcriptions`)**: Accepts multipart audio uploads (`file`, `model`, `language`, `response_format`) and routes to local **Speaches Faster-Whisper (`:8005`)** or `whisper.cpp` (`\$0.00` local cost) with optional cloud Whisper fallback and automatic `PrivacyGuard` transcript scrubbing.
+- **Text-to-Speech (`POST /api/v1/audio/speech`)**: Accepts JSON `{ model, input, voice, response_format, speed }`, scrubs `input` via `PrivacyGuard`, and streams synthesized `audio/mpeg`, `audio/wav`, or `audio/opus` audio from local **Kokoro-FastAPI (`:8880`)** or Piper TTS.
+
+```bash
+# Transcribe audio locally via Speaches Faster-Whisper (:8005)
+curl -k -X POST https://127.0.0.1:3588/api/v1/audio/transcriptions \
+  -H "Authorization: Bearer $(jq -r .adminPassword ~/.config/eluvix/auth.json)" \
+  -F file=@meeting.wav \
+  -F model=Systran/faster-whisper-large-v3
+
+# Synthesize speech locally via Kokoro-FastAPI (:8880)
+curl -k -X POST https://127.0.0.1:3588/api/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(jq -r .adminPassword ~/.config/eluvix/auth.json)" \
+  -d '{"model": "kokoro", "input": "Sovereign audio routing is online.", "voice": "af_heart"}' \
+  -o speech.mp3
+```

@@ -1,4 +1,5 @@
 import { Node, Edge } from '@xyflow/react';
+import { estimateAudioNodeVramGb } from '@eluvix/router-core/audio';
 
 export type DiagnosticFixKind =
   | 'reassign-port'
@@ -34,6 +35,7 @@ const LOCAL_ENGINE_NODE_TYPES = new Set([
   'ollamaNode',
   'ramalamaNode',
   'comfyuiNode',
+  'audioVoiceNode',
   'vllmNode',
   'sglangNode',
 ]);
@@ -50,6 +52,8 @@ function defaultEndpointForNodeType(nodeType?: string): string {
       return 'http://localhost:8080';
     case 'comfyuiNode':
       return 'http://localhost:8188';
+    case 'audioVoiceNode':
+      return 'http://localhost:8005';
     case 'ollamaNode':
     default:
       return 'http://localhost:11434';
@@ -79,6 +83,9 @@ function normalizeHostPort(endpointRaw: string): string | null {
  */
 export function estimateNodeVramGb(node: Node): number {
   const data = (node.data || {}) as Record<string, any>;
+  if (node.type === 'audioVoiceNode') {
+    return estimateAudioNodeVramGb(data.audio || {});
+  }
   if (node.type === 'comfyuiNode') {
     const cCfg = (data.comfyui || {}) as Record<string, any>;
     const vramMode = String(cCfg.vramMode || data.vramMode || 'normalvram');
@@ -224,7 +231,9 @@ export function analyzeGraphDiagnostics(
 
   // Pillar 4: Warn when ComfyUI uses --highvram or --gpu-only alongside a local LLM
   const comfyNodes = localNodes.filter((n) => n.type === 'comfyuiNode');
-  const otherLocalLlms = localNodes.filter((n) => n.type !== 'comfyuiNode');
+  const otherLocalLlms = localNodes.filter(
+    (n) => n.type !== 'comfyuiNode' && n.type !== 'audioVoiceNode'
+  );
   if (comfyNodes.length > 0 && otherLocalLlms.length > 0) {
     for (const cNode of comfyNodes) {
       const cData = (cNode.data || {}) as Record<string, any>;
@@ -380,6 +389,7 @@ export function applyDiagnosticFix(
     }
     const sourceNode =
       nodes.find((n) => n.type === 'switchyardNode') ||
+      nodes.find((n) => n.type === 'speculativeCascadeNode') ||
       nodes.find((n) => n.type === 'fallbackChainNode') ||
       nodes.find((n) => n.type === 'consensusNode') ||
       nodes.find((n) => n.type === 'inputNode');
@@ -424,6 +434,9 @@ export function applyDiagnosticFix(
     const nextNodes = nodes.map((n) => {
       if (!affectedSet.has(n.id)) return n;
       const data = { ...(n.data || {}) } as Record<string, any>;
+      if (n.type === 'audioVoiceNode') {
+        return n;
+      }
       if (n.type === 'comfyuiNode') {
         const prevComfy = (data.comfyui || {}) as Record<string, any>;
         data.vramMode = 'lowvram';

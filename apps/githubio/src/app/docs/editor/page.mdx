@@ -7,7 +7,8 @@ The **Eluvix Visual Node Routing Editor** (accessible at `/editor`) is an intera
 ## Pro Studio Capabilities
 
 The **Eluvix Visual Node Routing Editor** combines tactile graph wiring with keyboard-first studio tooling:
-- **Spotlight Command Palette (`Cmd/Ctrl + K`)**: Fuzzy-search and spawn any of the 28+ node types at viewport center, switch starter presets, run auto-layout, trigger compilation, or auto-heal graph diagnostics.
+- **Spotlight Command Palette (`Cmd/Ctrl + K`)**: Fuzzy-search and spawn any of the 30+ node types at viewport center, switch starter presets, run auto-layout, open the **Golden Eval Gate**, trigger compilation, or auto-heal graph diagnostics.
+- **Golden Eval Gate (`🧪 Evals` & Verify Before Apply)**: Run `$0.00` deterministic `dry-run` routing, PII redaction, and prompt-injection regression suites against unsaved canvas edits directly inside the **Eluvix Visual Node Routing Editor** (`EvalGateDrawer`) before hot-reloading production config.
 - **50-State Undo / Redo (`Cmd/Ctrl + Z` / `Cmd/Ctrl + Shift + Z`)**: Full snapshot history stack across node insertions, parameter edits, edge wiring, deletions, and layout transforms.
 - **Deterministic Sugiyama Topological Auto-Layout**: One-click 5-stage left-to-right hierarchical graph layout (`Entry / Guards` &rarr; `Cache / Memory / RAG` &rarr; `Routers / Judges` &rarr; `Gateways / Harnesses` &rarr; `Local & Cloud Upstreams / Observability`) with barycentric edge-crossing minimization.
 - **Interactive Live Canvas Route Simulator**: Dry-run prompts with modality, token count, and confidential flags directly on the canvas via `POST /api/v1/route-explain`—animating the winning path in emerald green and dimming bypassed edges in amber with hoverable rejection reasons.
@@ -59,11 +60,15 @@ The Routing Editor organizes nodes into functional categories:
 
 ### 2. Routing & Intent Dispatchers
 - **Switchyard Router (`switchyardNode`)**:
-  - Layer 7 adaptive balancer supporting 5 routing strategies (`cost-complexity`, `cascade-cost`, `lowest-cost`, `lowest-latency`, `round-robin`).
-  - Modality-aware media intent routing (`mediaIntentRouting`) isolating ComfyUI synthesis nodes from text chat while steering generative media prompts.
+  - Layer 7 adaptive balancer supporting 6 routing strategies (`cost-complexity`, `thompson-bandit`, `cascade-cost`, `lowest-cost`, `lowest-latency`, `round-robin`).
+  - Capability-tier vendor model aliasing (`claude-*-opus*`/`o3*` &rarr; `frontier`, `claude-*-sonnet*`/`gpt-4o` &rarr; `heavy`, `claude-*-haiku*`/`*-mini` &rarr; `\$0.00` local `simple` unless `strictModelMatch: true`).
+  - Modality-aware media intent routing (`mediaIntentRouting`) isolating ComfyUI synthesis and headless audio nodes from text chat while steering generative media prompts.
   - Configurable latency spillover circuit breaker (`spilloverThresholdMs`), upstream timeout (`timeoutMs`), and retry counts.
   - Token complexity boundaries and automatic code escalation.
   - Financial governance: per-request cap (`maxCostPerRequest`) and rolling 24-hour cloud spend cap (`maxDailySpendUsd` with `budgetExhaustedAction`: `prefer-local`, `strict-local`, or `reject`).
+- **Speculative Cascade & Distiller (`speculativeCascadeNode`)**:
+  - Dedicated 3-port orchestration node (`#draft`, `#verifier`, `#shadow-student`) implementing buffer-verify speculative cascades (`minConfidence`, `maxDraftTokens`) with zero corrupted half-streams.
+  - Optional asynchronous `#shadow-student` mirroring that captures `PrivacyGuard`-scrubbed teacher vs. student completions into SQLite `distillation_pairs` for SFT and DPO JSONL export.
 - **Task Router (`taskRouterNode`)**:
   - Dispatches queries based on semantic intent using Heuristic Regex, FastEmbed Similarity, or Micro-LLM classification.
   - Dynamic intent target handles: `#intent-code`, `#intent-reasoning`, `#intent-fast`, `#intent-tools`, `#intent-default`.
@@ -111,6 +116,7 @@ The Routing Editor organizes nodes into functional categories:
 - **Local Engine & Synthesis Nodes (`ramalamaNode`, `comfyuiNode`, `lemonadeNode`, `vllmNode`, `ollamaNode`)**:
   - **RamaLama (`ramalamaNode`)**: Rootless Podman/Docker OCI inference (`:8080`) with `--rag` artifacts, SELinux isolation, `--network=none` air-gapping, and systemd Quadlet `.container` unit generation.
   - **ComfyUI (`comfyuiNode`)**: Local diffusion, video, and 3D mesh DAG engine (`:8188`) with workflow presets (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), live VRAM status, local LLM prompt enhancer, and ArtCraft post-processing.
+  - **Audio / Voice (`audioVoiceNode`)**: Headless sovereign Speech-to-Text (`speaches-whisper` Faster-Whisper `:8005`, `whisper-cpp`) and Text-to-Speech (`kokoro-tts` `:8880`, `piper-tts`) runtime node powering `/api/v1/audio/transcriptions` and `/api/v1/audio/speech`.
   - **Ollama / vLLM / Lemonade**: Local GPU/NPU-accelerated runtimes with priority scoring, max parallel concurrency, and context window limits.
 - **Cloud Providers & Agent CLI Nodes**:
   - Google Antigravity AGY (with first-class **Gemini 4 Carbon** `1M` context & `-low`/`-medium`/`-high`/`-xhigh`/`-max` effort tiers), Billama Cloud, OpenAI Direct, Anthropic Claude Direct, OpenAI Codex, Claude Code.

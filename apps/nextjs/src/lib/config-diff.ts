@@ -24,6 +24,7 @@ export interface ConfigDiff {
   sandboxChanged?: boolean;
   consensusChanged?: boolean;
   fallbackChainsChanged?: boolean;
+  cascadeChanged?: boolean;
   confidentialPolicyChanged?: boolean;
   quantizationPolicyChanged?: boolean;
   fabricPolicyChanged?: boolean;
@@ -68,7 +69,8 @@ const COMPARED_FIELDS: Array<keyof UpstreamConfig> = [
   'artcraft',
   'attentionKernel',
   'ramalama',
-  'comfyui'
+  'comfyui',
+  'audio'
 ];
 
 const MEMORY_FIELDS: Array<keyof MemoryConfig> = [
@@ -154,6 +156,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
   const sandboxChanged = fieldDiffers((current as any)?.sandbox, (next as any).sandbox) || undefined;
   const consensusChanged = fieldDiffers((current as any)?.consensusGroups, (next as any).consensusGroups) || undefined;
   const fallbackChainsChanged = fieldDiffers((current as any)?.fallbackChains, (next as any).fallbackChains) || undefined;
+  const cascadeChanged = fieldDiffers((current as any)?.cascade, (next as any).cascade) || undefined;
   const normalizePolicy = (val: unknown): string => {
     return typeof val === 'string' && val.trim() && val !== 'disabled' ? val.trim() : 'disabled';
   };
@@ -205,6 +208,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     sandboxChanged,
     consensusChanged,
     fallbackChainsChanged,
+    cascadeChanged,
     confidentialPolicyChanged,
     quantizationPolicyChanged,
     fabricPolicyChanged,
@@ -229,6 +233,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !sandboxChanged &&
       !consensusChanged &&
       !fallbackChainsChanged &&
+      !cascadeChanged &&
       !confidentialPolicyChanged &&
       !quantizationPolicyChanged &&
       !fabricPolicyChanged &&

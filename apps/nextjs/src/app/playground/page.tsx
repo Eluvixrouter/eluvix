@@ -30,6 +30,7 @@ interface ArenaTurn {
   streamingB: boolean;
   traceA: any;
   traceB: any;
+  winner?: 'A' | 'B';
 }
 
 interface GeneratedMediaCard {
@@ -1096,6 +1097,73 @@ export default function PlaygroundPage() {
                             👁️ {turn.images.length} image{turn.images.length > 1 ? 's' : ''}
                           </span>
                         )}
+                        {!turn.streamingA &&
+                          !turn.streamingB &&
+                          turn.responseA.trim() &&
+                          turn.responseB.trim() && (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                disabled={Boolean(turn.winner)}
+                                onClick={async () => {
+                                  setArenaTurns((prev) =>
+                                    prev.map((t) => (t.id === turn.id ? { ...t, winner: 'A' } : t))
+                                  );
+                                  await fetch('/api/v1/distillation/vote', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      prompt: turn.prompt,
+                                      winnerUpstreamId: turn.traceA?.upstream || turn.modelA,
+                                      loserUpstreamId: turn.traceB?.upstream || turn.modelB,
+                                      winnerModel: turn.modelA,
+                                      loserModel: turn.modelB,
+                                      chosenText: turn.responseA,
+                                      rejectedText: turn.responseB,
+                                    }),
+                                  }).catch(() => {});
+                                }}
+                                className={`text-[10px] font-mono px-2 py-0.5 rounded border transition ${
+                                  turn.winner === 'A'
+                                    ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200 font-bold'
+                                    : 'bg-slate-800 hover:bg-sky-900/50 border-slate-700 text-sky-300'
+                                }`}
+                                title="Record Model A win into Thompson Bandit & DPO preference store"
+                              >
+                                {turn.winner === 'A' ? '🏆 Winner A' : '👍 Prefer A'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={Boolean(turn.winner)}
+                                onClick={async () => {
+                                  setArenaTurns((prev) =>
+                                    prev.map((t) => (t.id === turn.id ? { ...t, winner: 'B' } : t))
+                                  );
+                                  await fetch('/api/v1/distillation/vote', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      prompt: turn.prompt,
+                                      winnerUpstreamId: turn.traceB?.upstream || turn.modelB,
+                                      loserUpstreamId: turn.traceA?.upstream || turn.modelA,
+                                      winnerModel: turn.modelB,
+                                      loserModel: turn.modelA,
+                                      chosenText: turn.responseB,
+                                      rejectedText: turn.responseA,
+                                    }),
+                                  }).catch(() => {});
+                                }}
+                                className={`text-[10px] font-mono px-2 py-0.5 rounded border transition ${
+                                  turn.winner === 'B'
+                                    ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200 font-bold'
+                                    : 'bg-slate-800 hover:bg-amber-900/50 border-slate-700 text-amber-300'
+                                }`}
+                                title="Record Model B win into Thompson Bandit & DPO preference store"
+                              >
+                                {turn.winner === 'B' ? '🏆 Winner B' : '👍 Prefer B'}
+                              </button>
+                            </div>
+                          )}
                       </div>
 
                       <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-slate-800">

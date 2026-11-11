@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   getDb,
   getRollingSpendUsd,
+  getVramArbiterStats,
   globalCircuitBreaker,
   resolveBearerToken,
 } from '@eluvix/router-core';
@@ -30,22 +31,26 @@ function computePercentile(sortedValues: number[], p: number): number {
  */
 export async function GET(req: Request) {
   const authHeader = req.headers.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      if (!resolved.valid) {
-        return NextResponse.json(
-          {
-            error: {
-              message: 'Incorrect API key provided.',
-              type: 'invalid_request_error',
-              code: 'invalid_api_key',
-            },
+  const xApiKey = req.headers.get('x-api-key');
+  const rawToken =
+    authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7).trim()
+      : xApiKey && xApiKey.trim()
+        ? xApiKey.trim()
+        : null;
+  if (rawToken && rawToken.startsWith('elx_')) {
+    const resolved = resolveBearerToken(rawToken);
+    if (!resolved.valid) {
+      return NextResponse.json(
+        {
+          error: {
+            message: 'Incorrect API key provided.',
+            type: 'invalid_request_error',
+            code: 'invalid_api_key',
           },
-          { status: 401 }
-        );
-      }
+        },
+        { status: 401 }
+      );
     }
   }
 
@@ -158,6 +163,19 @@ export async function GET(req: Request) {
         `eluvix_circuit_breaker_open{upstream="${escapePromLabel(u.id)}",type="${escapePromLabel(u.type)}"} ${isOpen}`
       );
     }
+
+    const vramStats = getVramArbiterStats();
+    lines.push(
+      '# HELP eluvix_vram_evictions_total Total cooperative GPU VRAM idle weight evictions partitioned by target engine.',
+      '# TYPE eluvix_vram_evictions_total counter',
+      `eluvix_vram_evictions_total{engine="ollama"} ${vramStats.ollamaEvictions}`,
+      `eluvix_vram_evictions_total{engine="comfyui"} ${vramStats.comfyUiEvictions}`,
+      '# HELP eluvix_vram_active_workloads Number of currently in-flight local GPU requests partitioned by workload class.',
+      '# TYPE eluvix_vram_active_workloads gauge',
+      `eluvix_vram_active_workloads{workload="llm"} ${vramStats.activeInFlight.llm}`,
+      `eluvix_vram_active_workloads{workload="media"} ${vramStats.activeInFlight.media}`,
+      `eluvix_vram_active_workloads{workload="audio"} ${vramStats.activeInFlight.audio}`
+    );
 
     lines.push('');
 

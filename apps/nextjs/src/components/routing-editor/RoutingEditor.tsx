@@ -34,6 +34,7 @@ import SglangNode from './nodes/SglangNode';
 import OllamaNode from './nodes/OllamaNode';
 import RamalamaNode from './nodes/RamalamaNode';
 import ComfyUINode from './nodes/ComfyUINode';
+import AudioVoiceNode from './nodes/AudioVoiceNode';
 import AntigravityNode from './nodes/AntigravityNode';
 import CodexNode from './nodes/CodexNode';
 import ClaudeCodeNode from './nodes/ClaudeCodeNode';
@@ -46,6 +47,7 @@ import SandboxNode from './nodes/SandboxNode';
 import KnowledgeBaseNode from './nodes/KnowledgeBaseNode';
 import SemanticCacheNode from './nodes/SemanticCacheNode';
 import ConsensusNode from './nodes/ConsensusNode';
+import SpeculativeCascadeNode from './nodes/SpeculativeCascadeNode';
 import FallbackChainNode from './nodes/FallbackChainNode';
 import ConfidentialEnclaveNode from './nodes/ConfidentialEnclaveNode';
 import NeuroSymbolicCrsNode from './nodes/NeuroSymbolicCrsNode';
@@ -69,6 +71,13 @@ import RouteSimulatorDrawer, {
   applySimulationOverlayToEdges,
   type SimulatedExplanation,
 } from './RouteSimulatorDrawer';
+import EvalGateDrawer from './EvalGateDrawer';
+import {
+  STARTER_GOLDEN_EVAL_SUITES,
+  type EvalRunMode,
+  type EvalSuite,
+  type EvalSuiteResult,
+} from '@eluvix/router-core/eval-types';
 import { LayoutMetadata } from '@/lib/layouts/types';
 
 const DEFAULT_NODE_DATA: Record<string, any> = {
@@ -131,6 +140,15 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     judgeModel: 'auto',
     timeoutMs: 45000,
     rubric: 'accuracy-conciseness'
+  },
+  speculativeCascadeNode: {
+    label: 'Speculative Cascade',
+    enabled: true,
+    confidenceThreshold: 0.78,
+    maxDraftLatencyMs: 2500,
+    validateJsonSchema: true,
+    validateCodeFences: true,
+    shadowSampleRate: 0.05
   },
   fallbackChainNode: {
     label: 'Resilient Fallback Chain',
@@ -228,6 +246,21 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
       reserveVramGb: 4,
       loopbackEluvixUrl: 'http://127.0.0.1:3588/v1',
       mcpEnabled: true
+    }
+  },
+  audioVoiceNode: {
+    label: 'Sovereign Audio Engine',
+    endpoint: 'http://localhost:8005',
+    priority: 20,
+    models: ['Systran/faster-whisper-large-v3-turbo', 'kokoro', 'whisper-1', 'tts-1'],
+    audio: {
+      mode: 'both',
+      sttBackend: 'speaches',
+      ttsBackend: 'kokoro',
+      ttsEndpoint: 'http://localhost:8880',
+      defaultVoice: 'af_heart',
+      responseFormat: 'mp3',
+      scrubTranscriptPii: true
     }
   },
   semanticGuardNode: {
@@ -643,6 +676,7 @@ const nodeTypes = {
   ollamaNode: OllamaNode,
   ramalamaNode: RamalamaNode,
   comfyuiNode: ComfyUINode,
+  audioVoiceNode: AudioVoiceNode,
   antigravityNode: AntigravityNode,
   codexNode: CodexNode,
   claudeCodeNode: ClaudeCodeNode,
@@ -655,6 +689,7 @@ const nodeTypes = {
   knowledgeBaseNode: KnowledgeBaseNode,
   semanticCacheNode: SemanticCacheNode,
   consensusNode: ConsensusNode,
+  speculativeCascadeNode: SpeculativeCascadeNode,
   fallbackChainNode: FallbackChainNode,
   confidentialEnclaveNode: ConfidentialEnclaveNode,
   crsNode: NeuroSymbolicCrsNode,
@@ -744,6 +779,10 @@ export default function RoutingEditor() {
   const [isSimulatorOpen, setIsSimulatorOpen] = useState<boolean>(false);
   const [simulatedExplanation, setSimulatedExplanation] = useState<SimulatedExplanation | null>(null);
   const [isSimulating, setIsSimulating] = useState<boolean>(false);
+  const [isEvalGateOpen, setIsEvalGateOpen] = useState<boolean>(false);
+  const [isRunningEvals, setIsRunningEvals] = useState<boolean>(false);
+  const [lastEvalResult, setLastEvalResult] = useState<EvalSuiteResult | null>(null);
+  const [verifyBeforeApply, setVerifyBeforeApply] = useState<boolean>(false);
 
   const graphHistory = useGraphHistory();
   const { snapshot: telemetrySnapshot } = useCanvasTelemetry(liveTelemetryEnabled);
@@ -1420,7 +1459,7 @@ export default function RoutingEditor() {
       if (!sourceNode || !targetNode) return false;
 
       // Define valid target types for each source type
-      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
+      const allUpstreamTargets = ['lemonadeNode', 'vllmNode', 'sglangNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'audioVoiceNode', 'modelGatewayNode', 'billamaNode', 'openaiNode', 'claudeNode', 'antigravityNode', 'codexNode', 'claudeCodeNode', 'harnessNode', 'agentNode', 'consensusNode', 'fallbackChainNode'];
       const preRouteTargets = ['privacyGuardNode', 'semanticGuardNode', 'memoryNode', 'knowledgeBaseNode', 'semanticCacheNode', 'confidentialEnclaveNode', 'crsNode', 'taskRouterNode', 'switchyardNode', ...allUpstreamTargets];
 
       const rules: Record<string, string[]> = {
@@ -1453,6 +1492,7 @@ export default function RoutingEditor() {
         ollamaNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
         ramalamaNode: ['switchyardNode', 'comfyuiNode', 'observabilityNode'],
         comfyuiNode: ['switchyardNode', 'vectorcraftNode', 'artcraftNode', 'harnessNode', 'observabilityNode'],
+        audioVoiceNode: ['switchyardNode', 'harnessNode', 'observabilityNode'],
         billamaNode: ['switchyardNode', 'observabilityNode'],
         openaiNode: ['switchyardNode', 'observabilityNode'],
         claudeNode: ['switchyardNode', 'observabilityNode'],
@@ -1603,6 +1643,33 @@ export default function RoutingEditor() {
     setApplyDiff(diffRouterConfigs(current, nextConfig));
   }, []);
 
+  const handleRunEvalSuite = useCallback(
+    async (suite: EvalSuite, mode: EvalRunMode): Promise<EvalSuiteResult | null> => {
+      setIsRunningEvals(true);
+      try {
+        const compiled = compileGraph(nodes as any, edges as any);
+        const res = await fetch('/api/v1/evals/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            suite,
+            mode,
+            configOverride: compiled.rawRouterConfig,
+          }),
+        });
+        if (!res.ok) return null;
+        const report = (await res.json()) as EvalSuiteResult;
+        setLastEvalResult(report);
+        return report;
+      } catch {
+        return null;
+      } finally {
+        setIsRunningEvals(false);
+      }
+    },
+    [nodes, edges]
+  );
+
   const onApplyToRouter = useCallback(async () => {
     const compiled = compileGraph(nodes as any, edges as any);
     if (!compiled.rawRouterConfig) {
@@ -1610,13 +1677,20 @@ export default function RoutingEditor() {
       setIsExportModalOpen(true);
       return;
     }
+    if (verifyBeforeApply) {
+      const gateReport = await handleRunEvalSuite(STARTER_GOLDEN_EVAL_SUITES[0], 'dry-run');
+      if (!gateReport || !gateReport.passed) {
+        setIsEvalGateOpen(true);
+        return;
+      }
+    }
     // Authoritative apply deletes every live upstream that is not on the
     // canvas. Show the user the exact diff — especially the removals —
     // before anything is written.
     await prepareConfigDiff(compiled.rawRouterConfig);
     setConfirmAction('apply');
     setPendingApply(compiled);
-  }, [nodes, edges, prepareConfigDiff]);
+  }, [nodes, edges, prepareConfigDiff, verifyBeforeApply, handleRunEvalSuite]);
 
   const cancelApplyToRouter = useCallback(() => {
     setPendingApply(null);
@@ -1997,6 +2071,23 @@ export default function RoutingEditor() {
               </div>
               <span className="text-[10px] text-gray-400 group-hover:text-fuchsia-400">+ Add</span>
             </div>
+
+            {/* Sovereign Audio & Voice */}
+            <div
+              className="p-2.5 mb-2 border border-cyan-500/80 bg-cyan-950/20 rounded cursor-grab hover:bg-cyan-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'audioVoiceNode')}
+              onClick={() => addNode('audioVoiceNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">🎙️</span>
+                <div>
+                  <div className="font-semibold text-xs text-cyan-300 group-hover:text-cyan-200">Sovereign Audio &amp; Voice</div>
+                  <div className="text-[10px] text-gray-400 font-mono">:8005 / :8880 • Whisper + Kokoro</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-gray-400 group-hover:text-cyan-400">+ Add</span>
+            </div>
           </div>
 
           {/* Cloud LLM Providers */}
@@ -2311,6 +2402,23 @@ export default function RoutingEditor() {
               <span className="text-[10px] text-slate-400 group-hover:text-blue-400 font-mono">+ Add</span>
             </div>
 
+            {/* Speculative Cascade (Buffer-Verify + Shadow Distillation) */}
+            <div
+              className="p-2.5 mb-2 border border-emerald-500/80 bg-emerald-950/20 rounded-lg cursor-grab hover:bg-emerald-900/30 transition flex items-center justify-between group"
+              onDragStart={(e) => onDragStart(e, 'speculativeCascadeNode')}
+              onClick={() => addNode('speculativeCascadeNode')}
+              draggable
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-lg">⚡</span>
+                <div>
+                  <div className="font-semibold text-xs text-emerald-300 group-hover:text-emerald-200">Speculative Cascade</div>
+                  <div className="text-[10px] text-slate-400 font-mono">$0 Draft Verify &amp; Shadow DPO</div>
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-400 group-hover:text-emerald-400 font-mono">+ Add</span>
+            </div>
+
             {/* Consensus / Judge Arena */}
             <div
               className="p-2.5 mb-2 border border-violet-500/80 bg-violet-950/20 rounded-lg cursor-grab hover:bg-violet-900/30 transition flex items-center justify-between group"
@@ -2600,6 +2708,23 @@ export default function RoutingEditor() {
                 <span>Simulate</span>
               </button>
 
+              {/* Golden Eval Gate */}
+              <button
+                type="button"
+                onClick={() => setIsEvalGateOpen((v) => !v)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition hidden lg:inline-flex items-center gap-1 border ${
+                  isEvalGateOpen
+                    ? 'bg-violet-600/30 border-violet-400 text-violet-200 shadow'
+                    : lastEvalResult && !lastEvalResult.passed
+                      ? 'bg-rose-950/50 border-rose-500/60 text-rose-200'
+                      : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200 hover:text-white'
+                }`}
+                title="Run $0.00 deterministic or live Golden Eval assertions against the unsaved canvas"
+              >
+                <span>🧪</span>
+                <span>Evals</span>
+              </button>
+
               {/* Spotlight Command Palette */}
               <button
                 type="button"
@@ -2745,6 +2870,7 @@ export default function RoutingEditor() {
                  if (n.type === 'ollamaNode') return '#c084fc';
                  if (n.type === 'ramalamaNode') return '#fb923c';
                  if (n.type === 'comfyuiNode') return '#e879f9';
+                 if (n.type === 'audioVoiceNode') return '#22d3ee';
                  if (n.type === 'antigravityNode') return '#06b6d4';
                  if (n.type === 'codexNode') return '#10b981';
                  if (n.type === 'claudeCodeNode') return '#f59e0b';
@@ -2776,6 +2902,15 @@ export default function RoutingEditor() {
             onSimulate={handleSimulateRoute}
             onClearOverlay={() => setSimulatedExplanation(null)}
             simulating={isSimulating}
+          />
+          <EvalGateDrawer
+            isOpen={isEvalGateOpen}
+            onClose={() => setIsEvalGateOpen(false)}
+            onRunSuite={handleRunEvalSuite}
+            running={isRunningEvals}
+            lastResult={lastEvalResult}
+            verifyBeforeApply={verifyBeforeApply}
+            onToggleVerifyBeforeApply={setVerifyBeforeApply}
           />
           <LogViewer containerName={selectedLogContainer} onClose={() => setSelectedLogContainer(null)} />
           </div>
@@ -5267,6 +5402,18 @@ export default function RoutingEditor() {
                   </div>
                 )}
 
+                {compiledConfigs.audioSetup && (
+                  <div>
+                    <h4 className="text-cyan-400 font-bold mb-2 flex items-center justify-between">
+                      <span>Sovereign Headless Audio STT + TTS Stack (audio-voice-launch.sh)</span>
+                      <span className="text-[10px] bg-cyan-500/20 text-cyan-300 px-2 py-0.5 rounded font-mono">Whisper :8005 + Kokoro :8880</span>
+                    </h4>
+                    <pre className="bg-gray-950 p-4 rounded text-sm text-cyan-200 overflow-x-auto border border-cyan-900/60 font-mono text-xs whitespace-pre-wrap">
+                      {compiledConfigs.audioSetup}
+                    </pre>
+                  </div>
+                )}
+
               </div>
               <div className="p-4 border-t border-gray-700 bg-gray-900 flex items-center justify-between">
                 <div>
@@ -5347,10 +5494,12 @@ export default function RoutingEditor() {
           canRedo={graphHistory.canRedo}
           diagnosticsCount={graphDiagnostics.diagnostics.filter((d) => d.fixAction).length}
           simulatorOpen={isSimulatorOpen}
+          evalGateOpen={isEvalGateOpen}
           onAddNode={addNode}
           onLoadLayout={(slug) => loadLayoutBySlug(slug)}
           onAutoLayout={handleAutoLayout}
           onToggleSimulator={() => setIsSimulatorOpen((v) => !v)}
+          onToggleEvalGate={() => setIsEvalGateOpen((v) => !v)}
           onAutoFixAll={handleAutoFixAllDiagnostics}
           onSyncLiveConfig={handleSyncFromLiveConfig}
           onSave={handleFastSave}

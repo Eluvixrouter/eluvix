@@ -34,6 +34,15 @@ import {
   type ComfyUIConfig
 } from '@eluvix/router-core/comfyui';
 import {
+  generateAudioVoiceSetupScript,
+  STT_BACKEND_PRESETS,
+  TTS_BACKEND_PRESETS,
+  type AudioVoiceConfig,
+  type SttBackendPreset,
+  type TtsBackendPreset
+} from '@eluvix/router-core/audio';
+import type { SpeculativeCascadeConfig } from '@eluvix/router-core/cascade';
+import {
   analyzeGraphDiagnostics,
   type GraphDiagnosticsReport
 } from './diagnostics';
@@ -56,12 +65,13 @@ export interface CompilationResult {
   artcraftSetup?: string;
   ramalamaSetup?: string;
   comfyuiSetup?: string;
+  audioSetup?: string;
   diagnostics?: GraphDiagnosticsReport;
   rawRouterConfig: any;
 }
 
 export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
-  // 1. Extract Local Engine Nodes (Lemonade, vLLM, SGLang, Ollama, RamaLama, ComfyUI) and Cloud Providers (Billama, OpenAI, Claude)
+  // 1. Extract Local Engine Nodes (Lemonade, vLLM, SGLang, Ollama, RamaLama, ComfyUI, Audio) and Cloud Providers (Billama, OpenAI, Claude)
   const localEngineNodes = nodes.filter(
     n =>
       n.type === 'lemonadeNode' ||
@@ -69,7 +79,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
       n.type === 'sglangNode' ||
       n.type === 'ollamaNode' ||
       n.type === 'ramalamaNode' ||
-      n.type === 'comfyuiNode'
+      n.type === 'comfyuiNode' ||
+      n.type === 'audioVoiceNode'
   );
   const vllmNodes = nodes.filter(n => n.type === 'vllmNode');
   const sglangNodes = nodes.filter(n => n.type === 'sglangNode');
@@ -87,6 +98,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const semanticCacheNodes = nodes.filter(n => n.type === 'semanticCacheNode');
   const consensusNodes = nodes.filter(n => n.type === 'consensusNode');
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
+  const speculativeCascadeNodes = nodes.filter(n => n.type === 'speculativeCascadeNode');
   const confidentialEnclaveNodes = nodes.filter(n => n.type === 'confidentialEnclaveNode');
   const crsNodes = nodes.filter(n => n.type === 'crsNode');
   const vectorcraftNodes = nodes.filter(n => n.type === 'vectorcraftNode' || n.type === 'artcraftNode');
@@ -159,7 +171,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     crsNodes,
     vectorcraftNodes,
     mcpTools,
-    agentGateways
+    agentGateways,
+    speculativeCascadeNodes
   );
 
   const allUpstreamCapableNodes = [
@@ -185,6 +198,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     vectorcraftNodes,
     edges
   );
+  const audioVoiceNodes = localEngineNodes.filter(n => n.type === 'audioVoiceNode');
+  const audioSetupScript = generateAudioSetup(audioVoiceNodes);
   const diagnostics = analyzeGraphDiagnostics(nodes, edges);
 
   return {
@@ -205,6 +220,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     artcraftSetup: vcSetupScript,
     ramalamaSetup: ramalamaSetupScript,
     comfyuiSetup: comfyuiSetupScript,
+    ...(audioSetupScript ? { audioSetup: audioSetupScript } : {}),
     diagnostics,
     rawRouterConfig
   };
@@ -234,7 +250,8 @@ function generateEluvixConfig(
   crsNodes: Node[] = [],
   vectorcraftNodes: Node[] = [],
   mcpTools: Node[] = [],
-  agentGateways: Node[] = []
+  agentGateways: Node[] = [],
+  speculativeCascadeNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -495,12 +512,33 @@ function generateEluvixConfig(
       type = 'comfyui';
       defaultEndpoint = 'http://localhost:8188';
       defaultName = 'ComfyUI Engine';
+    } else if (node.type === 'audioVoiceNode') {
+      type = 'audio';
+      defaultEndpoint = 'http://localhost:8005';
+      defaultName = 'Sovereign Audio Engine';
     }
 
     const discovered = Array.isArray(node.data?.models) ? (node.data?.models as string[]) : [];
+    const audioRaw = (node.data as any)?.audio || {};
+    const defaultAudioModels =
+      type === 'audio'
+        ? (() => {
+            const mode = audioRaw.mode || 'both';
+            const sttSpec =
+              STT_BACKEND_PRESETS[(audioRaw.sttBackend || audioRaw.sttPreset || 'speaches') as SttBackendPreset] ||
+              STT_BACKEND_PRESETS.speaches;
+            const ttsSpec =
+              TTS_BACKEND_PRESETS[(audioRaw.ttsBackend || audioRaw.ttsPreset || 'kokoro') as TtsBackendPreset] ||
+              TTS_BACKEND_PRESETS.kokoro;
+            const list: string[] = [];
+            if (mode === 'both' || mode === 'stt') list.push(sttSpec.defaultModel, 'whisper-1');
+            if (mode === 'both' || mode === 'tts') list.push(ttsSpec.defaultModel, 'tts-1');
+            return Array.from(new Set(list));
+          })()
+        : [];
     const selected = node.data?.selectedModel && node.data.selectedModel !== '*'
       ? [String(node.data.selectedModel)]
-      : (discovered.length > 0 ? discovered : ['*']);
+      : (discovered.length > 0 ? discovered : type === 'audio' ? defaultAudioModels : ['*']);
 
     const tierInfo = tierMap.get(node.id) || {
       tierId: type === 'lemonade' ? 'tier-1' : 'tier-2',
@@ -658,6 +696,7 @@ function generateEluvixConfig(
             other =>
               other.id !== node.id &&
               other.type !== 'comfyuiNode' &&
+              other.type !== 'audioVoiceNode' &&
               edges.some(
                 e =>
                   (e.source === other.id && e.target === node.id) ||
@@ -668,7 +707,10 @@ function generateEluvixConfig(
     const connectedArtCraftForComfy =
       type === 'comfyui' ? findConnectedArtCraftNode(node) : undefined;
     const hasCoHostedLocalLlm =
-      type === 'comfyui' && localEngines.some(other => other.id !== node.id && other.type !== 'comfyuiNode');
+      type === 'comfyui' &&
+      localEngines.some(
+        other => other.id !== node.id && other.type !== 'comfyuiNode' && other.type !== 'audioVoiceNode'
+      );
 
     const comfyuiCfg: ComfyUIConfig | undefined =
       type === 'comfyui'
@@ -716,6 +758,25 @@ function generateEluvixConfig(
           }
         : undefined;
 
+    const audioCfg: AudioVoiceConfig | undefined =
+      type === 'audio'
+        ? {
+            mode: audioRaw.mode || 'both',
+            sttBackend: audioRaw.sttBackend || audioRaw.sttPreset || 'speaches',
+            ttsBackend: audioRaw.ttsBackend || audioRaw.ttsPreset || 'kokoro',
+            ...(audioRaw.defaultSttModel || audioRaw.sttModel
+              ? { defaultSttModel: String(audioRaw.defaultSttModel || audioRaw.sttModel) }
+              : {}),
+            ...(audioRaw.defaultTtsModel || audioRaw.ttsModel
+              ? { defaultTtsModel: String(audioRaw.defaultTtsModel || audioRaw.ttsModel) }
+              : {}),
+            defaultVoice: String(audioRaw.defaultVoice || 'af_heart'),
+            responseFormat: audioRaw.responseFormat || 'mp3',
+            ttsEndpoint: String(audioRaw.ttsEndpoint || 'http://localhost:8880'),
+            scrubTranscriptPii: audioRaw.scrubTranscriptPii !== false,
+          }
+        : undefined;
+
     upstreams.push({
       id: String(node.id),
       name: String(node.data?.label || defaultName),
@@ -740,7 +801,8 @@ function generateEluvixConfig(
       ...(vcCfg ? { vectorcraft: vcCfg } : {}),
       ...(acCfg ? { artcraft: acCfg } : {}),
       ...(ramalamaCfg ? { ramalama: ramalamaCfg } : {}),
-      ...(comfyuiCfg ? { comfyui: comfyuiCfg } : {})
+      ...(comfyuiCfg ? { comfyui: comfyuiCfg } : {}),
+      ...(audioCfg ? { audio: audioCfg } : {})
     });
   });
 
@@ -1241,6 +1303,7 @@ function generateEluvixConfig(
       ? Number(swData.prefillIsolationThresholdTokens)
       : undefined,
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
+    ...(swData.strictModelMatch === true ? { strictModelMatch: true } : {}),
     ...(swData.mediaIntentRouting !== undefined ? { mediaIntentRouting: Boolean(swData.mediaIntentRouting) } : {}),
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),
@@ -1416,6 +1479,46 @@ function generateEluvixConfig(
     };
   });
 
+  const primaryCascadeNode = speculativeCascadeNodes[0];
+  let cascadeConfig: SpeculativeCascadeConfig | undefined;
+  if (primaryCascadeNode) {
+    const casData = (primaryCascadeNode.data || {}) as Record<string, any>;
+    const draftEdge = edges.find(
+      e => e.source === primaryCascadeNode.id && e.sourceHandle === 'draft'
+    );
+    const verifierEdge = edges.find(
+      e => e.source === primaryCascadeNode.id && e.sourceHandle === 'verifier'
+    );
+    const shadowEdge = edges.find(
+      e => e.source === primaryCascadeNode.id && e.sourceHandle === 'shadow-student'
+    );
+    const fallbackOutEdges = edges.filter(
+      e => e.source === primaryCascadeNode.id && !e.sourceHandle
+    );
+
+    const draftUpstreamId =
+      draftEdge?.target || casData.draftUpstreamId || fallbackOutEdges[0]?.target;
+    const verifierUpstreamId =
+      verifierEdge?.target || casData.verifierUpstreamId || fallbackOutEdges[1]?.target;
+    const shadowStudentUpstreamId =
+      shadowEdge?.target || casData.shadowStudentUpstreamId || undefined;
+
+    cascadeConfig = {
+      id: String(primaryCascadeNode.id),
+      enabled: casData.enabled !== false,
+      ...(draftUpstreamId ? { draftUpstreamId: String(draftUpstreamId) } : {}),
+      ...(verifierUpstreamId ? { verifierUpstreamId: String(verifierUpstreamId) } : {}),
+      ...(shadowStudentUpstreamId
+        ? { shadowStudentUpstreamId: String(shadowStudentUpstreamId) }
+        : {}),
+      confidenceThreshold: Number(casData.confidenceThreshold ?? 0.78),
+      maxDraftLatencyMs: Number(casData.maxDraftLatencyMs ?? 2500),
+      validateJsonSchema: casData.validateJsonSchema !== false,
+      validateCodeFences: casData.validateCodeFences !== false,
+      shadowSampleRate: Number(casData.shadowSampleRate ?? 0.05),
+    };
+  }
+
   // Egress is determined by what is actually on the canvas: a graph whose
   // upstreams are all local engines compiles to a fail-closed local-only
   // policy, so the router can never fall back to an external service that
@@ -1453,6 +1556,7 @@ function generateEluvixConfig(
     ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
     ...(consensusGroups.length > 0 ? { consensusGroups } : {}),
     ...(fallbackChains.length > 0 ? { fallbackChains } : {}),
+    ...(cascadeConfig ? { cascade: cascadeConfig } : {}),
     ...(primaryVcConfig ? { vectorcraft: primaryVcConfig } : {}),
     ...(primaryAcConfig ? { artcraft: primaryAcConfig } : {}),
     promptGuard: {
@@ -1559,6 +1663,8 @@ function generateBifrostYaml(
       ? 'ramalama'
       : node.type === 'comfyuiNode'
       ? 'comfyui'
+      : node.type === 'audioVoiceNode'
+      ? 'audio'
       : 'ollama';
     const endpoint = data.endpoint || (
       type === 'lemonade' ? 'http://localhost:13305' :
@@ -1566,6 +1672,7 @@ function generateBifrostYaml(
       type === 'sglang' ? 'http://localhost:30000' :
       type === 'ramalama' ? 'http://localhost:8080' :
       type === 'comfyui' ? 'http://localhost:8188' :
+      type === 'audio' ? 'http://localhost:8005' :
       'http://localhost:11434'
     );
     const selected = data.selectedModel || '*';
@@ -2848,6 +2955,26 @@ function generateComfyUISetup(
   });
 
   return sections.join('\n\n');
+}
+
+function generateAudioSetup(audioNodes: Node[]): string {
+  if (audioNodes.length === 0) return '';
+  return generateAudioVoiceSetupScript(
+    audioNodes.map(node => {
+      const data = (node.data || {}) as Record<string, any>;
+      const rawAudio = (data.audio || {}) as Record<string, any>;
+      return {
+        id: node.id,
+        name: typeof data.label === 'string' ? data.label : undefined,
+        endpoint: String(data.endpoint || 'http://localhost:8005'),
+        audio: {
+          ...rawAudio,
+          sttBackend: rawAudio.sttBackend || rawAudio.sttPreset || 'speaches',
+          ttsBackend: rawAudio.ttsBackend || rawAudio.ttsPreset || 'kokoro',
+        } as AudioVoiceConfig,
+      };
+    })
+  );
 }
 
 

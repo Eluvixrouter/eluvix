@@ -56,18 +56,28 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // 2. Protect API routes (/api/v1/*, /api/secrets/*, and /api/orchestrator/*)
+  // 2. Protect API routes (/api/v1/*, /v1/*, /api/secrets/*, and /api/orchestrator/*)
   if (
     pathname.startsWith('/api/v1/') ||
+    pathname.startsWith('/v1/') ||
     pathname.startsWith('/api/secrets/') ||
     pathname.startsWith('/api/orchestrator/')
   ) {
+    const normalizedApiPath = pathname.startsWith('/v1/') ? `/api${pathname}` : pathname;
     const authHeader = req.headers.get('authorization');
+    const xApiKeyHeader = req.headers.get('x-api-key');
     const expectedPassword = process.env.ADMIN_PASSWORD;
 
-    // Check Bearer token
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.slice(7).trim();
+    const bearerToken =
+      authHeader && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : xApiKeyHeader && xApiKeyHeader.trim()
+          ? xApiKeyHeader.trim()
+          : null;
+
+    // Check Bearer token or Anthropic-compatible x-api-key header
+    if (bearerToken !== null) {
+      const token = bearerToken;
       const legacyPassword = process.env.LEGACY_ADMIN_PASSWORD;
       const isExpected = expectedPassword ? await secureTokenCompare(token, expectedPassword) : false;
       const isLegacy = legacyPassword ? await secureTokenCompare(token, legacyPassword) : false;
@@ -77,14 +87,21 @@ export async function middleware(req: NextRequest) {
       // Named API keys (elx_<32 letters>) are verified against keys.json inside Node route handlers
       if (
         /^elx_[A-Za-z]{24,64}$/.test(token) &&
-        (pathname.startsWith('/api/v1/chat') ||
-          pathname.startsWith('/api/v1/images') ||
-          pathname.startsWith('/api/v1/metrics') ||
-          pathname.startsWith('/api/v1/memory') ||
-          pathname.startsWith('/api/v1/models') ||
-          pathname.startsWith('/api/v1/route-explain') ||
-          pathname.startsWith('/api/v1/export') ||
-          pathname.startsWith('/api/v1/harness/sessions'))
+        (normalizedApiPath.startsWith('/api/v1/chat') ||
+          normalizedApiPath.startsWith('/api/v1/messages') ||
+          normalizedApiPath.startsWith('/api/v1/responses') ||
+          normalizedApiPath.startsWith('/api/v1/embeddings') ||
+          normalizedApiPath.startsWith('/api/v1/audio') ||
+          normalizedApiPath.startsWith('/api/v1/images') ||
+          normalizedApiPath.startsWith('/api/v1/mcp') ||
+          normalizedApiPath.startsWith('/api/v1/evals') ||
+          normalizedApiPath.startsWith('/api/v1/distillation') ||
+          normalizedApiPath.startsWith('/api/v1/metrics') ||
+          normalizedApiPath.startsWith('/api/v1/memory') ||
+          normalizedApiPath.startsWith('/api/v1/models') ||
+          normalizedApiPath.startsWith('/api/v1/route-explain') ||
+          normalizedApiPath.startsWith('/api/v1/export') ||
+          normalizedApiPath.startsWith('/api/v1/harness/sessions'))
       ) {
         return NextResponse.next();
       }
@@ -183,6 +200,7 @@ export const config = {
     '/provider/:path*',
     '/harness/:path*',
     '/api/v1/:path*',
+    '/v1/:path*',
     '/api/secrets/:path*',
     '/api/orchestrator/:path*'
   ]

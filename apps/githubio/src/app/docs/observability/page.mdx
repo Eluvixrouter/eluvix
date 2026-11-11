@@ -39,7 +39,8 @@ The web dashboard provides real-time operational intelligence with sub-second re
 | **Token Throughput** | Total tokens processed, segmented into prompt tokens and completion tokens. |
 | **Local Cost Savings** | Running calculation of financial savings achieved by routing queries to local $0 hardware instead of commercial frontier APIs. |
 | **24h Cloud Spend Meter** | Live rolling 24-hour cloud expenditure bar against Switchyard `maxDailySpendUsd`, highlighting active `prefer-local`, `strict-local`, or `reject` budget guardrails. |
-| **Upstream Health Matrix** | Real-time ping status for RamaLama, ComfyUI, Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
+| **VRAM Arbiter & Bandit Posteriors** | Real-time Cooperative GPU VRAM Arbiter lease/eviction telemetry (`vramArbiter`) and Online Contextual Thompson Bandit arm `(alpha, beta)` posteriors (`banditArms`). |
+| **Upstream Health Matrix** | Real-time ping status for RamaLama, ComfyUI, Speaches/Kokoro Audio, Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
 
 ---
 
@@ -61,7 +62,7 @@ scrape_configs:
       - targets: ['127.0.0.1:3588']
 ```
 
-Exported metric families include `eluvix_requests_total`, `eluvix_tokens_total`, `eluvix_kv_cache_transferred_bytes_total`, `eluvix_latency_p50_ms`, `eluvix_ttft_p50_ms`, `eluvix_ttft_p99_ms`, `eluvix_itl_p50_ms`, `eluvix_rolling_24h_spend_usd`, `eluvix_daily_spend_cap_usd`, `eluvix_upstreams_configured_total`, and `eluvix_circuit_breaker_open`.
+Exported metric families include `eluvix_requests_total`, `eluvix_tokens_total`, `eluvix_kv_cache_transferred_bytes_total`, `eluvix_latency_p50_ms`, `eluvix_ttft_p50_ms`, `eluvix_ttft_p99_ms`, `eluvix_itl_p50_ms`, `eluvix_rolling_24h_spend_usd`, `eluvix_daily_spend_cap_usd`, `eluvix_upstreams_configured_total`, `eluvix_circuit_breaker_open`, `eluvix_vram_evictions_total{engine="ollama|comfyui"}`, and `eluvix_vram_active_workloads{kind="llm|media"}`.
 
 ---
 

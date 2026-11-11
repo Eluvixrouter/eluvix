@@ -12,9 +12,10 @@ Eluvix connects out-of-the-box with:
 2. **RamaLama**: Rootless OCI container inference via Podman or Docker on `http://127.0.0.1:8080`, supporting `ollama://`, `hf://`, and `oci://` model URIs, `--rag` OCI artifacts, `--selinux=true`, `--network=none` air-gapping, and systemd Podman Quadlet `.container` unit generation.
 3. **vLLM**: High-throughput distributed serving with PagedAttention on `http://127.0.0.1:8000` (NVIDIA CUDA or AMD ROCm).
 4. **ComfyUI**: Local diffusion, video, and 3D mesh workflow DAG engine on `http://127.0.0.1:8188` (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`).
-5. **Lemonade**: Local hardware and private NPU/GPU enclave inference runtimes on `http://127.0.0.1:13305`.
-6. **OpenViking**: Hierarchical context and memory engine on `http://127.0.0.1:1933`.
-7. **TrueForge**: Autonomous agent harness runtime on `http://127.0.0.1:8790`.
+5. **Speaches (Faster-Whisper) & Kokoro-FastAPI / Piper TTS**: Headless sovereign Speech-to-Text (`http://127.0.0.1:8005`) and Text-to-Speech (`http://127.0.0.1:8880`) audio engines wired via `audioVoiceNode`.
+6. **Lemonade**: Local hardware and private NPU/GPU enclave inference runtimes on `http://127.0.0.1:13305`.
+7. **OpenViking**: Hierarchical context and memory engine on `http://127.0.0.1:1933`.
+8. **TrueForge**: Autonomous agent harness runtime on `http://127.0.0.1:8790`.
 
 ---
 
@@ -29,9 +30,13 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
 
 ---
 
-## ComfyUI Local Media Coexistence (`:8188`)
+## ComfyUI Local Media Coexistence & Cooperative GPU VRAM Arbiter
 
-ComfyUI shares local GPU VRAM peacefully alongside text inference servers using `--lowvram` or `--reserve-vram` flags. Eluvix continuously monitors live GPU memory and queue depth via `GET /api/v1/comfyui/status`.
+Single-workstation GPUs (`16 GB`–`24 GB` VRAM) frequently run both local LLMs (Ollama `:11434`) and diffusion/video DAGs (ComfyUI `:8188`). In addition to monitoring live GPU memory via `GET /api/v1/comfyui/status`, `@eluvix/router-core` includes a **Cooperative GPU VRAM Arbiter** (`vramArbiter.enabled: true`):
+
+- **Before ComfyUI Synthesis (`media` lease)**: If zero LLM streams are currently in-flight (`activeLlmStreams === 0`), the arbiter inspects SSRF-validated `GET /api/ps` on configured local Ollama endpoints and dispatches `{ model, keep_alive: 0 }` to cleanly unload idle GGUF weights from VRAM before FLUX.1 or Wan 2.1 allocates tensors.
+- **Before Local LLM Inference (`llm` lease)**: If zero ComfyUI jobs are active (`activeMediaJobs === 0`), the arbiter dispatches `POST /free` (`{ unload_models: true, free_memory: true }`) to idle ComfyUI endpoints so full VRAM returns to KV-cache and model weights.
+- **Zero Container Disruption**: The Cooperative GPU VRAM Arbiter **never stops, kills, or restarts running Docker/Podman containers** and never evicts weights while an active stream or render job holds a lease. Eviction counters (`eluvix_vram_evictions_total`) and active workload gauges (`eluvix_vram_active_workloads`) are exported to `/api/v1/metrics` and `/api/v1/observability`.
 
 ---
 

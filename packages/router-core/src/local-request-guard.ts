@@ -78,8 +78,8 @@ export function desktopTokenEquals(provided: string, expected: string): boolean 
 
 /**
  * Pull the desktop token out of a request's headers: the dedicated header
- * (renderer, scripts) or `Authorization: Bearer <token>` (OpenAI-compatible
- * CLI tools, which present their API key that way).
+ * (renderer, scripts), `Authorization: Bearer <token>` (OpenAI-compatible
+ * CLI tools), or `x-api-key: <token>` (Anthropic / Claude Code SDKs).
  */
 export function extractDesktopToken(
   headers: Record<string, string | string[] | undefined>
@@ -90,6 +90,10 @@ export function extractDesktopToken(
   if (typeof auth === 'string' && auth.startsWith('Bearer ')) {
     const token = auth.slice('Bearer '.length).trim();
     if (token) return token;
+  }
+  const xApiKey = headers['x-api-key'];
+  if (typeof xApiKey === 'string' && xApiKey.trim()) {
+    return xApiKey.trim();
   }
   return null;
 }

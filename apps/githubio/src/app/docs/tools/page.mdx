@@ -31,9 +31,26 @@ Eluvix integrates with **OpenBao / HashiCorp Vault** secret engines (`/api/secre
 
 ## Model Context Protocol (MCP)
 
-Eluvix natively supports the **Model Context Protocol (MCP)**, the open standard for connecting AI systems to external data sources, enterprise tools, and local development environments.
+Eluvix natively supports the **Model Context Protocol (MCP)**—acting both as an MCP client/gateway to external tool servers and as a **Sovereign MCP `2025-06-18` Server** that exposes Eluvix's own routing intelligence, DLP scrubber, memory engine, and ComfyUI synthesis to Claude Desktop, Cursor, Windsurf, Google Antigravity (`agy`), OpenCode, and Codex CLI.
 
-### MCP Tool Node (`mcpToolNode`)
+### 1. Eluvix Native Sovereign MCP Server (`POST /api/v1/mcp` & `npx eluvix-mcp`)
+External AI IDEs and agents can connect to Eluvix over two transports:
+- **Streamable-HTTP JSON-RPC 2.0**: `POST https://127.0.0.1:3588/api/v1/mcp` (authenticated via `Authorization: Bearer` or `x-api-key`).
+- **Stdio CLI Binary**: `npx eluvix-mcp` (pure NDJSON over `stdout` with diagnostic logs routed to `stderr` so JSON-RPC frames are never corrupted).
+
+| Sovereign MCP Tool | Capability |
+| :--- | :--- |
+| `eluvix_route_explain` | Dry-runs Switchyard complexity, modality, and budget routing without invoking an upstream (`\$0.00`). |
+| `eluvix_list_models` | Lists configured local & cloud models with capability tags and per-1k token pricing. |
+| `eluvix_smart_complete` | Dispatches a completion through PrivacyGuard, SemanticGuard, and Switchyard (increments `x-eluvix-hops`; blocks recursion when `hops >= 2`). |
+| `eluvix_memory_query` | Queries user-scoped recall across OpenViking, Graphiti, LightRAG, Mem0, or SQLite FTS5. |
+| `eluvix_memory_store` | Persists curated facts or preferences to the caller's scoped memory store. |
+| `eluvix_privacy_scrub` | Redacts API keys, SSNs, emails, credit cards, and custom regexes from untrusted text. |
+| `eluvix_generate_image` | Synthesizes local images/video/3D assets via ComfyUI (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`). |
+
+Eluvix also serves read-only MCP resources (`eluvix://config/summary` with `apiKey` fields stripped, `eluvix://telemetry/spend-24h`, and `eluvix://upstreams/health`).
+
+### 2. MCP Tool Node (`mcpToolNode`)
 The visual editor provides dedicated MCP Tool nodes:
 - **Server Endpoint**: Connects via Server-Sent Events (SSE) or local standard I/O (stdio).
 - **Execution Modes**:
