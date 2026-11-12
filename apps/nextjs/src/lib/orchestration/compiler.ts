@@ -172,7 +172,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     vectorcraftNodes,
     mcpTools,
     agentGateways,
-    speculativeCascadeNodes
+    speculativeCascadeNodes,
+    observabilityNodes
   );
 
   const allUpstreamCapableNodes = [
@@ -251,7 +252,8 @@ function generateEluvixConfig(
   vectorcraftNodes: Node[] = [],
   mcpTools: Node[] = [],
   agentGateways: Node[] = [],
-  speculativeCascadeNodes: Node[] = []
+  speculativeCascadeNodes: Node[] = [],
+  observabilityNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -1559,6 +1561,44 @@ function generateEluvixConfig(
     ...(cascadeConfig ? { cascade: cascadeConfig } : {}),
     ...(primaryVcConfig ? { vectorcraft: primaryVcConfig } : {}),
     ...(primaryAcConfig ? { artcraft: primaryAcConfig } : {}),
+    ...(pgNode && (pgData.outputGuardEnabled === true || pgData.outputGuard?.enabled === true)
+      ? {
+          outputGuard: {
+            enabled: true,
+            action: (pgData.outputGuard?.action || pgData.outputGuardAction || 'redact') as
+              | 'redact'
+              | 'block'
+              | 'audit',
+            detectSecrets: pgData.outputGuard?.detectSecrets !== false,
+            ...(Array.isArray(pgData.outputGuard?.blockedRegexes)
+              ? { blockedRegexes: pgData.outputGuard.blockedRegexes }
+              : {}),
+            redactionStyle: (pgData.redactionStyle || 'token') as 'mask' | 'token' | 'hash',
+          },
+        }
+      : {}),
+    ...(observabilityNodes.length > 0 &&
+    ((observabilityNodes[0].data as any)?.exporter === 'otlp' ||
+      (observabilityNodes[0].data as any)?.exporter === 'langfuse' ||
+      Boolean((observabilityNodes[0].data as any)?.otlpEndpoint))
+      ? {
+          observability: {
+            enabled: true,
+            projectName: String((observabilityNodes[0].data as any)?.projectName || 'eluvix-desktop'),
+            exporter: String((observabilityNodes[0].data as any)?.exporter || 'otlp') as
+              | 'sqlite'
+              | 'otlp'
+              | 'langfuse'
+              | 'prometheus',
+            ...((observabilityNodes[0].data as any)?.otlpEndpoint
+              ? { otlpEndpoint: String((observabilityNodes[0].data as any).otlpEndpoint) }
+              : {}),
+            samplingRate: Number((observabilityNodes[0].data as any)?.samplingRate ?? 100),
+            captureInputs: (observabilityNodes[0].data as any)?.captureInputs !== false,
+            scrubPii: (observabilityNodes[0].data as any)?.scrubPii !== false,
+          },
+        }
+      : {}),
     promptGuard: {
       enabled: semanticGuards.length > 0,
       threshold: sgNode ? Number(sgData.threshold ?? 0.85) : 0.85,

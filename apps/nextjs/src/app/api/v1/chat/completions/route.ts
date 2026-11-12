@@ -12,17 +12,32 @@ export async function POST(req: Request) {
   let keyOrigin: RequestScope['origin'] | undefined;
   const rawToken = extractApiTokenFromHeaders(req);
   if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken);
+    const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
     if (!resolved.valid) {
+      const status =
+        resolved.reason === 'insufficient-scope'
+          ? 403
+          : resolved.reason === 'rate-limited' || resolved.reason === 'budget-exceeded'
+          ? 429
+          : 401;
       return NextResponse.json(
         {
           error: {
-            message: 'Incorrect API key provided.',
+            message:
+              resolved.reason === 'insufficient-scope'
+                ? 'API key lacks required "chat" scope.'
+                : resolved.reason === 'expired'
+                ? 'API key has expired.'
+                : resolved.reason === 'rate-limited'
+                ? 'API key rate limit (RPM) exceeded.'
+                : resolved.reason === 'budget-exceeded'
+                ? 'API key daily spend budget exceeded.'
+                : 'Incorrect API key provided.',
             type: 'invalid_request_error',
-            code: 'invalid_api_key'
+            code: resolved.reason || 'invalid_api_key'
           }
         },
-        { status: 401 }
+        { status }
       );
     }
     keyUserId = resolved.userId;
@@ -102,6 +117,13 @@ export async function POST(req: Request) {
       origin
     };
     const hops = Math.max(0, parseInt(req.headers.get('x-eluvix-hops') || '0', 10) || 0);
+    const headerPromptRef = req.headers.get('x-eluvix-prompt');
+    if (headerPromptRef && headerPromptRef.trim()) {
+      body.metadata = {
+        ...(body.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
+        promptRef: body.metadata?.promptRef || headerPromptRef.trim(),
+      };
+    }
 
     const VALID_CONFIDENTIAL = new Set(['disabled', 'prefer-tee', 'require-tee', 'require-dual-attestation']);
     const VALID_QUANT = new Set(['disabled', 'prefer-nvfp4-hadamard', 'lossless-reasoning']);

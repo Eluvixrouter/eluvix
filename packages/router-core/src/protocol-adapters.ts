@@ -121,6 +121,13 @@ export function resolveVirtualVendorModel(requestedModel?: string): VendorModelA
 // Anthropic `/v1/messages` <-> OpenAI `/v1/chat/completions` Translation
 // ============================================================================
 
+export interface AnthropicCacheBreakpoint {
+  scope: 'system' | 'tools' | 'messages';
+  index: number;
+  cacheControl: { type: 'ephemeral'; ttl?: string };
+  prefixTextSample?: string;
+}
+
 export interface AnthropicMessagesRequest {
   model?: string;
   messages: Array<{
@@ -137,6 +144,7 @@ export interface AnthropicMessagesRequest {
     name: string;
     description?: string;
     input_schema?: Record<string, any>;
+    cache_control?: { type: 'ephemeral'; ttl?: string };
   }>;
   tool_choice?:
     | { type: 'auto' | 'any' | 'none' }
@@ -146,6 +154,72 @@ export interface AnthropicMessagesRequest {
     budget_tokens?: number;
   };
   metadata?: Record<string, any>;
+}
+
+/**
+ * Extracts all Anthropic `cache_control` breakpoints across `system[]`, `tools[]`,
+ * and `messages[].content[]` blocks for native Anthropic passthrough and local
+ * vLLM/SGLang KV-prefix affinity routing.
+ */
+export function extractAnthropicCacheBreakpoints(
+  body: AnthropicMessagesRequest
+): AnthropicCacheBreakpoint[] {
+  const breakpoints: AnthropicCacheBreakpoint[] = [];
+  if (!body || typeof body !== 'object') return breakpoints;
+
+  if (Array.isArray(body.system)) {
+    body.system.forEach((block, idx) => {
+      if (block && typeof block === 'object' && block.cache_control?.type === 'ephemeral') {
+        breakpoints.push({
+          scope: 'system',
+          index: idx,
+          cacheControl: {
+            type: 'ephemeral',
+            ...(typeof block.cache_control.ttl === 'string' ? { ttl: block.cache_control.ttl } : {}),
+          },
+          prefixTextSample: typeof block.text === 'string' ? block.text.slice(0, 256) : undefined,
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(body.tools)) {
+    body.tools.forEach((tool, idx) => {
+      if (tool && typeof tool === 'object' && (tool as any).cache_control?.type === 'ephemeral') {
+        const cc = (tool as any).cache_control;
+        breakpoints.push({
+          scope: 'tools',
+          index: idx,
+          cacheControl: {
+            type: 'ephemeral',
+            ...(typeof cc.ttl === 'string' ? { ttl: cc.ttl } : {}),
+          },
+          prefixTextSample: tool.name,
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(body.messages)) {
+    body.messages.forEach((turn, msgIdx) => {
+      if (!turn || !Array.isArray(turn.content)) return;
+      turn.content.forEach((block) => {
+        if (block && typeof block === 'object' && block.cache_control?.type === 'ephemeral') {
+          breakpoints.push({
+            scope: 'messages',
+            index: msgIdx,
+            cacheControl: {
+              type: 'ephemeral',
+              ...(typeof block.cache_control.ttl === 'string' ? { ttl: block.cache_control.ttl } : {}),
+            },
+            prefixTextSample: typeof block.text === 'string' ? block.text.slice(0, 256) : undefined,
+          });
+        }
+      });
+    });
+  }
+
+  return breakpoints;
 }
 
 /**
@@ -309,7 +383,7 @@ export function anthropicToOpenAiChatRequest(body: AnthropicMessagesRequest): {
     }
   }
 
-  // 4. Thinking / extended reasoning metadata
+  // 4. Thinking / extended reasoning & prompt caching metadata
   const metadata: Record<string, any> = {
     ...(body.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
   };
@@ -317,6 +391,18 @@ export function anthropicToOpenAiChatRequest(body: AnthropicMessagesRequest): {
     const budget = Number(body.thinking.budget_tokens || 0);
     metadata.effort = budget >= 16000 ? 'high' : budget >= 4000 ? 'medium' : 'high';
     metadata.thinkingBudget = budget || 8192;
+  }
+
+  const cacheBreakpoints = extractAnthropicCacheBreakpoints(body);
+  if (cacheBreakpoints.length > 0) {
+    metadata._anthropicCacheBreakpoints = cacheBreakpoints;
+    if (Array.isArray(body.system)) metadata._anthropicNativeSystem = body.system;
+    if (Array.isArray(body.tools)) metadata._anthropicNativeTools = body.tools;
+    if (Array.isArray(body.messages)) metadata._anthropicNativeMessages = body.messages;
+    const prefixSample = cacheBreakpoints
+      .map((bp) => `${bp.scope}:${bp.index}:${bp.prefixTextSample || ''}`)
+      .join('|');
+    if (prefixSample) metadata._cachePrefixText = prefixSample;
   }
 
   return {
@@ -420,8 +506,18 @@ export function openAiToAnthropicMessageResponse(
     });
   }
 
-  const inputTokens = Number(openAiJson?.usage?.prompt_tokens ?? 0);
-  const outputTokens = Number(openAiJson?.usage?.completion_tokens ?? 0);
+  const inputTokens = Number(openAiJson?.usage?.prompt_tokens ?? openAiJson?.usage?.input_tokens ?? 0);
+  const outputTokens = Number(openAiJson?.usage?.completion_tokens ?? openAiJson?.usage?.output_tokens ?? 0);
+  const cacheReadInputTokens = Number(
+    openAiJson?.usage?.cache_read_input_tokens ??
+      openAiJson?.usage?.prompt_tokens_details?.cached_tokens ??
+      0
+  );
+  const cacheCreationInputTokens = Number(
+    openAiJson?.usage?.cache_creation_input_tokens ??
+      openAiJson?.usage?.prompt_tokens_details?.cache_creation_tokens ??
+      0
+  );
 
   return {
     id:
@@ -440,6 +536,12 @@ export function openAiToAnthropicMessageResponse(
     usage: {
       input_tokens: inputTokens,
       output_tokens: outputTokens,
+      ...(cacheCreationInputTokens > 0 || openAiJson?.usage?.cache_creation_input_tokens !== undefined
+        ? { cache_creation_input_tokens: cacheCreationInputTokens }
+        : {}),
+      ...(cacheReadInputTokens > 0 || openAiJson?.usage?.cache_read_input_tokens !== undefined
+        ? { cache_read_input_tokens: cacheReadInputTokens }
+        : {}),
     },
   };
 }
@@ -467,6 +569,8 @@ export function transformOpenAiSseToAnthropicSse(
   let activeBlockIndex = -1;
   let outputTokens = 0;
   let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
   let finishReason: string | null = null;
   let sawToolCalls = false;
   const openToolIndices = new Map<number, number>(); // OpenAI tool index -> Anthropic block index
@@ -502,7 +606,12 @@ export function transformOpenAiSseToAnthropicSse(
           content: [],
           stop_reason: null,
           stop_sequence: null,
-          usage: { input_tokens: inputTokens, output_tokens: 0 },
+          usage: {
+            input_tokens: inputTokens,
+            output_tokens: 0,
+            ...(cacheCreationTokens > 0 ? { cache_creation_input_tokens: cacheCreationTokens } : {}),
+            ...(cacheReadTokens > 0 ? { cache_read_input_tokens: cacheReadTokens } : {}),
+          },
         },
       })
     );
@@ -531,6 +640,18 @@ export function transformOpenAiSseToAnthropicSse(
             }
             if (typeof parsed.usage.completion_tokens === 'number') {
               outputTokens = parsed.usage.completion_tokens;
+            }
+            const readCached =
+              parsed.usage.cache_read_input_tokens ??
+              parsed.usage.prompt_tokens_details?.cached_tokens;
+            if (typeof readCached === 'number') {
+              cacheReadTokens = readCached;
+            }
+            const createCached =
+              parsed.usage.cache_creation_input_tokens ??
+              parsed.usage.prompt_tokens_details?.cache_creation_tokens;
+            if (typeof createCached === 'number') {
+              cacheCreationTokens = createCached;
             }
           }
 
@@ -675,7 +796,11 @@ export function transformOpenAiSseToAnthropicSse(
               stop_reason: mapFinishReasonToAnthropicStopReason(finishReason, sawToolCalls),
               stop_sequence: null,
             },
-            usage: { output_tokens: outputTokens },
+            usage: {
+              output_tokens: outputTokens,
+              ...(cacheCreationTokens > 0 ? { cache_creation_input_tokens: cacheCreationTokens } : {}),
+              ...(cacheReadTokens > 0 ? { cache_read_input_tokens: cacheReadTokens } : {}),
+            },
           })
         );
         controller.enqueue(formatSse('message_stop', { type: 'message_stop' }));

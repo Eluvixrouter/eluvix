@@ -16,6 +16,8 @@ export interface RequestLog {
   duration_ms: number;
   prompt_tokens?: number;
   completion_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   ttft_ms?: number;
   itl_ms?: number;
   kv_cache_kb?: number;
@@ -46,6 +48,8 @@ function initSchema(db: SqliteDb) {
       duration_ms INTEGER,
       prompt_tokens INTEGER DEFAULT 0,
       completion_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_write_tokens INTEGER DEFAULT 0,
       ttft_ms INTEGER,
       itl_ms REAL,
       kv_cache_kb REAL,
@@ -176,6 +180,109 @@ function initSchema(db: SqliteDb) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_distillation_pairs_user_score ON distillation_pairs(user_id, judge_score DESC, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS audit_events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      timestamp TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      actor_role TEXT NOT NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      details_json TEXT NOT NULL,
+      prev_hash TEXT NOT NULL,
+      entry_hash TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_events_seq ON audit_events(seq DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action, seq DESC);
+
+    CREATE TABLE IF NOT EXISTS batch_files (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      filename TEXT NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'batch',
+      bytes INTEGER NOT NULL DEFAULT 0,
+      content_jsonl TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_batch_files_user ON batch_files(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS batch_jobs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      input_file_id TEXT NOT NULL,
+      output_file_id TEXT,
+      error_file_id TEXT,
+      endpoint TEXT NOT NULL DEFAULT '/v1/chat/completions',
+      completion_window TEXT NOT NULL DEFAULT '24h',
+      status TEXT NOT NULL DEFAULT 'validating',
+      total_requests INTEGER NOT NULL DEFAULT 0,
+      completed_requests INTEGER NOT NULL DEFAULT 0,
+      failed_requests INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT,
+      created_at INTEGER NOT NULL,
+      in_progress_at INTEGER,
+      completed_at INTEGER,
+      failed_at INTEGER,
+      cancelled_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_batch_jobs_user ON batch_jobs(user_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS batch_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id TEXT NOT NULL,
+      custom_id TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'POST',
+      url TEXT NOT NULL DEFAULT '/v1/chat/completions',
+      body_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      response_status INTEGER,
+      response_body_json TEXT,
+      error_json TEXT,
+      completed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_batch_items_batch ON batch_items(batch_id, id ASC);
+
+    CREATE TABLE IF NOT EXISTS prompt_registry (
+      id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      description TEXT,
+      system_template TEXT NOT NULL,
+      variables_schema_json TEXT,
+      model_hint TEXT,
+      eval_score REAL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS prompt_aliases (
+      prompt_id TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT NOT NULL DEFAULT 'default',
+      PRIMARY KEY (prompt_id, alias)
+    );
+
+    CREATE TABLE IF NOT EXISTS alert_webhooks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'json',
+      secret TEXT,
+      events_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_status INTEGER,
+      last_triggered_at TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // Migration for databases created before chat_history carried a user
@@ -191,7 +298,7 @@ function initSchema(db: SqliteDb) {
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_chat_history_user_session ON chat_history(user_id, session_id, id)');
 
-  // Migration for request_logs: add ttft_ms, itl_ms, and kv_cache_kb columns for disaggregated serving telemetry
+  // Migration for request_logs: add ttft_ms, itl_ms, kv_cache_kb, and prompt-cache columns
   const reqCols = db.prepare('PRAGMA table_info(request_logs)').all() as Array<{ name: string }>;
   if (!reqCols.some(c => c.name === 'ttft_ms')) {
     db.exec('ALTER TABLE request_logs ADD COLUMN ttft_ms INTEGER');
@@ -207,6 +314,12 @@ function initSchema(db: SqliteDb) {
   }
   if (!reqCols.some(c => c.name === 'user_id')) {
     db.exec("ALTER TABLE request_logs ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+  }
+  if (!reqCols.some(c => c.name === 'cache_read_tokens')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER DEFAULT 0');
+  }
+  if (!reqCols.some(c => c.name === 'cache_write_tokens')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER DEFAULT 0');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_user ON request_logs(user_id, id DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp DESC)');
@@ -256,8 +369,8 @@ export function logRequest(log: RequestLog) {
   try {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, ttft_ms, itl_ms, kv_cache_kb, cost_usd, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, ttft_ms, itl_ms, kv_cache_kb, cost_usd, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -267,6 +380,8 @@ export function logRequest(log: RequestLog) {
       log.duration_ms,
       log.prompt_tokens || 0,
       log.completion_tokens || 0,
+      log.cache_read_tokens || 0,
+      log.cache_write_tokens || 0,
       log.ttft_ms ?? null,
       log.itl_ms ?? null,
       log.kv_cache_kb ?? null,

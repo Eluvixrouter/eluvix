@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     setupFiles: ['./src/test-setup.ts'],
+    exclude: ['**/node_modules/**', '**/e2e/**', '**/.next/**'],
   },
   resolve: {
     alias: {
@@ -24,6 +25,10 @@ export default defineConfig({
       '@eluvix/router-core/audio': path.resolve(__dirname, '../../packages/router-core/src/audio.ts'),
       '@eluvix/router-core/cascade': path.resolve(__dirname, '../../packages/router-core/src/cascade.ts'),
       '@eluvix/router-core/eval-types': path.resolve(__dirname, '../../packages/router-core/src/eval-types.ts'),
+      '@eluvix/router-core/structured-outputs': path.resolve(__dirname, '../../packages/router-core/src/structured-outputs.ts'),
+      '@eluvix/router-core/output-guard': path.resolve(__dirname, '../../packages/router-core/src/output-guard.ts'),
+      '@eluvix/router-core/otel-exporter': path.resolve(__dirname, '../../packages/router-core/src/otel-exporter.ts'),
+      '@eluvix/router-core/engine-signals': path.resolve(__dirname, '../../packages/router-core/src/engine-signals.ts'),
       '@eluvix/router-core': path.resolve(__dirname, '../../packages/router-core/src/index.ts'),
     },
   },

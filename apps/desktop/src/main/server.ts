@@ -42,6 +42,24 @@ import {
   handleEluvixMcpPayload,
   runEvalSuite,
   STARTER_GOLDEN_EVAL_SUITES,
+  listAuditEvents,
+  verifyAuditChain,
+  createBatchFile,
+  listBatchFiles,
+  getBatchFileContent,
+  createBatchJob,
+  executeBatchJob,
+  getBatchJob,
+  listBatchJobs,
+  cancelBatchJob,
+  listPromptVersions,
+  registerPromptVersion,
+  promotePromptAlias,
+  resolvePromptTemplate,
+  listAlertWebhooks,
+  registerAlertWebhook,
+  deleteAlertWebhook,
+  dispatchAlertWebhooks,
 } from '@eluvix/router-core';
 import EventEmitter from 'node:events';
 
@@ -1441,6 +1459,226 @@ export class DesktopRouterServer extends EventEmitter {
         });
         res.end(JSON.stringify(report));
         return;
+      }
+
+      // Cross-Encoder & Sovereign Reranker (`/v1/rerank` & `/api/v1/rerank`)
+      if ((pathname === '/v1/rerank' || pathname === '/api/v1/rerank') && req.method === 'POST') {
+        const bodyStr = await this.readBody(req);
+        const body = JSON.parse(bodyStr || '{}');
+        const rerankRes = await this.router.routeRerank(body, { userId: 'default' });
+        const outText = await rerankRes.text();
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        rerankRes.headers.forEach((v, k) => {
+          if (k.toLowerCase().startsWith('x-eluvix-')) headers[k] = v;
+        });
+        res.writeHead(rerankRes.status, headers);
+        res.end(outText);
+        return;
+      }
+
+      // Tamper-Evident Audit Log (`/v1/audit` & `/api/v1/audit`)
+      if ((pathname === '/v1/audit' || pathname === '/api/v1/audit') && req.method === 'GET') {
+        const verify =
+          url.searchParams.get('verify') === '1' ||
+          url.searchParams.get('verify') === 'true';
+        const limit = Math.max(
+          1,
+          Math.min(500, parseInt(url.searchParams.get('limit') || '100', 10) || 100)
+        );
+        const events = listAuditEvents({ limit });
+        const verification = verify ? verifyAuditChain() : undefined;
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          ...(verification ? { 'x-eluvix-audit-chain-valid': String(verification.valid) } : {}),
+        });
+        res.end(
+          JSON.stringify({
+            object: 'list',
+            data: events,
+            ...(verification ? { verification } : {}),
+          })
+        );
+        return;
+      }
+
+      // Versioned Prompt Registry (`/v1/prompts` & `/api/v1/prompts`)
+      if (pathname === '/v1/prompts' || pathname === '/api/v1/prompts') {
+        if (req.method === 'GET') {
+          const resolveRef = url.searchParams.get('resolve');
+          if (resolveRef) {
+            const resolved = resolvePromptTemplate(resolveRef);
+            if (!resolved) {
+              this.rejectJson(res, 404, `Prompt "${resolveRef}" not found.`, 'not_found_error');
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(resolved));
+            return;
+          }
+          const id = url.searchParams.get('id') || undefined;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: listPromptVersions(id) }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await this.readBody(req)) || '{}');
+          if (body?.action === 'promote') {
+            const aliasRec = promotePromptAlias({
+              promptId: String(body.promptId || body.id || ''),
+              alias: String(body.alias || 'production'),
+              version: Number(body.version || 1),
+              minEvalScore: typeof body.minEvalScore === 'number' ? body.minEvalScore : undefined,
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(aliasRec));
+            return;
+          }
+          const verRec = registerPromptVersion({
+            id: String(body.id || ''),
+            systemTemplate: String(body.systemTemplate || ''),
+            description: body.description,
+            variablesSchema: body.variablesSchema,
+            modelHint: body.modelHint,
+            evalScore: typeof body.evalScore === 'number' ? body.evalScore : undefined,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(verRec));
+          return;
+        }
+      }
+
+      // Batch Files (`/v1/files` & `/api/v1/files`)
+      if (pathname === '/v1/files' || pathname === '/api/v1/files') {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: listBatchFiles('default') }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const created = createBatchFile({
+            filename: body.filename || 'batch.jsonl',
+            purpose: body.purpose || 'batch',
+            contentJsonl: body.content || body.content_jsonl || '',
+            userId: 'default',
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(created));
+          return;
+        }
+      }
+
+      const fileContentMatch = /^\/(?:api\/)?v1\/files\/([^/]+)\/content$/.exec(pathname);
+      if (fileContentMatch && req.method === 'GET') {
+        const content = getBatchFileContent(fileContentMatch[1], 'default');
+        if (content === null) {
+          this.rejectJson(res, 404, 'File not found', 'not_found_error');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/jsonl; charset=utf-8' });
+        res.end(content);
+        return;
+      }
+
+      // Batch Jobs (`/v1/batches` & `/api/v1/batches`)
+      if (pathname === '/v1/batches' || pathname === '/api/v1/batches') {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: listBatchJobs('default') }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const job = createBatchJob({
+            input_file_id: String(body.input_file_id || ''),
+            endpoint: body.endpoint,
+            completion_window: body.completion_window,
+            metadata: body.metadata,
+            userId: 'default',
+          });
+          if (job.status === 'in_progress') {
+            if (body.await_completion === true) {
+              const done = await executeBatchJob(job.id, this.router, { userId: 'default' });
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(done || job));
+              return;
+            }
+            queueMicrotask(() => {
+              void executeBatchJob(job.id, this.router, { userId: 'default' }).catch(() => {});
+            });
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(job));
+          return;
+        }
+      }
+
+      const batchIdMatch = /^\/(?:api\/)?v1\/batches\/([^/]+)(?:\/cancel)?$/.exec(pathname);
+      if (batchIdMatch) {
+        const batchId = batchIdMatch[1];
+        if (req.method === 'GET') {
+          const job = getBatchJob(batchId, 'default');
+          if (!job) {
+            this.rejectJson(res, 404, 'Batch not found', 'not_found_error');
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(job));
+          return;
+        }
+        if (req.method === 'POST') {
+          const cancelled = cancelBatchJob(batchId, 'default');
+          if (!cancelled) {
+            this.rejectJson(res, 404, 'Batch not found', 'not_found_error');
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(cancelled));
+          return;
+        }
+      }
+
+      // Alerting Webhooks (`/v1/webhooks` & `/api/v1/webhooks`)
+      if (pathname === '/v1/webhooks' || pathname === '/api/v1/webhooks') {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: listAlertWebhooks('default') }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await this.readBody(req)) || '{}');
+          if (body?.action === 'test') {
+            const dispatched = await dispatchAlertWebhooks({
+              event: body.event || 'budget.threshold',
+              severity: body.severity || 'info',
+              summary: body.summary || 'Desktop test webhook',
+              data: body.data || {},
+              userId: 'default',
+            });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(dispatched));
+            return;
+          }
+          const created = registerAlertWebhook({
+            name: String(body.name || 'Alert Webhook'),
+            url: String(body.url || ''),
+            provider: body.provider,
+            secret: body.secret,
+            events: body.events,
+            enabled: body.enabled,
+            userId: 'default',
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(created));
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const id = url.searchParams.get('id') || '';
+          const deleted = deleteAlertWebhook(id, 'default');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ id, deleted }));
+          return;
+        }
       }
 
       // Not found

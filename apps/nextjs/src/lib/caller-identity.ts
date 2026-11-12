@@ -1,5 +1,9 @@
 import { getToken } from 'next-auth/jwt';
-import { resolveBearerToken, getOrCreateAuthConfig } from '@eluvix/router-core';
+import {
+  resolveBearerToken,
+  getOrCreateAuthConfig,
+  type ApiKeyScope,
+} from '@eluvix/router-core';
 
 /**
  * The memory store identity of the app's human operator. Eluvix is a
@@ -20,7 +24,16 @@ export type CallerIdentityResult =
       authSource?: 'ldap' | 'local';
       via: 'api-key' | 'admin' | 'session';
     }
-  | { ok: false; reason: 'invalid-key' | 'no-identity' };
+  | {
+      ok: false;
+      reason:
+        | 'invalid-key'
+        | 'expired'
+        | 'insufficient-scope'
+        | 'rate-limited'
+        | 'budget-exceeded'
+        | 'no-identity';
+    };
 
 async function secureCompare(provided: string, expected: string): Promise<boolean> {
   const enc = new TextEncoder();
@@ -98,11 +111,16 @@ export function extractApiTokenFromHeaders(req: Request): string | null {
  *   - the admin password (`Bearer` or `x-api-key`) → the admin's 'default' store;
  *   - the NextAuth session cookie → the proved user's store (ldap:<uid> or 'default').
  */
-export async function resolveCallerIdentity(req: Request): Promise<CallerIdentityResult> {
+export async function resolveCallerIdentity(
+  req: Request,
+  options?: { requiredScope?: ApiKeyScope }
+): Promise<CallerIdentityResult> {
   const token = extractApiTokenFromHeaders(req);
   if (token !== null) {
     if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
+      const resolved = resolveBearerToken(token, undefined, 'eluvix', {
+        requiredScope: options?.requiredScope,
+      });
       return resolved.valid
         ? {
             ok: true,
@@ -110,7 +128,7 @@ export async function resolveCallerIdentity(req: Request): Promise<CallerIdentit
             role: resolved.role || 'operator',
             via: 'api-key',
           }
-        : { ok: false, reason: 'invalid-key' };
+        : { ok: false, reason: resolved.reason || 'invalid-key' };
     }
     if (token.length > 0) {
       const resolved = resolveBearerToken(token);

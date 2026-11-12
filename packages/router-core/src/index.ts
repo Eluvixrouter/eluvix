@@ -182,6 +182,8 @@ export interface RouterConfig {
   modelGateway?: ModelGatewayConfig;
   promptGuard?: PromptGuardConfig & { action?: 'block' | 'strip' | 'divert' | 'warn' };
   privacyGuard?: PrivacyGuardConfig;
+  outputGuard?: OutputGuardConfig;
+  observability?: ObservabilityExporterConfig;
   memory?: MemoryConfig;
   knowledge?: KnowledgeBaseConfig;
   cache?: CacheConfig;
@@ -227,6 +229,40 @@ export * from './distillation.js';
 export * from './vram-arbiter.js';
 export * from './mcp-server.js';
 export * from './evals.js';
+export * from './structured-outputs.js';
+export * from './output-guard.js';
+export * from './otel-exporter.js';
+export * from './audit.js';
+export * from './secrets.js';
+export * from './engine-signals.js';
+export * from './batches.js';
+export * from './rerank.js';
+export * from './prompt-registry.js';
+export * from './webhooks.js';
+import { resolveUpstreamSecret } from './secrets.js';
+import {
+  getCachedEngineSignal,
+  computeEngineLoadScoreAdjustment,
+  formatEngineLoadHeader,
+} from './engine-signals.js';
+import { resolvePromptTemplate } from './prompt-registry.js';
+import { executeRerankRequest, type RerankRequest } from './rerank.js';
+import {
+  extractResponseFormatSpec,
+  supportsStructuredOutputs,
+  translateStructuredOutputFormat,
+  validateAgainstJsonSchema,
+} from './structured-outputs.js';
+import {
+  type OutputGuardConfig,
+  applyOutputGuardToChatCompletionJson,
+  createStreamingOutputDlpTransform,
+} from './output-guard.js';
+import {
+  type ObservabilityExporterConfig,
+  type OtelChildSpanInput,
+  OtlpTraceExporter,
+} from './otel-exporter.js';
 import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
 import { globalVramArbiter, type VramArbiterConfig } from './vram-arbiter.js';
 import {
@@ -354,6 +390,7 @@ export interface RouteTraceStep {
     | 'modality-filter'
     | 'vision-filter'
     | 'tools-filter'
+    | 'structured-outputs-filter'
     | 'budget-guardrail'
     | 'circuit-breaker'
     | 'fallback-chain'
@@ -469,6 +506,14 @@ export interface UpstreamConfig {
   priority: number;
   models: string[];
   costPer1kTokens?: number;
+  /**
+   * Prompt cache read discount multiplier (default `0.1` = 90% discount on cached input tokens).
+   */
+  cacheReadMultiplier?: number;
+  /**
+   * Prompt cache creation/write multiplier (default `1.25` on Anthropic cache writes).
+   */
+  cacheWriteMultiplier?: number;
   tier?: string;
   tierName?: string;
   maxComplexityScore?: number;
@@ -493,84 +538,78 @@ export interface UpstreamConfig {
   ramalama?: RamalamaConfig;
   comfyui?: ComfyUIConfig;
   audio?: AudioVoiceConfig;
+  supportsStructuredOutputs?: boolean;
 }
 
-/**
- * Resolves the effective attention kernel backend for an upstream from either
- * `upstream.attentionKernel` or `upstream.capabilities`.
- */
-export function resolveEffectiveAttentionBackend(
-  upstream: UpstreamConfig
-): AttentionKernelBackend | null {
-  if (!upstream) return null;
-  const ak = upstream.attentionKernel;
-  if (ak && ak.enabled !== false && ak.backend) {
-    return ak.backend;
-  }
-  const caps = upstream.capabilities || [];
-  if (caps.includes('blackwell-tmem') || ak?.blackwellTmem || ak?.blackwellTmemEnabled) {
-    return 'blackwell-tcgen05-tmem';
-  }
-  if (
-    caps.includes('fp8-hadamard') ||
-    ak?.fp8HadamardSmoothing ||
-    ak?.fp8HadamardIncoherent ||
-    ak?.fp8BlockHad
-  ) {
-    return 'fa3-fp8-hadamard';
-  }
-  if (caps.includes('fa3-warp-specialized') || (ak && ak.enabled !== false && ak.warpSpecialized === true)) {
-    return 'fa3-wgmma-tma';
-  }
-  return null;
-}
-
-/**
- * Evaluates whether an upstream is equipped with a Warp-Specialized FlashAttention-3
- * (`WGMMA` + `TMA` + `mbarrier` Ping-Pong) or Blackwell `tcgen05.mma` + `256 KB TMEM` kernel.
- */
-export function isWarpSpecializedAttentionUpstream(upstream: UpstreamConfig): boolean {
-  const b = resolveEffectiveAttentionBackend(upstream);
-  return (
-    b === 'fa3-wgmma-tma' ||
-    b === 'fa3-fp8-hadamard' ||
-    b === 'blackwell-tcgen05-tmem'
-  );
-}
-
-/**
- * Evaluates whether an upstream supports FP8 Ping-Pong scheduling with Walsh-Hadamard
- * incoherent processing (`fa3-fp8-hadamard`) or Blackwell `tcgen05.mma` + `256 KB TMEM`.
- */
-export function isFp8PingPongAttentionUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream || isLegacySynchronousAttentionUpstream(upstream)) return false;
-  const ak = upstream.attentionKernel;
-  if (ak && ak.enabled !== false && ak.pingPongSchedule === false) return false;
-  const b = resolveEffectiveAttentionBackend(upstream);
-  if (b === 'blackwell-tcgen05-tmem' || b === 'fa3-fp8-hadamard') return true;
-  const caps = upstream.capabilities || [];
-  if (caps.includes('blackwell-tmem') || caps.includes('fp8-hadamard')) return true;
-  if (
-    ak &&
-    ak.enabled !== false &&
-    ak.pingPongSchedule !== false &&
-    (ak.fp8HadamardSmoothing || ak.fp8HadamardIncoherent || ak.fp8BlockHad)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Evaluates whether an upstream is explicitly configured with a legacy synchronous
- * attention kernel (`pytorch-sdpa` or `fa2-cp-async`) that suffers from the 64:1 SFU softmax stall.
- */
-export function isLegacySynchronousAttentionUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  const ak = upstream.attentionKernel;
-  if (!ak || ak.enabled === false) return false;
-  return ak.backend === 'pytorch-sdpa' || ak.backend === 'fa2-cp-async' || ak.warpSpecialized === false;
-}
+export {
+  isCloudMetadataEndpoint,
+  isLocalUpstream,
+  getEffectiveCostPer1kTokens,
+  estimateUpstreamRequestCostUsd,
+  isVisionCapableUpstream,
+  type CacheTokenUsage,
+} from './cost.js';
+import {
+  isLocalUpstream,
+  getEffectiveCostPer1kTokens,
+  estimateUpstreamRequestCostUsd,
+  isVisionCapableUpstream,
+} from './cost.js';
+export {
+  resolveEffectiveAttentionBackend,
+  isWarpSpecializedAttentionUpstream,
+  isFp8PingPongAttentionUpstream,
+  isLegacySynchronousAttentionUpstream,
+  isNeuroSymbolicCrsUpstream,
+  isCollisionFreeRailFabricUpstream,
+  isLegacyEcmpFabricUpstream,
+  isLosslessSub4BitUpstream,
+  isNaiveSub4BitUpstream,
+  isConfidentialEnclaveUpstream,
+} from './routing/candidates.js';
+import {
+  resolveEffectiveAttentionBackend,
+  isWarpSpecializedAttentionUpstream,
+  isFp8PingPongAttentionUpstream,
+  isLegacySynchronousAttentionUpstream,
+  isNeuroSymbolicCrsUpstream,
+  isCollisionFreeRailFabricUpstream,
+  isLegacyEcmpFabricUpstream,
+  isLosslessSub4BitUpstream,
+  isNaiveSub4BitUpstream,
+  isConfidentialEnclaveUpstream,
+} from './routing/candidates.js';
+export {
+  type PromptComplexityAssessment,
+  type RouterDeps,
+  computeKvPrefixHash,
+  estimatePromptComplexity,
+} from './routing/strategies.js';
+import {
+  type PromptComplexityAssessment,
+  type RouterDeps,
+  computeKvPrefixHash,
+  estimatePromptComplexity,
+} from './routing/strategies.js';
+export {
+  type DiscoveredModel,
+  type UpstreamDiscoveryResult,
+  detectUpstreamModelDetails,
+  detectUpstreamModels,
+  parseModelDetails,
+  isAntigravitySupportedModel,
+  buildCliPrompt,
+} from './discovery.js';
+import {
+  detectUpstreamModels,
+  isAntigravitySupportedModel,
+  buildCliPrompt,
+} from './discovery.js';
+import {
+  executeEmbeddingsForward,
+  executeAudioTranscriptionForward,
+  executeAudioSpeechForward,
+} from './forwarders/embeddings-audio.js';
 
 function extractMessageText(content: string | MessageContentPart[] | undefined): string {
   if (typeof content === 'string') return content;
@@ -581,448 +620,6 @@ function extractMessageText(content: string | MessageContentPart[] | undefined):
       .join('\n');
   }
   return '';
-}
-
-/**
- * Evaluates whether an upstream is equipped with Neuro-Symbolic CRS verification
- * (Backward Program Slicing, SymCC/Z3 Concolic Verification, or ASan Shadow Triage).
- */
-export function isNeuroSymbolicCrsUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (upstream.capabilities?.includes('neuro-symbolic-crs')) return true;
-  const c = upstream.crs;
-  if (!c || c.enabled === false) return false;
-  return true;
-}
-
-/**
- * Evaluates whether an upstream is deployed on a collision-free Rail-Optimized
- * Leaf-Spine Clos fabric (NCCL PxN, SRv6 uSID deterministic spine pinning, or
- * Switch DLB packet spraying with ConnectX-7/8 OOO-DDP).
- */
-export function isCollisionFreeRailFabricUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (upstream.capabilities?.includes('rail-srv6-dlb')) return true;
-  const f = upstream.fabric;
-  if (!f || f.enabled === false) return false;
-  return (
-    f.topology === 'rail-dlb-oooddp' ||
-    f.topology === 'rail-srv6-usid' ||
-    (f.topology === 'rail-pxn-ecmp' && f.ncclPxn !== false)
-  );
-}
-
-/**
- * Evaluates whether an upstream is deployed on a legacy Top-of-Rack (ToR) static
- * 5-tuple ECMP fabric subject to 99.76% spine hash collision probability and PFC pause storms.
- */
-export function isLegacyEcmpFabricUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  const f = upstream.fabric;
-  if (!f || f.enabled === false) return false;
-  return f.topology === 'tor-static-ecmp';
-}
-
-/**
- * Evaluates whether an upstream uses lossless sub-4-bit microscaling quantization
- * (NVIDIA Blackwell NVFP4 or OCP MXFP4) paired with Walsh-Hadamard outlier rotation
- * (QuaRot / SpinQuant) or SVDQuant low-rank absorption, preserving 99.6% reasoning accuracy.
- */
-export function isLosslessSub4BitUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (upstream.capabilities?.includes('nvfp4-hadamard')) return true;
-  const q = upstream.quantization;
-  if (!q || q.enabled === false) return false;
-  const isMicroscaledFp4 = q.format === 'nvfp4' || q.format === 'mxfp4';
-  const hasOutlierRotation =
-    q.outlierMitigation === 'hadamard-quarot' ||
-    q.outlierMitigation === 'spinquant' ||
-    q.outlierMitigation === 'svdquant';
-  return isMicroscaledFp4 && hasOutlierRotation;
-}
-
-/**
- * Evaluates whether an upstream is running naive / weight-only 4-bit quantization
- * (INT4-AWQ, INT4-GPTQ, or unrotated MXFP4/NVFP4 without Walsh-Hadamard outlier smoothing)
- * which suffers -5.2% to -7.5% accuracy degradation on reasoning/coding workloads due to
- * emergent SiLU_and_Mul activation spikes.
- */
-export function isNaiveSub4BitUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  const q = upstream.quantization;
-  if (!q || q.enabled === false) return false;
-  if (q.format === 'int4_awq' || q.format === 'int4_gptq') {
-    return !q.outlierMitigation || q.outlierMitigation === 'none';
-  }
-  if (q.format === 'mxfp4' || q.format === 'nvfp4') {
-    return !q.outlierMitigation || q.outlierMitigation === 'none';
-  }
-  return false;
-}
-
-/**
- * Evaluates whether an upstream is running inside an attested Confidential Computing
- * enclave (AMD SEV-SNP / Intel TDX) or dual CPU+GPU TEE (NVIDIA H100 CC-On / Blackwell TEE-I/O).
- */
-export function isConfidentialEnclaveUpstream(
-  upstream: UpstreamConfig,
-  mode: 'require-tee' | 'require-dual-attestation' = 'require-tee'
-): boolean {
-  if (!upstream) return false;
-  if (upstream.capabilities?.includes('confidential-dual-attestation')) return true;
-  if (mode === 'require-tee' && upstream.capabilities?.includes('confidential-tee')) return true;
-  const cc = upstream.confidential;
-  if (!cc?.enabled) return false;
-
-  const arch = cc.architecture;
-  const cpuTee =
-    cc.cpuTee ||
-    (arch === 'sev-snp-h100-cc'
-      ? 'amd-sev-snp'
-      : arch === 'tdx-b200-tee-io'
-      ? 'intel-tdx'
-      : arch === 'sev-es-passthrough'
-      ? 'amd-sev-es'
-      : 'none');
-  const gpuTee =
-    cc.gpuTee ||
-    (arch === 'sev-snp-h100-cc'
-      ? 'h100-cc-on'
-      : arch === 'tdx-b200-tee-io'
-      ? 'b200-tee-io'
-      : 'none');
-
-  // Legacy SEV-ES without RMP or standard-kvm fails strict integrity attestation
-  const validCpu = cpuTee === 'amd-sev-snp' || cpuTee === 'intel-tdx';
-  if (!validCpu) return false;
-  if (cc.vmpl !== undefined && cc.vmpl !== 0) return false;
-  if (cc.restrictedInjection === false) return false;
-
-  if (mode === 'require-dual-attestation') {
-    const validGpu = gpuTee === 'h100-cc-on' || gpuTee === 'h100-ppcie' || gpuTee === 'b200-tee-io';
-    if (!validGpu) return false;
-    if (cc.spdmAttested === false) return false;
-  }
-
-  return true;
-}
-
-/**
- * Whether serving a prompt through this upstream keeps the prompt on the
- * user's own machine / LAN. Antigravity and other cli:// agent wrappers are
- * NOT local: the CLI is a front-end for an external service, so the prompt
- * leaves the machine even though the process runs locally.
- * For 'harness' upstreams, an explicit `harness.providerIsLocal` decides.
- * When the flag is absent, locality is derived from the endpoint with the
- * same rule as every other wrapper: cli:// and acp:// endpoints spawn a
- * local process that fronts an external service, so they are NOT local;
- * http(s) endpoints are judged by host like any other upstream. (The flag
- * used to default to local — including a blanket shortcut for ACP — which
- * let the egress policy and the memory-egress guard treat remote or
- * cloud-backed harnesses as on-machine.)
- */
-export function isCloudMetadataEndpoint(endpoint: string): boolean {
-  try {
-    let host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
-    if (host.startsWith('::ffff:')) {
-      const mapped = host.slice(7);
-      const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-      if (hexMatch) {
-        const high = parseInt(hexMatch[1], 16);
-        const low = parseInt(hexMatch[2], 16);
-        host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
-      } else {
-        host = mapped;
-      }
-    }
-    return (
-      host.startsWith('169.254.') ||
-      host === '169.254.169.254' ||
-      host === 'fd00:ec2::254' ||
-      host.startsWith('fe80:') ||
-      host.startsWith('64:ff9b::')
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function isLocalUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (isCloudMetadataEndpoint(upstream.endpoint || '')) return false;
-  if (upstream.type === 'antigravity') return false;
-  if (upstream.type === 'harness' && upstream.harness?.providerIsLocal !== undefined) {
-    return upstream.harness.providerIsLocal;
-  }
-  const endpoint = (upstream.endpoint || '').trim().toLowerCase();
-  if (
-    upstream.harness?.embedded === true ||
-    endpoint.startsWith('trueforge://') ||
-    endpoint.startsWith('inprocess://') ||
-    endpoint.startsWith('opencode://') ||
-    endpoint.startsWith('opencode-eluvix://') ||
-    endpoint.startsWith('aider://') ||
-    endpoint.startsWith('swe-agent://') ||
-    endpoint.startsWith('cline://') ||
-    endpoint.startsWith('plandex://')
-  ) {
-    return true;
-  }
-  if (endpoint.startsWith('cli://')) return false;
-  if (endpoint.startsWith('acp://')) {
-    // Process-wrapper endpoint (see above): a harness with no explicit
-    // providerIsLocal declaration is not local. Non-harness upstreams keep
-    // the legacy behavior.
-    return upstream.type === 'harness' ? false : upstream.harness?.providerIsLocal !== false;
-  }
-  let host: string;
-  try {
-    host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
-  } catch {
-    return false;
-  }
-  if (host.startsWith('::ffff:')) {
-    const mapped = host.slice(7);
-    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-    if (hexMatch) {
-      const high = parseInt(hexMatch[1], 16);
-      const low = parseInt(hexMatch[2], 16);
-      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
-    } else {
-      host = mapped;
-    }
-  }
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-  if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
-  return false;
-}
-
-/**
- * Computes the effective USD cost per 1,000 tokens for an upstream.
- * Explicit `upstream.costPer1kTokens` always takes precedence; otherwise external
- * cloud APIs (`openai-compatible`, `billama`, `anthropic`) default to `$0.005/1K`
- * while local engines and subscription CLI agents default to `$0.00`.
- */
-export function getEffectiveCostPer1kTokens(upstream: UpstreamConfig): number {
-  if (typeof upstream.costPer1kTokens === 'number' && Number.isFinite(upstream.costPer1kTokens)) {
-    return Math.max(0, upstream.costPer1kTokens);
-  }
-  if (
-    !isLocalUpstream(upstream) &&
-    (upstream.type === 'openai-compatible' || upstream.type === 'billama' || upstream.type === 'anthropic')
-  ) {
-    return 0.005;
-  }
-  return 0;
-}
-
-/**
- * Estimates total USD spend for a completed request on `upstream`.
- */
-export function estimateUpstreamRequestCostUsd(
-  upstream: UpstreamConfig,
-  promptTokens: number,
-  completionTokens: number
-): number {
-  const rate = getEffectiveCostPer1kTokens(upstream);
-  if (rate <= 0) return 0;
-  const totalTokens = Math.max(0, (promptTokens || 0) + (completionTokens || 0));
-  return Number(((totalTokens / 1000) * rate).toFixed(6));
-}
-
-/**
- * Whether an upstream can serve requests that contain images. An explicit
- * 'vision' capability wins; otherwise capability is inferred from the
- * provider type and the served model names — the same style of inference
- * routing already applies to tool calling. Inference matters because most
- * configurations declare no capabilities at all: previously every image
- * request dead-ended with "no upstream with vision capability" even when
- * a multimodal provider (OpenAI-compatible, Anthropic, Billama,
- * Antigravity, or a local vision model like llava / *-vl / omni) was
- * configured and reachable.
- */
-export function isVisionCapableUpstream(upstream: UpstreamConfig): boolean {
-  if (!upstream) return false;
-  if (isDedicatedAudioUpstreamType(upstream.type)) return false;
-  if (upstream.type === 'comfyui') {
-    return Boolean(upstream.capabilities?.includes('vision-input'));
-  }
-  if (upstream.capabilities?.includes('vision')) return true;
-  if (
-    upstream.type === 'openai-compatible' ||
-    upstream.type === 'anthropic' ||
-    upstream.type === 'antigravity' ||
-    upstream.type === 'billama'
-  ) {
-    return true;
-  }
-  return (
-    Array.isArray(upstream.models) &&
-    upstream.models.some(m =>
-      /gpt-4o|gpt-4-turbo|claude|gemini|llava|-vl\b|vision|omni|pixtral|gemma-?3|minicpm-v|internvl|molmo/i.test(m)
-    )
-  );
-}
-
-export interface PromptComplexityAssessment {
-  score: 1 | 2 | 3 | 4;
-  label: 'simple' | 'moderate' | 'heavy' | 'frontier';
-  tokenEstimate: number;
-  features: string[];
-  hasImages?: boolean;
-  hasTools?: boolean;
-}
-
-/**
- * Computes a deterministic 32-bit hex hash over static system prompts,
- * knowledge blocks, or initial message turns to support KV-cache prefix affinity.
- */
-export function computeKvPrefixHash(messages: ChatMessage[], maxChars = 2048): string {
-  if (!messages || messages.length === 0) return 'empty';
-  let prefix = '';
-  const hasSystem = messages.some(m => m.role === 'system');
-
-  if (hasSystem) {
-    for (const m of messages) {
-      if (m.role === 'system') {
-        const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-        prefix += `[${m.role}]${c}\n`;
-        if (prefix.length >= maxChars) break;
-      }
-    }
-  } else {
-    // No explicit system prompt: hash initial context turn
-    for (const m of messages) {
-      const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      prefix += `[${m.role}]${c}\n`;
-      if (prefix.length >= 512) break;
-    }
-  }
-
-  if (!prefix) return 'empty';
-
-  let h = 0x811c9dc5;
-  for (let i = 0; i < prefix.length; i++) {
-    h ^= prefix.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
-export function estimatePromptComplexity(
-  messages: ChatMessage[],
-  customThresholds?: {
-    moderate?: number;
-    heavy?: number;
-    frontier?: number;
-    codeEscalation?: boolean;
-    hasTools?: boolean;
-    toolsCount?: number;
-  }
-): PromptComplexityAssessment {
-  if (!messages || messages.length === 0) {
-    const hasTools = customThresholds?.hasTools ?? false;
-    return {
-      score: hasTools ? 3 : 1,
-      label: hasTools ? 'heavy' : 'simple',
-      tokenEstimate: 0,
-      features: hasTools ? [`tools (${customThresholds?.toolsCount ?? 1})`] : ['empty'],
-      hasImages: false,
-      hasTools
-    };
-  }
-
-  let hasImages = false;
-
-  const textContent = messages.map(m => {
-    if (typeof m.content === 'string') {
-      return m.content;
-    } else if (Array.isArray(m.content)) {
-      let combined = '';
-      for (const part of m.content) {
-        if (part.type === 'text') combined += part.text + '\n';
-        if (part.type === 'image_url') hasImages = true;
-      }
-      return combined;
-    }
-    return '';
-  }).join('\n');
-  const totalChars = textContent.length;
-  const tokenEstimate = Math.ceil(totalChars / 4);
-  const features: string[] = [];
-
-  // 1. Code blocks & programming syntax markers
-  const codeBlockRegex = /```[\s\S]*?```/g;
-  const codeMatches = textContent.match(codeBlockRegex);
-  const codeBlockMatches = codeMatches ? codeMatches.length : 0;
-  if (codeBlockMatches > 0) {
-    features.push(`${codeBlockMatches} code block(s)`);
-  }
-
-  // 2. Structured schemas (JSON, XML/HTML, structured tables)
-  const isStructured = /(\{|\[)\s*"[^"]+"\s*:/g.test(textContent) ||
-    /<[a-zA-Z0-9_-]+>[\s\S]*?<\/[a-zA-Z0-9_-]+>/g.test(textContent);
-  if (isStructured) {
-    features.push('structured schema (json/xml)');
-  }
-
-  // 3. Complex reasoning & analytical markers
-  const reasoningRegex = /\b(step-by-step|step by step|prove|proof|derive|differential|algorithmic|architecture|refactor|benchmark|root cause|diagnose|formal verification|complexity analysis|edge case|concurrency|mutex|deadlock|quantum|theorem|calculus|linear algebra|optimize|optimization)\b/gi;
-  const reasoningMatches = textContent.match(reasoningRegex);
-  const reasoningCount = reasoningMatches ? reasoningMatches.length : 0;
-  if (reasoningCount > 0) {
-    features.push(`reasoning keywords (${reasoningCount})`);
-  }
-
-  if (hasImages) {
-    features.push('image payload');
-  }
-
-  const hasTools = customThresholds?.hasTools ?? false;
-  if (hasTools) {
-    features.push(`tools (${customThresholds?.toolsCount ?? 1})`);
-  }
-
-  const frontierLimit = customThresholds?.frontier ?? 6000;
-  const heavyLimit = customThresholds?.heavy ?? 1500;
-  const moderateLimit = customThresholds?.moderate ?? 300;
-  const codeEscalate = customThresholds?.codeEscalation ?? true;
-
-  let score: 1 | 2 | 3 | 4 = 1;
-  let label: 'simple' | 'moderate' | 'heavy' | 'frontier' = 'simple';
-
-  // Level 4: Frontier (Massive token context > frontierLimit tokens or extreme code/reasoning requirements)
-  if (tokenEstimate > frontierLimit || hasImages || (tokenEstimate > 2500 && (codeBlockMatches >= 3 || reasoningCount >= 4))) {
-    score = 4;
-    label = 'frontier';
-  }
-  // Level 3: Heavy / Coding / In-depth reasoning / Tool-calling
-  else if (tokenEstimate > heavyLimit || (codeEscalate && codeBlockMatches >= 1) || reasoningCount >= 2 || isStructured || hasTools) {
-    score = 3;
-    label = 'heavy';
-  }
-  // Level 2: Moderate
-  else if (tokenEstimate > moderateLimit || reasoningCount >= 1 || messages.length > 5) {
-    score = 2;
-    label = 'moderate';
-  }
-  // Level 1: Simple
-  else {
-    score = 1;
-    label = 'simple';
-  }
-
-  return {
-    score,
-    label,
-    tokenEstimate,
-    features,
-    hasImages,
-    hasTools
-  };
 }
 
 export type MessageContentPart = 
@@ -1075,288 +672,6 @@ export interface ChatRequest {
  */
 export type ResolvedChatRequest = ChatRequest & { model: string };
 
-export interface DiscoveredModel {
-  id: string;
-  name?: string;
-  size?: number | string;
-  recipe?: string;
-  ownedBy?: string;
-  labels?: string[];
-  contextLength?: number;
-}
-
-export interface UpstreamDiscoveryResult {
-  models: string[];
-  details: DiscoveredModel[];
-}
-
-export async function detectUpstreamModelDetails(upstream: UpstreamConfig, timeoutMs = 5000): Promise<UpstreamDiscoveryResult> {
-  if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-    // Model discovery spawns the CLI (via discoverAntigravityModels), so
-    // the config-supplied path goes through the same executable gate as
-    // forwarding — previously this path spawned it with no check at all
-    // (audit M-2). An unresolvable/denied path degrades to the cached /
-    // default catalog, exactly like a failed probe did before.
-    const cliPath = tryResolveCliExecutable(upstream.antigravity?.cliPath || 'agy', {
-      allowedBasenames: ANTIGRAVITY_CLI_BINARIES
-    });
-    const discovered = cliPath
-      ? await discoverAntigravityModels(cliPath)
-      : { models: getCachedAntigravityModels(), cachedAt: new Date().toISOString(), source: 'default' as const };
-    const models = [...discovered.models.map(m => m.baseId), '*'];
-    const details: DiscoveredModel[] = discovered.models.map(m => ({
-      id: m.baseId,
-      name: m.displayName,
-      recipe: 'antigravity-cli',
-      ownedBy: 'antigravity',
-      labels: [m.tier, ...m.efforts.map(e => `effort:${e}`)],
-      contextLength: m.contextLimit
-    }));
-    return { models, details };
-  }
-
-  if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
-    const kind = upstream.harness?.kind || (upstream.endpoint.startsWith('acp://') ? 'acp' : 'trueforge');
-    if (kind === 'trueforge' && /^https?:\/\//i.test(upstream.endpoint)) {
-      const base = upstream.endpoint.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(`${base}/v1/models`, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          signal: controller.signal
-        });
-        clearTimeout(timer);
-        if (res.ok) {
-          const data = await res.json();
-          const parsed = parseModelDetails(data);
-          if (parsed.models.length > 0) {
-            return parsed;
-          }
-        }
-      } catch {
-        // Fall through to static harness models when container is offline
-      }
-    }
-    if (kind) {
-      const configured = Array.isArray(upstream.models) && upstream.models.length > 0
-        ? upstream.models
-        : [`harness/${kind}`, `${kind}/default`];
-      const details: DiscoveredModel[] = configured
-        .filter(m => m !== '*')
-        .map(id => ({
-          id,
-          name: id,
-          recipe: `harness:${kind}`,
-          ownedBy: kind
-        }));
-      return { models: configured, details };
-    }
-  }
-
-  const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
-  const candidateUrls: string[] = [];
-  const baseWithoutV1 = trimmed.replace(/\/v1$/, '');
-
-  // ComfyUI local media engine (:8188) exposes /models/checkpoints, /models/diffusion_models, /models/unet, and /object_info/CheckpointLoaderSimple
-  if (upstream.type === 'comfyui') {
-    const comfyUrls = [
-      `${baseWithoutV1}/models/checkpoints`,
-      `${baseWithoutV1}/models/diffusion_models`,
-      `${baseWithoutV1}/models/unet`,
-      `${baseWithoutV1}/object_info/CheckpointLoaderSimple`
-    ];
-    const aggregatedModels = new Set<string>();
-    const aggregatedDetails: DiscoveredModel[] = [];
-    for (const url of comfyUrls) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          signal: controller.signal
-        });
-        clearTimeout(timer);
-        if (!res.ok) continue;
-        const data = await res.json();
-        const folder = url.includes('diffusion_models')
-          ? 'diffusion_models'
-          : url.includes('unet')
-            ? 'unet'
-            : 'checkpoints';
-        const parsed = parseComfyModelsResponse(data, folder);
-        for (const m of parsed.models) {
-          if (!aggregatedModels.has(m)) {
-            aggregatedModels.add(m);
-            aggregatedDetails.push({
-              id: m,
-              name: m,
-              ownedBy: 'comfyui',
-              recipe: folder === 'checkpoints' ? 'comfyui:checkpoint' : `comfyui:${folder}`
-            });
-          }
-        }
-      } catch {
-        // Continue probing remaining ComfyUI endpoints
-      }
-    }
-    if (aggregatedModels.size > 0) {
-      return { models: Array.from(aggregatedModels), details: aggregatedDetails };
-    }
-  }
-
-  // Determine candidate URLs based on type and endpoint structure
-  if (upstream.type === 'ollama') {
-    candidateUrls.push(
-      `${baseWithoutV1}/v1/models`,
-      `${baseWithoutV1}/api/tags`,
-      `${baseWithoutV1}/models`
-    );
-  } else if (upstream.type === 'lemonade' || upstream.type === 'ramalama') {
-    // Lemonade router (:13305) & RamaLama OCI server (:8080) support /v1/models, /models, /api/models, /api/tags
-    candidateUrls.push(
-      `${baseWithoutV1}/v1/models`,
-      `${baseWithoutV1}/models`,
-      `${baseWithoutV1}/api/models`,
-      `${baseWithoutV1}/api/tags`
-    );
-  } else if (trimmed.endsWith('/v1')) {
-    candidateUrls.push(
-      `${trimmed}/models`,
-      `${baseWithoutV1}/models`,
-      `${baseWithoutV1}/api/tags`
-    );
-  } else {
-    candidateUrls.push(
-      `${trimmed}/v1/models`,
-      `${trimmed}/models`,
-      `${trimmed}/api/tags`,
-      `${trimmed}/api/models`
-    );
-  }
-
-  const headers: Record<string, string> = {
-    'Accept': 'application/json'
-  };
-  if (upstream.apiKey) {
-    headers['Authorization'] = `Bearer ${upstream.apiKey}`;
-    if (upstream.type === 'anthropic' || upstream.endpoint.includes('anthropic.com')) {
-      headers['x-api-key'] = upstream.apiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    }
-  }
-
-  for (const url of candidateUrls) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-      const res = await fetch(url, {
-        method: 'GET',
-        headers,
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-
-      if (!res.ok) continue;
-
-      const data = await res.json();
-      const result = parseModelDetails(data);
-      if (result.models.length > 0) {
-        return result;
-      }
-    } catch {
-      // Continue to next candidate endpoint
-    }
-  }
-
-  return { models: [], details: [] };
-}
-
-export async function detectUpstreamModels(upstream: UpstreamConfig, timeoutMs = 5000): Promise<string[]> {
-  const result = await detectUpstreamModelDetails(upstream, timeoutMs);
-  return result.models;
-}
-
-function parseModelDetails(data: any): UpstreamDiscoveryResult {
-  if (!data || typeof data !== 'object') return { models: [], details: [] };
-
-  const details: DiscoveredModel[] = [];
-  const modelSet = new Set<string>();
-
-  // Standard OpenAI format: { data: [{ id: "..." }] }
-  if (Array.isArray(data.data)) {
-    data.data.forEach((item: any) => {
-      const id = typeof item === 'string' ? item : item?.id || item?.name || item?.model;
-      if (typeof id === 'string' && id.length > 0 && !modelSet.has(id)) {
-        modelSet.add(id);
-        details.push({
-          id,
-          name: item?.name || id,
-          size: typeof item?.size === 'number' ? `${item.size} GB` : item?.size,
-          recipe: item?.recipe,
-          ownedBy: item?.owned_by,
-          labels: Array.isArray(item?.labels) ? item.labels : undefined,
-          contextLength: item?.context_length || item?.max_context_window
-        });
-      }
-    });
-  }
-
-  // Ollama format: { models: [{ name: "..." }] }
-  if (Array.isArray(data.models)) {
-    data.models.forEach((item: any) => {
-      const id = typeof item === 'string' ? item : item?.name || item?.id || item?.model;
-      if (typeof id === 'string' && id.length > 0 && !modelSet.has(id)) {
-        modelSet.add(id);
-        const labels: string[] = [];
-        if (item?.details?.parameter_size) labels.push(item.details.parameter_size);
-        if (item?.details?.quantization_level) labels.push(item.details.quantization_level);
-        if (item?.details?.family) labels.push(item.details.family);
-        
-        details.push({
-          id,
-          name: id,
-          size: typeof item?.size === 'number' ? `${(item.size / (1024 * 1024 * 1024)).toFixed(1)} GB` : undefined,
-          recipe: 'ollama',
-          labels: labels.length > 0 ? labels : undefined
-        });
-      }
-    });
-  }
-
-  // Generic router / gateway fields fallback
-  for (const key of ['available_models', 'items', 'routes', 'nodes']) {
-    if (Array.isArray(data[key])) {
-      data[key].forEach((item: any) => {
-        const id = typeof item === 'string' ? item : item?.id || item?.name || item?.model;
-        if (typeof id === 'string' && id.length > 0 && !modelSet.has(id)) {
-          modelSet.add(id);
-          details.push({ id, name: id });
-        }
-      });
-    }
-  }
-
-  // Plain array: ["model1", "model2"]
-  if (Array.isArray(data)) {
-    data.forEach((item: any) => {
-      const id = typeof item === 'string' ? item : item?.id || item?.name || item?.model;
-      if (typeof id === 'string' && id.length > 0 && !modelSet.has(id)) {
-        modelSet.add(id);
-        details.push({ id, name: id });
-      }
-    });
-  }
-
-  return {
-    models: Array.from(modelSet),
-    details
-  };
-}
-
 /**
  * Upper bound on the in-memory response cache. Entries hold full response
  * bodies, so without a cap the map grows for the life of the process.
@@ -1385,11 +700,13 @@ function stableStringify(value: any): string {
 
 export class Eluvix {
   private config: RouterConfig;
+  private deps?: RouterDeps;
   private roundRobinIndex: number = 0;
   private responseCache: Map<string, { response: any; timestamp: number; lastUserQuery?: string }> = new Map();
   private requestCounts: Map<string, { count: number; resetTime: number }> = new Map();
   private contextProvider: ContextProvider | null = null;
   private kvPrefixAffinityMap: Map<string, { upstreamId: string; timestamp: number }> = new Map();
+  private otelExporter: OtlpTraceExporter;
 
   /** Bounded prefix affinity lookup for KV cache reuse (30-min TTL). */
   private getAffinityUpstream(prefixHash: string, ttlMs = 1800000): string | null {
@@ -1440,15 +757,25 @@ export class Eluvix {
     return removed;
   }
 
-  constructor(config: RouterConfig) {
+  constructor(config: RouterConfig, deps?: RouterDeps) {
     liveRouterInstances.add(new WeakRef(this));
+    this.deps = deps;
     this.config = {
       ...config,
       upstreams: [...(config.upstreams || [])].sort((a, b) => b.priority - a.priority)
     };
+    this.otelExporter = new OtlpTraceExporter(this.config.observability);
     if (this.config.memory?.enabled) {
       this.contextProvider = createContextProvider(this.config.memory);
     }
+  }
+
+  public getOtelExporter(): OtlpTraceExporter {
+    return this.otelExporter;
+  }
+
+  public async flushTraces(): Promise<{ sent: number; ok: boolean; error?: string }> {
+    return this.otelExporter.flush(this.deps?.fetch || globalThis.fetch);
   }
 
   public getUpstreams(): UpstreamConfig[] {
@@ -1925,7 +1252,45 @@ export class Eluvix {
       : this.config.modelGateway?.caching;
     let cacheKey = '';
 
-    // 0e. System Prompt Prepend (clone messages to avoid mutating caller's request object)
+    // 0e. System Prompt Prepend & Versioned Prompt Registry Resolution
+    let resolvedPromptHeader: string | null = null;
+    const rawPromptRef =
+      typeof effectiveRequest.metadata?.promptRef === 'string'
+        ? effectiveRequest.metadata.promptRef.trim()
+        : typeof (effectiveRequest as any).prompt_id === 'string'
+        ? String((effectiveRequest as any).prompt_id).trim()
+        : '';
+    if (rawPromptRef && effectiveRequest.messages) {
+      const resolvedPrompt = resolvePromptTemplate(
+        rawPromptRef,
+        effectiveRequest.metadata?.promptVariables
+      );
+      if (resolvedPrompt) {
+        resolvedPromptHeader = `${resolvedPrompt.promptId}@v${resolvedPrompt.version}`;
+        const clonedMsgs = effectiveRequest.messages.map(m => ({ ...m }));
+        const firstSys = clonedMsgs.find(m => m.role === 'system');
+        if (firstSys && typeof firstSys.content === 'string') {
+          firstSys.content = `${resolvedPrompt.renderedSystemPrompt}\n\n${firstSys.content}`;
+          effectiveRequest = { ...effectiveRequest, messages: clonedMsgs };
+        } else {
+          effectiveRequest = {
+            ...effectiveRequest,
+            messages: [
+              { role: 'system', content: resolvedPrompt.renderedSystemPrompt },
+              ...clonedMsgs,
+            ],
+          };
+        }
+        if (
+          effectiveRequest.model === 'auto' &&
+          resolvedPrompt.modelHint &&
+          resolvedPrompt.modelHint !== 'auto'
+        ) {
+          effectiveRequest = { ...effectiveRequest, model: resolvedPrompt.modelHint };
+        }
+      }
+    }
+
     if (this.config.modelGateway?.systemPromptPrepend && effectiveRequest.messages) {
       const prepend = this.config.modelGateway.systemPromptPrepend;
       const clonedMessages = effectiveRequest.messages.map(m => ({ ...m }));
@@ -2079,7 +1444,14 @@ export class Eluvix {
     const hasCrsUpstreamSelected = targetUpstreams.some(u => isNeuroSymbolicCrsUpstream(u));
     let crsTriageResult: ReturnType<typeof analyzePromptForCrsTriage> | null = null;
 
-    const preInjectionPrefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+    const rawCachePrefix =
+      typeof effectiveRequest.metadata?._cachePrefixText === 'string' &&
+      effectiveRequest.metadata._cachePrefixText.trim()
+        ? effectiveRequest.metadata._cachePrefixText.trim()
+        : '';
+    const preInjectionPrefixHash = rawCachePrefix
+      ? crypto.createHash('sha256').update(rawCachePrefix).digest('hex').slice(0, 12)
+      : computeKvPrefixHash(effectiveRequest.messages || []);
 
     if (
       (activeCrsPolicy !== 'disabled' || isStallEscalationStrategy || hasCrsUpstreamSelected) &&
@@ -2479,6 +1851,22 @@ export class Eluvix {
       }
     } catch (err) {
       console.warn('Failed to evaluate latency spillover, continuing normal routing.');
+    }
+
+    // 0f2. Live Engine Load Signals (Warm VRAM Residency Bonus & Queue Waiting Penalty)
+    if (targetUpstreams.length > 1) {
+      const anySignalPresent = targetUpstreams.some(u => getCachedEngineSignal(u.id) !== undefined);
+      if (anySignalPresent) {
+        const baseOrder = new Map(targetUpstreams.map((u, idx) => [u.id, idx]));
+        targetUpstreams.sort((a, b) => {
+          const sigA = getCachedEngineSignal(a.id);
+          const sigB = getCachedEngineSignal(b.id);
+          const adjA = computeEngineLoadScoreAdjustment(sigA, effectiveRequest.model).scoreDelta;
+          const adjB = computeEngineLoadScoreAdjustment(sigB, effectiveRequest.model).scoreDelta;
+          if (adjA !== adjB) return adjB - adjA;
+          return (baseOrder.get(a.id) ?? 0) - (baseOrder.get(b.id) ?? 0);
+        });
+      }
     }
 
     const upstreamTimeout = switchyardConfig.timeoutMs ?? 60000;
@@ -2891,28 +2279,127 @@ export class Eluvix {
           const duration_ms = Date.now() - startTime;
           
           if (response.ok) {
-            globalCircuitBreaker.recordSuccess(upstream.id);
             let completionTokens = parseInt(response.headers.get('x-eluvix-completion-tokens') || '0', 10);
             let promptTokens = parseInt(response.headers.get('x-eluvix-prompt-tokens') || '0', 10) || complexity.tokenEstimate;
+            let cacheReadTokens = parseInt(response.headers.get('x-eluvix-cache-read-tokens') || '0', 10) || 0;
+            let cacheWriteTokens = parseInt(response.headers.get('x-eluvix-cache-write-tokens') || '0', 10) || 0;
             const servedModel = response.headers.get('x-eluvix-model') || effectiveRequest.model;
             const effortHeader = response.headers.get('x-eluvix-effort');
-            
+            const rfSpec = extractResponseFormatSpec(effectiveRequest);
+            let schemaValidationHeader: 'native' | 'validated' | 'repaired' | 'escalated' | null = null;
+            let outputGuardStatusHeader: string | null = null;
+            let outputGuardRedactionsHeader = 0;
+
             let responseBody: any = response.body;
             let assistantOutputText = '';
+            let schemaValidationFailed = false;
+
             if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
               try {
-                const rawData = await response.text();
-                const parsed = JSON.parse(rawData);
+                let rawData = await response.text();
+                let parsed = JSON.parse(rawData);
                 if (parsed.usage?.completion_tokens != null) {
                   completionTokens = parsed.usage.completion_tokens;
                 }
                 if (parsed.usage?.prompt_tokens != null) {
                   promptTokens = parsed.usage.prompt_tokens;
                 }
+                const usageCacheRead =
+                  parsed.usage?.cache_read_input_tokens ??
+                  parsed.usage?.prompt_tokens_details?.cached_tokens;
+                if (typeof usageCacheRead === 'number' && usageCacheRead > 0) {
+                  cacheReadTokens = usageCacheRead;
+                }
+                const usageCacheWrite =
+                  parsed.usage?.cache_creation_input_tokens ??
+                  parsed.usage?.prompt_tokens_details?.cache_creation_tokens;
+                if (typeof usageCacheWrite === 'number' && usageCacheWrite > 0) {
+                  cacheWriteTokens = usageCacheWrite;
+                }
+
+                // If Anthropic forced-tool structured output returned a tool_call, normalize it into message.content JSON
+                if (
+                  rfSpec &&
+                  rfSpec.type === 'json_schema' &&
+                  upstream.type === 'anthropic' &&
+                  !parsed.choices?.[0]?.message?.content &&
+                  Array.isArray(parsed.choices?.[0]?.message?.tool_calls) &&
+                  parsed.choices[0].message.tool_calls[0]?.function?.arguments
+                ) {
+                  const rawArgs = parsed.choices[0].message.tool_calls[0].function.arguments;
+                  parsed.choices[0].message.content =
+                    typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs);
+                }
+
                 if (typeof parsed.choices?.[0]?.message?.content === 'string') {
                   assistantOutputText = parsed.choices[0].message.content;
                 }
-                if (cacheConfig?.enabled && cacheKey) {
+
+                // Structured Outputs JSON Schema Validation & Fence Repair
+                if (rfSpec && (rfSpec.type === 'json_schema' || rfSpec.type === 'json_object')) {
+                  const validation = validateAgainstJsonSchema(
+                    assistantOutputText,
+                    rfSpec.schema,
+                    rfSpec.strict
+                  );
+                  if (!validation.valid) {
+                    const hasMoreCandidates =
+                      targetUpstreams.indexOf(upstream) < targetUpstreams.length - 1 ||
+                      attempt < retryCount;
+                    if (hasMoreCandidates) {
+                      console.warn(
+                        `[StructuredOutputs] Upstream ${upstream.id} failed JSON schema validation (${validation.errors.join('; ')}); escalating.`
+                      );
+                      schemaValidationFailed = true;
+                    } else if (rfSpec.strict) {
+                      return new Response(
+                        JSON.stringify({
+                          error: {
+                            message: `Structured output schema validation failed: ${validation.errors.join('; ')}`,
+                            type: 'invalid_response_schema',
+                            code: 'schema_validation_failed',
+                            errors: validation.errors,
+                          },
+                        }),
+                        {
+                          status: 422,
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'x-eluvix-upstream': upstream.id,
+                            'x-eluvix-schema-validation': 'failed',
+                          },
+                        }
+                      );
+                    }
+                  } else {
+                    if (validation.wasFenceRepaired && validation.repairedJsonText) {
+                      assistantOutputText = validation.repairedJsonText;
+                      if (parsed.choices?.[0]?.message) {
+                        parsed.choices[0].message.content = validation.repairedJsonText;
+                      }
+                      schemaValidationHeader = 'repaired';
+                    } else {
+                      schemaValidationHeader = attemptsMade > 1 ? 'escalated' : 'validated';
+                    }
+                  }
+                }
+
+                // Output Guardrails (Sync JSON DLP & Secret Scrubbing)
+                if (!schemaValidationFailed && this.config.outputGuard?.enabled) {
+                  const ogResult = applyOutputGuardToChatCompletionJson(
+                    parsed,
+                    this.config.outputGuard
+                  );
+                  parsed = ogResult.payload;
+                  outputGuardStatusHeader = ogResult.result.status;
+                  outputGuardRedactionsHeader = ogResult.result.redactionCount;
+                  if (typeof parsed.choices?.[0]?.message?.content === 'string') {
+                    assistantOutputText = parsed.choices[0].message.content;
+                  }
+                }
+
+                rawData = JSON.stringify(parsed);
+                if (!schemaValidationFailed && cacheConfig?.enabled && cacheKey) {
                   this.setCachedResponse(cacheKey, parsed, lastUserQuery);
                 }
                 responseBody = new Blob([rawData]).stream();
@@ -2920,26 +2407,42 @@ export class Eluvix {
             } else if (
               effectiveRequest.stream &&
               responseBody &&
-              canRemember &&
-              typeof (responseBody as any).getReader === 'function' &&
-              (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
+              typeof (responseBody as any).getReader === 'function'
             ) {
-              const providerRef = this.contextProvider!;
-              responseBody = teeSseStreamForMemory(
-                responseBody as ReadableStream<Uint8Array>,
-                (fullAssistantText) => {
-                  void providerRef
-                    .remember(
-                      {
-                        user: { role: 'user', content: lastUserQuery },
-                        assistant: fullAssistantText
-                      },
-                      scope
-                    )
-                    .catch(() => {});
-                }
-              );
+              if (this.config.outputGuard?.enabled) {
+                outputGuardStatusHeader = 'clean';
+                responseBody = createStreamingOutputDlpTransform(
+                  responseBody as ReadableStream<Uint8Array>,
+                  this.config.outputGuard
+                );
+              }
+              if (
+                canRemember &&
+                (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
+              ) {
+                const providerRef = this.contextProvider!;
+                responseBody = teeSseStreamForMemory(
+                  responseBody as ReadableStream<Uint8Array>,
+                  (fullAssistantText) => {
+                    void providerRef
+                      .remember(
+                        {
+                          user: { role: 'user', content: lastUserQuery },
+                          assistant: fullAssistantText
+                        },
+                        scope
+                      )
+                      .catch(() => {});
+                  }
+                );
+              }
             }
+
+            if (schemaValidationFailed) {
+              continue;
+            }
+
+            globalCircuitBreaker.recordSuccess(upstream.id);
 
             if (!effectiveRequest.stream && canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
               void this.contextProvider
@@ -2965,7 +2468,10 @@ export class Eluvix {
             const kvDtype = upstream.disaggregation?.kvCacheDtype === 'bf16' ? 'bf16' : 'fp8_e4m3';
             const kvFootprint = estimateKvCacheFootprint(servedModel, promptTokens, kvDtype);
             const kvCacheKb = Number((kvFootprint.totalBytes / 1024).toFixed(1));
-            const syncCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, completionTokens);
+            const syncCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, completionTokens, {
+              cacheReadTokens,
+              cacheWriteTokens,
+            });
 
             // Logging: For non-streaming, log immediately. For streaming, tee stream to log full duration and token count upon completion.
             const slaThresholdMs = switchyardConfig.spilloverThresholdMs ?? 30000;
@@ -2986,6 +2492,8 @@ export class Eluvix {
                 duration_ms,
                 prompt_tokens: promptTokens,
                 completion_tokens: completionTokens,
+                cache_read_tokens: cacheReadTokens,
+                cache_write_tokens: cacheWriteTokens,
                 ttft_ms: ttftMs,
                 itl_ms: itlMs,
                 kv_cache_kb: kvCacheKb,
@@ -3019,7 +2527,10 @@ export class Eluvix {
                   const finalItl = estimatedCompletion > 1
                     ? Number((finalDecode / (estimatedCompletion - 1)).toFixed(2))
                     : Number((finalDecode || finalDuration).toFixed(2));
-                  const streamCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, estimatedCompletion);
+                  const streamCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, estimatedCompletion, {
+                    cacheReadTokens,
+                    cacheWriteTokens,
+                  });
                   recordBanditArmOutcome({
                     upstreamId: upstream.id,
                     complexityTier: complexity.label,
@@ -3036,6 +2547,8 @@ export class Eluvix {
                     duration_ms: finalDuration,
                     prompt_tokens: promptTokens,
                     completion_tokens: estimatedCompletion,
+                    cache_read_tokens: cacheReadTokens,
+                    cache_write_tokens: cacheWriteTokens,
                     ttft_ms: ttftMs,
                     itl_ms: finalItl,
                     kv_cache_kb: kvCacheKb,
@@ -3053,6 +2566,19 @@ export class Eluvix {
             });
             newResponse.headers.set('x-eluvix-upstream', upstream.id);
             newResponse.headers.set('x-eluvix-model', servedModel);
+            if (cacheReadTokens > 0) {
+              newResponse.headers.set('x-eluvix-cache-read-tokens', String(cacheReadTokens));
+            }
+            if (cacheWriteTokens > 0) {
+              newResponse.headers.set('x-eluvix-cache-write-tokens', String(cacheWriteTokens));
+            }
+            if (schemaValidationHeader) {
+              newResponse.headers.set('x-eluvix-schema-validation', schemaValidationHeader);
+            }
+            if (outputGuardStatusHeader) {
+              newResponse.headers.set('x-eluvix-output-guard', outputGuardStatusHeader);
+              newResponse.headers.set('x-eluvix-output-redactions', String(outputGuardRedactionsHeader));
+            }
             if (cascadeHeaderStatus) {
               newResponse.headers.set('x-eluvix-cascade', cascadeHeaderStatus);
               if (cascadeEscalationReason) {
@@ -3253,6 +2779,16 @@ export class Eluvix {
             if (effortHeader) {
               newResponse.headers.set('x-eluvix-effort', effortHeader);
             }
+            if (resolvedPromptHeader) {
+              newResponse.headers.set('x-eluvix-prompt', resolvedPromptHeader);
+            }
+            const activeEngineSignal = getCachedEngineSignal(upstream.id);
+            if (activeEngineSignal) {
+              newResponse.headers.set(
+                'x-eluvix-engine-load',
+                formatEngineLoadHeader(activeEngineSignal, servedModel)
+              );
+            }
             if (this.config.memory?.enabled) {
               newResponse.headers.set(
                 'x-eluvix-memory',
@@ -3266,6 +2802,120 @@ export class Eluvix {
                 strippedKnowledgeForCloud ? `${knowledgeStatus};stripped-for-cloud` : knowledgeStatus
               );
               newResponse.headers.set('x-eluvix-knowledge-tokens', String(strippedKnowledgeForCloud ? 0 : knowledgeTokens));
+            }
+
+            if (this.config.observability) {
+              const childSpans: OtelChildSpanInput[] = [
+                {
+                  name: 'eluvix.guard',
+                  kind: 'INTERNAL',
+                  startTimeMs: routeStartTime,
+                  endTimeMs: startTime,
+                  status: 'OK',
+                  attributes: {
+                    'eluvix.prompt_guard.enabled': Boolean(this.config.promptGuard?.enabled),
+                    'eluvix.privacy_guard.enabled': Boolean(this.config.privacyGuard?.enabled),
+                    'eluvix.output_guard.status': outputGuardStatusHeader || 'disabled',
+                    'eluvix.output_guard.redactions': outputGuardRedactionsHeader,
+                  },
+                },
+                {
+                  name: 'eluvix.routing',
+                  kind: 'INTERNAL',
+                  startTimeMs: routeStartTime,
+                  endTimeMs: startTime,
+                  status: 'OK',
+                  attributes: {
+                    'eluvix.strategy': selection.strategy,
+                    'eluvix.complexity_score': complexity.score,
+                    'eluvix.complexity_tier': complexity.label,
+                    'eluvix.chosen_upstream_id': upstream.id,
+                    ...(selection.vendorAlias?.aliasApplied
+                      ? { 'eluvix.vendor_alias': selection.vendorAlias.originalModel }
+                      : {}),
+                  },
+                },
+                {
+                  name: 'eluvix.upstream',
+                  kind: 'CLIENT',
+                  startTimeMs: startTime,
+                  endTimeMs: startTime + duration_ms,
+                  status: 'OK',
+                  attributes: {
+                    'gen_ai.system': upstream.type,
+                    'gen_ai.request.model': effectiveRequest.model,
+                    'gen_ai.response.model': servedModel,
+                    'gen_ai.usage.input_tokens': promptTokens,
+                    'gen_ai.usage.output_tokens': completionTokens,
+                    ...(cacheReadTokens > 0
+                      ? { 'gen_ai.usage.cache_read_input_tokens': cacheReadTokens }
+                      : {}),
+                    ...(cacheWriteTokens > 0
+                      ? { 'gen_ai.usage.cache_creation_input_tokens': cacheWriteTokens }
+                      : {}),
+                    'eluvix.upstream_id': upstream.id,
+                    'eluvix.ttft_ms': ttftMs,
+                    'eluvix.cost_usd': syncCostUsd,
+                  },
+                },
+              ];
+
+              if (this.config.memory?.enabled) {
+                childSpans.push({
+                  name: 'eluvix.memory',
+                  kind: 'INTERNAL',
+                  startTimeMs: routeStartTime,
+                  endTimeMs: startTime,
+                  status: 'OK',
+                  attributes: {
+                    'eluvix.memory.status': memoryStatus,
+                    'eluvix.memory.tokens': memoryTokens,
+                  },
+                });
+              }
+
+              const traceRes = this.otelExporter.enqueueTrace({
+                name: 'eluvix.chat',
+                kind: 'SERVER',
+                startTimeMs: routeStartTime,
+                endTimeMs: Date.now(),
+                status: 'OK',
+                attributes: {
+                  'gen_ai.system': upstream.type,
+                  'gen_ai.request.model': request.model || 'auto',
+                  'gen_ai.response.model': servedModel,
+                  'gen_ai.usage.input_tokens': promptTokens,
+                  'gen_ai.usage.output_tokens': completionTokens,
+                  ...(cacheReadTokens > 0
+                    ? { 'gen_ai.usage.cache_read_input_tokens': cacheReadTokens }
+                    : {}),
+                  ...(cacheWriteTokens > 0
+                    ? { 'gen_ai.usage.cache_creation_input_tokens': cacheWriteTokens }
+                    : {}),
+                  'eluvix.upstream_id': upstream.id,
+                  'eluvix.strategy': selection.strategy,
+                  'eluvix.complexity_tier': complexity.label,
+                  'eluvix.cost_usd': syncCostUsd,
+                  'eluvix.ttft_ms': ttftMs,
+                  ...(schemaValidationHeader
+                    ? { 'eluvix.schema_validation': schemaValidationHeader }
+                    : {}),
+                  ...(cascadeHeaderStatus
+                    ? { 'eluvix.cascade_mode': cascadeHeaderStatus }
+                    : {}),
+                  ...(this.config.observability.captureInputs
+                    ? {
+                        'gen_ai.prompt': lastUserQuery,
+                        'gen_ai.completion': assistantOutputText,
+                      }
+                    : {}),
+                },
+                children: childSpans,
+              });
+              newResponse.headers.set('x-eluvix-trace-id', traceRes.traceId);
+              if (traceRes.enqueued) {
+                void this.flushTraces().catch(() => {});
+              }
             }
             
             return newResponse;
@@ -3764,6 +3414,31 @@ export class Eluvix {
           removed: targetUpstreams.filter(u => !toolCapable.includes(u)).map(u => u.id)
         });
         targetUpstreams = toolCapable;
+      }
+    }
+
+    // Structured Outputs (`response_format: { type: 'json_schema' | 'json_object' }`) Filter
+    const rfSpec = extractResponseFormatSpec(effectiveRequest);
+    if (rfSpec && (rfSpec.type === 'json_schema' || rfSpec.type === 'json_object')) {
+      const structuredCapable = targetUpstreams.filter(u =>
+        supportsStructuredOutputs(u, rfSpec.strict)
+      );
+      const structuredRemoved = targetUpstreams.filter(u => !structuredCapable.includes(u));
+      if (rfSpec.strict || structuredRemoved.length > 0) {
+        steps.push({
+          stage: 'structured-outputs-filter',
+          detail: `response_format=${rfSpec.type}${rfSpec.strict ? ' (strict=true)' : ''}: filtered candidate pool for grammar-constrained JSON output support`,
+          kept: structuredCapable.map(u => u.id),
+          removed: structuredRemoved.map(u => u.id),
+        });
+      }
+      if (rfSpec.strict && structuredCapable.length === 0) {
+        fail(
+          `No upstream available for model: ${effectiveRequest.model} supporting strict structured outputs (response_format: ${rfSpec.type}, strict: true)`
+        );
+      }
+      if (structuredCapable.length > 0) {
+        targetUpstreams = structuredCapable;
       }
     }
 
@@ -4310,7 +3985,14 @@ export class Eluvix {
     }
 
     // KV Prefix Affinity: Sticky routing for common prompt prefixes to maximize PagedAttention / RadixAttention reuse
-    const prefixHash = computeKvPrefixHash(effectiveRequest.messages || []);
+    const cachePrefixText =
+      typeof effectiveRequest.metadata?._cachePrefixText === 'string' &&
+      effectiveRequest.metadata._cachePrefixText.trim()
+        ? effectiveRequest.metadata._cachePrefixText.trim()
+        : '';
+    const prefixHash = cachePrefixText
+      ? crypto.createHash('sha256').update(cachePrefixText).digest('hex').slice(0, 12)
+      : computeKvPrefixHash(effectiveRequest.messages || []);
     if (switchyardConfig.kvPrefixAffinity && prefixHash !== 'empty') {
       const cachedUpstreamId = this.getAffinityUpstream(prefixHash);
       if (cachedUpstreamId) {
@@ -4504,12 +4186,28 @@ export class Eluvix {
     };
     
     if (upstream.apiKey) {
-      headers['Authorization'] = `Bearer ${upstream.apiKey}`;
+      const resolvedApiKey =
+        (await resolveUpstreamSecret(upstream.apiKey, { fetchImpl: this.deps?.fetch })) ||
+        upstream.apiKey;
+      headers['Authorization'] = `Bearer ${resolvedApiKey}`;
       if (upstream.type === 'anthropic' || upstream.endpoint.includes('anthropic.com')) {
-        headers['x-api-key'] = upstream.apiKey;
+        headers['x-api-key'] = resolvedApiKey;
         headers['anthropic-version'] = '2023-06-01';
       }
     }
+    if (
+      (upstream.type === 'anthropic' || upstream.endpoint.includes('anthropic.com')) &&
+      Array.isArray(effectiveRequest.metadata?._anthropicCacheBreakpoints) &&
+      effectiveRequest.metadata._anthropicCacheBreakpoints.length > 0
+    ) {
+      headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
+    }
+
+    // Translate Structured Outputs (`response_format`) into the engine's native grammar fields
+    const structuredTranslation = translateStructuredOutputFormat(
+      effectiveRequest as unknown as Record<string, any>,
+      upstream
+    );
 
     // Clean trailing slashes and ensure OpenAI-compatible completion path
     const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
@@ -4520,7 +4218,7 @@ export class Eluvix {
     const fetchOptions: RequestInit = {
       method: 'POST',
       headers,
-      body: JSON.stringify(effectiveRequest)
+      body: JSON.stringify(structuredTranslation.payload)
     };
 
     const controller = new AbortController();
@@ -4551,7 +4249,8 @@ export class Eluvix {
     const fetchStartTime = Date.now();
 
     try {
-      const res = await fetch(url, {
+      const fetchFn = this.deps?.fetch || fetch;
+      const res = await fetchFn(url, {
         ...fetchOptions,
         signal: controller.signal
       });
@@ -5683,355 +5382,15 @@ export class Eluvix {
       hops?: number;
     }
   ): Promise<Response> {
-    const hops = options?.hops ?? 0;
-    if (hops >= 2) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
-            type: 'loop_detected',
-            code: 'max_hops_exceeded',
-          },
-        }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const rawInputs = Array.isArray(request.input)
-      ? request.input
-      : typeof request.input === 'string'
-      ? [request.input]
-      : [];
-
-    if (rawInputs.length === 0 || rawInputs.some((item) => typeof item !== 'string')) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: 'Missing or invalid "input": expected a non-empty string or array of strings.',
-            type: 'invalid_request_error',
-            code: 'invalid_embedding_input',
-          },
-        }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // 1. PrivacyGuard PII scrubbing before embedding generation / egress
-    let inputs = [...rawInputs];
-    if (this.config.privacyGuard?.enabled) {
-      const scrubbed: string[] = [];
-      for (const text of inputs) {
-        const check = applyPrivacyGuard([{ role: 'user', content: text }], {
-          enabled: true,
-          action: this.config.privacyGuard.action || 'anonymize',
-          detectPii: this.config.privacyGuard.detectPii,
-          customPatterns: this.config.privacyGuard.customPatterns,
-          redactionStyle: this.config.privacyGuard.redactionStyle,
-          whitelist: this.config.privacyGuard.whitelist,
-          auditLogging: this.config.privacyGuard.auditLogging,
-        });
-        if (!check.passed) {
-          return new Response(
-            JSON.stringify({
-              error: {
-                message: check.reason || 'Embedding input blocked by Privacy Guard',
-                type: 'privacy_guard_violation',
-                code: 'pii_leakage_detected',
-              },
-            }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-        const mod = check.modifiedMessages[0]?.content;
-        scrubbed.push(typeof mod === 'string' ? mod : text);
-      }
-      inputs = scrubbed;
-    }
-
-    // 2. Filter candidate embedding-capable upstreams
-    const requestedModel = (request.model || 'auto').trim();
-    let candidates = this.getUpstreams().filter(
-      (u) =>
-        u.type !== 'comfyui' &&
-        u.type !== 'antigravity' &&
-        u.type !== 'harness' &&
-        u.type !== 'anthropic' &&
-        !isDedicatedAudioUpstreamType(u.type) &&
-        !u.endpoint?.startsWith('cli://') &&
-        !u.endpoint?.startsWith('acp://')
-    );
-
-    if (this.config.egressPolicy === 'local-only') {
-      candidates = candidates.filter((u) => isLocalUpstream(u));
-      if (candidates.length === 0) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: `No local embedding upstream available for model: ${requestedModel} (egressPolicy: local-only).`,
-              type: 'invalid_request_error',
-              code: 'egress_policy_local_only',
-            },
-          }),
-          { status: 503, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-    }
-
-    // Enforce 24h rolling cloud spend guardrail
-    const switchyardConfig = this.config.switchyard || {};
-    if (
-      typeof switchyardConfig.maxDailySpendUsd === 'number' &&
-      Number.isFinite(switchyardConfig.maxDailySpendUsd) &&
-      switchyardConfig.maxDailySpendUsd > 0
-    ) {
-      const rolling24h = getRollingSpendUsd(24);
-      if (rolling24h >= switchyardConfig.maxDailySpendUsd) {
-        const action = switchyardConfig.budgetExhaustedAction || 'prefer-local';
-        if (action === 'reject') {
-          return new Response(
-            JSON.stringify({
-              error: {
-                message: `Daily cloud spend cap exceeded ($${rolling24h.toFixed(4)} >= $${switchyardConfig.maxDailySpendUsd.toFixed(2)}).`,
-                type: 'budget_exceeded',
-                code: 'daily_spend_cap_exceeded',
-              },
-            }),
-            { status: 429, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-        const zeroCost = candidates.filter((u) => getEffectiveCostPer1kTokens(u) <= 0);
-        if (action === 'strict-local' && zeroCost.length === 0) {
-          return new Response(
-            JSON.stringify({
-              error: {
-                message: 'Daily spend cap exceeded and no $0.00 local embedding upstream is available.',
-                type: 'budget_exceeded',
-                code: 'daily_spend_cap_exceeded',
-              },
-            }),
-            { status: 429, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-        if (zeroCost.length > 0) {
-          candidates = zeroCost;
-        }
-      }
-    }
-
-    if (candidates.length === 0) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: `No embedding-capable upstream available for model: ${requestedModel}.`,
-            type: 'invalid_request_error',
-            code: 'no_embedding_upstream',
-          },
-        }),
-        { status: 503, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Rank: exact model match > explicit embedding capability > $0.00 local > priority
-    candidates.sort((a, b) => {
-      const exactA = requestedModel !== 'auto' && a.models?.includes(requestedModel) ? 1 : 0;
-      const exactB = requestedModel !== 'auto' && b.models?.includes(requestedModel) ? 1 : 0;
-      if (exactA !== exactB) return exactB - exactA;
-      const costA = getEffectiveCostPer1kTokens(a);
-      const costB = getEffectiveCostPer1kTokens(b);
-      if (costA !== costB) return costA - costB;
-      return b.priority - a.priority;
-    });
-
-    const timeoutMs = options?.timeoutMs ?? switchyardConfig.timeoutMs ?? 30000;
-    const pinnedDimensions =
-      typeof request.dimensions === 'number' && request.dimensions > 0
-        ? Math.floor(request.dimensions)
-        : undefined;
-    const encodingFormat = request.encoding_format === 'base64' ? 'base64' : 'float';
-    const estTokens = Math.max(
-      1,
-      Math.ceil(inputs.reduce((sum, s) => sum + s.length, 0) / 4)
-    );
-
-    let lastDimensionError: string | null = null;
-    let lastError: string | null = null;
-
-    for (const upstream of candidates) {
-      const endpointCheck = validateUpstreamHttpEndpoint(upstream.endpoint, {
-        allowLoopbackAndLan: true,
-      });
-      if (!endpointCheck.ok) {
-        lastError = endpointCheck.reason || `Blocked unsafe upstream endpoint: ${upstream.endpoint}`;
-        continue;
-      }
-
-      const effectiveModel =
-        requestedModel !== 'auto' &&
-        (upstream.models?.includes(requestedModel) ||
-          upstream.models?.includes('*') ||
-          !isLocalUpstream(upstream))
-          ? requestedModel
-          : upstream.models?.find((m) => /embed|bge|nomic|mxbai|e5|gte/i.test(m)) ||
-            (upstream.type === 'ollama' ? 'nomic-embed-text' : requestedModel !== 'auto' ? requestedModel : 'text-embedding-3-small');
-
-      const trimmed = upstream.endpoint.trim().replace(/\/+$/, '');
-      const baseWithoutV1 = trimmed.replace(/\/v1$/, '');
-      const startTime = Date.now();
-
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (upstream.apiKey) {
-          headers['Authorization'] = `Bearer ${upstream.apiKey}`;
-        }
-
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        if (options?.signal) {
-          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
-        }
-
-        let res = await fetch(
-          trimmed.endsWith('/v1') ? `${trimmed}/embeddings` : `${trimmed}/v1/embeddings`,
-          {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model: effectiveModel,
-              input: inputs,
-              ...(pinnedDimensions ? { dimensions: pinnedDimensions } : {}),
-            }),
-            signal: controller.signal,
-          }
-        );
-
-        // Fallback to native Ollama `/api/embed` when `/v1/embeddings` returns 404
-        if (!res.ok && res.status === 404 && upstream.type === 'ollama') {
-          res = await fetch(`${baseWithoutV1}/api/embed`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-              model: effectiveModel,
-              input: inputs,
-            }),
-            signal: controller.signal,
-          });
-        }
-
-        clearTimeout(timer);
-
-        if (!res.ok) {
-          lastError = `Upstream ${upstream.name} returned HTTP ${res.status}`;
-          continue;
-        }
-
-        const payload = (await res.json()) as Record<string, any>;
-        const rawVectors: number[][] = Array.isArray(payload.data)
-          ? payload.data.map((d: any) => d.embedding)
-          : Array.isArray(payload.embeddings)
-          ? payload.embeddings
-          : Array.isArray(payload.embedding)
-          ? [payload.embedding]
-          : [];
-
-        if (rawVectors.length === 0) {
-          lastError = `Upstream ${upstream.name} returned no embedding vectors`;
-          continue;
-        }
-
-        let anySliced = false;
-        let resolvedDims = 0;
-        const formattedData = rawVectors.map((vec, index) => {
-          const norm = normalizeEmbeddingVector(vec, pinnedDimensions);
-          if (norm.sliced) anySliced = true;
-          resolvedDims = norm.dimensions;
-          return {
-            object: 'embedding',
-            index,
-            embedding:
-              encodingFormat === 'base64'
-                ? encodeFloat32VectorBase64(norm.vector)
-                : norm.vector,
-          };
-        });
-
-        const duration_ms = Date.now() - startTime;
-        const promptTokens = Number(payload?.usage?.prompt_tokens ?? estTokens);
-        const costUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, 0);
-
-        logRequest({
-          model: effectiveModel,
-          upstream_id: upstream.id,
-          status: 200,
-          duration_ms,
-          prompt_tokens: promptTokens,
-          completion_tokens: 0,
-          ttft_ms: duration_ms,
-          cost_usd: costUsd,
-          user_id: options?.scope?.userId || 'default',
-        });
-
-        return new Response(
-          JSON.stringify({
-            object: 'list',
-            data: formattedData,
-            model: effectiveModel,
-            usage: {
-              prompt_tokens: promptTokens,
-              total_tokens: promptTokens,
-            },
-          }),
-          {
-            status: 200,
-            headers: {
-              'Content-Type': 'application/json',
-              'x-eluvix-upstream': upstream.id,
-              'x-eluvix-model': effectiveModel,
-              'x-eluvix-embedding-dims': String(resolvedDims),
-              'x-eluvix-cost-usd': costUsd.toFixed(6),
-              ...(anySliced ? { 'x-eluvix-matryoshka-sliced': 'true' } : {}),
-            },
-          }
-        );
-      } catch (err: any) {
-        if (err?.dimensionMismatch) {
-          lastDimensionError = err.message;
-          continue;
-        }
-        lastError = err?.message || `Failed to reach embedding upstream ${upstream.name}`;
-      }
-    }
-
-    if (lastDimensionError) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: lastDimensionError,
-            type: 'invalid_request_error',
-            code: 'embedding_dimension_mismatch',
-          },
-        }),
-        { status: 422, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: lastError || 'All embedding upstreams failed.',
-          type: 'upstream_error',
-          code: 'embedding_failed',
-        },
-      }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    return executeEmbeddingsForward(
+      this.config,
+      this.getUpstreams(),
+      request,
+      options,
+      this.deps
     );
   }
 
-  /**
-   * Sovereign Audio Speech-to-Text Router (`/v1/audio/transcriptions`).
-   * Routes multipart audio blobs across local `Speaches` (Faster-Whisper `:8005`),
-   * `whisper.cpp` (`:8086`), `Lemonade` (`:13305`), or cloud Whisper upstreams,
-   * with SSRF guard validation and optional `PrivacyGuard` post-transcription PII scrubbing.
-   */
   public async routeAudioTranscription(
     request: {
       file: Blob | Uint8Array;
@@ -6050,264 +5409,15 @@ export class Eluvix {
       hops?: number;
     }
   ): Promise<Response> {
-    const hops = options?.hops ?? 0;
-    if (hops >= 2) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
-            type: 'loop_detected',
-            code: 'max_hops_exceeded',
-          },
-        }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    if (!request.file) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: 'Missing required multipart field "file" for audio transcription.',
-            type: 'invalid_request_error',
-            code: 'missing_audio_file',
-          },
-        }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const allUpstreams = this.getUpstreams();
-    let candidates = allUpstreams.filter((u) => {
-      if (u.type === 'kokoro-tts') return false;
-      if (isDedicatedAudioUpstreamType(u.type)) {
-        return u.audio?.mode !== 'tts';
-      }
-      if (u.audio && u.audio.mode !== 'tts') return true;
-      if (u.type === 'lemonade' || u.type === 'openai-compatible') return true;
-      return false;
-    });
-
-    if (this.config.egressPolicy === 'local-only') {
-      candidates = candidates.filter((u) => {
-        const effEndpoint = u.audio?.sttEndpoint || u.endpoint;
-        return isLocalUpstream({ ...u, endpoint: effEndpoint });
-      });
-      if (candidates.length === 0) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: 'No local STT audio upstream available (egressPolicy: local-only).',
-              type: 'invalid_request_error',
-              code: 'egress_policy_local_only',
-            },
-          }),
-          { status: 503, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-    }
-
-    if (candidates.length === 0) {
-      // Sovereign local default fallback to Speaches (:8005)
-      candidates = [
-        {
-          id: 'default-speaches-stt',
-          name: 'Local Speaches Faster-Whisper (:8005)',
-          type: 'speaches',
-          endpoint: 'http://127.0.0.1:8005',
-          priority: 1,
-          models: ['*'],
-          audio: {
-            mode: 'stt',
-            sttBackend: 'speaches',
-            defaultSttModel: STT_BACKEND_PRESETS.speaches.defaultModel,
-          },
-        },
-      ];
-    }
-
-    // Rank dedicated audio STT nodes ahead of generic OpenAI-compatible nodes, then $0.00 local first
-    candidates.sort((a, b) => {
-      const dedA = isDedicatedAudioUpstreamType(a.type) || Boolean(a.audio) ? 1 : 0;
-      const dedB = isDedicatedAudioUpstreamType(b.type) || Boolean(b.audio) ? 1 : 0;
-      if (dedA !== dedB) return dedB - dedA;
-      const costA = getEffectiveCostPer1kTokens(a);
-      const costB = getEffectiveCostPer1kTokens(b);
-      if (costA !== costB) return costA - costB;
-      return b.priority - a.priority;
-    });
-
-    const fileBlob =
-      request.file instanceof Blob
-        ? request.file
-        : new Blob([request.file as any], { type: request.mimeType || 'audio/wav' });
-    const filename = request.filename || 'audio.wav';
-    const responseFormat: TranscriptionResponseFormat = request.response_format || 'json';
-    const timeoutMs = options?.timeoutMs ?? this.config.switchyard?.timeoutMs ?? 60000;
-    let lastError = 'All STT audio upstreams failed.';
-
-    for (const upstream of candidates) {
-      const rawTargetEndpoint = upstream.audio?.sttEndpoint || upstream.endpoint;
-      const endpointCheck = validateUpstreamHttpEndpoint(rawTargetEndpoint, {
-        allowLoopbackAndLan: true,
-      });
-      if (!endpointCheck.ok) {
-        lastError = endpointCheck.reason || `Blocked unsafe STT endpoint: ${rawTargetEndpoint}`;
-        continue;
-      }
-
-      const sttPreset = upstream.audio?.sttBackend || (upstream.type === 'lemonade' ? 'lemonade' : isLocalUpstream(upstream) ? 'speaches' : 'openai');
-      const effectiveModel =
-        request.model &&
-        request.model !== 'auto' &&
-        request.model !== '*' &&
-        !(isLocalUpstream(upstream) && request.model === 'whisper-1' && upstream.audio?.defaultSttModel)
-          ? request.model
-          : upstream.audio?.defaultSttModel || STT_BACKEND_PRESETS[sttPreset]?.defaultModel || 'whisper-1';
-
-      const trimmed = rawTargetEndpoint.trim().replace(/\/+$/, '');
-      const url = trimmed.endsWith('/v1')
-        ? `${trimmed}/audio/transcriptions`
-        : `${trimmed}/v1/audio/transcriptions`;
-
-      const form = new FormData();
-      form.append('file', fileBlob, filename);
-      form.append('model', effectiveModel);
-      if (request.language) form.append('language', request.language);
-      if (request.prompt) form.append('prompt', request.prompt);
-      if (request.response_format) form.append('response_format', request.response_format);
-      if (typeof request.temperature === 'number') {
-        form.append('temperature', String(request.temperature));
-      }
-
-      const headers: Record<string, string> = {};
-      if (upstream.apiKey) {
-        headers['Authorization'] = `Bearer ${upstream.apiKey}`;
-      }
-
-      const startTime = Date.now();
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        if (options?.signal) {
-          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
-        }
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: form,
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-
-        if (!res.ok) {
-          lastError = `STT upstream ${upstream.name} returned HTTP ${res.status}`;
-          continue;
-        }
-
-        const shouldScrub =
-          Boolean(this.config.privacyGuard?.enabled) ||
-          Boolean(upstream.audio?.scrubTranscriptPii);
-
-        const scrubString = (raw: string): string => {
-          if (!shouldScrub || !raw) return raw;
-          const check = applyPrivacyGuard([{ role: 'user', content: raw }], {
-            enabled: true,
-            action: 'anonymize',
-            detectPii: this.config.privacyGuard?.detectPii,
-            customPatterns: this.config.privacyGuard?.customPatterns,
-            redactionStyle: this.config.privacyGuard?.redactionStyle || 'token',
-            whitelist: this.config.privacyGuard?.whitelist,
-            auditLogging: false,
-          });
-          const mod = check.modifiedMessages[0]?.content;
-          return typeof mod === 'string' ? mod : raw;
-        };
-
-        const duration_ms = Date.now() - startTime;
-
-        if (responseFormat === 'text' || responseFormat === 'srt' || responseFormat === 'vtt') {
-          const rawText = await res.text();
-          const finalText = scrubString(rawText);
-          const completionTokens = Math.max(1, Math.ceil(finalText.length / 4));
-          const costUsd = estimateUpstreamRequestCostUsd(upstream, 64, completionTokens);
-          logRequest({
-            model: effectiveModel,
-            upstream_id: upstream.id,
-            status: 200,
-            duration_ms,
-            prompt_tokens: 64,
-            completion_tokens: completionTokens,
-            ttft_ms: duration_ms,
-            cost_usd: costUsd,
-            user_id: options?.scope?.userId || 'default',
-          });
-          return new Response(finalText, {
-            status: 200,
-            headers: {
-              'Content-Type': 'text/plain; charset=utf-8',
-              'x-eluvix-upstream': upstream.id,
-              'x-eluvix-model': effectiveModel,
-              'x-eluvix-cost-usd': costUsd.toFixed(6),
-            },
-          });
-        }
-
-        const jsonPayload = (await res.json()) as Record<string, any>;
-        if (typeof jsonPayload.text === 'string') {
-          jsonPayload.text = scrubString(jsonPayload.text);
-        }
-        const completionTokens = Math.max(
-          1,
-          Math.ceil(String(jsonPayload.text || '').length / 4)
-        );
-        const costUsd = estimateUpstreamRequestCostUsd(upstream, 64, completionTokens);
-
-        logRequest({
-          model: effectiveModel,
-          upstream_id: upstream.id,
-          status: 200,
-          duration_ms,
-          prompt_tokens: 64,
-          completion_tokens: completionTokens,
-          ttft_ms: duration_ms,
-          cost_usd: costUsd,
-          user_id: options?.scope?.userId || 'default',
-        });
-
-        return new Response(JSON.stringify(jsonPayload), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'x-eluvix-upstream': upstream.id,
-            'x-eluvix-model': effectiveModel,
-            'x-eluvix-cost-usd': costUsd.toFixed(6),
-          },
-        });
-      } catch (err: any) {
-        lastError = err?.message || `Failed to reach STT upstream ${upstream.name}`;
-      }
-    }
-
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: lastError,
-          type: 'upstream_error',
-          code: 'audio_transcription_failed',
-        },
-      }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    return executeAudioTranscriptionForward(
+      this.config,
+      this.getUpstreams(),
+      request,
+      options,
+      this.deps
     );
   }
 
-  /**
-   * Sovereign Audio Text-to-Speech Router (`/v1/audio/speech`).
-   * Routes TTS synthesis across local `Kokoro-FastAPI` / `Piper` (`:8880`),
-   * `Lemonade` (`:13305`), or OpenAI TTS upstreams with SSRF validation and
-   * `PrivacyGuard` input scrubbing.
-   */
   public async routeAudioSpeech(
     request: {
       input: string;
@@ -6323,356 +5433,30 @@ export class Eluvix {
       hops?: number;
     }
   ): Promise<Response> {
-    const hops = options?.hops ?? 0;
-    if (hops >= 2) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: `Routing loop detected (x-eluvix-hops=${hops} >= 2).`,
-            type: 'loop_detected',
-            code: 'max_hops_exceeded',
-          },
-        }),
-        { status: 429, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    if (typeof request.input !== 'string' || !request.input.trim()) {
-      return new Response(
-        JSON.stringify({
-          error: {
-            message: 'Missing required non-empty "input" text for speech synthesis.',
-            type: 'invalid_request_error',
-            code: 'missing_speech_input',
-          },
-        }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    let speechInput = request.input;
-    if (this.config.privacyGuard?.enabled) {
-      const check = applyPrivacyGuard([{ role: 'user', content: speechInput }], {
-        enabled: true,
-        action: this.config.privacyGuard.action || 'anonymize',
-        detectPii: this.config.privacyGuard.detectPii,
-        customPatterns: this.config.privacyGuard.customPatterns,
-        redactionStyle: this.config.privacyGuard.redactionStyle,
-        whitelist: this.config.privacyGuard.whitelist,
-        auditLogging: this.config.privacyGuard.auditLogging,
-      });
-      if (!check.passed) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: check.reason || 'Speech input blocked by Privacy Guard',
-              type: 'privacy_guard_violation',
-              code: 'pii_leakage_detected',
-            },
-          }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      const mod = check.modifiedMessages[0]?.content;
-      if (typeof mod === 'string') speechInput = mod;
-    }
-
-    let candidates = this.getUpstreams().filter((u) => {
-      if (u.type === 'whisper' || u.type === 'speaches') {
-        return Boolean(u.audio && u.audio.mode !== 'stt' && u.audio.ttsEndpoint);
-      }
-      if (isDedicatedAudioUpstreamType(u.type)) {
-        return u.audio?.mode !== 'stt';
-      }
-      if (u.audio && u.audio.mode !== 'stt') return true;
-      if (u.type === 'lemonade' || u.type === 'openai-compatible') return true;
-      return false;
-    });
-
-    if (this.config.egressPolicy === 'local-only') {
-      candidates = candidates.filter((u) => {
-        const effEndpoint = u.audio?.ttsEndpoint || u.endpoint;
-        return isLocalUpstream({ ...u, endpoint: effEndpoint });
-      });
-      if (candidates.length === 0) {
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: 'No local TTS speech upstream available (egressPolicy: local-only).',
-              type: 'invalid_request_error',
-              code: 'egress_policy_local_only',
-            },
-          }),
-          { status: 503, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-    }
-
-    if (candidates.length === 0) {
-      candidates = [
-        {
-          id: 'default-kokoro-tts',
-          name: 'Local Kokoro-FastAPI TTS (:8880)',
-          type: 'kokoro-tts',
-          endpoint: 'http://127.0.0.1:8880',
-          priority: 1,
-          models: ['*'],
-          audio: {
-            mode: 'tts',
-            ttsBackend: 'kokoro',
-            defaultTtsModel: TTS_BACKEND_PRESETS.kokoro.defaultModel,
-            defaultVoice: TTS_BACKEND_PRESETS.kokoro.defaultVoice,
-          },
-        },
-      ];
-    }
-
-    candidates.sort((a, b) => {
-      const dedA = isDedicatedAudioUpstreamType(a.type) || Boolean(a.audio) ? 1 : 0;
-      const dedB = isDedicatedAudioUpstreamType(b.type) || Boolean(b.audio) ? 1 : 0;
-      if (dedA !== dedB) return dedB - dedA;
-      const costA = getEffectiveCostPer1kTokens(a);
-      const costB = getEffectiveCostPer1kTokens(b);
-      if (costA !== costB) return costA - costB;
-      return b.priority - a.priority;
-    });
-
-    const timeoutMs = options?.timeoutMs ?? this.config.switchyard?.timeoutMs ?? 60000;
-    const estPromptTokens = Math.max(1, Math.ceil(speechInput.length / 4));
-    let lastError = 'All TTS speech upstreams failed.';
-
-    for (const upstream of candidates) {
-      const rawTargetEndpoint =
-        upstream.audio?.ttsEndpoint ||
-        (upstream.audio?.mode === 'both' &&
-        upstream.audio?.ttsBackend &&
-        upstream.audio.ttsBackend !== 'openai' &&
-        upstream.audio.ttsBackend !== 'lemonade' &&
-        upstream.endpoint.includes(':8005')
-          ? 'http://localhost:8880'
-          : upstream.endpoint);
-
-      const endpointCheck = validateUpstreamHttpEndpoint(rawTargetEndpoint, {
-        allowLoopbackAndLan: true,
-      });
-      if (!endpointCheck.ok) {
-        lastError = endpointCheck.reason || `Blocked unsafe TTS endpoint: ${rawTargetEndpoint}`;
-        continue;
-      }
-
-      const ttsPreset =
-        upstream.audio?.ttsBackend ||
-        (upstream.type === 'lemonade'
-          ? 'lemonade'
-          : isLocalUpstream({ ...upstream, endpoint: rawTargetEndpoint })
-          ? 'kokoro'
-          : 'openai');
-      const effectiveModel =
-        request.model &&
-        request.model !== 'auto' &&
-        request.model !== '*' &&
-        !(
-          isLocalUpstream({ ...upstream, endpoint: rawTargetEndpoint }) &&
-          (request.model === 'tts-1' || request.model === 'tts-1-hd' || request.model === 'gpt-4o-mini-tts') &&
-          upstream.audio?.defaultTtsModel
-        )
-          ? request.model
-          : upstream.audio?.defaultTtsModel || TTS_BACKEND_PRESETS[ttsPreset]?.defaultModel || 'kokoro';
-
-      const effectiveVoice =
-        request.voice ||
-        upstream.audio?.defaultVoice ||
-        TTS_BACKEND_PRESETS[ttsPreset]?.defaultVoice ||
-        'af_heart';
-      const format: AudioResponseFormat =
-        request.response_format || upstream.audio?.responseFormat || 'mp3';
-
-      const trimmed = rawTargetEndpoint.trim().replace(/\/+$/, '');
-      const url = trimmed.endsWith('/v1')
-        ? `${trimmed}/audio/speech`
-        : `${trimmed}/v1/audio/speech`;
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (upstream.apiKey) {
-        headers['Authorization'] = `Bearer ${upstream.apiKey}`;
-      }
-
-      const startTime = Date.now();
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        if (options?.signal) {
-          options.signal.addEventListener('abort', () => controller.abort(), { once: true });
-        }
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: effectiveModel,
-            input: speechInput,
-            voice: effectiveVoice,
-            response_format: format,
-            ...(typeof request.speed === 'number' ? { speed: request.speed } : {}),
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-
-        if (!res.ok) {
-          lastError = `TTS upstream ${upstream.name} returned HTTP ${res.status}`;
-          continue;
-        }
-
-        const audioBytes = await res.arrayBuffer();
-        const duration_ms = Date.now() - startTime;
-        const costUsd = estimateUpstreamRequestCostUsd(upstream, estPromptTokens, 0);
-
-        logRequest({
-          model: effectiveModel,
-          upstream_id: upstream.id,
-          status: 200,
-          duration_ms,
-          prompt_tokens: estPromptTokens,
-          completion_tokens: 0,
-          ttft_ms: duration_ms,
-          cost_usd: costUsd,
-          user_id: options?.scope?.userId || 'default',
-        });
-
-        const mimeType = res.headers.get('content-type') || inferAudioMimeType(format);
-        return new Response(audioBytes, {
-          status: 200,
-          headers: {
-            'Content-Type': mimeType,
-            'x-eluvix-upstream': upstream.id,
-            'x-eluvix-model': effectiveModel,
-            'x-eluvix-audio-voice': effectiveVoice,
-            'x-eluvix-cost-usd': costUsd.toFixed(6),
-          },
-        });
-      } catch (err: any) {
-        lastError = err?.message || `Failed to reach TTS upstream ${upstream.name}`;
-      }
-    }
-
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: lastError,
-          type: 'upstream_error',
-          code: 'audio_speech_failed',
-        },
-      }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } }
+    return executeAudioSpeechForward(
+      this.config,
+      this.getUpstreams(),
+      request,
+      options,
+      this.deps
     );
   }
-}
 
-export function isAntigravitySupportedModel(modelName: string, upstreamModels: string[] = []): boolean {
-  if (!modelName || modelName === 'auto') return false;
-  if (upstreamModels.includes(modelName)) return true;
-
-  // Reject explicitly retired Google Gemini models (3.1, 3.6, 3.7, 2.5)
-  if (/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(modelName)) return false;
-
-  // Check dynamically discovered / cached Antigravity catalog
-  const catalog = getCachedAntigravityModels();
-  const lower = modelName.toLowerCase();
-  for (const entry of catalog) {
-    if (entry.baseId.toLowerCase() === lower) return true;
-    if (entry.variants.some(v => v.toLowerCase() === lower)) return true;
-  }
-
-  // Gemini models: gemini-4-carbon, gemini-4-argon (and variants: gemini-4-argo, -low/-medium/-high/-xhigh/-max), gemini-3.8-flash (and variants)
-  if (/^gemini-(?:4-carbon|4-argon|4-argo|3\.8)/i.test(modelName)) return true;
-  // Claude models supported by Antigravity: claude-opus-5-5, claude-sonnet-5-5
-  if (/^claude-(?:opus|sonnet)/i.test(modelName)) return true;
-  // GPT-OSS: only 120b
-  if (/^gpt-oss-120b/i.test(modelName)) return true;
-  return false;
-}
-
-export function buildCliPrompt(messages: ChatMessage[], maxBytes = 100000): string {
-  if (!messages || messages.length === 0) return 'Hello';
-
-  const systemParts: string[] = [];
-  const conversationTurns: { role: string; text: string }[] = [];
-
-  for (const m of messages) {
-    const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-    if (m.role && m.role.toLowerCase() === 'system') {
-      systemParts.push(`[SYSTEM]: ${text}`);
-    } else {
-      conversationTurns.push({ role: (m.role || 'user').toUpperCase(), text });
+  public async routeRerank(
+    request: RerankRequest,
+    options?: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      userId?: string;
     }
+  ): Promise<Response> {
+    return executeRerankRequest(this.config, this.getUpstreams(), request, {
+      fetchImpl: this.deps?.fetch,
+      userId: options?.userId,
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+    });
   }
-
-  const systemBlock = systemParts.join('\n\n');
-  const systemBytes = Buffer.byteLength(systemBlock, 'utf8');
-
-  // If system instructions alone exceed maxBytes, truncate system instructions by bytes
-  if (systemBytes >= maxBytes - 1000) {
-    const buf = Buffer.from(systemBlock, 'utf8');
-    return buf.subarray(0, maxBytes - 100).toString('utf8') + '\n\n[System truncated]';
-  }
-
-  const remainingBudget = maxBytes - (systemBytes > 0 ? systemBytes + 2 : 0);
-  const includedTurns: string[] = [];
-  let currentBytes = 0;
-  let omittedTurns = false;
-
-  for (let i = conversationTurns.length - 1; i >= 0; i--) {
-    const turn = `[${conversationTurns[i].role}]: ${conversationTurns[i].text}`;
-    const turnBytes = Buffer.byteLength(turn, 'utf8') + 2;
-    if (currentBytes + turnBytes <= remainingBudget) {
-      includedTurns.unshift(turn);
-      currentBytes += turnBytes;
-    } else if (i === conversationTurns.length - 1 && includedTurns.length === 0) {
-      // The newest turn ALONE exceeds the remaining budget. Dropping it
-      // (the old behavior) sent the CLI a prompt containing none of the
-      // user's message — only the history-omitted note below. Truncate
-      // the turn byte-safely instead and mark the truncation inline.
-      // (4 spare bytes cover a multibyte codepoint split by the cut
-      // decoding to U+FFFD.)
-      const prefix = `[${conversationTurns[i].role}]: `;
-      const truncNote = '\n[Eluvix Note: Latest message truncated to stay within argument limit]';
-      // When older turns exist they are omitted, which adds the
-      // history-omitted note (plus its separator) to the assembled
-      // prompt — reserve room for it so the total stays within budget.
-      const omitReserve = i > 0
-        ? Buffer.byteLength('[Eluvix Note: Prior conversation history omitted to stay within argument limit]', 'utf8') + 2
-        : 0;
-      const avail =
-        remainingBudget - 2 - Buffer.byteLength(prefix, 'utf8') - Buffer.byteLength(truncNote, 'utf8') - omitReserve - 4;
-      if (avail > 0) {
-        const textBuf = Buffer.from(conversationTurns[i].text, 'utf8');
-        const truncated = prefix + textBuf.subarray(0, avail).toString('utf8') + truncNote;
-        includedTurns.unshift(truncated);
-        currentBytes += Buffer.byteLength(truncated, 'utf8') + 2;
-        if (i > 0) omittedTurns = true;
-      } else {
-        omittedTurns = true;
-      }
-      break;
-    } else {
-      omittedTurns = true;
-      break;
-    }
-  }
-
-  const parts: string[] = [];
-  if (systemBlock) {
-    parts.push(systemBlock);
-  }
-  if (omittedTurns) {
-    parts.push('[Eluvix Note: Prior conversation history omitted to stay within argument limit]');
-  }
-  if (includedTurns.length > 0) {
-    parts.push(includedTurns.join('\n\n'));
-  }
-
-  return parts.join('\n\n');
 }
 
 /**

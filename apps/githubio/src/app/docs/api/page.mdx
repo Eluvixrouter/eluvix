@@ -114,6 +114,16 @@ Authorization: Bearer <ADMIN_PASSWORD_OR_NAMED_KEY>
 - `X-Eluvix-Cascade`: Speculative cascade decision (`draft-accepted` or `verifier-escalated`) when `speculativeCascade` is enabled.
 - `X-Eluvix-Cascade-Confidence`: Measured speculative draft confidence score (`0.00`–`1.00`).
 - `X-Eluvix-Embedding-Dimensions`: Vector dimensionality returned by `/api/v1/embeddings` after Matryoshka L2-normalized truncation/padding.
+- `X-Eluvix-Cache-Read-Tokens`: Prompt cache read input tokens (discounted by `cacheReadMultiplier`, default 90% discount).
+- `X-Eluvix-Cache-Write-Tokens`: Prompt cache creation/write input tokens on Anthropic `cache_control` or prefix-cached upstreams.
+- `X-Eluvix-Schema-Validation`: Structured Output JSON Schema validation outcome (`passed`, `repaired`, `escalated`, or `failed`).
+- `X-Eluvix-Output-Guard`: Output Guardrail & streaming SSE DLP inspection result (`clean`, `redacted`, or `blocked`).
+- `X-Eluvix-Output-Redactions`: Number of secrets, PII tokens, or policy regex matches redacted from the model response.
+- `X-Eluvix-Trace-Id`: 128-bit OpenTelemetry trace ID exported via OTLP/HTTP JSON (`gen_ai.*` & `eluvix.*` semantic conventions) or Langfuse.
+- `X-Eluvix-Engine-Load`: Live local engine load telemetry (`engine`, `waiting`, `running`, `kv`, `warm`, `delta`).
+- `X-Eluvix-Rerank-Model`: Model identifier that scored a `/api/v1/rerank` request.
+- `X-Eluvix-Prompt`: Resolved versioned Prompt Registry template (`<id>@v<version>`) when `X-Eluvix-Prompt` or `metadata.promptRef` is supplied.
+- `X-Eluvix-Audit-Chain-Valid`: Cryptographic SHA-256 hash-chain verification status (`true` / `false`) on `GET /api/v1/audit?verify=1`.
 - `X-Eluvix-Hops`: Incremented hop count returned to the caller.
 
 #### Request Example (cURL)
@@ -411,6 +421,28 @@ Creates, commits, or clears memories in the active memory backend:
   "userId": "alice"
 }
 ```
+
+---
+
+## 14. Security Audit Chain, Batch API, Reranker, Prompt Registry & Alerting Webhooks (v1.2)
+
+### `GET /api/v1/audit`
+Returns tamper-evident security audit events (`api_key.create`, `api_key.revoke`, `config.update`, `prompt.register`, `prompt.promote`). Pass `?verify=1` to walk the entire SHA-256 hash chain (`prev_hash` &rarr; `entry_hash`) from genesis and emit `X-Eluvix-Audit-Chain-Valid: true|false`.
+
+### `POST /api/v1/files`, `GET /api/v1/files`, `GET /api/v1/files/:id/content`
+OpenAI-compatible JSONL batch file storage backed by SQLite `batch_files`.
+
+### `POST /api/v1/batches`, `GET /api/v1/batches`, `GET /api/v1/batches/:id`, `POST /api/v1/batches/:id`
+OpenAI-compatible asynchronous Batch API executing queued JSONL `/v1/chat/completions` and `/v1/embeddings` items while cooperatively yielding to interactive foreground GPU requests via `CooperativeVramArbiter`.
+
+### `POST /api/v1/rerank`
+Cohere / Jina / vLLM compatible cross-encoder and sovereign BM25/overlap reranking endpoint (`{ model, query, documents, top_n, return_documents }`) with `PrivacyGuard` PII scrubbing and `X-Eluvix-Rerank-Model` telemetry.
+
+### `GET /api/v1/prompts`, `POST /api/v1/prompts`
+Versioned Prompt Registry storing immutable system templates (`v1, v2, v3...`), aliases (`@staging`, `@production`), and `minEvalScore` promotion gates. Reference prompts in chat requests via `X-Eluvix-Prompt: <id>@production` or `metadata.promptRef`.
+
+### `GET /api/v1/webhooks`, `POST /api/v1/webhooks`, `DELETE /api/v1/webhooks`
+Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `ntfy`, `json`) signed with `X-Eluvix-Signature: sha256=<hmac_hex>`.
 
 ---
 

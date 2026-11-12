@@ -4,6 +4,38 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.2.0 — Prompt Caching, Universal Structured Outputs, Streaming Output Guard DLP, Real OTLP Exporter, Hashed Scoped Keys, Secret References, Tamper-Evident Audit Chain, Live Engine Signals, Batch API, Rerank & Prompt Registry *(November 11, 2026)*
+
+### 🎯 Wire-Protocol Correctness & Real OpenTelemetry Exporter
+- **Prompt-Caching Passthrough & Cache-Aware Cost Accounting**:
+  - Preserves Anthropic `cache_control: { type: "ephemeral" }` breakpoints on `system`, `tools`, and `messages`, forwards `anthropic-beta: prompt-caching-2024-07-31`, derives sticky KV prefix affinity hashes from cached prefixes, and discounts cached input tokens via `cacheReadMultiplier` (default `0.1` = 90% off) with `X-Eluvix-Cache-Read-Tokens` and `X-Eluvix-Cache-Write-Tokens`.
+- **Universal Structured Outputs (`structured-outputs.ts`)**:
+  - Translates OpenAI `response_format: { type: "json_schema" }` into native grammar constraints across vLLM (`guided_json`), SGLang, Ollama (`format: <schema>`), and RamaLama/llama.cpp (`json_schema`), filters incapable upstreams when `strict: true`, repairs markdown fences, and validates/escalates on schema mismatch (`X-Eluvix-Schema-Validation`).
+- **Output Guardrails with Sliding-Window Streaming SSE DLP (`output-guard.ts`)**:
+  - Scans non-streaming JSON and live SSE token streams (with a sliding holdback buffer so secrets or PII split across adjacent token chunks are caught before reaching the client), emitting `X-Eluvix-Output-Guard` and `X-Eluvix-Output-Redactions`.
+- **Dependency-Light OpenTelemetry (`OTLP/HTTP JSON` + Langfuse) Exporter (`otel-exporter.ts`)**:
+  - Exports root `eluvix.chat` and child `eluvix.guard`, `eluvix.routing`, `eluvix.upstream`, and `eluvix.memory` spans with `gen_ai.*` and `eluvix.*` semantic conventions, PII scrubbing, and SSRF validation (`X-Eluvix-Trace-Id`).
+
+### 🔐 Security Hardening: Hashed Scoped Keys, Secret References & Tamper-Evident Audit Log
+- **Automatic SHA-256 Key Hashing & Scoped/Expiring Keys (`auth.ts`)**:
+  - Automatically migrates plaintext `elx_...` keys in `keys.json` in place to `keyHash = sha256(key)` + `keyPrefix`, backed by an `mtimeMs`-invalidated cache and enforcing per-key `scopes`, `expiresAt`, `maxDailySpendUsd`, and sliding-window `rpm`.
+- **Secret References (`secrets.ts`)**:
+  - Resolves `env:VAR_NAME`, `file:secrets/...`, `bao:secret/data/path#field` (OpenBao / HashiCorp Vault KV v2 with TTL cache), and `keychain:service/account` at outbound request time without ever writing plaintext secrets to `config.json`.
+- **Tamper-Evident SHA-256 Audit Chain (`GET /api/v1/audit?verify=1`)**:
+  - Chains every security and configuration event in SQLite `audit_events` (`prev_hash` &rarr; `entry_hash`) and verifies full chain integrity on demand (`X-Eluvix-Audit-Chain-Valid`).
+
+### ⚙️ Operator Platform: Live Engine Load Signals, Batch API, Rerank, Prompt Registry & Webhooks
+- **Live Engine Load Signals (`engine-signals.ts`)**:
+  - Scrapes vLLM/SGLang Prometheus `/metrics` (`vllm:num_requests_waiting`, `vllm:gpu_cache_usage_perc`), Ollama `/api/ps` (warm VRAM models), and ComfyUI `/queue` to route away from congested queues toward warm VRAM models (`X-Eluvix-Engine-Load`).
+- **OpenAI-Compatible Batch API (`/api/v1/files` & `/api/v1/batches`)**:
+  - Asynchronous JSONL batch execution in SQLite (`batch_files`, `batch_jobs`, `batch_items`) yielding to foreground GPU workloads via `CooperativeVramArbiter`.
+- **Cross-Encoder & Sovereign Reranker (`POST /api/v1/rerank`)**:
+  - Cohere/Jina/vLLM-compatible reranking with `PrivacyGuard` scrubbing and sovereign BM25/overlap fallback (`X-Eluvix-Rerank-Model`).
+- **Versioned Prompt Registry (`GET/POST /api/v1/prompts`) & Alerting Webhooks (`GET/POST/DELETE /api/v1/webhooks`)**:
+  - Immutable prompt versions (`v1, v2, v3...`), `@staging` / `@production` aliases with `minEvalScore` promotion gates (`X-Eluvix-Prompt`), and HMAC-SHA256 signed Slack/Discord/ntfy/JSON webhooks (`X-Eluvix-Signature`).
+
+---
+
 ## v1.1.0 — Universal Wire-Protocol Gateway, Speculative Cascades, Thompson Bandit, SFT/DPO Distillation, Sovereign MCP Server, Cooperative VRAM Arbiter & Golden Evals *(November 11, 2026)*
 
 ### 🌐 Universal Wire-Protocol Gateway (`/v1/messages`, `/v1/responses`, `/v1/embeddings`)

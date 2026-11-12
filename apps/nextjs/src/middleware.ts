@@ -101,7 +101,13 @@ export async function middleware(req: NextRequest) {
           normalizedApiPath.startsWith('/api/v1/models') ||
           normalizedApiPath.startsWith('/api/v1/route-explain') ||
           normalizedApiPath.startsWith('/api/v1/export') ||
-          normalizedApiPath.startsWith('/api/v1/harness/sessions'))
+          normalizedApiPath.startsWith('/api/v1/harness/sessions') ||
+          normalizedApiPath.startsWith('/api/v1/audit') ||
+          normalizedApiPath.startsWith('/api/v1/files') ||
+          normalizedApiPath.startsWith('/api/v1/batches') ||
+          normalizedApiPath.startsWith('/api/v1/rerank') ||
+          normalizedApiPath.startsWith('/api/v1/prompts') ||
+          normalizedApiPath.startsWith('/api/v1/webhooks'))
       ) {
         return NextResponse.next();
       }
@@ -141,7 +147,11 @@ export async function middleware(req: NextRequest) {
           pathname.startsWith('/api/v1/provider') ||
           pathname.startsWith('/api/v1/observability') ||
           pathname.startsWith('/api/v1/memory') ||
-          pathname.startsWith('/api/v1/harness/sessions');
+          pathname.startsWith('/api/v1/harness/sessions') ||
+          pathname.startsWith('/api/v1/files') ||
+          pathname.startsWith('/api/v1/batches') ||
+          pathname.startsWith('/api/v1/prompts') ||
+          pathname.startsWith('/api/v1/webhooks');
 
         if (isProtectedMutation) {
           return NextResponse.json(

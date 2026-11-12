@@ -83,6 +83,26 @@
       "types": "./dist/eval-types.d.ts",
       "import": "./dist/eval-types.js",
       "default": "./dist/eval-types.js"
+    },
+    "./structured-outputs": {
+      "types": "./dist/structured-outputs.d.ts",
+      "import": "./dist/structured-outputs.js",
+      "default": "./dist/structured-outputs.js"
+    },
+    "./output-guard": {
+      "types": "./dist/output-guard.d.ts",
+      "import": "./dist/output-guard.js",
+      "default": "./dist/output-guard.js"
+    },
+    "./otel-exporter": {
+      "types": "./dist/otel-exporter.d.ts",
+      "import": "./dist/otel-exporter.js",
+      "default": "./dist/otel-exporter.js"
+    },
+    "./engine-signals": {
+      "types": "./dist/engine-signals.d.ts",
+      "import": "./dist/engine-signals.js",
+      "default": "./dist/engine-signals.js"
     }
   },
   "type": "module",
@@ -95,7 +115,11 @@
     "ldapts": "^9.2.0"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@types/autocannon": "^7.12.7",
     "@types/better-sqlite3": "^9.6.0",
+    "autocannon": "^9.0.0",
+    "openai": "^7.55.0",
     "typescript": "^5.0.0",
     "vitest": "^2.1.9"
   }
