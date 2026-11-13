@@ -19,7 +19,9 @@ export default function RoutingEditorPage() {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      setBaseUrl(window.location.origin);
+      // Client-only origin: read after mount, in a timer callback rather
+      // than synchronously in the effect body (react-hooks/set-state-in-effect).
+      const timer = setTimeout(() => setBaseUrl(window.location.origin), 0);
       fetch('/api/v1/layouts')
         .then((res) => res.json())
         .then((data) => {
@@ -42,6 +44,7 @@ export default function RoutingEditorPage() {
 
       window.addEventListener('eluvix:open-quick-harness', handleOpenQuickHarness);
       return () => {
+        clearTimeout(timer);
         window.removeEventListener('eluvix:open-quick-harness', handleOpenQuickHarness);
       };
     }

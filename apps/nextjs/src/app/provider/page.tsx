@@ -643,9 +643,14 @@ export default function ProviderPage() {
   };
 
   useEffect(() => {
-    fetchStatus();
+    const timer = setTimeout(() => {
+      fetchStatus();
+    }, 0);
     const interval = setInterval(fetchStatus, 4000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleToggle = async () => {

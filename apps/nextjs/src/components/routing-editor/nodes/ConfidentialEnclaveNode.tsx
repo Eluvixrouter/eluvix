@@ -24,24 +24,29 @@ export default function ConfidentialEnclaveNode({ id, data }: { id: string; data
     data?.spdmAttested ?? true
   );
 
-  useEffect(() => {
-    if (data?.architecture !== undefined) setArchitecture(data.architecture);
-    if (data?.confidentialPolicy !== undefined) setConfidentialPolicy(data.confidentialPolicy);
-    if (data?.kbsEndpoint !== undefined) setKbsEndpoint(data.kbsEndpoint);
-    if (data?.expectedMeasurement !== undefined) setExpectedMeasurement(data.expectedMeasurement);
-    if (data?.restrictedInjection !== undefined) setRestrictedInjection(data.restrictedInjection);
-    if (data?.spdmAttested !== undefined) setSpdmAttested(data.spdmAttested);
-  }, [
-    data?.architecture,
-    data?.confidentialPolicy,
-    data?.kbsEndpoint,
-    data?.expectedMeasurement,
-    data?.restrictedInjection,
-    data?.spdmAttested
-  ]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.architecture !== undefined) setArchitecture(data.architecture);
+      if (data?.confidentialPolicy !== undefined) setConfidentialPolicy(data.confidentialPolicy);
+      if (data?.kbsEndpoint !== undefined) setKbsEndpoint(data.kbsEndpoint);
+      if (data?.expectedMeasurement !== undefined) setExpectedMeasurement(data.expectedMeasurement);
+      if (data?.restrictedInjection !== undefined) setRestrictedInjection(data.restrictedInjection);
+      if (data?.spdmAttested !== undefined) setSpdmAttested(data.spdmAttested);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

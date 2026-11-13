@@ -456,25 +456,6 @@ export default function PlaygroundPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollEndRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setCurrentSessionId(uuidv4());
-    fetchSessions();
-    fetch('/api/v1/models')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && Array.isArray(data.data)) {
-          const defaults = ['auto', 'gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash'];
-          const merged = Array.from(new Set([...defaults, ...data.data.map((m: any) => m.id)]));
-          setAvailableModels(merged);
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    scrollEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
-  }, [messages, arenaTurns, loading]);
-
   const fetchSessions = async () => {
     try {
       const res = await fetch('/api/v1/chat/history');
@@ -486,6 +467,32 @@ export default function PlaygroundPage() {
       console.error(err);
     }
   };
+
+  // Mount setup: new session id + session list + model list. The two
+  // synchronous state updates run in a timer callback rather than
+  // synchronously in the effect body (react-hooks/set-state-in-effect);
+  // the model fetch below already updates state only in .then callbacks.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setCurrentSessionId(uuidv4());
+      fetchSessions();
+    }, 0);
+    fetch('/api/v1/models')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && Array.isArray(data.data)) {
+          const defaults = ['auto', 'gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash'];
+          const merged = Array.from(new Set([...defaults, ...data.data.map((m: any) => m.id)]));
+          setAvailableModels(merged);
+        }
+      })
+      .catch(() => {});
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    scrollEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
+  }, [messages, arenaTurns, loading]);
 
   const loadSession = async (sessionId: string) => {
     try {

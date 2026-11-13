@@ -58,50 +58,63 @@ export default function VectorCraftNode({ id, data }: { id: string; data: any })
 
   const spec = ARTCRAFT_APPS_CATALOG[selectedApp] || ARTCRAFT_APPS_CATALOG.vectorcraft;
 
-  useEffect(() => {
-    if (!data) return;
-    const nextApp: ArtCraftAppId =
-      data.app && ARTCRAFT_APPS_CATALOG[data.app as ArtCraftAppId]
-        ? (data.app as ArtCraftAppId)
-        : 'vectorcraft';
-    const nextSpec = ARTCRAFT_APPS_CATALOG[nextApp];
-    setSelectedApp(nextApp);
-    setBundleMode(Array.isArray(data.enabledApps) && data.enabledApps.length > 1);
-    setEnabledApps(
-      Array.isArray(data.enabledApps) && data.enabledApps.length > 0
-        ? (data.enabledApps as ArtCraftAppId[])
-        : [nextApp]
-    );
-    setBackendMode(data.backendMode || 'auto');
-    setCliCommand(data.cliCommand || nextSpec.cliBinary);
-    setControlAddress(data.controlAddress || `127.0.0.1:${nextSpec.defaultControlPort ?? 7979}`);
-    setDefaultPromptWorkflow(data.defaultPromptWorkflow || (nextSpec.prompts[0] ?? 'none'));
-    setAutoApproveTier(data.autoApproveTier || 'canvas-draw');
-    setDefaultExportFormat(data.defaultExportFormat || nextSpec.defaultExportFormat);
-    setReadRoot(
-      Array.isArray(data.readRoots) && data.readRoots.length > 0
-        ? String(data.readRoots[0])
-        : data.readRoot || ''
-    );
-    setWriteRoot(
-      Array.isArray(data.writeRoots) && data.writeRoots.length > 0
-        ? String(data.writeRoots[0])
-        : data.writeRoot || ''
-    );
-  }, [data]);
-
-  if (data) {
-    if (!data.app) data.app = initialApp;
-    if (!data.enabledApps) data.enabledApps = [initialApp];
-    if (!data.backendMode) data.backendMode = 'auto';
-    if (!data.cliCommand) data.cliCommand = initialSpec.cliBinary;
-    if (!data.controlAddress) data.controlAddress = `127.0.0.1:${initialSpec.defaultControlPort ?? 7979}`;
-    if (!data.defaultPromptWorkflow) data.defaultPromptWorkflow = initialSpec.prompts[0] ?? 'none';
-    if (!data.autoApproveTier) data.autoApproveTier = 'canvas-draw';
-    if (!data.defaultExportFormat) data.defaultExportFormat = initialSpec.defaultExportFormat;
-    if (data.readRoots === undefined) data.readRoots = readRoot ? [readRoot] : [];
-    if (data.writeRoots === undefined) data.writeRoots = writeRoot ? [writeRoot] : [];
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing, so no
+  // cascading post-commit render happens.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      const nextApp: ArtCraftAppId =
+        data.app && ARTCRAFT_APPS_CATALOG[data.app as ArtCraftAppId]
+          ? (data.app as ArtCraftAppId)
+          : 'vectorcraft';
+      const nextSpec = ARTCRAFT_APPS_CATALOG[nextApp];
+      setSelectedApp(nextApp);
+      setBundleMode(Array.isArray(data.enabledApps) && data.enabledApps.length > 1);
+      setEnabledApps(
+        Array.isArray(data.enabledApps) && data.enabledApps.length > 0
+          ? (data.enabledApps as ArtCraftAppId[])
+          : [nextApp]
+      );
+      setBackendMode(data.backendMode || 'auto');
+      setCliCommand(data.cliCommand || nextSpec.cliBinary);
+      setControlAddress(data.controlAddress || `127.0.0.1:${nextSpec.defaultControlPort ?? 7979}`);
+      setDefaultPromptWorkflow(data.defaultPromptWorkflow || (nextSpec.prompts[0] ?? 'none'));
+      setAutoApproveTier(data.autoApproveTier || 'canvas-draw');
+      setDefaultExportFormat(data.defaultExportFormat || nextSpec.defaultExportFormat);
+      setReadRoot(
+        Array.isArray(data.readRoots) && data.readRoots.length > 0
+          ? String(data.readRoots[0])
+          : data.readRoot || ''
+      );
+      setWriteRoot(
+        Array.isArray(data.writeRoots) && data.writeRoots.length > 0
+          ? String(data.writeRoots[0])
+          : data.writeRoot || ''
+      );
+    }
   }
+
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.app) missing.app = initialApp;
+    if (!data.enabledApps) missing.enabledApps = [initialApp];
+    if (!data.backendMode) missing.backendMode = 'auto';
+    if (!data.cliCommand) missing.cliCommand = initialSpec.cliBinary;
+    if (!data.controlAddress) missing.controlAddress = `127.0.0.1:${initialSpec.defaultControlPort ?? 7979}`;
+    if (!data.defaultPromptWorkflow) missing.defaultPromptWorkflow = initialSpec.prompts[0] ?? 'none';
+    if (!data.autoApproveTier) missing.autoApproveTier = 'canvas-draw';
+    if (!data.defaultExportFormat) missing.defaultExportFormat = initialSpec.defaultExportFormat;
+    if (data.readRoots === undefined) missing.readRoots = readRoot ? [readRoot] : [];
+    if (data.writeRoots === undefined) missing.writeRoots = writeRoot ? [writeRoot] : [];
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, initialApp, initialSpec, readRoot, writeRoot]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

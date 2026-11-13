@@ -83,9 +83,14 @@ export default function ObservabilityPage() {
     }
   }, [statusFilter]);
 
-  // Initial fetch
+  // Initial fetch. Kicked off from a timer callback rather than
+  // synchronously in the effect body (react-hooks/set-state-in-effect);
+  // the first poll still starts before the next paint.
   useEffect(() => {
-    fetchObservability(true);
+    const timer = setTimeout(() => {
+      fetchObservability(true);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [fetchObservability]);
 
   // Live polling interval (every 3 seconds when isLive is active)

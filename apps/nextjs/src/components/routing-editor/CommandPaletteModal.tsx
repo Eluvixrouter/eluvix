@@ -123,10 +123,28 @@ export default function CommandPaletteModal({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // Reset the palette when it opens, and reset the highlighted row when the
+  // query changes. Both are "adjust state when a prop changes", done during
+  // render instead of in effects (react-hooks/set-state-in-effect): React
+  // discards the render and re-renders with the new state before committing.
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen);
     if (isOpen) {
       setQuery('');
       setActiveIndex(0);
+    }
+  }
+  const [prevQuery, setPrevQuery] = useState(query);
+  if (query !== prevQuery) {
+    setPrevQuery(query);
+    setActiveIndex(0);
+  }
+
+  // Focus the input once the palette opens (a timer callback, not a
+  // synchronous setState — the effect sets no state itself).
+  useEffect(() => {
+    if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 20);
     }
   }, [isOpen]);
@@ -363,10 +381,6 @@ export default function CommandPaletteModal({
     scored.sort((a, b) => b.score - a.score);
     return scored.map((s) => s.item);
   }, [allItems, query]);
-
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [query]);
 
   useEffect(() => {
     const activeEl = listRef.current?.querySelector(`[data-palette-idx="${activeIndex}"]`);

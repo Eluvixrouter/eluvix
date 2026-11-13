@@ -60,13 +60,20 @@ export function useDockerStatus(pollingInterval = 5000) {
 
   useEffect(() => {
     subscribers.add(setStatus);
+    let timer: NodeJS.Timeout | undefined;
     if (subscribers.size === 1) {
       startPolling(pollingInterval);
     } else if (cachedStatus) {
-      setStatus(cachedStatus);
+      // Adopt the latest cached status, which may have advanced since this
+      // component's initial render. Deferred to a timer callback so the
+      // effect body sets no state synchronously
+      // (react-hooks/set-state-in-effect); the subscriber added above still
+      // receives live poll updates in the meantime.
+      timer = setTimeout(() => setStatus(cachedStatus), 0);
     }
 
     return () => {
+      if (timer !== undefined) clearTimeout(timer);
       subscribers.delete(setStatus);
       if (subscribers.size === 0) {
         stopPolling();

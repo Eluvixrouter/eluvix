@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function ObservabilityNode({ id, data }: { id: string; data: any }) {
@@ -11,15 +11,21 @@ export default function ObservabilityNode({ id, data }: { id: string; data: any 
   const [samplingRate, setSamplingRate] = useState(data?.samplingRate ?? 100);
   const [scrubPii, setScrubPii] = useState(data?.scrubPii !== false);
 
-  // Ensure default structure
-  if (data) {
-    if (!data.projectName) data.projectName = projectName;
-    if (!data.exporter) data.exporter = exporter;
-    if (data.captureInputs === undefined) data.captureInputs = captureInputs;
-    if (data.samplingRate === undefined) data.samplingRate = samplingRate;
-    if (data.scrubPii === undefined) data.scrubPii = scrubPii;
-    if (data.latencyAlertMs === undefined) data.latencyAlertMs = 5000;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // projectName uses an `=== undefined` guard because its text input can
+  // be cleared to '' — a `!data.projectName` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (data.projectName === undefined) missing.projectName = projectName;
+    if (!data.exporter) missing.exporter = exporter;
+    if (data.captureInputs === undefined) missing.captureInputs = captureInputs;
+    if (data.samplingRate === undefined) missing.samplingRate = samplingRate;
+    if (data.scrubPii === undefined) missing.scrubPii = scrubPii;
+    if (data.latencyAlertMs === undefined) missing.latencyAlertMs = 5000;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, projectName, exporter, captureInputs, samplingRate, scrubPii]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);
