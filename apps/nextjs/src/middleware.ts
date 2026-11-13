@@ -36,6 +36,38 @@ async function secureTokenCompare(provided: string, expected: string): Promise<b
   return diff === 0;
 }
 
+/**
+ * State-mutating API prefixes that read-only callers may not touch with a
+ * non-GET method. Chat routes are state-mutating (they spend quota, can
+ * trigger harness sessions, and write chat history / memory), so
+ * /api/v1/chat covers both /api/v1/chat and /api/v1/chat/completions.
+ * Exported for unit tests; the middleware applies it to session callers,
+ * while elx_ named keys are enforced in the chat handlers themselves
+ * (the Edge middleware cannot read keys.json, so key verification is
+ * deferred to the Node route handlers).
+ */
+export function isProtectedMutationPath(pathname: string): boolean {
+  return (
+    pathname.startsWith('/api/secrets') ||
+    pathname.startsWith('/api/orchestrator') ||
+    pathname.startsWith('/api/v1/chat') ||
+    pathname.startsWith('/api/v1/config') ||
+    pathname.startsWith('/api/v1/configurator') ||
+    pathname.startsWith('/api/v1/detect-models') ||
+    pathname.startsWith('/api/v1/tools') ||
+    pathname.startsWith('/api/v1/docker') ||
+    pathname.startsWith('/api/v1/layouts') ||
+    pathname.startsWith('/api/v1/provider') ||
+    pathname.startsWith('/api/v1/observability') ||
+    pathname.startsWith('/api/v1/memory') ||
+    pathname.startsWith('/api/v1/harness/sessions') ||
+    pathname.startsWith('/api/v1/files') ||
+    pathname.startsWith('/api/v1/batches') ||
+    pathname.startsWith('/api/v1/prompts') ||
+    pathname.startsWith('/api/v1/webhooks')
+  );
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const origin = req.headers.get('origin');
@@ -135,23 +167,7 @@ export async function middleware(req: NextRequest) {
         req.method !== 'HEAD' &&
         req.method !== 'OPTIONS'
       ) {
-        const isProtectedMutation =
-          pathname.startsWith('/api/secrets') ||
-          pathname.startsWith('/api/orchestrator') ||
-          pathname.startsWith('/api/v1/config') ||
-          pathname.startsWith('/api/v1/configurator') ||
-          pathname.startsWith('/api/v1/detect-models') ||
-          pathname.startsWith('/api/v1/tools') ||
-          pathname.startsWith('/api/v1/docker') ||
-          pathname.startsWith('/api/v1/layouts') ||
-          pathname.startsWith('/api/v1/provider') ||
-          pathname.startsWith('/api/v1/observability') ||
-          pathname.startsWith('/api/v1/memory') ||
-          pathname.startsWith('/api/v1/harness/sessions') ||
-          pathname.startsWith('/api/v1/files') ||
-          pathname.startsWith('/api/v1/batches') ||
-          pathname.startsWith('/api/v1/prompts') ||
-          pathname.startsWith('/api/v1/webhooks');
+        const isProtectedMutation = isProtectedMutationPath(pathname);
 
         if (isProtectedMutation) {
           return NextResponse.json(

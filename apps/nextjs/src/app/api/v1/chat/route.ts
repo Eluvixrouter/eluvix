@@ -128,6 +128,17 @@ export async function POST(req: Request) {
     if (!caller.ok) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
+    // Readonly callers (LDAP session or elx_ named key) may not execute
+    // chat turns: they spend quota, can trigger harness sessions, and write
+    // chat history / memory. The middleware readonly blocklist covers the
+    // session path; this covers the elx_ key path, which the middleware
+    // passes through for in-handler verification.
+    if (caller.role === 'readonly') {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden: read-only users cannot execute chat requests' },
+        { status: 403 }
+      );
+    }
     const userId = caller.userId;
 
     const wantStream = body.stream === true;

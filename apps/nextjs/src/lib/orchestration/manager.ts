@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
 import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
-import { saveConfig } from '@/lib/router';
+import { saveConfig, validateConfig } from '@/lib/router';
 import { DOCKER_SERVICE_CATALOG } from '@/lib/docker-catalog';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
@@ -223,6 +223,53 @@ export class OrchestrationManager {
     // preserved from the previous configuration.
     const mergedConfig = configData;
 
+    // Validate BEFORE touching disk. Previously the file was overwritten
+    // first and saveConfig validation errors were swallowed, destroying
+    // the live config while reporting success.
+    try {
+      validateConfig(mergedConfig);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logs.push(`✗ Refusing to deploy invalid configuration: ${message}`);
+      return {
+        success: false,
+        tier: 'local',
+        message: `Local deployment refused: ${message}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+    // validateConfig only requires upstreams to be an array, but an empty
+    // graph is a total routing outage — refuse it as a failed deploy
+    // rather than reporting success with zero upstreams.
+    if (mergedConfig.upstreams.length === 0) {
+      logs.push('✗ Refusing to deploy an empty upstream graph (zero upstreams would leave the router unable to route)');
+      return {
+        success: false,
+        tier: 'local',
+        message: 'Local deployment refused: upstreams must contain at least one upstream',
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    // Back up the previous config before overwriting (same .bak precedent
+    // as configurator/apply), so a failed deploy never destroys it.
+    let backupFile: string | null = null;
+    if (fs.existsSync(targetFile)) {
+      backupFile = `${targetFile}.bak`;
+      try {
+        fs.copyFileSync(targetFile, backupFile);
+        // copyFileSync does not preserve the source mode: the backup holds
+        // the same credentials as config.json, so it must be 0600, not the
+        // umask default (audit H-11 class — backups at default modes).
+        fs.chmodSync(backupFile, 0o600);
+        logs.push(`✓ Backed up previous router config to ${backupFile}`);
+      } catch {
+        backupFile = null;
+      }
+    }
+
     fs.writeFileSync(targetFile, JSON.stringify(mergedConfig, null, 2), { encoding: 'utf-8', mode: 0o600 });
     logs.push(`✓ Written active router config to ${targetFile}`);
 
@@ -231,7 +278,25 @@ export class OrchestrationManager {
         saveConfig(mergedConfig);
         logs.push(`✓ Saved and reloaded active router configuration`);
       }
-    } catch {}
+    } catch (err) {
+      // The on-disk file must never hold a config the router refused:
+      // restore the backup and report failure, not success.
+      if (backupFile && fs.existsSync(backupFile)) {
+        try {
+          fs.copyFileSync(backupFile, targetFile);
+          logs.push('↩ Restored previous router config from backup after validation failure');
+        } catch {}
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      logs.push(`✗ Failed to save and reload active router configuration: ${message}`);
+      return {
+        success: false,
+        tier: 'local',
+        message: `Local deployment failed: ${message}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
 
     // Synchronize active Eluvix models & auth into OpenCode config (~/.config/opencode/opencode.json)
     try {

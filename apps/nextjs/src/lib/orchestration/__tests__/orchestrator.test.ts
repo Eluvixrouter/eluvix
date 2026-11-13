@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ALLOWED_EXECUTABLES, executeSafeCommand } from '../executor';
 import { orchestratorManager } from '../manager';
 
@@ -43,7 +46,7 @@ describe('Orchestration Subsystem', () => {
 
   it('should successfully deploy local level 1 config', async () => {
     const sampleConfig = {
-      upstreams: [{ id: 'test-ollama', name: 'Test', endpoint: 'http://localhost:11434', priority: 1, models: ['smollm'] }],
+      upstreams: [{ id: 'test-ollama', name: 'Test', type: 'ollama', endpoint: 'http://localhost:11434', priority: 1, models: ['smollm'] }],
       strategy: 'lowest-cost'
     };
 
@@ -212,5 +215,78 @@ describe('Orchestration Subsystem', () => {
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  // Hunt-2 M-C3: LOCAL deploy must validate before writing, keep a backup,
+  // and report failure — never destroy the live config while claiming
+  // success. deployLocal writes to the shared test config dir under
+  // NODE_ENV=test, so these tests live in this file (sequential) rather
+  // than racing it from another worker.
+  describe('deployLocal validation and backup (hunt2 M-C3)', () => {
+    const configDir = path.join(os.tmpdir(), 'eluvix-test-config');
+
+    function seedValidConfig() {
+      fs.mkdirSync(configDir, { recursive: true });
+      const valid = {
+        upstreams: [
+          { id: 'seed-lemonade', name: 'Seed', type: 'lemonade', endpoint: 'http://localhost:13305', models: ['*'] }
+        ],
+        strategy: 'cost-complexity'
+      };
+      fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify(valid), 'utf-8');
+      return valid;
+    }
+
+    function readDeployed() {
+      return JSON.parse(fs.readFileSync(path.join(configDir, 'config.json'), 'utf-8'));
+    }
+
+    it('refuses an invalid config and leaves the previous config untouched', async () => {
+      const seeded = seedValidConfig();
+      const res = await orchestratorManager.deploy({
+        tier: 'local',
+        compiledConfigs: {
+          eluvixJson: JSON.stringify({ upstreams: 'not-an-array' }),
+          rawRouterConfig: { upstreams: 'not-an-array' }
+        }
+      });
+      expect(res.success).toBe(false);
+      expect(readDeployed()).toEqual(seeded);
+    });
+
+    it('refuses an empty upstream graph and leaves the previous config untouched', async () => {
+      const seeded = seedValidConfig();
+      const res = await orchestratorManager.deploy({
+        tier: 'local',
+        compiledConfigs: {
+          eluvixJson: JSON.stringify({ upstreams: [] }),
+          rawRouterConfig: { upstreams: [] }
+        }
+      });
+      expect(res.success).toBe(false);
+      expect(readDeployed()).toEqual(seeded);
+    });
+
+    it('backs up the previous config on a valid deploy', async () => {
+      const seeded = seedValidConfig();
+      const next = {
+        upstreams: [
+          { id: 'next-lemonade', name: 'Next', type: 'lemonade', endpoint: 'http://localhost:13305', models: ['*'] }
+        ],
+        strategy: 'cost-complexity'
+      };
+      const res = await orchestratorManager.deploy({
+        tier: 'local',
+        compiledConfigs: { eluvixJson: JSON.stringify(next), rawRouterConfig: next }
+      });
+      expect(res.success).toBe(true);
+      expect(readDeployed().upstreams.map((u: any) => u.id)).toEqual(['next-lemonade']);
+      const backupPath = path.join(configDir, 'config.json.bak');
+      expect(fs.existsSync(backupPath)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(backupPath, 'utf-8'))).toEqual(seeded);
+      // The backup holds the same credentials as config.json: it must be
+      // 0600, never the umask default (audit H-11 class).
+      expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
+    });
   });
 });

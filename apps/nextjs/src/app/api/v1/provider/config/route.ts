@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getProviderAgent } from '@/lib/router';
 import { getProviderSettings } from '@eluvix/router-core';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,12 +24,24 @@ export async function POST(req: Request) {
       maxConcurrency: body.maxConcurrency || 1,
     });
 
-    const updated = getProviderSettings();
+    const rawSettings = getProviderSettings();
     const status = await agent.getStatus();
+
+    // Same redaction as the status GET: the node_token authenticates this
+    // node to the external provider network and must not leak to operators
+    // through the config POST's read-back.
+    const caller = await resolveCallerIdentity(req);
+    const isAdmin = caller.ok && caller.role === 'admin';
+    const settings = rawSettings
+      ? {
+          ...rawSettings,
+          node_token: isAdmin ? rawSettings.node_token : (rawSettings.node_token ? '[REDACTED]' : ''),
+        }
+      : rawSettings;
 
     return NextResponse.json({
       success: true,
-      settings: updated,
+      settings,
       status
     });
   } catch (err: any) {

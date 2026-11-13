@@ -15,7 +15,8 @@ import {
   desktopTokenEquals,
   extractDesktopToken,
   getOrCreateDesktopToken,
-  DESKTOP_TOKEN_HEADER
+  DESKTOP_TOKEN_HEADER,
+  DESKTOP_TOKEN_FILENAME
 } from '../local-request-guard.js';
 import { getAppPaths } from '../paths.js';
 
@@ -242,5 +243,33 @@ describe('desktop token', () => {
     expect(second.isNew).toBe(false);
     expect(second.token).toBe(first.token);
     expect(second.tokenFile).toBe(first.tokenFile);
+  });
+
+  it('tightens a pre-existing loose token file instead of trusting its mode (hunt2 L-C5)', () => {
+    // A token file created by an older build, copied in, or restored from
+    // backup may carry loose modes; any local user who can read it can
+    // call the desktop server. Loading it must re-assert 0o600.
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-token-tighten-'));
+    try {
+      process.env.XDG_CONFIG_HOME = tmp;
+      const { configDir } = getAppPaths('eluvix');
+      fs.mkdirSync(configDir, { recursive: true });
+      const tokenFile = path.join(configDir, DESKTOP_TOKEN_FILENAME);
+      fs.writeFileSync(tokenFile, 'pre-existing-token-value\n');
+      // chmodSync, not the write mode: the process umask would mask 0o644.
+      fs.chmodSync(tokenFile, 0o644);
+      expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o644);
+
+      const loaded = getOrCreateDesktopToken();
+      expect(loaded.isNew).toBe(false);
+      expect(loaded.token).toBe('pre-existing-token-value');
+      expect(loaded.tokenFile).toBe(tokenFile);
+      expect(fs.statSync(tokenFile).mode & 0o777).toBe(0o600);
+    } finally {
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
