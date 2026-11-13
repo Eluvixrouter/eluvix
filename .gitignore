@@ -3,6 +3,7 @@ node_modules/
 dist/
 out/
 .env*
+!.env.example
 release/
 *.log
 .DS_Store

@@ -3,6 +3,10 @@
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { DOC_SECTIONS, DOC_CATEGORIES } from './docs-data';
+// Read from apps/nextjs/package.json so the badge tracks the built release
+// instead of rotting at a hardcoded version (hunt-2 L24: it read v1.0.4
+// while the app was 1.0.21).
+import { version as appVersion } from '../../../package.json';
 
 export default function DocsPage() {
   const [activeSectionId, setActiveSectionId] = useState<string>('getting-started');
@@ -78,7 +82,7 @@ export default function DocsPage() {
               <h1 className="text-sm font-bold text-slate-100 flex items-center gap-2">
                 Eluvix In-App Documentation
                 <span className="bg-sky-500/10 text-sky-400 border border-sky-500/30 text-[10px] font-mono px-2 py-0.5 rounded-full">
-                  v1.0.4
+                  v{appVersion}
                 </span>
               </h1>
               <p className="text-[11px] text-slate-400">

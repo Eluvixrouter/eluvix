@@ -8,28 +8,29 @@
 #   ./scripts/release-tagger.sh major         # e.g. 1.0.1 -> 2.0.0
 #   ./scripts/release-tagger.sh 1.0.2         # Explicit version
 #   ./scripts/release-tagger.sh patch --push  # Also push commits & tag to origin
+#
+# Notes:
+#   - Argument parsing, the cd to the repo root, and the --dry-run exit all
+#     happen BEFORE the test suite runs (hunt-2 L3): invoking the script
+#     from outside the repo, or with --dry-run, must not run tests first.
+#   - If the requested version already equals the current version and its
+#     tag is missing, the tag is created without touching any files
+#     (hunt-2 L6) — this is the recovery path for a bump that was never
+#     tagged (e.g. 1.0.5, whose bump commit exists but was never tagged).
+#   - After a successful bump, add a CHANGELOG.md entry for the new version
+#     (see CHANGELOG.md's header for the process, hunt-2 M12).
 # ==============================================================================
 
 set -euo pipefail
 
-pnpm test
-
+# --- Resolve the repo root first, so every later step (including tests)
+# --- runs against this repo even when the script is invoked from elsewhere.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 VERSION_FILE="${REPO_ROOT}/VERSION"
 
-# Resolve current version prioritizing apps/desktop/package.json or VERSION file
-if [ -f "${VERSION_FILE}" ]; then
-  CURRENT_VERSION=$(tr -d "[:space:]" < "${VERSION_FILE}")
-elif [ -f "${REPO_ROOT}/apps/desktop/package.json" ]; then
-  CURRENT_VERSION=$(node -p "require('./apps/desktop/package.json').version")
-  echo "${CURRENT_VERSION}" > "${VERSION_FILE}"
-else
-  CURRENT_VERSION=$(node -p "require('./package.json').version")
-  echo "${CURRENT_VERSION}" > "${VERSION_FILE}"
-fi
-
+# --- Parse arguments before doing any work (hunt-2 L3). ---
 TARGET_ARG="patch"
 PUSH_FLAG=false
 DRY_RUN=false
@@ -43,6 +44,57 @@ for arg in "$@"; do
     TARGET_ARG="$arg"
   fi
 done
+
+PACKAGES=(
+  "package.json"
+  "apps/desktop/package.json"
+  "packages/router-core/package.json"
+  "packages/opencode-eluvix/package.json"
+  "apps/nextjs/package.json"
+  "apps/githubio/package.json"
+)
+
+# --- Resolve the current version WITHOUT writing anything (hunt-2 L3, and
+# --- the known dry-run side effect where resolution created VERSION when it
+# --- was absent). Every version source must agree; on divergence, fail
+# --- loudly instead of silently picking one (hunt-2 L4). Plain indexed
+# --- arrays only — no associative arrays, so the script still runs on the
+# --- bash 3.2 macOS ships. ---
+VERSION_REPORT=""
+CURRENT_VERSION=""
+check_version_source() {
+  # $1 = label, $2 = value
+  VERSION_REPORT="${VERSION_REPORT}  ${1}: ${2}
+"
+  if [ -z "${CURRENT_VERSION}" ]; then
+    CURRENT_VERSION="${2}"
+  elif [ "${2}" != "${CURRENT_VERSION}" ]; then
+    echo "Error: Version sources disagree; refusing to pick a bump base (hunt-2 L4)." >&2
+    printf '%s' "${VERSION_REPORT}" >&2
+    echo "Align VERSION, all package.json files, and helm/eluvix/Chart.yaml appVersion, then re-run." >&2
+    exit 1
+  fi
+}
+if [ -f "${VERSION_FILE}" ]; then
+  check_version_source "VERSION" "$(tr -d "[:space:]" < "${VERSION_FILE}")"
+fi
+for pkg in "${PACKAGES[@]}"; do
+  if [ -f "${pkg}" ]; then
+    check_version_source "${pkg}" "$(node -p "require('./${pkg}').version")"
+  fi
+done
+if [ -f helm/eluvix/Chart.yaml ]; then
+  check_version_source "helm/eluvix/Chart.yaml (appVersion)" "$(grep '^appVersion:' helm/eluvix/Chart.yaml | head -n 1 | sed 's/^appVersion: *//; s/"//g; s/ *$//')"
+fi
+
+if [ -z "${CURRENT_VERSION}" ]; then
+  echo "Error: No version source found (no VERSION file, package.json, or Chart.yaml)." >&2
+  exit 1
+fi
+if [[ ! "${CURRENT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+  echo "Error: Current version \"${CURRENT_VERSION}\" is not a valid x.y.z version." >&2
+  exit 1
+fi
 
 IFS="." read -r MAJOR MINOR PATCH <<< "${CURRENT_VERSION}"
 PATCH="${PATCH%%-*}"
@@ -61,7 +113,14 @@ case "${TARGET_ARG}" in
     NEW_VERSION="${NEW_MAJOR}.0.0"
     ;;
   v*)
+    # Hunt-2 L5: a v-prefixed argument gets the same numeric validation
+    # as a bare version — the prefix is not a free pass for malformed input.
     NEW_VERSION="${TARGET_ARG#v}"
+    if [[ ! "${NEW_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+      echo "Error: Unknown argument \"${TARGET_ARG}\"." >&2
+      echo "Usage: $0 [patch|minor|major|<version>] [--push] [--dry-run]" >&2
+      exit 1
+    fi
     ;;
   *)
     if [[ "${TARGET_ARG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
@@ -87,24 +146,45 @@ if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Hunt-2 L6: the requested version is already the current version, but its
+# tag is missing (the tag-existence check above already ruled out the
+# tag-present case). There are no files to change and nothing to commit,
+# so create just the tag instead of failing on an empty commit.
+if [ "${NEW_VERSION}" = "${CURRENT_VERSION}" ]; then
+  if [ "${DRY_RUN}" = true ]; then
+    echo ">> Dry run: already at version ${CURRENT_VERSION}; would create missing tag ${TAG_NAME} and change no files."
+    exit 0
+  fi
+  echo ">> Already at version ${CURRENT_VERSION}; creating missing tag ${TAG_NAME} (no files changed)."
+  git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+  if [ "${PUSH_FLAG}" = true ]; then
+    echo ">> Pushing tag to origin..."
+    git push origin "${TAG_NAME}"
+  else
+    echo ""
+    echo "To trigger GitHub Actions to build and release the Electron app, push:"
+    echo "  git push origin ${TAG_NAME}"
+    echo ""
+  fi
+  echo "============================================================"
+  echo " Created missing tag ${TAG_NAME} for existing version ${CURRENT_VERSION}."
+  echo "============================================================"
+  exit 0
+fi
+
 if [ "${DRY_RUN}" = true ]; then
   echo ">> Dry run complete. No files changed, no tags created."
   exit 0
 fi
 
+# Tests gate the writes, but they run only after argument parsing, the cd,
+# version validation, and the dry-run exit above (hunt-2 L3).
+pnpm test
+
 echo ">> Updating VERSION file..."
 echo "${NEW_VERSION}" > "${VERSION_FILE}"
 
 echo ">> Updating package.json files..."
-PACKAGES=(
-  "package.json"
-  "apps/desktop/package.json"
-  "packages/router-core/package.json"
-  "packages/opencode-eluvix/package.json"
-  "apps/nextjs/package.json"
-  "apps/githubio/package.json"
-)
-
 for pkg in "${PACKAGES[@]}"; do
   if [ -f "${pkg}" ]; then
     node -e "
@@ -149,6 +229,8 @@ echo " Successfully created release ${TAG_NAME}!"
 echo " Commit: $(git rev-parse --short HEAD)"
 echo " Tag:    ${TAG_NAME}"
 echo "============================================================"
+echo " Remember: add a CHANGELOG.md entry for ${TAG_NAME} (see its header"
+echo " for the process) before the release is announced."
 
 if [ "${PUSH_FLAG}" = true ]; then
   echo ">> Pushing branch and tag to origin..."

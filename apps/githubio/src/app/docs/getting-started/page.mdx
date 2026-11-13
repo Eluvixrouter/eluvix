@@ -30,7 +30,7 @@ pnpm install
 
 ### 2. Configure Environment (Optional)
 
-Eluvix is zero-config by default. On its first boot, it automatically generates a secure 8-character random admin password and a NextAuth session secret, storing them in `~/.config/eluvix/auth.json`.
+Eluvix is zero-config by default. On its first boot, it automatically generates a secure 24-letter random admin password and a NextAuth session secret, storing them in `~/.config/eluvix/auth.json`.
 
 If you prefer to define credentials manually, create a `.env` file in the root or `apps/nextjs`:
 
@@ -45,7 +45,7 @@ Available environment variables:
 | `ADMIN_PASSWORD` | Master password for console login and API authentication | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_SECRET` | Secret key used to encrypt session JWT tokens | Auto-generated in `~/.config/eluvix/auth.json` |
 | `NEXTAUTH_URL` | Canonical URL for NextAuth callbacks | Auto-detected from host and port |
-| `PORT` | HTTPS port for the Next.js server (with same-port HTTP auto-upgrade) | `3588` |
+| `PORT` | HTTPS port for the Next.js server (same-port dual-protocol demux; see the note under §3 — only browser navigation is 308-upgraded, `/api/` is served over plain HTTP) | `3588` |
 | `HTTP_PORT` | Optional secondary HTTP redirect port | `3580` |
 | `HOSTNAME` | Listening network interface | `127.0.0.1` |
 
@@ -62,8 +62,15 @@ During startup:
 - **Same-Port Dual-Protocol Demuxing on Port 3588**:
   - The server binds port `3588`.
   - Encrypted clients connect via `https://127.0.0.1:3588`.
-  - Plaintext HTTP requests to `http://127.0.0.1:3588` are automatically intercepted and upgraded via `HTTP/1.1 308 Permanent Redirect` on the exact same port!
+  - Plaintext HTTP **browser navigation** to `http://127.0.0.1:3588` is upgraded via `HTTP/1.1 308 Permanent Redirect` to HTTPS on the exact same port — but **API requests are not**: `/api/` paths on port 3588 are served directly over plain HTTP by design (`apps/nextjs/server.mjs`: the HTTP handler serves `/api/` before the 308 branch). API clients must use `https://127.0.0.1:3588/api/v1`.
   - An optional secondary redirect server also runs on `http://127.0.0.1:3580`.
+
+> **Security note:** never send an `Authorization: Bearer` admin password or
+> named API key to `http://127.0.0.1:3588/api/...` — it will work, and it
+> will travel unencrypted. Always use the `https://` URL for API traffic.
+> For trusted local TLS, install `mkcert` before first boot (see above) so
+> the server can issue a certificate for `localhost`, `127.0.0.1`, and
+> `eluvix.local`; without it the server falls back to plain HTTP.
 
 Open your browser to `https://127.0.0.1:3588` (or simply `http://127.0.0.1:3588`) and sign in using the password printed in your console or found in `~/.config/eluvix/auth.json`.
 
@@ -95,10 +102,10 @@ Eluvix includes optional Docker Compose profiles for dedicated agent backends:
 docker compose --profile memory up -d
 
 # Spin up with TrueForge Agent Runtime (:8790)
-docker compose --profile harness up -d
+docker compose --profile harnesses up -d
 
 # Launch entire sovereign agent stack (Router + OpenViking + TrueForge + vLLM)
-docker compose --profile memory --profile harness up -d
+docker compose --profile memory --profile harnesses up -d
 ```
 
 ---

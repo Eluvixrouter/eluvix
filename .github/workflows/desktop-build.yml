@@ -63,10 +63,12 @@ jobs:
         with:
           version: 11.24.0
 
+      # Hunt-2 L10: Node version comes from .nvmrc, the repo's single
+      # pinned source, instead of a hardcoded value.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install system dependencies (Linux)
@@ -161,13 +163,33 @@ jobs:
               echo "Error: Invalid tag format: $TAG_INPUT" >&2
               exit 1
             fi
-            echo "tag=$TAG_INPUT" >> $GITHUB_OUTPUT
+            TAG="$TAG_INPUT"
           elif [ "$IS_TAG_REF" = "true" ]; then
-            echo "tag=$REF_NAME" >> $GITHUB_OUTPUT
+            TAG="$REF_NAME"
           else
             VERSION=$(node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('./apps/desktop/package.json', 'utf8')); console.log(pkg.version);")
-            echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+            TAG="v${VERSION}"
           fi
+          # Hunt-2 L2: normalize to the tagger's v-prefixed form, so a
+          # dispatch with `1.2.3` does not create a differently-named
+          # release from the tagger's `v1.2.3` for the same version.
+          if [[ "$TAG" != v* ]]; then
+            TAG="v${TAG}"
+          fi
+          # Hunt-2 M14: the release tag must match the desktop version
+          # actually checked out and built. Without this, an operator could
+          # publish e.g. 1.0.21 artifacts under v9.9.9 and the release page
+          # would not reveal which code is inside. This holds for tag
+          # pushes too: the checkout is at the tag, so a tag that disagrees
+          # with its own commit's package.json is a tagging mistake, and
+          # publishing under it would mislabel the artifacts.
+          BUILT_VERSION=$(node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('./apps/desktop/package.json', 'utf8')); console.log(pkg.version);")
+          if [ "$TAG" != "v${BUILT_VERSION}" ]; then
+            echo "Error: Release tag ${TAG} does not match the built desktop version v${BUILT_VERSION}." >&2
+            echo "Refusing to publish mismatched artifacts. Tag the commit whose apps/desktop/package.json reads ${TAG#v}, or dispatch without a tag to use the current version." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

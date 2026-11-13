@@ -206,7 +206,7 @@ async function startServer() {
 
       console.log(`\n  ▲ Next.js 14.2.35`);
       console.log(`  - Local:        https://${hostname}:${currentPort}`);
-      console.log(`  - Auto-Upgrade: http://${hostname}:${currentPort} ➔ https://${hostname}:${currentPort} (Same-Port Dual Protocol)`);
+      console.log(`  - Dual Protocol: http://${hostname}:${currentPort} and https://${hostname}:${currentPort} share one port (only browser navigation upgrades to HTTPS; /api/ stays plain HTTP by design)`);
       console.log(`  - TLS:          Enabled (mkcert)`);
       console.log(`  - Admin Pass:   ${auth.adminPassword}`);
       console.log(`  - Config Path:  ${auth.authFile}`);

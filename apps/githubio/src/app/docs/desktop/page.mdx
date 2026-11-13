@@ -21,8 +21,11 @@ To run the desktop application in development mode:
 # Ensure router-core and nextjs packages are built
 pnpm --filter @eluvix/router-core build
 
-# Launch the desktop client
+# Compile the desktop app (this only builds — it does not launch anything)
 pnpm desktop:build
+
+# Launch the desktop client
+pnpm --filter @eluvix/desktop start
 ```
 
 ---
@@ -35,10 +38,9 @@ Eluvix uses `electron-builder` to package binaries across multiple platforms:
 ```bash
 pnpm --filter @eluvix/desktop run dist:linux
 ```
-Outputs:
+Outputs (per `apps/desktop/electron-builder.yml` — there is no `.rpm` target):
 - **AppImage** (universal portable Linux executable)
 - **.deb** (Debian / Ubuntu package)
-- **.rpm** (Fedora / RHEL package)
 
 ### Windows
 ```bash

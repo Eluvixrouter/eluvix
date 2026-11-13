@@ -10,9 +10,10 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [22.x]
+    # Hunt-2 L1: least privilege — this job only builds and tests, it never
+    # publishes, so it needs read-only contents and nothing else.
+    permissions:
+      contents: read
 
     steps:
     - uses: actions/checkout@v4
@@ -22,10 +23,12 @@ jobs:
       with:
         version: 11.24.0
 
-    - name: Use Node.js ${{ matrix.node-version }}
+    # Hunt-2 L10: the Node version comes from the repo's single pinned
+    # source, .nvmrc, instead of a hardcoded matrix entry.
+    - name: Use Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version-file: '.nvmrc'
         cache: 'pnpm'
 
     - name: Install dependencies
@@ -42,6 +45,18 @@ jobs:
 
     - name: Typecheck Next.js Dashboard
       run: pnpm --filter nextjs exec tsc --noEmit
+
+    # Hunt-2 L27: lint both Next.js apps. githubio previously defined a
+    # `lint` script but shipped no ESLint config (so `next lint` would
+    # prompt interactively); it now uses the same config as nextjs, and
+    # two unused imports it flagged were removed. Desktop has no test or
+    # lint harness at all, so it stays ungated — desktop tests are a
+    # follow-up, not something to fabricate here.
+    - name: Lint Next.js Dashboard
+      run: pnpm --filter nextjs lint
+
+    - name: Lint GitHub Pages Documentation Site
+      run: pnpm --filter githubio lint
 
     - name: Build Next.js Dashboard
       run: pnpm --filter nextjs build

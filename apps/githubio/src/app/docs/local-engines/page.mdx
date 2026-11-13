@@ -78,12 +78,12 @@ Eluvix provides modular Docker Compose overlays to support both NVIDIA CUDA and 
 
 - **Memory Profile (`--profile memory`)**:
   Spins up the [OpenViking](https://github.com/volcengine/OpenViking) context database container on port `1933`.
-- **Harness Profile (`--profile harness`)**:
+- **Harness Profile (`--profile harnesses`)**:
   Spins up the [TrueForge](https://github.com/truefoundry/trueforge) agent harness runtime container on port `8790`.
 
 Example:
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.amd.yml --profile memory --profile harness up -d
+docker compose -f docker-compose.yml -f docker-compose.amd.yml --profile memory --profile harnesses up -d
 ```
 
 ---

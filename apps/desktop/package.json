@@ -10,11 +10,11 @@
     "build": "tsc && pnpm run copy-assets",
     "copy-assets": "node scripts/copy-assets.mjs",
     "start": "electron .",
-    "pack": "pnpm run build && electron-builder --dir",
-    "dist": "pnpm run build && electron-builder",
-    "dist:linux": "pnpm run build && electron-builder --linux",
-    "dist:mac": "pnpm run build && electron-builder --mac",
-    "dist:win": "pnpm run build && electron-builder --win"
+    "pack": "pnpm run build && electron-builder --dir --publish never",
+    "dist": "pnpm run build && electron-builder --publish never",
+    "dist:linux": "pnpm run build && electron-builder --linux --publish never",
+    "dist:mac": "pnpm run build && electron-builder --mac --publish never",
+    "dist:win": "pnpm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@eluvix/router-core": "workspace:*"

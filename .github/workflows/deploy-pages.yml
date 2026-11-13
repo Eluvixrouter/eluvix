@@ -29,10 +29,12 @@ jobs:
         with:
           version: 11.24.0
 
+      # Hunt-2 L10: Node version comes from .nvmrc, the repo's single
+      # pinned source, instead of a hardcoded value.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Setup Pages
