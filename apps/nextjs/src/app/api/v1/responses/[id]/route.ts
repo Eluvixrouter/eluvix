@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
  */
 export async function GET(
   req: Request,
-  context: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   const identity = await resolveCallerIdentity(req);
   if (!identity.ok) {
@@ -26,7 +26,7 @@ export async function GET(
     );
   }
 
-  const responseId = context.params?.id;
+  const { id: responseId } = await context.params;
   if (!responseId) {
     return NextResponse.json(
       { error: { message: 'Response ID is required.', type: 'invalid_request_error' } },
@@ -57,7 +57,7 @@ export async function GET(
  */
 export async function DELETE(
   req: Request,
-  context: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   const identity = await resolveCallerIdentity(req);
   if (!identity.ok) {
@@ -86,7 +86,7 @@ export async function DELETE(
     );
   }
 
-  const responseId = context.params?.id;
+  const { id: responseId } = await context.params;
   if (!responseId) {
     return NextResponse.json(
       { error: { message: 'Response ID is required.', type: 'invalid_request_error' } },

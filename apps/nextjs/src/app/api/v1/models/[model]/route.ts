@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(
   req: Request,
-  { params }: { params: { model: string } }
+  { params }: { params: Promise<{ model: string }> }
 ) {
   // See the models list route: elx_ passthrough tokens are verified here.
   if (!namedKeyAuthorized(req)) {
@@ -22,7 +22,7 @@ export async function GET(
       { status: 401 }
     );
   }
-  const modelId = decodeURIComponent(params.model);
+  const modelId = decodeURIComponent((await params).model);
   const router = getRouter();
   const upstreams = router.getUpstreams();
   const agyCatalog = getCachedAntigravityModels();

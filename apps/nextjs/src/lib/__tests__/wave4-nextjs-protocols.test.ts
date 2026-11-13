@@ -210,7 +210,7 @@ describe('Wave 1 Next.js: x-api-key Auth, /v1/messages, /v1/responses, /v1/embed
       new Request(`http://localhost:3588/api/v1/responses/${r1Json.id}`, {
         headers: { Authorization: `Bearer ${bobKey.key}` },
       }),
-      { params: { id: r1Json.id } }
+      { params: Promise.resolve({ id: r1Json.id }) }
     );
     expect(bobGet.status).toBe(404);
 
@@ -227,7 +227,7 @@ describe('Wave 1 Next.js: x-api-key Auth, /v1/messages, /v1/responses, /v1/embed
       new Request(`http://localhost:3588/api/v1/responses/${ephJson.id}`, {
         headers: { Authorization: `Bearer ${aliceKey.key}` },
       }),
-      { params: { id: ephJson.id } }
+      { params: Promise.resolve({ id: ephJson.id }) }
     );
     expect(getEph.status).toBe(404);
 
@@ -237,7 +237,7 @@ describe('Wave 1 Next.js: x-api-key Auth, /v1/messages, /v1/responses, /v1/embed
         method: 'DELETE',
         headers: { Authorization: `Bearer ${aliceKey.key}` },
       }),
-      { params: { id: r1Json.id } }
+      { params: Promise.resolve({ id: r1Json.id }) }
     );
     expect(delRes.status).toBe(200);
   });
