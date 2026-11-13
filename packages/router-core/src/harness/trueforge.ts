@@ -867,7 +867,14 @@ export async function forwardTrueForgeHarness(
     // Streaming mode
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
-    const reader = (turnRes.body as ReadableStream<Uint8Array>).getReader();
+    // Suspects S-B2: a null-body turn response (e.g. 204 — undici sets
+    // body to null) threw TypeError at getReader() here, while the
+    // non-stream path guards turnRes.body and returns an empty completion.
+    // A missing body is an immediately-finished empty stream, so both modes
+    // agree; the stop chunk + [DONE] below still run.
+    const reader = turnRes.body
+      ? (turnRes.body as ReadableStream<Uint8Array>).getReader()
+      : null;
 
     const outStream = new ReadableStream<Uint8Array>({
       async start(streamController) {
@@ -883,7 +890,9 @@ export async function forwardTrueForgeHarness(
         let buffer = '';
         let currentEvent = '';
         try {
-          while (true) {
+          // Null reader (S-B2, see above): the loop body never runs and
+          // control falls through to the stop chunk + [DONE] below.
+          while (reader) {
             const { done, value } = await reader.read();
             if (done) {
               // Hunt-2 M-B3: flush the leftover buffer (see non-stream
@@ -943,7 +952,7 @@ export async function forwardTrueForgeHarness(
       },
       cancel(reason) {
         clearTimeout(timer);
-        return reader.cancel(reason).catch(() => {});
+        return reader?.cancel(reason).catch(() => {});
       }
     });
 

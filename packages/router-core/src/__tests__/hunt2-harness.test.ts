@@ -326,6 +326,72 @@ describe('hunt-2 slice B regressions', () => {
     }
   }, 10000);
 
+  it('S-B2 (TrueForge): a null-body (204) turn response streams an empty completion instead of throwing TypeError', async () => {
+    // Pre-fix, the streaming branch called turnRes.body.getReader()
+    // unconditionally; undici sets body to null for a 204, so the forward
+    // call rejected with TypeError while the non-stream path (guarded by
+    // `if (turnRes.body)`) returned a 200 empty completion. Both modes must
+    // agree on the empty-completion shape.
+    const srv = await startMockServer((req, _body, res) => {
+      if (req.method === 'POST' && req.url === '/api/v1/sessions') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'tf-1' }));
+        return;
+      }
+      if (req.url?.includes('/turns')) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    try {
+      const res = await forwardTrueForgeHarness(
+        tfUpstream(srv.url, 'auto-deny'),
+        { model: 'test-model', messages: [{ role: 'user', content: 'hi' }], stream: true },
+        5000
+      );
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).toContain('"finish_reason":"stop"');
+      expect(text).toContain('data: [DONE]');
+      expect(text).not.toContain('getReader');
+    } finally {
+      await srv.close();
+    }
+  }, 10000);
+
+  it('S-B2 control: the same null-body turn returns a 200 empty completion non-stream (unchanged)', async () => {
+    const srv = await startMockServer((req, _body, res) => {
+      if (req.method === 'POST' && req.url === '/api/v1/sessions') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'tf-1' }));
+        return;
+      }
+      if (req.url?.includes('/turns')) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    try {
+      const res = await forwardTrueForgeHarness(
+        tfUpstream(srv.url, 'auto-deny'),
+        { model: 'test-model', messages: [{ role: 'user', content: 'hi' }] },
+        5000
+      );
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.choices[0].message.content).toBe('');
+      expect(json.choices[0].finish_reason).toBe('stop');
+    } finally {
+      await srv.close();
+    }
+  }, 10000);
+
   // --- ACP permission options (M-B2) -------------------------------------
   // Fake ACP agent: answers initialize/session-new, then issues one
   // permission request with the options from argv[2], records the
