@@ -214,7 +214,13 @@ describe('Wave 3 Next.js & Desktop Parity: /api/v1/mcp, /api/v1/evals/run & VRAM
   });
 
   it('maintains DesktopRouterServer parity on /v1/mcp and /v1/evals/run with per-install token auth', async () => {
-    const desktop = new DesktopRouterServer(0, {
+    // DesktopRouterServer takes only a port: the guarded local-only config
+    // goes through updateConfig, the supported injection path (the old
+    // two-argument construction never existed — it typechecked nowhere
+    // because vitest does not typecheck, and the object was silently
+    // dropped at runtime).
+    const desktop = new DesktopRouterServer(0);
+    desktop.updateConfig({
       egressPolicy: 'local-only',
       promptGuard: { enabled: true, action: 'block' },
       privacyGuard: { enabled: true, action: 'anonymize', redactionStyle: 'token' },
