@@ -228,20 +228,21 @@ export class OrchestrationManager {
       return { ok: false, error: `Invalid compiled JSON: ${message}` };
     }
 
+    // An empty graph is a total routing outage — refuse it as a failed deploy
+    // rather than reporting success with zero upstreams. Checked before
+    // validateConfig so the deploy keeps its own message (validateConfig
+    // refuses empty upstreams too, covering the config-POST/Apply path).
+    if (Array.isArray(configData.upstreams) && configData.upstreams.length === 0) {
+      logs.push('✗ Refusing to deploy an empty upstream graph (zero upstreams would leave the router unable to route)');
+      return { ok: false, error: 'upstreams must contain at least one upstream' };
+    }
+
     try {
       validateConfig(configData);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logs.push(`✗ Refusing to deploy invalid configuration: ${message}`);
       return { ok: false, error: message };
-    }
-
-    // validateConfig only requires upstreams to be an array, but an empty
-    // graph is a total routing outage — refuse it as a failed deploy
-    // rather than reporting success with zero upstreams.
-    if (configData.upstreams.length === 0) {
-      logs.push('✗ Refusing to deploy an empty upstream graph (zero upstreams would leave the router unable to route)');
-      return { ok: false, error: 'upstreams must contain at least one upstream' };
     }
 
     return { ok: true, config: configData };

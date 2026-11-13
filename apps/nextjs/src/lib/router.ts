@@ -235,6 +235,14 @@ export function validateConfig(config: any): void {
   if (!Array.isArray(config.upstreams)) {
     throw new ConfigValidationError('Invalid configuration: "upstreams" must be an array');
   }
+  // An empty graph is a total routing outage — the router would accept every
+  // request and route none of them. Refuse it here so every save path
+  // (config POST / Apply-to-router, deployLocal, detect-models) rejects an
+  // empty canvas instead of silently wiping the live router to zero
+  // upstreams (hunt-2 suspect S-C1; M-C3 fixed only the deployLocal path).
+  if (config.upstreams.length === 0) {
+    throw new ConfigValidationError('Invalid configuration: "upstreams" must contain at least one upstream');
+  }
   if (config.egressPolicy !== undefined && config.egressPolicy !== 'local-only' && config.egressPolicy !== 'allow-egress') {
     throw new ConfigValidationError('Invalid configuration: "egressPolicy" must be "local-only" or "allow-egress"');
   }
