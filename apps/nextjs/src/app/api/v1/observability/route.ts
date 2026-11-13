@@ -371,7 +371,12 @@ export async function POST(req: Request) {
       model: 'auto',
       messages: [{ role: 'user', content: 'Eluvix health ping' }],
     }, {
-      scope: { userId: pingUserId }
+      scope: { userId: pingUserId },
+      // A probe is not a conversation: never write the fixed ping exchange
+      // back into any partition's memory (hunt-2 suspect S-C2 — the ping
+      // used to land in the default partition, and even caller-scoped it
+      // still polluted the caller's own recall with probe noise).
+      skipMemoryWriteBack: true,
     });
 
     const durationMs = Date.now() - startTime;
