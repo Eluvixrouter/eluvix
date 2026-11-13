@@ -5,7 +5,10 @@ metadata:
   name: eluvix-local
 servers: 1
 agents: 1
-image: docker.io/rancher/k3s:v1.31.5-k3s1
+# k3s release line: pinned to a supported line (the k3s stable channel as
+# of November 2026). Do not drift back to the 1.31 line: upstream support
+# for Kubernetes 1.31 ended in October 2025.
+image: docker.io/rancher/k3s:v1.36.5-k3s1
 ports:
   # App ports land on the cluster nodes, where the chart's NodePort
   # Services (helm/eluvix/values-local.yaml) listen. Mappings aimed at
@@ -52,6 +55,15 @@ options:
     timeout: "120s"
   k3s:
     extraArgs:
+      # NodePort range widened deliberately, and ONLY for this coupling:
+      # helm/eluvix/values-local.yaml sets NodePorts below the Kubernetes
+      # default range (30000-32767) — 3588, 8080, 11434, 8002, 8003 — so
+      # the local chart is valid only because this flag widens the range.
+      # Do not drop this flag without moving those nodePorts into
+      # 30000-32767 (which would break the host-port mappings above), and
+      # do not add low nodePorts to values-local.yaml without this flag.
+      # The wide range is a local-dev convenience, not a production
+      # setting: any NodePort service in the cluster can grab low ports.
       - arg: --kube-apiserver-arg=service-node-port-range=1-65535
         nodeFilters:
           - server:*

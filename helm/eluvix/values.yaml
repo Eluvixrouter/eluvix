@@ -3,6 +3,9 @@ global:
   environment: production
 
 # 1. Switchyard Sovereign Balancer & Gateway
+# NOTE: this service is the canned-response SIMULATOR (docker/switchyard),
+# not the real Switchyard router — see helm/eluvix/README.md and
+# values-prod.yaml before treating any Helm install as production.
 switchyard:
   enabled: true
   image:
@@ -11,6 +14,13 @@ switchyard:
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8080
+  # Token guarding the sim's /v1/config endpoint. The sim refuses ALL
+  # /v1/config requests (503) when this is empty, and requires the Bearer
+  # token on GET and POST when set. Pass a real value via
+  # --set switchyard.authToken=... (never commit one here); the ingress
+  # routes /v1 to this service, so leaving it empty is the safe default
+  # and setting it is required before any config read/write works.
+  authToken: ""
   service:
     type: ClusterIP
     port: 8080
@@ -43,10 +53,10 @@ nextjs:
     port: 3588
   env:
     NODE_ENV: production
-  persistence:
-    enabled: true
-    storageClass: local-path
-    size: 2Gi
+  # No persistence block: a previous revision mounted a PVC at
+  # /app/apps/nextjs/data, a path the app never reads, so it persisted
+  # nothing. App state lives under $XDG_CONFIG_HOME/eluvix inside the pod
+  # and is ephemeral unless an operator mounts that path deliberately.
   resources:
     limits:
       cpu: 1000m

@@ -5,6 +5,17 @@ services:
     profiles: ["inference", "all"]
     ports:
       - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    # Compose-level readiness signal (spin_up polls the Ollama API
+    # separately, but compose itself previously had no signal for ollama).
+    # Uses the in-image ollama binary, not wget/curl: the ollama image
+    # does not ship them, and `ollama list` exits nonzero while the
+    # server is down. (Not runtime-verified here — no docker binary in
+    # this environment; see the batch report.)
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -25,11 +36,14 @@ services:
     profiles: ["inference", "all"]
     ports:
       - "127.0.0.1:${VLLM_PORT:-8000}:8000"
-    volumes:
-      # Named volume, NOT the host's ~/.cache/huggingface (audit L-15):
-      # the host cache holds the operator's real HF tokens, and the sim
-      # image runs as node (see docker/vllm/Dockerfile).
-      - vllm_hf_cache:/home/node/.cache/huggingface
+    # No HF cache mount: this service builds the in-memory vllm SIM, which
+    # never reads /root/.cache/huggingface. (The sglang service below runs
+    # the real image, so it keeps its cache mount. If this service is ever
+    # swapped for a real vLLM image, re-add the mount then.)
+    # Consolidated from T6 + D1: T6's named-volume mount (audit L-15) is
+    # dropped here, not the L-15 intent — the sim reads no HF cache
+    # (zero cache refs in docker/vllm/), so no mount means no host-cache
+    # exposure either, and the named volume would persist nothing.
     restart: unless-stopped
     networks:
       - eluvix-net
