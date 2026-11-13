@@ -35,7 +35,10 @@ spec:
               service:
                 name: {{ include "eluvix.fullname" $ }}-{{ .service }}
                 port:
-                  number: {{ if eq .service "nextjs" }}{{ $.Values.nextjs.service.port }}{{ else if eq .service "switchyard" }}{{ $.Values.switchyard.service.port }}{{ else }}80{{ end }}
+                  # Hunt-2 S13: every service the chart actually runs maps
+                  # to its configured port; an unknown service fails the
+                  # render instead of silently routing to port 80.
+                  number: {{ if eq .service "nextjs" }}{{ $.Values.nextjs.service.port }}{{ else if eq .service "switchyard" }}{{ $.Values.switchyard.service.port }}{{ else if eq .service "ollama" }}{{ $.Values.ollama.service.port }}{{ else if eq .service "agentRouter" }}{{ $.Values.agentRouter.service.port }}{{ else if eq .service "agentGateway" }}{{ $.Values.agentGateway.service.port }}{{ else }}{{ fail (printf "ingress: unknown service %q (expected nextjs, switchyard, ollama, agentRouter or agentGateway)" .service) }}{{ end }}
           {{- end }}
     {{- end }}
 {{- end }}

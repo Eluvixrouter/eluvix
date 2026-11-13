@@ -44,12 +44,16 @@ spec:
               mountPath: {{ .Values.ollama.persistence.mountPath }}
           {{- end }}
           livenessProbe:
-            tcpSocket:
+            # Hunt-2 S10: tcpSocket passes as soon as the port opens, long
+            # before Ollama can serve; probe the real API instead.
+            httpGet:
+              path: /api/tags
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /api/tags
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5

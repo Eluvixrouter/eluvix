@@ -131,18 +131,16 @@ Eluvix features a split, pick-and-choose compose architecture in `docker/compose
 
 ```bash
 # Start Core Gateway & UI only
-docker compose -f docker/compose/core.yml up -d
+# (Fragments cannot run standalone: they reference the eluvix-net network
+# defined in the root compose, and every service is profile-gated, so use
+# the root compose with --profile.)
+docker compose --profile core up -d
 
 # Start Core + Local Inference Engines (vLLM & SGLang)
-docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d
+docker compose --profile core --profile inference up -d
 
 # Start Full Production Mesh (Gateway + Inference + SWE Harnesses + Memory)
-docker compose \
-  -f docker/compose/core.yml \
-  -f docker/compose/inference.yml \
-  -f docker/compose/harnesses.yml \
-  -f docker/compose/memory.yml \
-  up -d
+docker compose --profile core --profile inference --profile harnesses --profile memory up -d
 ```
 
 ---

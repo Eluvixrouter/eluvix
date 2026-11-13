@@ -45,9 +45,11 @@ The Configurator features an active upstream discovery scanner:
    - **Lemonade Router** (`:13305`)
    - **Local Ollama** (`:11434`)
    - **Local vLLM / vLLM-sr** (`:8000`, `:8001`)
-   - **Google Antigravity Agent** (`agy` CLI)
    - **Claude Code Agent** (`:8082`)
    - **Billama Cloud**
+   - **Google Antigravity Agent** (`agy` CLI) — only if you have added an
+     Antigravity upstream to your configuration; none ships by default, so
+     a stock install never queries it.
 3. Detected models automatically populate the selection matrix with appropriate context window lengths and max completion output token limits.
 
 ---

@@ -84,6 +84,10 @@ Eluvix provides modular Docker Compose configurations tailored for specific hard
 
 ```bash
 # NVIDIA CUDA (vLLM with GPU passthrough)
+# Prerequisite: the NVIDIA driver AND the NVIDIA Container Toolkit must be
+# installed and configured as the Docker runtime first
+# (sudo nvidia-ctk runtime configure --runtime=docker, then restart Docker);
+# the override file alone does not expose the GPU to the container.
 docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --build
 
 # AMD ROCm (ROCm 6.2 with /dev/kfd and /dev/dri passthrough)

@@ -767,11 +767,11 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
           table: {
             headers: ['Subsystem', 'Compose Command', 'Description'],
             rows: [
-              ['Core Gateway & UI', 'docker compose -f docker/compose/core.yml up -d', 'Gateway router, Next.js UI, SQLite telemetry on port 3588'],
-              ['Inference Pool (vLLM / SGLang)', 'docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d', 'High-throughput local vLLM (:8000), SGLang (:30000), and Ollama (:11434)'],
-              ['SWE Harnesses', 'docker compose -f docker/compose/core.yml -f docker/compose/harnesses.yml up -d', 'TrueForge (:8790) and OpenHands (:3000) coding agent environments'],
-              ['Memory & Knowledge RAG', 'docker compose -f docker/compose/core.yml -f docker/compose/memory.yml up -d', 'Graphiti temporal graphs (:8000), LightRAG (:9621), OpenViking (:1933)'],
-              ['Full Mesh Stack', 'docker compose -f docker/compose/core.yml -f docker/compose/inference.yml -f docker/compose/harnesses.yml -f docker/compose/memory.yml up -d', 'Complete production deployment running all engines, harnesses, and memory databases'],
+              ['Core Gateway & UI', 'docker compose --profile core up -d', 'Gateway router, Next.js UI, SQLite telemetry on port 3588'],
+              ['Inference Pool (vLLM / SGLang)', 'docker compose --profile core --profile inference up -d', 'High-throughput local vLLM (:8000), SGLang (:30000), and Ollama (:11434)'],
+              ['SWE Harnesses', 'docker compose --profile core --profile harnesses up -d', 'TrueForge (:8790), OpenCode (:4096) and Sandbox (:3986) coding agent environments'],
+              ['Memory & Knowledge RAG', 'docker compose --profile core --profile memory up -d', 'Graphiti temporal graphs (:8004), LightRAG (:9621), OpenViking (:1933)'],
+              ['Full Mesh Stack', 'docker compose --profile core --profile inference --profile harnesses --profile memory up -d', 'Complete production deployment running all engines, harnesses, and memory databases'],
             ],
           },
         },
