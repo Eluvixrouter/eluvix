@@ -33,6 +33,9 @@ export function MockupPlayground() {
   const [showSanitizerDiff, setShowSanitizerDiff] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const streamIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Monotonic counter for custom-prompt ids, incremented only in the send
+  // event handler. Unique across sends and stable across re-renders.
+  const customPromptIdRef = useRef(0);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -48,7 +51,7 @@ export function MockupPlayground() {
 
   function handleSendPrompt(sample?: MockSamplePrompt) {
     const promptData = sample || {
-      id: 'custom-' + Date.now(),
+      id: 'custom-' + (customPromptIdRef.current += 1),
       title: 'Custom Prompt',
       category: 'General',
       rawPrompt: input.trim(),
