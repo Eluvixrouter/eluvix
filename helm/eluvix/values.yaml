@@ -7,7 +7,7 @@ switchyard:
   enabled: true
   image:
     repository: eluvix-switchyard
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8080
@@ -34,7 +34,7 @@ nextjs:
   enabled: true
   image:
     repository: eluvix-nextjs
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 3588
@@ -60,7 +60,7 @@ ollama:
   enabled: true
   image:
     repository: ollama/ollama
-    tag: latest
+    tag: "0.40.16"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 11434
@@ -73,7 +73,10 @@ ollama:
     size: 20Gi
     mountPath: /root/.ollama
   env:
-    OLLAMA_ORIGINS: "*"
+    # Only the dashboard's own origins may call Ollama from a browser
+    # (audit L-16). "*" would let any visited website drive the local
+    # Ollama API (pull/generate/delete) from the user's browser.
+    OLLAMA_ORIGINS: "http://localhost:3588,http://127.0.0.1:3588,https://localhost:3588,https://127.0.0.1:3588,http://eluvix.local,https://eluvix.local,http://localhost,https://localhost"
     OLLAMA_HOST: "0.0.0.0:11434"
   resources:
     limits:
@@ -96,7 +99,7 @@ agentRouter:
   enabled: true
   image:
     repository: eluvix-agent-router
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8002
@@ -116,7 +119,7 @@ agentGateway:
   enabled: true
   image:
     repository: eluvix-agentgateway
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8003
@@ -132,8 +135,12 @@ agentGateway:
       memory: 64Mi
 
 # 6. Ingress Configuration
+# Disabled by default in the production values (audit M-27 / decision
+# D10): the ingress serves the dashboard and API over plain HTTP with
+# no auth of its own. Enable it only behind TLS. The local k3d values
+# (values-local.yaml) turn it back on for the loopback-bound dev stack.
 ingress:
-  enabled: true
+  enabled: false
   className: traefik
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web
