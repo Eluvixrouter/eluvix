@@ -12,6 +12,10 @@ export const dynamic = 'force-dynamic';
  * OpenAI `{ created, data: [{ url | b64_json, revised_prompt }] }`.
  */
 export async function POST(req: Request) {
+  // Attribute image-generation request logs to the calling key's user
+  // (router-core M7): without this every image turn lands under 'default'
+  // and non-admin request history for images is always empty.
+  let callerUserId: string | undefined;
   const authHeader = req.headers.get('authorization');
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
@@ -29,6 +33,7 @@ export async function POST(req: Request) {
           { status: 401 }
         );
       }
+      callerUserId = resolved.userId;
     }
   }
 
@@ -102,6 +107,6 @@ export async function POST(req: Request) {
       steps: typeof body.steps === 'number' ? body.steps : undefined,
       cfg: typeof body.cfg === 'number' ? body.cfg : undefined,
     },
-    { signal: req.signal, hops, proxyBaseUrl }
+    { signal: req.signal, hops, proxyBaseUrl, userId: callerUserId }
   );
 }

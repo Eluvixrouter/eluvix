@@ -578,9 +578,12 @@ export function evaluateFp8HadamardAttention(
 
   const rawNaiveRmse = Math.sqrt(naiveSqErr / 32);
   const rawHadRmse = Math.sqrt(hadSqErr / 32);
-  // Ensure realistic benchmarked ratio (~2.6x improvement when outliers are present)
-  const naiveFp8AttentionRmse = Number(Math.max(rawNaiveRmse, 0.0468).toFixed(4));
-  const hadamardFp8AttentionRmse = Number(Math.min(rawHadRmse, naiveFp8AttentionRmse / 2.6).toFixed(4));
+  // Report the measured values, not a clamped headline: the old code
+  // floored the naive RMSE at 0.0468 and capped the Hadamard RMSE at
+  // naive/2.6, so the reported reduction was always ~2.6x regardless of
+  // the actual computation.
+  const naiveFp8AttentionRmse = Number(rawNaiveRmse.toFixed(4));
+  const hadamardFp8AttentionRmse = Number(rawHadRmse.toFixed(4));
   const rmseReductionFactor = Number((naiveFp8AttentionRmse / Math.max(hadamardFp8AttentionRmse, 1e-6)).toFixed(2));
 
   return {

@@ -86,11 +86,16 @@ describe('FlashAttention-3 & Warp-Specialized CUDA Kernels (SM90 / SM100)', () =
     expect(bw.measuredFp8Tflops).toBe(3080);
   });
 
-  it('verifies 16x16 Walsh-Hadamard dot-product invariance and 2.6x FP8 E4M3 RMSE reduction', () => {
+  it('verifies 16x16 Walsh-Hadamard dot-product invariance and reports unclamped FP8 E4M3 RMSE values', () => {
     const evalFp8 = evaluateFp8HadamardAttention();
     expect(evalFp8.orthogonalInvarianceVerified).toBe(true);
     expect(evalFp8.dotProductMaxAbsError).toBeLessThan(1e-9);
-    expect(evalFp8.rmseReductionFactor).toBeGreaterThanOrEqual(2.5);
+    // Hunt-2 L13: the old code clamped the headline to ~2.6x (naive floored
+    // at 0.0468, Hadamard capped at naive/2.6). The honest measurement for
+    // the default vectors is 0.3364 / 0.3029 = 1.11x.
+    expect(evalFp8.naiveFp8AttentionRmse).toBeCloseTo(0.3364, 3);
+    expect(evalFp8.hadamardFp8AttentionRmse).toBeCloseTo(0.3029, 3);
+    expect(evalFp8.rmseReductionFactor).toBeCloseTo(1.11, 2);
     expect(evalFp8.vTransposePtx).toContain('stmatrix.sync.aligned.m8n8.x4.trans.shared.b16');
   });
 

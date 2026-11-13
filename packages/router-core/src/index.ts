@@ -1579,7 +1579,16 @@ export class Eluvix {
         toolChoice: effectiveRequest.tool_choice ?? null,
         temperature: effectiveRequest.temperature ?? null,
         topP: (effectiveRequest as any).top_p ?? null,
-        maxTokens: (effectiveRequest as any).max_tokens ?? null
+        maxTokens: (effectiveRequest as any).max_tokens ?? null,
+        // Everything else that changes the response. Omitting these served
+        // a plain-text answer to a JSON-mode caller, ignored stop sequences,
+        // and served one seed's output to another seed's request.
+        responseFormat: (effectiveRequest as any).response_format ?? null,
+        stop: (effectiveRequest as any).stop ?? null,
+        seed: (effectiveRequest as any).seed ?? null,
+        presencePenalty: (effectiveRequest as any).presence_penalty ?? null,
+        frequencyPenalty: (effectiveRequest as any).frequency_penalty ?? null,
+        maxCompletionTokens: (effectiveRequest as any).max_completion_tokens ?? null
       });
       const stripByUpstream = [...targetUpstreams]
         .sort((a, b) => a.id.localeCompare(b.id))
@@ -1677,6 +1686,17 @@ export class Eluvix {
         if (this.config.knowledge?.enabled) {
           hitHeaders['x-eluvix-knowledge'] = knowledgeStatus;
         }
+        // Cache hits used to skip request logging entirely, leaving served
+        // responses invisible in request history/analytics.
+        logRequest({
+          model: (cached.response as any)?.model || effectiveRequest.model,
+          upstream_id: 'cache',
+          status: 200,
+          duration_ms: 0,
+          prompt_tokens: complexity.tokenEstimate,
+          completion_tokens: (cached.response as any)?.usage?.completion_tokens || 0,
+          user_id: scope.userId
+        });
         return new Response(JSON.stringify(cached.response), {
           status: 200,
           headers: hitHeaders
@@ -1701,7 +1721,7 @@ export class Eluvix {
       activeConsensus.candidateUpstreamIds.length >= 2
     ) {
       const idSet = new Set(activeConsensus.candidateUpstreamIds);
-      let consensusCandidates = targetUpstreams.filter((u) => idSet.has(u.id) && globalCircuitBreaker.isAllowed(u.id));
+      let consensusCandidates = targetUpstreams.filter((u) => idSet.has(u.id) && globalCircuitBreaker.isAllowed(u.id, activeConsensus.failureThreshold ?? 3, activeConsensus.cooldownSeconds ?? 60));
       if (consensusCandidates.length >= 2) {
         if (switchyardConfig.maxCostPerRequest != null) {
           const estimatedCost = consensusCandidates.reduce((acc, u) => {
@@ -1806,7 +1826,52 @@ export class Eluvix {
               completion_tokens: completionTokens,
               ttft_ms: duration_ms,
               itl_ms: undefined,
-              kv_cache_kb: 0
+              kv_cache_kb: 0,
+              user_id: scope.userId
+            });
+          } else if (
+            effectiveRequest.stream &&
+            consensusRes.body &&
+            typeof (consensusRes.body as any).getReader === 'function'
+          ) {
+            // Streamed consensus turns used to vanish from memory and
+            // request history: the block above gates remember() and
+            // logRequest behind !stream, and no tee was applied. Tee the
+            // synthesized SSE stream (it ends with [DONE]) like the
+            // standard streaming path does.
+            const consensusStreamStart = routeStartTime;
+            const consensusProviderRef = canRemember ? this.contextProvider : undefined;
+            const teeBody = teeSseStreamForMemory(
+              consensusRes.body as ReadableStream<Uint8Array>,
+              (fullAssistantText) => {
+                if (consensusProviderRef && fullAssistantText.trim().length > 0) {
+                  void consensusProviderRef
+                    .remember(
+                      {
+                        user: { role: 'user', content: lastUserQuery },
+                        assistant: fullAssistantText
+                      },
+                      scope
+                    )
+                    .catch(() => {});
+                }
+                logRequest({
+                  model: activeConsensus.judgeModel || effectiveRequest.model,
+                  upstream_id: `consensus:${activeConsensus.id}`,
+                  status: consensusRes.status,
+                  duration_ms: Date.now() - consensusStreamStart,
+                  prompt_tokens: promptTokens,
+                  completion_tokens: Math.max(1, Math.ceil(fullAssistantText.length / 4)),
+                  ttft_ms: duration_ms,
+                  itl_ms: undefined,
+                  kv_cache_kb: 0,
+                  user_id: scope.userId
+                });
+              }
+            );
+            return new Response(teeBody, {
+              status: consensusRes.status,
+              headers: consensusRes.headers
             });
           }
 
@@ -2506,6 +2571,11 @@ export class Eluvix {
               !(upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
             ) {
               const streamStartTime = startTime;
+              // If the remember-only tee above already wrapped this body,
+              // this tee must log only — remembering here too wrote every
+              // streamed turn to memory twice. (For antigravity/cli://
+              // upstreams this branch never runs, so their memory path is
+              // still the remember-only tee above.)
               const providerRef = canRemember ? this.contextProvider : undefined;
               responseBody = teeSseStreamForMemory(
                 responseBody as ReadableStream<Uint8Array>,
@@ -3301,6 +3371,44 @@ export class Eluvix {
           toolsCount
         });
         complexity.tokenEstimate = newComplexity.tokenEstimate + (options?.memoryTokens || 0);
+      } else if (nonSystemMsgs.length > 0) {
+        // One giant message (or two) used to fail open: the branch above
+        // requires > 2 non-system messages, so a single oversized user
+        // message was sent to a small local model untouched. Truncate the
+        // largest string message from the middle — keeping head and tail,
+        // where the actual question usually sits — by the overshoot plus
+        // margin. If no message is large enough to absorb the overshoot,
+        // leave the request untouched (system messages dominate) rather
+        // than destroying content.
+        const overTokens = complexity.tokenEstimate - MAX_LOCAL_TOKENS;
+        const overChars = Math.ceil(overTokens * 4) + 256;
+        let targetIdx = -1;
+        let targetLen = 0;
+        msgs.forEach((m, i) => {
+          if (m.role !== 'system' && typeof m.content === 'string' && m.content.length > targetLen) {
+            targetLen = m.content.length;
+            targetIdx = i;
+          }
+        });
+        if (targetIdx >= 0 && targetLen > overChars + 512) {
+          const orig = msgs[targetIdx].content as string;
+          const kept = targetLen - overChars;
+          const headLen = Math.ceil(kept / 2);
+          const tailLen = kept - headLen;
+          const note = '\n[System Note: Middle of message truncated to fit local context window]\n';
+          const truncated = orig.slice(0, headLen) + note + (tailLen > 0 ? orig.slice(-tailLen) : '');
+          effectiveRequest = {
+            ...effectiveRequest,
+            messages: msgs.map((m, i) => (i === targetIdx ? { ...m, content: truncated } : m))
+          };
+          const newComplexity = estimatePromptComplexity(stripKnowledgeFromMessages(stripMemoryFromMessages(effectiveRequest.messages)), {
+            ...switchyardConfig.complexityThresholds,
+            codeEscalation: switchyardConfig.codeEscalation,
+            hasTools,
+            toolsCount
+          });
+          complexity.tokenEstimate = newComplexity.tokenEstimate + (options?.memoryTokens || 0);
+        }
       }
     }
 
@@ -4174,7 +4282,7 @@ export class Eluvix {
     }
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-      return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs);
+      return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs, scope?.userId ?? 'default');
     }
 
     if (upstream.type === 'comfyui') {
@@ -4359,7 +4467,8 @@ export class Eluvix {
     request: ResolvedChatRequest,
     complexityScore: 1 | 2 | 3 | 4 = 1,
     clientSignal?: AbortSignal,
-    upstreamTimeoutMs = 60000
+    upstreamTimeoutMs = 60000,
+    userId = 'default'
   ): Promise<Response> {
     const startTime = Date.now();
     // The config-supplied cliPath is resolved through the central gate:
@@ -4647,7 +4756,8 @@ export class Eluvix {
               status: 502,
               duration_ms: Date.now() - startTime,
               prompt_tokens: exactPromptTokens,
-              completion_tokens: exactCompletionTokens
+              completion_tokens: exactCompletionTokens,
+              user_id: userId
             });
             return;
           }
@@ -4708,7 +4818,8 @@ export class Eluvix {
             status: code === 0 ? 200 : 502,
             duration_ms: Date.now() - startTime,
             prompt_tokens: exactPromptTokens,
-            completion_tokens: exactCompletionTokens
+            completion_tokens: exactCompletionTokens,
+            user_id: userId
           });
         });
       });
@@ -5126,7 +5237,7 @@ export class Eluvix {
       steps?: number;
       cfg?: number;
     },
-    options?: { signal?: AbortSignal; timeoutMs?: number; proxyBaseUrl?: string; hops?: number }
+    options?: { signal?: AbortSignal; timeoutMs?: number; proxyBaseUrl?: string; hops?: number; userId?: string }
   ): Promise<Response> {
     const hops = options?.hops ?? 0;
     if (hops >= 2) {
@@ -5250,7 +5361,8 @@ export class Eluvix {
           status: 502,
           duration_ms,
           prompt_tokens: estPromptTokens,
-          completion_tokens: 0
+          completion_tokens: 0,
+          user_id: options?.userId ?? 'default'
         });
       } catch {}
       return new Response(
@@ -5336,7 +5448,8 @@ export class Eluvix {
         prompt_tokens: estPromptTokens,
         completion_tokens: imageCompletionTokens,
         ttft_ms: duration_ms,
-        cost_usd: imageCostUsd
+        cost_usd: imageCostUsd,
+        user_id: options?.userId ?? 'default'
       });
     } catch {}
 

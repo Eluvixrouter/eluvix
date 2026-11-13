@@ -7,8 +7,11 @@ export type EluvixRole = 'admin' | 'operator' | 'readonly';
 
 export interface LdapAuthConfig {
   enabled: boolean;
-  autoBindLocalLdap: boolean;
   allowLocalBreakGlass: boolean;
+  // Opt-in to plaintext ldap:// to a non-loopback host. Default false:
+  // a remote ldap:// URL sends the service-account bind password and user
+  // passwords in cleartext. Loopback ldap:// is always allowed.
+  allowInsecureLdap?: boolean;
   url: string;
   baseDn: string;
   bindDn?: string;
@@ -63,7 +66,6 @@ export function escapeLdapDn(str: string): string {
 
 const DEFAULT_LDAP_CONFIG: LdapAuthConfig = {
   enabled: false,
-  autoBindLocalLdap: true,
   allowLocalBreakGlass: true,
   url: 'ldap://127.0.0.1:389',
   baseDn: 'dc=axonwall,dc=local',
@@ -123,7 +125,6 @@ export function resolveLdapConfig(override?: Partial<LdapAuthConfig>, appName = 
       const ldapBlock = eluvixConfig?.auth?.ldap;
       if (ldapBlock && typeof ldapBlock === 'object') {
         if (typeof ldapBlock.enabled === 'boolean') resolved.enabled = ldapBlock.enabled;
-        if (typeof ldapBlock.autoBindLocalLdap === 'boolean') resolved.autoBindLocalLdap = ldapBlock.autoBindLocalLdap;
         if (typeof ldapBlock.allowLocalBreakGlass === 'boolean') resolved.allowLocalBreakGlass = ldapBlock.allowLocalBreakGlass;
         if (ldapBlock.url) resolved.url = ldapBlock.url;
         if (ldapBlock.baseDn) resolved.baseDn = ldapBlock.baseDn;
@@ -235,6 +236,21 @@ export function mapGroupsToRole(
 }
 
 /**
+ * True when the URL is plaintext ldap:// to a non-loopback host — the
+ * shape that sends bind and user passwords in cleartext.
+ */
+export function isPlaintextRemoteLdap(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'ldap:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Authenticates a user against OpenLDAP:
  * 1. Simple bind as service account (or direct bind if no service account).
  * 2. Search for user by uid.
@@ -257,6 +273,13 @@ export async function authenticateLdapUser(
   const config = resolveLdapConfig(configOverride, appName);
   if (!config.enabled) {
     return { authenticated: false, error: 'LDAP authentication is not enabled' };
+  }
+
+  // Fail closed on plaintext remote LDAP: without this, pointing url at a
+  // remote ldap:// host silently sends the service-account and user
+  // passwords in cleartext. Explicit opt-in via allowInsecureLdap.
+  if (isPlaintextRemoteLdap(config.url) && !config.allowInsecureLdap) {
+    return { authenticated: false, error: 'Refusing plaintext LDAP to a non-loopback host; use ldaps:// or set allowInsecureLdap' };
   }
 
   const client = new Client({
@@ -293,7 +316,12 @@ export async function authenticateLdapUser(
     });
 
     if (searchRes.searchEntries.length === 0) {
-      return { authenticated: false, error: 'User not found in directory' };
+      // Generic error, deliberately: distinct "not found" / "locked" /
+      // "wrong password" strings let an attacker enumerate usernames and
+      // lockout state. The shipped NextAuth caller collapses these
+      // anyway; this closes the vector for any future caller that
+      // surfaces res.error.
+      return { authenticated: false, error: 'Invalid username or password' };
     }
 
     const userEntry = searchRes.searchEntries[0];
@@ -303,7 +331,9 @@ export async function authenticateLdapUser(
     if (userEntry.pwdAccountLockedTime) {
       const lockedTime = String(userEntry.pwdAccountLockedTime);
       if (lockedTime && lockedTime !== '000001010000Z') {
-        return { authenticated: false, error: 'Account is locked by password policy' };
+        // Same generic error as not-found/wrong-password (see above):
+        // revealing lockout state is an enumeration oracle.
+        return { authenticated: false, error: 'Invalid username or password' };
       }
     }
 

@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 export interface GuardCheckResult {
   passed: boolean;
   score?: number;
@@ -50,7 +52,13 @@ export interface PrivacyGuardConfig {
 // Common prompt injection attack patterns & system prompt leakage keywords
 const INJECTION_PATTERNS: Array<{ regex: RegExp; label: string; weight: number }> = [
   {
-    regex: /(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+)?(?:previous|prior|above|system)\s+(?:instructions|prompts|rules|commands|directives)/i,
+    // Bounded filler words between the trigger verb and the target noun:
+    // the old pattern required exactly one anchor word, so doubling it
+    // ("previous previous") or inserting one ("the", "secret") defeated
+    // the match while preserving meaning. Up to 4 fillers covers the
+    // observed evasions without turning the pattern into a free-form
+    // verb-to-noun span.
+    regex: /(?:ignore|disregard|forget|override|bypass)\s+(?:\w+\s+){0,4}(?:instructions|prompts|rules|commands|directives)/i,
     label: 'instruction_override',
     weight: 0.95
   },
@@ -145,13 +153,17 @@ function noteUnimplementedGuardMode(config?: PromptGuardConfig): void {
   );
 }
 
+// Salted SHA-256 replacement for the old 32-bit simpleHash: the old hash
+// was reversible by brute force (a 10k SSN serial space fell in ~4 ms).
+// The salt is generated once per process and never leaves it, so a
+// [HASH:...] value cannot be inverted from the redacted output alone.
+// Consequence, documented: the same value hashes differently across
+// processes — 'hash' style is stable within a run, not across runs.
+// (The default redactionStyle is 'token'; this only hardens the opt-in.)
+const HASH_SALT = crypto.randomBytes(16).toString('hex');
+
 function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash) + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0').slice(0, 8);
+  return crypto.createHash('sha256').update(`${HASH_SALT}:${str}`).digest('hex').slice(0, 16);
 }
 
 /**

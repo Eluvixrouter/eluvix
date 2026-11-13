@@ -391,11 +391,25 @@ export interface DualAttestationVerdict {
   kbsKeyRelease: 'GRANTED' | 'DENIED';
   eatTokenIssued: string | null;
   reasons: string[];
+  // Always true: this verifier performs NO cryptographic signature
+  // verification — DualAttestationEvidence carries only caller-asserted
+  // booleans (vcekSignatureValid, gpuSpdmRimVerified, ...) and no
+  // signature blobs to check, and EATs are signed with an ephemeral
+  // process-local key no other party can verify after a restart. Any
+  // consumer MUST treat an affirming verdict as simulation-only and
+  // must never gate real key release or access on it. This field exists
+  // so a future caller cannot mistake GRANTED for hardware-backed proof.
+  simulatedEvidence: true;
 }
 
 /**
  * Evaluates dual CPU (AMD SEV-SNP / Intel TDX) + GPU (NVIDIA H100 / B200 SPDM 1.2)
  * attestation evidence against a relying-party policy (IETF RATS RFC 9334).
+ *
+ * SIMULATION ONLY: evidence is caller-asserted booleans; no signature is
+ * verified and the EAT signing key is ephemeral. Do not wire this to a
+ * real key-release or access gate without replacing the evidence model
+ * with verifiable reports and a persistent, published verification key.
  */
 export function verifyDualAttestationReport(
   evidence: DualAttestationEvidence,
@@ -481,7 +495,8 @@ export function verifyDualAttestationReport(
     kbsKeyRelease: affirming ? 'GRANTED' : 'DENIED',
     eatTokenIssued,
     reasons: affirming
-      ? ['Dual CPU + GPU hardware roots of trust verified; Trustee KBS unsealing AES-256-GCM model key']
+      ? ['Simulated dual attestation evidence accepted against policy (no hardware signature verified); Trustee KBS unsealing AES-256-GCM model key']
       : reasons,
+    simulatedEvidence: true as const,
   };
 }
