@@ -1,4 +1,16 @@
-import { Eluvix, type RouterConfig, type ChatMessage } from './index.js';
+import {
+  Eluvix,
+  type RouterConfig,
+  type ChatMessage,
+  classifyPaperclipTask,
+  recommendPaperclipAssignees,
+  getPaperclipOutcomePriors,
+  PAPERCLIP_VIRTUAL_MODELS,
+  getEffectiveCostPer1kTokens,
+  isLocalUpstream,
+  type PaperclipCandidateAgent,
+} from './index.js';
+import { globalCircuitBreaker } from './circuit-breaker.js';
 import type { RequestScope } from './context/types.js';
 import { addMemoryItem, searchMemoryItems, getRollingSpendUsd, listBanditArms } from './db.js';
 import { getVramArbiterStats } from './vram-arbiter.js';
@@ -160,6 +172,56 @@ export const ELUVIX_MCP_TOOLS: McpToolDefinition[] = [
           description: 'Rolling spend window in hours (default: 24).',
         },
       },
+    },
+  },
+  {
+    name: 'switchyard_capabilities',
+    description:
+      'Inspect Switchyard fleet capabilities: upstreams, virtual tier models, local/cloud egress class, health, and cost per 1k tokens.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'switchyard_classify_task',
+    description:
+      'Classify a task or Paperclip issue into modality, complexity, sensitivity, and suggested Switchyard tier.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        priority: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+        labels: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'switchyard_explain_route',
+    description:
+      'Dry-run Switchyard routing with optional Paperclip priority and sensitivity signals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string' },
+        model: { type: 'string' },
+        priority: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+        sensitivity: { type: 'string', enum: ['public', 'internal', 'confidential'] },
+      },
+      required: ['prompt'],
+    },
+  },
+  {
+    name: 'switchyard_recommend_assignee',
+    description:
+      'Rank candidate employee agents for a task using Switchyard capability fit, cost, latency, load, and sensitivity.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'object' },
+        candidates: { type: 'array', items: { type: 'object' } },
+        topN: { type: 'number' },
+      },
+      required: ['task', 'candidates'],
     },
   },
 ];
@@ -465,6 +527,88 @@ async function executeMcpToolCall(
           priority: u.priority,
           models: u.models,
         })),
+      });
+    }
+
+    case 'switchyard_capabilities': {
+      const upstreams = (ctx.config.upstreams || []).map((u) => ({
+        id: u.id,
+        name: u.name,
+        type: u.type,
+        isLocal: isLocalUpstream(u),
+        healthy: globalCircuitBreaker.getState(u.id) !== 'open',
+        models: u.models || [],
+        costPer1kTokens: getEffectiveCostPer1kTokens(u),
+      }));
+      return mcpTextResult({
+        egressPolicy: ctx.config.egressPolicy || 'allow-egress',
+        strategy: ctx.config.switchyard?.strategy || ctx.config.strategy || 'cost-complexity',
+        virtualModels: PAPERCLIP_VIRTUAL_MODELS,
+        upstreams,
+      });
+    }
+
+    case 'switchyard_classify_task': {
+      return mcpTextResult(
+        classifyPaperclipTask({
+          title: String(args.title || ''),
+          description: typeof args.description === 'string' ? args.description : undefined,
+          priority: args.priority,
+          labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
+        })
+      );
+    }
+
+    case 'switchyard_explain_route': {
+      const explanation = ctx.router.explainRoute(
+        {
+          model: String(args.model || 'eluvix/auto'),
+          messages: [{ role: 'user', content: String(args.prompt || '') }],
+        },
+        {
+          scope: ctx.scope,
+          paperclip: {
+            trusted: true,
+            priority: args.priority,
+            sensitivity: args.sensitivity,
+            droppedHeaders: [],
+          },
+        }
+      );
+      return mcpTextResult(explanation);
+    }
+
+    case 'switchyard_recommend_assignee': {
+      const task = {
+        title: String(args.task?.title || ''),
+        description:
+          typeof args.task?.description === 'string' ? args.task.description : undefined,
+        priority: args.task?.priority,
+        labels: Array.isArray(args.task?.labels) ? args.task.labels.map(String) : undefined,
+        sensitivity: args.task?.sensitivity,
+      };
+      const classification = classifyPaperclipTask(task);
+      const priors = getPaperclipOutcomePriors(classification.taskClass, ctx.scope?.userId);
+      const fleet = (ctx.config.upstreams || []).map((u) => ({
+        id: u.id,
+        name: u.name,
+        type: u.type,
+        isLocal: isLocalUpstream(u),
+        healthy: globalCircuitBreaker.getState(u.id) !== 'open',
+        models: u.models || [],
+        costPer1kTokens: getEffectiveCostPer1kTokens(u),
+      }));
+      const res = recommendPaperclipAssignees(
+        task,
+        (args.candidates || []) as PaperclipCandidateAgent[],
+        fleet,
+        undefined,
+        priors
+      );
+      const topN = typeof args.topN === 'number' && args.topN > 0 ? args.topN : undefined;
+      return mcpTextResult({
+        ...res,
+        recommendations: topN ? res.recommendations.slice(0, topN) : res.recommendations,
       });
     }
 

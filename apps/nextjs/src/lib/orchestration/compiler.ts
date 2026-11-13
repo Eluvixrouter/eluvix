@@ -95,6 +95,7 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
   const memoryNodes = nodes.filter(n => n.type === 'memoryNode');
   const sandboxNodes = nodes.filter(n => n.type === 'sandboxNode');
   const knowledgeBaseNodes = nodes.filter(n => n.type === 'knowledgeBaseNode');
+  const paperclipBridgeNodes = nodes.filter(n => n.type === 'paperclipBridgeNode');
   const semanticCacheNodes = nodes.filter(n => n.type === 'semanticCacheNode');
   const consensusNodes = nodes.filter(n => n.type === 'consensusNode');
   const fallbackChainNodes = nodes.filter(n => n.type === 'fallbackChainNode');
@@ -173,7 +174,8 @@ export function compileGraph(nodes: Node[], edges: Edge[]): CompilationResult {
     mcpTools,
     agentGateways,
     speculativeCascadeNodes,
-    observabilityNodes
+    observabilityNodes,
+    paperclipBridgeNodes
   );
 
   const allUpstreamCapableNodes = [
@@ -253,7 +255,8 @@ function generateEluvixConfig(
   mcpTools: Node[] = [],
   agentGateways: Node[] = [],
   speculativeCascadeNodes: Node[] = [],
-  observabilityNodes: Node[] = []
+  observabilityNodes: Node[] = [],
+  paperclipBridgeNodes: Node[] = []
 ): any {
   const upstreams: any[] = [];
   const switchyard = switchyardNodes[0];
@@ -1385,6 +1388,19 @@ function generateEluvixConfig(
 
   const kbNode = knowledgeBaseNodes[0];
   const kbData = (kbNode?.data || {}) as Record<string, any>;
+  const paperclipNode = paperclipBridgeNodes[0];
+  const paperclipData = (paperclipNode?.data || {}) as Record<string, any>;
+  const paperclipIntegrationConfig = paperclipNode
+    ? {
+        enabled: paperclipData.enabled !== false,
+        paperclipBaseUrl: String(paperclipData.paperclipBaseUrl || 'http://127.0.0.1:3100'),
+        trustHeadersFrom: (paperclipData.trustHeadersFrom === 'loopback' ? 'loopback' : 'scoped-key') as
+          | 'loopback'
+          | 'scoped-key',
+        ...(paperclipData.budgetPressure ? { budgetPressure: paperclipData.budgetPressure } : {}),
+        ...(paperclipData.priorityPolicy ? { priorityPolicy: paperclipData.priorityPolicy } : {}),
+      }
+    : undefined;
   const knowledgeConfig = kbNode
     ? {
         enabled: true,
@@ -1554,6 +1570,7 @@ function generateEluvixConfig(
     modelGateway: modelGatewayConfig,
     ...(memoryConfig ? { memory: memoryConfig } : {}),
     ...(knowledgeConfig ? { knowledge: knowledgeConfig } : {}),
+    ...(paperclipIntegrationConfig ? { integrations: { paperclip: paperclipIntegrationConfig } } : {}),
     ...(cacheConfig ? { cache: cacheConfig } : {}),
     ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
     ...(consensusGroups.length > 0 ? { consensusGroups } : {}),

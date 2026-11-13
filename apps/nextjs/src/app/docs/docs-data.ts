@@ -627,6 +627,45 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
     },
   },
   {
+    id: 'paperclip',
+    title: 'Paperclip Agent Org Integration',
+    category: 'Agent Ecosystem',
+    icon: '📎',
+    summary: 'Deep Paperclip integration: eluvix/* virtual models, eluvix_local OpenCode adapter, priority/budget/sensitivity routing, and Switchyard assignee recommendation.',
+    content: {
+      overview: 'Eluvix integrates with Paperclip across Tier 0 (virtual Switchyard models), Tier 1 (@eluvix/paperclip-adapter running eluvix_local OpenCode harness), and Tier 2 (@eluvix/paperclip-plugin for task classification and opt-in auto-assignment).',
+      subsections: [
+        {
+          title: 'Paperclip API Endpoints (/api/v1/paperclip/*)',
+          body: 'All Paperclip integration routes require a valid Bearer token with the "paperclip" (or "*") scope and enforce per-user SQLite isolation.',
+          table: {
+            headers: ['Method & Path', 'Description'],
+            rows: [
+              ['GET /api/v1/paperclip/whoami', 'Verifies key identity, Paperclip integration status, egress policy, and rolling 24h spend.'],
+              ['GET /api/v1/paperclip/capabilities', 'Returns Switchyard strategy, virtual models (eluvix/*), Paperclip policy, and sanitized upstream fleet.'],
+              ['POST /api/v1/paperclip/classify', 'Classifies task title/description/priority/labels into complexity, modalities, sensitivity, and suggested tier.'],
+              ['POST /api/v1/paperclip/recommend-assignee', 'Ranks candidate Paperclip agents using capability fit, cost, latency, load, budget, and SQLite outcome priors.'],
+              ['POST /api/v1/paperclip/feedback', 'Records assignment outcome priors into paperclip_assignment_outcomes for Thompson-style historical scoring.'],
+              ['GET /api/v1/paperclip/usage/:runId', 'Aggregates authoritative token counts, dominant model, and USD cost by correlation_id for a Paperclip run.'],
+            ],
+          },
+        },
+        {
+          title: 'Paperclip Request & Response Headers',
+          body: 'Trusted x-paperclip-* headers bias Switchyard upstream selection and correlate telemetry.',
+          table: {
+            headers: ['Header', 'Description'],
+            rows: [
+              ['X-Eluvix-Correlation-Id', 'Echoes the correlated Paperclip run ID (x-paperclip-run-id) persisted on request_logs.'],
+              ['X-Eluvix-Paperclip-Priority', 'Echoes the resolved Paperclip issue priority (critical, high, medium, low).'],
+              ['X-Eluvix-Paperclip-Bias', 'Comma-separated Switchyard routing bias tags applied (tier-floor, tier-ceiling, prefer-local, local-only, budget-cascade).'],
+            ],
+          },
+        },
+      ],
+    },
+  },
+  {
     id: 'local-engines',
     title: 'Local Engines, RamaLama & ComfyUI',
     category: 'Hardware & Platform',

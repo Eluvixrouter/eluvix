@@ -53,6 +53,7 @@ export const PALETTE_NODE_CATALOG: PaletteNodeSpec[] = [
   // Memory, RAG, Caching, Tools & Observability
   { type: 'memoryNode', title: 'OpenViking Context & Memory', subtitle: 'Scoped L0/L1/L2 Episodic Memory (:1933)', icon: '🧠', category: 'Context & RAG', keywords: 'memory openviking graphiti recall' },
   { type: 'knowledgeBaseNode', title: 'Knowledge Base (Hybrid RAG)', subtitle: 'LightRAG / Vector Citation Injector (:9621)', icon: '📚', category: 'Context & RAG', keywords: 'rag citations vector search documents' },
+  { type: 'paperclipBridgeNode', title: 'Paperclip Bridge', subtitle: 'Company Priority & Delegation Policy (:3100)', icon: '📎', category: 'Context & RAG', keywords: 'paperclip company agent delegation priority budget' },
   { type: 'semanticCacheNode', title: 'Semantic & Exact Cache', subtitle: 'Per-User Zero-Latency Response Cache', icon: '⚡', category: 'Context & RAG', keywords: 'cache sqlite fts qdrant ttl' },
   { type: 'mcpToolNode', title: 'MCP Tool Server', subtitle: 'Model Context Protocol Tool Provider', icon: '🔧', category: 'Tools & Creative', keywords: 'mcp filesystem postgres github brave' },
   { type: 'vectorcraftNode', title: 'VectorCraft / ArtCraft Creative Suite', subtitle: '14-App Local Creative MCP Suite (SVG, Photo, Video, 3D)', icon: '🎨', category: 'Tools & Creative', keywords: 'vectorcraft artcraft photocraft filmcraft svg bezier' },

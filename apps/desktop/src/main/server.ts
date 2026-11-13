@@ -28,6 +28,17 @@ import {
   transformOpenAiSseToResponsesSse,
   getStoredResponse,
   saveStoredResponse,
+  PAPERCLIP_VIRTUAL_MODELS,
+  classifyPaperclipTask,
+  recommendPaperclipAssignees,
+  getPaperclipOutcomePriors,
+  recordPaperclipAssignmentOutcome,
+  getPaperclipUsageByCorrelation,
+  globalCircuitBreaker,
+  getEffectiveCostPer1kTokens,
+  isLocalUpstream,
+  getRollingSpendUsd,
+  type PaperclipCandidateAgent,
   deleteStoredResponse,
   getDb,
   listDistillationPairs,
@@ -437,6 +448,9 @@ export class DesktopRouterServer extends EventEmitter {
       if (pathname === '/v1/models' && req.method === 'GET') {
         const upstreams = this.router.getUpstreams();
         const modelSet = new Set<string>();
+        for (const vm of PAPERCLIP_VIRTUAL_MODELS) {
+          modelSet.add(vm.id);
+        }
         upstreams.forEach(u => {
           u.models.forEach(m => {
             if (m !== '*') modelSet.add(m);
@@ -1684,6 +1698,128 @@ export class DesktopRouterServer extends EventEmitter {
           res.end(JSON.stringify({ id, deleted }));
           return;
         }
+      }
+
+      // Paperclip Integration Routes (`/v1/paperclip/*` & `/api/v1/paperclip/*`)
+      if (pathname === '/v1/paperclip/whoami' || pathname === '/api/v1/paperclip/whoami') {
+        const cfg = this.router.getConfig();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          userId: 'default',
+          via: 'desktop-token',
+          paperclipIntegrationEnabled: Boolean(cfg.integrations?.paperclip?.enabled),
+          trustHeadersFrom: cfg.integrations?.paperclip?.trustHeadersFrom ?? 'scoped-key',
+          egressPolicy: cfg.egressPolicy ?? 'allow-egress',
+          rolling24hSpendUsd: getRollingSpendUsd(24, 'default'),
+          maxDailySpendUsd: cfg.switchyard?.maxDailySpendUsd ?? null,
+        }));
+        return;
+      }
+
+      if (pathname === '/v1/paperclip/capabilities' || pathname === '/api/v1/paperclip/capabilities') {
+        const cfg = this.router.getConfig();
+        const upstreams = this.router.getUpstreams().map((u) => {
+          const local = isLocalUpstream(u);
+          return {
+            id: u.id,
+            name: u.name,
+            type: u.type,
+            isLocal: local,
+            healthy: globalCircuitBreaker.getState(u.id) !== 'open',
+            models: u.models || [],
+            costPer1kTokens: getEffectiveCostPer1kTokens(u),
+            estimatedLatencyMs: u.latencyMs ?? (local ? 750 : 1400),
+          };
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          object: 'eluvix.switchyard.capabilities',
+          egressPolicy: cfg.egressPolicy ?? 'allow-egress',
+          strategy: cfg.switchyard?.strategy ?? cfg.strategy ?? 'cost-complexity',
+          virtualModels: PAPERCLIP_VIRTUAL_MODELS,
+          paperclipPolicy: cfg.integrations?.paperclip ?? { enabled: false },
+          upstreams,
+        }));
+        return;
+      }
+
+      if ((pathname === '/v1/paperclip/classify' || pathname === '/api/v1/paperclip/classify') && req.method === 'POST') {
+        const body = JSON.parse((await this.readBody(req)) || '{}');
+        const classification = classifyPaperclipTask({
+          issueId: typeof body.issueId === 'string' ? body.issueId : undefined,
+          title: String(body.title || ''),
+          description: typeof body.description === 'string' ? body.description : undefined,
+          priority: body.priority,
+          labels: Array.isArray(body.labels) ? body.labels.map(String) : undefined,
+          sensitivity: body.sensitivity,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(classification));
+        return;
+      }
+
+      if ((pathname === '/v1/paperclip/recommend-assignee' || pathname === '/api/v1/paperclip/recommend-assignee') && req.method === 'POST') {
+        const body = JSON.parse((await this.readBody(req)) || '{}');
+        const task = {
+          issueId: typeof body.task?.issueId === 'string' ? body.task.issueId : undefined,
+          title: String(body.task?.title || ''),
+          description: typeof body.task?.description === 'string' ? body.task.description : undefined,
+          priority: body.task?.priority,
+          labels: Array.isArray(body.task?.labels) ? body.task.labels.map(String) : undefined,
+          sensitivity: body.task?.sensitivity,
+        };
+        const classification = classifyPaperclipTask(task);
+        const priors = getPaperclipOutcomePriors(classification.taskClass, 'default');
+        const fleet = this.router.getUpstreams().map((u) => ({
+          id: u.id,
+          name: u.name,
+          type: u.type,
+          isLocal: isLocalUpstream(u),
+          healthy: globalCircuitBreaker.getState(u.id) !== 'open',
+          models: u.models || [],
+          costPer1kTokens: getEffectiveCostPer1kTokens(u),
+          estimatedLatencyMs: u.latencyMs ?? (isLocalUpstream(u) ? 750 : 1400),
+        }));
+        const result = recommendPaperclipAssignees(
+          task,
+          (body.candidates || []) as PaperclipCandidateAgent[],
+          fleet,
+          body.weights,
+          priors
+        );
+        const topN = typeof body.topN === 'number' && body.topN > 0 ? Math.min(20, body.topN) : undefined;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ...result,
+          recommendations: topN ? result.recommendations.slice(0, topN) : result.recommendations,
+        }));
+        return;
+      }
+
+      if ((pathname === '/v1/paperclip/feedback' || pathname === '/api/v1/paperclip/feedback') && req.method === 'POST') {
+        const body = JSON.parse((await this.readBody(req)) || '{}');
+        recordPaperclipAssignmentOutcome({
+          userId: 'default',
+          issueId: String(body.issueId || ''),
+          agentId: String(body.agentId || ''),
+          taskClass: String(body.taskClass || 'text:moderate'),
+          success: Boolean(body.success),
+          costUsd: typeof body.costUsd === 'number' ? body.costUsd : 0,
+          durationMs: typeof body.durationMs === 'number' ? body.durationMs : 0,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      const pcUsageMatch = /^\/(?:api\/)?v1\/paperclip\/usage\/([^/]+)$/.exec(pathname);
+      if (pcUsageMatch && req.method === 'GET') {
+        const runId = decodeURIComponent(pcUsageMatch[1]);
+        const summary = getPaperclipUsageByCorrelation(runId, 'default');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(summary));
+        return;
       }
 
       // Not found

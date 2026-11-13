@@ -27,6 +27,15 @@ import {
   type AttentionRoutingPolicy,
   FLASH_ATTENTION_BENCHMARK_TABLE
 } from './flash-attention-kernels.js';
+import {
+  type PaperclipIntegrationConfig,
+  type PaperclipRequestContext,
+  type ResolvedPaperclipBias,
+  PAPERCLIP_STEP_TIER_RANK,
+  PAPERCLIP_VIRTUAL_MODELS,
+  resolvePaperclipRoutingBias,
+  resolveVirtualTierAlias,
+} from './paperclip-context.js';
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -194,10 +203,16 @@ export interface RouterConfig {
   vramArbiter?: VramArbiterConfig;
   vectorcraft?: VectorCraftMcpConfig;
   artcraft?: ArtCraftMcpConfig;
+  integrations?: {
+    paperclip?: PaperclipIntegrationConfig;
+  };
 }
 
 export * from './paths.js';
 export * from './db.js';
+export * from './paperclip-context.js';
+export * from './paperclip-assign.js';
+export * from './paperclip-store.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
@@ -392,6 +407,7 @@ export interface RouteTraceStep {
     | 'tools-filter'
     | 'structured-outputs-filter'
     | 'budget-guardrail'
+    | 'paperclip-context'
     | 'circuit-breaker'
     | 'fallback-chain'
     | 'consensus'
@@ -826,6 +842,7 @@ export class Eluvix {
       signal?: AbortSignal;
       scope?: Partial<RequestScope>;
       hops?: number;
+      paperclip?: PaperclipRequestContext;
     }
   ): Promise<Response> {
     const hops = options?.hops ?? 0;
@@ -1313,7 +1330,8 @@ export class Eluvix {
         hops,
         memoryTainted,
         knowledgeTainted,
-        memoryTokens: memoryTokens + knowledgeTokens
+        memoryTokens: memoryTokens + knowledgeTokens,
+        paperclip: options?.paperclip
       });
     } catch (err: any) {
       if (err?.confidentialUnavailable) {
@@ -2563,7 +2581,12 @@ export class Eluvix {
                 itl_ms: itlMs,
                 kv_cache_kb: kvCacheKb,
                 cost_usd: syncCostUsd,
-                user_id: scope?.userId || 'default'
+                user_id: scope?.userId || 'default',
+                correlation_id: options?.paperclip?.runId,
+                pc_issue_id: options?.paperclip?.issueId,
+                pc_agent_id: options?.paperclip?.agentId,
+                pc_company_id: options?.paperclip?.companyId,
+                pc_priority: options?.paperclip?.priority,
               });
             } else if (
               responseBody &&
@@ -2623,7 +2646,12 @@ export class Eluvix {
                     itl_ms: finalItl,
                     kv_cache_kb: kvCacheKb,
                     cost_usd: streamCostUsd,
-                    user_id: scope?.userId || 'default'
+                    user_id: scope?.userId || 'default',
+                    correlation_id: options?.paperclip?.runId,
+                    pc_issue_id: options?.paperclip?.issueId,
+                    pc_agent_id: options?.paperclip?.agentId,
+                    pc_company_id: options?.paperclip?.companyId,
+                    pc_priority: options?.paperclip?.priority,
                   });
                 }
               );
@@ -2665,6 +2693,18 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
             newResponse.headers.set('x-eluvix-cost-usd', syncCostUsd.toFixed(6));
+            if (options?.paperclip?.runId) {
+              newResponse.headers.set('x-eluvix-correlation-id', options.paperclip.runId);
+            }
+            if (options?.paperclip?.priority) {
+              newResponse.headers.set('x-eluvix-paperclip-priority', options.paperclip.priority);
+            }
+            if (selection.paperclipBias?.active) {
+              const biasLabel = selection.paperclipBias.relaxed
+                ? 'relaxed'
+                : selection.paperclipBias.biasTags.join(',') || 'none';
+              newResponse.headers.set('x-eluvix-paperclip-bias', biasLabel);
+            }
             if (selection.budgetFallback) {
               newResponse.headers.set('x-eluvix-budget-fallback', 'local-sovereign');
             }
@@ -3035,6 +3075,7 @@ export class Eluvix {
       hops?: number;
       memoryTainted?: boolean;
       memoryTokens?: number;
+      paperclip?: PaperclipRequestContext;
     }
   ): RouteExplanation {
     const effectiveRequest: ResolvedChatRequest = {
@@ -3048,7 +3089,8 @@ export class Eluvix {
         scope: options?.scope,
         hops: options?.hops,
         memoryTainted: options?.memoryTainted,
-        memoryTokens: options?.memoryTokens
+        memoryTokens: options?.memoryTokens,
+        paperclip: options?.paperclip
       });
       return {
         model: effectiveRequest.model,
@@ -3096,6 +3138,7 @@ export class Eluvix {
       knowledgeTainted?: boolean;
       memoryTokens?: number;
       knowledgeTokens?: number;
+      paperclip?: PaperclipRequestContext;
     }
   ): {
     effectiveRequest: ResolvedChatRequest;
@@ -3107,6 +3150,7 @@ export class Eluvix {
     budgetFallback?: boolean;
     rolling24hSpendUsd?: number;
     vendorAlias?: VendorModelAliasResult;
+    paperclipBias?: ResolvedPaperclipBias;
   } {
     const steps: RouteTraceStep[] = [];
     const fail = (message: string): never => {
@@ -3632,6 +3676,61 @@ export class Eluvix {
       }
     }
 
+    const paperclipBias = resolvePaperclipRoutingBias(
+      options?.paperclip,
+      this.config.integrations?.paperclip
+    );
+    const virtualTier = resolveVirtualTierAlias(effectiveRequest.model);
+    if (virtualTier) {
+      if (virtualTier === 'fast-local') {
+        paperclipBias.preferLocal = true;
+        paperclipBias.maxTier = virtualTier;
+      } else {
+        paperclipBias.minTier = paperclipBias.minTier || virtualTier;
+      }
+      if (!paperclipBias.biasTags.includes('virtual-tier')) {
+        paperclipBias.biasTags.push('virtual-tier');
+      }
+      paperclipBias.active = true;
+    }
+
+    if (paperclipBias.active) {
+      const beforePc = targetUpstreams;
+      if (!paperclipBias.allowCloud) {
+        const localOnly = targetUpstreams.filter((u) => isLocalUpstream(u));
+        if (localOnly.length > 0) {
+          targetUpstreams = localOnly;
+        } else if (paperclipBias.sensitivityForcedLocal) {
+          fail(
+            `Paperclip confidential sensitivity requires local-only egress, but no local upstream is available for model: ${effectiveRequest.model}`
+          );
+        } else {
+          paperclipBias.relaxed = true;
+        }
+      }
+      if (paperclipBias.maxCostPer1kUsd !== undefined) {
+        const withinCap = targetUpstreams.filter(
+          (u) => getEffectiveCostPer1kTokens(u) <= paperclipBias.maxCostPer1kUsd!
+        );
+        if (withinCap.length > 0) {
+          targetUpstreams = withinCap;
+        } else {
+          paperclipBias.relaxed = true;
+        }
+      }
+      const removedPc = beforePc.filter((u) => !targetUpstreams.includes(u)).map((u) => u.id);
+      steps.push({
+        stage: 'paperclip-context',
+        detail: `priority=${options?.paperclip?.priority ?? 'none'}, sensitivity=${options?.paperclip?.sensitivity ?? 'none'}, budgetRemainingPct=${options?.paperclip?.budgetRemainingPct ?? 'n/a'}, bias=[${paperclipBias.biasTags.join(',')}]${paperclipBias.relaxed ? ' (relaxed)' : ''}`,
+        kept: targetUpstreams.map((u) => u.id),
+        removed: removedPc,
+      });
+    }
+
+    const effectiveMinComplexity = paperclipBias.minTier
+      ? Math.max(complexity.score, PAPERCLIP_STEP_TIER_RANK[paperclipBias.minTier])
+      : complexity.score;
+
     const hasExactModelMatch = (u: UpstreamConfig, model: string): number => {
       if (u.models?.includes(model)) return 1;
       if ((u.type === 'antigravity' || u.endpoint?.startsWith('cli://')) && isAntigravitySupportedModel(model, u.models)) {
@@ -3646,7 +3745,11 @@ export class Eluvix {
     if (strategy === 'cost-complexity') {
       targetUpstreams.sort((a, b) => {
         // 0. Exact model match takes precedence over wildcard '*' match
-        if (effectiveRequest.model !== 'auto') {
+        if (
+          effectiveRequest.model !== 'auto' &&
+          effectiveRequest.model !== 'eluvix/auto' &&
+          !virtualTier
+        ) {
           const exactA = hasExactModelMatch(a, effectiveRequest.model);
           const exactB = hasExactModelMatch(b, effectiveRequest.model);
           if (exactA !== exactB) {
@@ -3658,12 +3761,29 @@ export class Eluvix {
         const capA = a.maxComplexityScore ?? (a.type === 'openai-compatible' || a.type === 'billama' || a.type === 'anthropic' || a.type === 'antigravity' || a.type === 'harness' ? 4 : 2);
         const capB = b.maxComplexityScore ?? (b.type === 'openai-compatible' || b.type === 'billama' || b.type === 'anthropic' || b.type === 'antigravity' || b.type === 'harness' ? 4 : 2);
 
-        const capableA = capA >= complexity.score ? 1 : 0;
-        const capableB = capB >= complexity.score ? 1 : 0;
+        const capableA = capA >= effectiveMinComplexity ? 1 : 0;
+        const capableB = capB >= effectiveMinComplexity ? 1 : 0;
 
         // 1. Capable upstreams come first
         if (capableA !== capableB) {
           return capableB - capableA;
+        }
+
+        if (paperclipBias.maxTier) {
+          const maxRank = PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier];
+          const withinA = capA <= maxRank ? 1 : 0;
+          const withinB = capB <= maxRank ? 1 : 0;
+          if (withinA !== withinB) {
+            return withinB - withinA;
+          }
+        }
+
+        if (paperclipBias.preferLocal) {
+          const locA = isLocalUpstream(a) ? 1 : 0;
+          const locB = isLocalUpstream(b) ? 1 : 0;
+          if (locA !== locB) {
+            return locB - locA;
+          }
         }
 
         // 2. Lowest cost per 1k tokens first ($0 local engines prioritized)
@@ -4211,13 +4331,20 @@ export class Eluvix {
       steps,
       budgetFallback,
       rolling24hSpendUsd,
-      vendorAlias
+      vendorAlias,
+      paperclipBias
     };
   }
 
   public matchesModel(upstream: UpstreamConfig, requestedModel: string): boolean {
     if (!upstream || !Array.isArray(upstream.models)) return false;
-    if (requestedModel === 'auto') return upstream.models.length > 0;
+    if (
+      requestedModel === 'auto' ||
+      requestedModel === 'eluvix/auto' ||
+      resolveVirtualTierAlias(requestedModel) !== undefined
+    ) {
+      return upstream.models.length > 0;
+    }
     if (upstream.models.includes(requestedModel)) return true;
     if (upstream.type === 'harness' && upstream.harness?.kind && requestedModel === `harness/${upstream.harness.kind}`) {
       return true;

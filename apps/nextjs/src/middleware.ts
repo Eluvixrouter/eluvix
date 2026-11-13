@@ -139,7 +139,8 @@ export async function middleware(req: NextRequest) {
           normalizedApiPath.startsWith('/api/v1/batches') ||
           normalizedApiPath.startsWith('/api/v1/rerank') ||
           normalizedApiPath.startsWith('/api/v1/prompts') ||
-          normalizedApiPath.startsWith('/api/v1/webhooks'))
+          normalizedApiPath.startsWith('/api/v1/webhooks') ||
+          normalizedApiPath.startsWith('/api/v1/paperclip'))
       ) {
         return NextResponse.next();
       }

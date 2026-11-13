@@ -28,6 +28,7 @@ import McpToolNode from "./nodes/McpToolNode";
 import ModelGatewayNode from './nodes/ModelGatewayNode';
 import ObservabilityNode from './nodes/ObservabilityNode';
 import PrivacyGuardNode from './nodes/PrivacyGuardNode';
+import PaperclipBridgeNode from './nodes/PaperclipBridgeNode';
 import LemonadeNode from './nodes/LemonadeNode';
 import VllmNode from './nodes/VllmNode';
 import SglangNode from './nodes/SglangNode';
@@ -119,6 +120,12 @@ const DEFAULT_NODE_DATA: Record<string, any> = {
     topK: 5,
     maxTokens: 1200,
     minScore: 0.65
+  },
+  paperclipBridgeNode: {
+    enabled: true,
+    paperclipBaseUrl: 'http://127.0.0.1:3100',
+    trustHeadersFrom: 'scoped-key',
+    budgetPressure: { thresholdPct: 15, action: 'cascade-cheaper' }
   },
   semanticCacheNode: {
     label: 'Semantic Cache',
@@ -687,6 +694,7 @@ const nodeTypes = {
   harnessNode: HarnessNode,
   sandboxNode: SandboxNode,
   knowledgeBaseNode: KnowledgeBaseNode,
+  paperclipBridgeNode: PaperclipBridgeNode,
   semanticCacheNode: SemanticCacheNode,
   consensusNode: ConsensusNode,
   speculativeCascadeNode: SpeculativeCascadeNode,

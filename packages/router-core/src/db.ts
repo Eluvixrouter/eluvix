@@ -23,6 +23,11 @@ export interface RequestLog {
   kv_cache_kb?: number;
   cost_usd?: number;
   user_id?: string;
+  correlation_id?: string;
+  pc_issue_id?: string;
+  pc_agent_id?: string;
+  pc_company_id?: string;
+  pc_priority?: string;
 }
 
 export interface SqliteDb {
@@ -321,8 +326,39 @@ function initSchema(db: SqliteDb) {
   if (!reqCols.some(c => c.name === 'cache_write_tokens')) {
     db.exec('ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER DEFAULT 0');
   }
+  if (!reqCols.some(c => c.name === 'correlation_id')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN correlation_id TEXT');
+  }
+  if (!reqCols.some(c => c.name === 'pc_issue_id')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN pc_issue_id TEXT');
+  }
+  if (!reqCols.some(c => c.name === 'pc_agent_id')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN pc_agent_id TEXT');
+  }
+  if (!reqCols.some(c => c.name === 'pc_company_id')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN pc_company_id TEXT');
+  }
+  if (!reqCols.some(c => c.name === 'pc_priority')) {
+    db.exec('ALTER TABLE request_logs ADD COLUMN pc_priority TEXT');
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_user ON request_logs(user_id, id DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_request_logs_correlation_id ON request_logs(correlation_id)');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS paperclip_assignment_outcomes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      issue_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      task_class TEXT NOT NULL,
+      success INTEGER NOT NULL DEFAULT 1,
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_pc_outcomes_agent_class
+      ON paperclip_assignment_outcomes(task_class, agent_id);
+  `);
 }
 
 export function getDb(): SqliteDb {
@@ -375,8 +411,12 @@ export function logRequest(log: RequestLog) {
   try {
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO request_logs (model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, ttft_ms, itl_ms, kv_cache_kb, cost_usd, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO request_logs (
+        model, upstream_id, status, duration_ms, prompt_tokens, completion_tokens,
+        cache_read_tokens, cache_write_tokens, ttft_ms, itl_ms, kv_cache_kb, cost_usd,
+        user_id, correlation_id, pc_issue_id, pc_agent_id, pc_company_id, pc_priority
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     stmt.run(
@@ -392,7 +432,12 @@ export function logRequest(log: RequestLog) {
       log.itl_ms ?? null,
       log.kv_cache_kb ?? null,
       typeof log.cost_usd === 'number' && Number.isFinite(log.cost_usd) ? log.cost_usd : 0,
-      log.user_id || 'default'
+      log.user_id || 'default',
+      log.correlation_id ?? null,
+      log.pc_issue_id ?? null,
+      log.pc_agent_id ?? null,
+      log.pc_company_id ?? null,
+      log.pc_priority ?? null
     );
   } catch (err: any) {
     console.error('Failed to log request to DB:', err.message);

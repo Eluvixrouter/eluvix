@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getCachedAntigravityModels, resolveBearerToken } from '@eluvix/router-core';
+import {
+  getCachedAntigravityModels,
+  PAPERCLIP_VIRTUAL_MODELS,
+  resolveBearerToken,
+} from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
@@ -31,6 +35,9 @@ export async function GET(req: Request) {
   // Aggregate all models from upstreams
   const modelSet = new Set<string>();
   modelSet.add('auto');
+  for (const vm of PAPERCLIP_VIRTUAL_MODELS) {
+    modelSet.add(vm.id);
+  }
   upstreams.forEach(u => {
     (u.models || []).forEach(m => {
       if (m !== '*' && !/^gemini-(?:3\.1|3\.6|3\.7|2\.5)/i.test(m)) {
