@@ -10,6 +10,7 @@ import {
   getVramArbiterStats,
   listBanditArms,
 } from '@eluvix/router-core';
+import { ANTIGRAVITY_CLI_BINARIES, tryResolveCliExecutable } from '@eluvix/router-core/cli-exec';
 import { getConfig, getRouter } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 import { spawn } from 'node:child_process';
@@ -45,32 +46,41 @@ async function checkUpstreamHealth(upstream: any): Promise<UpstreamHealth> {
     if (agyHealthCache && (Date.now() - agyHealthCache.timestamp < AGY_HEALTH_TTL_MS)) {
       isAvailable = agyHealthCache.isAvailable;
     } else {
-      isAvailable = await new Promise<boolean>((resolve) => {
-        let resolved = false;
-        const child = spawn(cliPath, ['--version'], { stdio: 'ignore' });
-        const timeoutId = setTimeout(() => {
-          if (!resolved) {
-            resolved = true;
-            try { child.kill('SIGTERM'); } catch {}
-            resolve(false);
-          }
-        }, 1000);
-
-        child.on('error', () => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeoutId);
-            resolve(false);
-          }
-        });
-        child.on('close', (code) => {
-          if (!resolved) {
-            resolved = true;
-            clearTimeout(timeoutId);
-            resolve(code === 0);
-          }
-        });
+      // Resolve through the same gate router-core uses at spawn time (S2):
+      // the saved config's cliPath passed only the static load-time check,
+      // so a symlink-laundered or denied-dir path must never be spawned here.
+      // Unresolvable (missing binary, denied location) means offline, not a spawn.
+      const resolvedCli = tryResolveCliExecutable(cliPath, {
+        allowedBasenames: ANTIGRAVITY_CLI_BINARIES,
       });
+      isAvailable = resolvedCli
+        ? await new Promise<boolean>((resolve) => {
+            let resolved = false;
+            const child = spawn(resolvedCli, ['--version'], { stdio: 'ignore' });
+            const timeoutId = setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                try { child.kill('SIGTERM'); } catch {}
+                resolve(false);
+              }
+            }, 1000);
+
+            child.on('error', () => {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeoutId);
+                resolve(false);
+              }
+            });
+            child.on('close', (code) => {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeoutId);
+                resolve(code === 0);
+              }
+            });
+          })
+        : false;
       agyHealthCache = { isAvailable, timestamp: Date.now() };
     }
 

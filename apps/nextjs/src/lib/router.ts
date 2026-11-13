@@ -1,8 +1,8 @@
 import { Eluvix, RouterConfig, getAppPaths, isSecretReference } from '@eluvix/router-core';
+import { ANTIGRAVITY_CLI_BINARIES, getDeniedCliDirs } from '@eluvix/router-core/cli-exec';
 import { DEFAULT_CONFIG } from './default-config';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 
 export class ConfigValidationError extends Error {
   constructor(message: string) {
@@ -200,17 +200,32 @@ function isValidCliPath(cliPath?: string): boolean {
   if (!cliPath) return true;
   // Disallow shell characters and command injection
   if (/[;&|`$<>\s]/.test(cliPath)) return false;
-  const normalized = path.normalize(cliPath);
-  if (normalized === 'agy') return true;
-
-  const homeDir = os.homedir();
-  const trustedPaths = [
-    '/usr/local/bin/agy',
-    '/usr/bin/agy',
-    path.join(homeDir, '.local', 'bin', 'agy'),
-    path.join(homeDir, 'bin', 'agy')
-  ];
-  return trustedPaths.includes(normalized);
+  // The basename must be an authorized Antigravity CLI binary — the same
+  // allowlist router-core's resolveCliExecutable() enforces at spawn time.
+  // (S2: the old hardcoded trusted-path list rejected `antigravity` and
+  // every non-listed install dir that the spawn gate accepts.)
+  if (!ANTIGRAVITY_CLI_BINARIES.includes(path.basename(cliPath))) return false;
+  // Explicit paths must not resolve into a denied directory (world-writable
+  // scratch, or Eluvix's own config/data/layouts dirs). Follow symlinks when
+  // the target exists, so a symlink at an innocent-looking path cannot
+  // launder a denied location past this check (S2); fall back to the lexical
+  // path when the binary is not installed yet. Existence and executability
+  // are deliberately NOT required here: this validator also runs on config
+  // load, and a saved config must stay loadable on a machine where the CLI
+  // is not installed (yet) — the spawn-time gate fails closed for those.
+  if (cliPath.includes('/') || cliPath.includes('\\')) {
+    let canonical: string;
+    try {
+      canonical = fs.realpathSync(path.resolve(cliPath));
+    } catch {
+      canonical = path.resolve(cliPath);
+    }
+    for (const dir of getDeniedCliDirs()) {
+      const rel = path.relative(dir, canonical);
+      if (rel === '' || (!rel.startsWith('..' + path.sep) && !path.isAbsolute(rel))) return false;
+    }
+  }
+  return true;
 }
 
 export function validateConfig(config: any): void {

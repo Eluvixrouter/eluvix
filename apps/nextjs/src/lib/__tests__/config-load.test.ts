@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import { sanitizeLoadedConfig } from '../router';
 import { DEFAULT_CONFIG } from '../default-config';
+import { getDeniedCliDirs } from '@eluvix/router-core/cli-exec';
 
 const GOOD_UPSTREAM = {
   id: 'local-lemonade',
@@ -61,6 +62,83 @@ describe('sanitizeLoadedConfig', () => {
     });
     expect(config.upstreams.map(u => u.id)).toEqual(['local-lemonade']);
     expect(warnings.some(w => w.includes('cliPath'))).toBe(true);
+  });
+
+  // S2: the Next.js cliPath check must agree with router-core's
+  // resolveCliExecutable() spawn gate — same basename allowlist, same
+  // denied directories — instead of its old hardcoded trusted-path list.
+  describe('antigravity cliPath allowlist (S2)', () => {
+    const agyUpstream = (cliPath: string) => ({
+      id: 'test-agy',
+      name: 'Test AGY',
+      type: 'antigravity',
+      endpoint: 'cli://agy',
+      priority: 1,
+      models: ['*'],
+      antigravity: { cliPath }
+    });
+    const isKept = (cliPath: string): boolean => {
+      const { config } = sanitizeLoadedConfig({
+        upstreams: [structuredClone(GOOD_UPSTREAM), agyUpstream(cliPath)]
+      });
+      return config.upstreams.some((u: any) => u.id === 'test-agy');
+    };
+
+    it("accepts the bare 'antigravity' binary name", () => {
+      expect(isKept('antigravity')).toBe(true);
+    });
+
+    it('accepts a valid binary at a non-listed location', () => {
+      expect(isKept('/opt/agy')).toBe(true);
+    });
+
+    it('accepts the antigravity binary in a system bin dir', () => {
+      expect(isKept('/usr/local/bin/antigravity')).toBe(true);
+    });
+
+    it('accepts a trusted path whose binary is not installed yet (load-time leniency)', () => {
+      // Existence/executability are enforced by the spawn-time gate, not
+      // here: a saved config must stay loadable on a machine where the CLI
+      // is not installed (yet).
+      expect(isKept('/usr/local/bin/agy')).toBe(true);
+    });
+
+    it('rejects a binary under a denied directory', () => {
+      expect(isKept('/tmp/agy')).toBe(false);
+    });
+
+    it('rejects a symlink that launders a denied-dir binary past the check', () => {
+      // Fixtures live outside every denied dir (guarded: ~/.cache is not
+      // tmp/config/data/layouts). The bad link's lexical path is therefore
+      // innocent-looking — only following the symlink to /tmp exposes it.
+      const cacheDir = path.join(os.homedir(), '.cache');
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const fixtureRoot = fs.mkdtempSync(path.join(cacheDir, 'eluvix-s2-'));
+      const evilTarget = `/tmp/s2-evil-agy-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const goodTarget = path.join(fixtureRoot, 'real-agy');
+      try {
+        for (const dir of getDeniedCliDirs()) {
+          expect(fixtureRoot.startsWith(dir + path.sep)).toBe(false);
+        }
+        fs.writeFileSync(evilTarget, '#!/bin/sh\necho evil\n');
+        fs.chmodSync(evilTarget, 0o755);
+        fs.writeFileSync(goodTarget, '#!/bin/sh\necho real\n');
+        fs.chmodSync(goodTarget, 0o755);
+        const badDir = path.join(fixtureRoot, 'bad');
+        const goodDir = path.join(fixtureRoot, 'good');
+        fs.mkdirSync(badDir);
+        fs.mkdirSync(goodDir);
+        const badLink = path.join(badDir, 'agy');
+        const goodLink = path.join(goodDir, 'agy');
+        fs.symlinkSync(evilTarget, badLink);
+        fs.symlinkSync(goodTarget, goodLink);
+        expect(isKept(badLink)).toBe(false);
+        expect(isKept(goodLink)).toBe(true);
+      } finally {
+        try { fs.rmSync(fixtureRoot, { recursive: true, force: true }); } catch {}
+        try { fs.unlinkSync(evilTarget); } catch {}
+      }
+    });
   });
 
   it('drops non-object upstream entries', () => {
