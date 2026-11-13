@@ -31,7 +31,8 @@ export class BuiltinContextProvider implements ContextProvider {
       return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: 0 };
     }
 
-    const items = searchMemoryItems(trimmed, scope.userId || 'default', 10);
+    const userId = scope.userId || 'default';
+    const items = searchMemoryItems(trimmed, userId, 10);
     const blocks: RecallBlock[] = [];
     let usedTokens = 0;
     const maxTokens = Math.max(64, budgetTokens || 800);
@@ -44,7 +45,11 @@ export class BuiltinContextProvider implements ContextProvider {
           const allowedChars = maxTokens * 4;
           const sliced = item.content.slice(0, allowedChars);
           blocks.push({
-            uri: item.uri || `viking://user/${scope.userId}/memories/${item.id}`,
+            // Hunt-2 L-B3: the fallback URI must use the same defaulted
+            // userId as the search above, not the raw scope value —
+            // otherwise a caller with no userId in scope gets
+            // `viking://user/undefined/memories/<id>`.
+            uri: item.uri || `viking://user/${userId}/memories/${item.id}`,
             text: sliced,
             score: item.score,
             level: item.level || 'L1'
@@ -54,7 +59,7 @@ export class BuiltinContextProvider implements ContextProvider {
         break;
       }
       blocks.push({
-        uri: item.uri || `viking://user/${scope.userId}/memories/${item.id}`,
+        uri: item.uri || `viking://user/${userId}/memories/${item.id}`,
         text: item.content,
         score: item.score,
         level: item.level || 'L1'

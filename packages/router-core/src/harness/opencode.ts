@@ -5,7 +5,10 @@ import { setBounded } from '../bounded-map.js';
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { isToolAutoApproved } from './approval.js';
-import { resolveSafeWorkspacePath } from './trueforge.js';
+import {
+  appendCappedTranscript,
+  resolveSafeWorkspacePath,
+} from './trueforge.js';
 export { resolveSafeWorkspacePath };
 import {
   computeHarnessKvPrefixHash,
@@ -85,7 +88,8 @@ async function replyToOpenCodePermission(
   permissionId: string,
   toolName: string,
   policy: HarnessApprovalPolicy,
-  autoApproveTools?: readonly string[]
+  autoApproveTools?: readonly string[],
+  signal?: AbortSignal
 ): Promise<boolean> {
   if (policy === 'surface') return false;
   const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
@@ -101,10 +105,19 @@ async function replyToOpenCodePermission(
             ? 'Auto-approved by Eluvix-OpenCode harness policy'
             : `Rejected by Eluvix-OpenCode headless policy (${policy})`,
         }),
+        ...(signal ? { signal } : {})
       }
     );
-  } catch {
-    // Non-fatal if permission endpoint already settled
+  } catch (err) {
+    // An aborted permission reply must fail the turn (hunt-2 H-B1):
+    // the turn's timeout fired, or the client disconnected. Any other
+    // failure (e.g. the permission endpoint already settled) stays
+    // non-fatal. Note: unlike TrueForge, the OpenCode server has
+    // already returned the message, so it never blocks on this reply —
+    // 'surface' staying silent here stalls nothing.
+    if (signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+      throw err;
+    }
   }
   return approved;
 }
@@ -258,7 +271,9 @@ export async function executeEmbeddedOpenCodeTurn(
     textParts.push(`MCP Servers: ${sessionObj.mcpServers.join(', ')}`);
   }
   const text = textParts.join(' — ');
-  sessionObj.messages.push({ role: 'assistant', text, timestamp: Date.now() });
+  // Hunt-2 L-B1: this transcript is never read back, so cap it tightly
+  // instead of growing it for the session's lifetime.
+  appendCappedTranscript(sessionObj.messages, { role: 'assistant', text, timestamp: Date.now() });
 
   const completionId = `chatcmpl-oc-${Date.now()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -530,8 +545,13 @@ export async function forwardOpencodeHarness(
       msgRes = await sendMessage(ocSessionId, prompt, stepTier.tier);
     }
 
-    clearTimeout(timer);
+    // Hunt-2 H-B1: do NOT clear the timer here. The permission-reply loop
+    // below runs after the message round-trip, and clearing the timer
+    // first left that loop — and its reply fetches — unbounded. The timer
+    // now lives until the loop completes (cleared just after it, and on
+    // every early return inside it).
     if (!msgRes.ok) {
+      clearTimeout(timer);
       return msgRes;
     }
 
@@ -556,7 +576,8 @@ export async function forwardOpencodeHarness(
           permId,
           toolName,
           approvalPolicy,
-          harnessCfg.autoApproveTools
+          harnessCfg.autoApproveTools,
+          controller.signal
         );
       } else if (
         p?.type === 'tool' ||
@@ -595,6 +616,10 @@ export async function forwardOpencodeHarness(
         }
       }
     }
+
+    // Permission loop done — the turn's deadline no longer needs to cover
+    // anything below (pure local response construction). See H-B1 note above.
+    clearTimeout(timer);
 
     const rawText =
       parts

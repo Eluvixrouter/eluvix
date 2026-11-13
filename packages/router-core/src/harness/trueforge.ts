@@ -100,6 +100,20 @@ function extractPromptFromMessages(messages: ChatMessage[]): string {
   return '';
 }
 
+/** Maximum transcript entries kept per embedded harness session (hunt-2
+ * L-B1). The embedded transcripts are never read back — TrueForge only
+ * checks `turns.length === 0`, OpenCode never reads them — so the cap
+ * bounds per-session memory growth without changing behavior. */
+export const MAX_EMBEDDED_SESSION_TRANSCRIPT = 20;
+
+/** Append to an embedded session transcript, trimming oldest-first to the cap. */
+export function appendCappedTranscript<T>(entries: T[], entry: T): void {
+  entries.push(entry);
+  if (entries.length > MAX_EMBEDDED_SESSION_TRANSCRIPT) {
+    entries.splice(0, entries.length - MAX_EMBEDDED_SESSION_TRANSCRIPT);
+  }
+}
+
 async function respondToApproval(
   baseUrl: string,
   headers: Record<string, string>,
@@ -108,11 +122,16 @@ async function respondToApproval(
   approvalId: string,
   toolName: string,
   policy: HarnessApprovalPolicy,
-  autoApproveTools?: readonly string[]
+  autoApproveTools?: readonly string[],
+  signal?: AbortSignal
 ): Promise<boolean> {
-  if (policy === 'surface') return false;
-  // Auto-approval requires an exact allowlist match (audit M-4): the
-  // server-supplied tool name looking read-only is never sufficient.
+  // No special case for 'surface' here: isToolAutoApproved returns false
+  // for every policy except 'auto-approve-readonly'/'read-only', so a
+  // surface-mode approval is answered with a denial. Headless turns have
+  // no approver, and answering (rather than staying silent) is what keeps
+  // a blocking server from stalling the turn to the full timeout (hunt-2
+  // M-B1). Callers that surface the request to the client still emit
+  // their note delta; this POST is what unblocks the server.
   const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
   try {
     await fetch(
@@ -127,11 +146,18 @@ async function respondToApproval(
           reason: approved
             ? 'Auto-approved read-only tool by Eluvix harness policy'
             : `Denied by Eluvix headless approval policy (${policy})`
-        })
+        }),
+        ...(signal ? { signal } : {})
       }
     );
-  } catch {
-    // Non-fatal if approval endpoint already closed
+  } catch (err) {
+    // An aborted approval reply must fail the turn (hunt-2 H-B1): the
+    // turn's timeout fired, or the client disconnected, and swallowing
+    // the abort would leave the turn parked on a dead approval. Any other
+    // failure (e.g. the approval endpoint already closed) stays non-fatal.
+    if (signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+      throw err;
+    }
   }
   return approved;
 }
@@ -299,7 +325,7 @@ export async function executeEmbeddedTrueForgeTurn(
   }
 
   const finalOutput = summaryParts.join(' — ');
-  sessionObj.turns.push({
+  appendCappedTranscript(sessionObj.turns, {
     prompt: promptInspection.sanitizedText,
     output: finalOutput,
     timestamp: Date.now(),
@@ -725,18 +751,24 @@ export async function forwardTrueForgeHarness(
           const toolName = String(evt?.toolName || evt?.tool || 'unknown_tool');
           if (approvalPolicy === 'surface') {
             onDelta(`\n[Approval Required: tool "${toolName}" (id=${approvalId})]\n`);
-          } else {
-            await respondToApproval(
-              baseUrl,
-              headers,
-              tfSessionId!,
-              turnId,
-              approvalId,
-              toolName,
-              approvalPolicy,
-              harnessCfg.autoApproveTools
-            );
           }
+          // Answer every approval request, in every mode (hunt-2 M-B1):
+          // a TrueForge server blocks the turn awaiting this response, so
+          // staying silent in 'surface' mode guaranteed a full-timeout
+          // failure. Surface answers with a denial (see respondToApproval)
+          // while the note above tells the client what was asked. The
+          // turn's AbortSignal bounds the reply (hunt-2 H-B1).
+          await respondToApproval(
+            baseUrl,
+            headers,
+            tfSessionId!,
+            turnId,
+            approvalId,
+            toolName,
+            approvalPolicy,
+            harnessCfg.autoApproveTools,
+            controller.signal
+          );
         } else if (
           type === 'turn.completed' ||
           type === 'turn.end' ||
@@ -762,7 +794,20 @@ export async function forwardTrueForgeHarness(
         let currentEvent = '';
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            // Hunt-2 M-B3: flush the leftover buffer. A server whose
+            // final event lacks a trailing newline would otherwise lose
+            // that event entirely — for single-event responses, the whole
+            // answer. The leftover is at most one partial line.
+            buffer += decoder.decode();
+            const tail = buffer.trim();
+            if (tail.startsWith('data:')) {
+              await parseTurnSseEvent(currentEvent, tail.slice(5).trim(), d => {
+                fullText += d;
+              });
+            }
+            break;
+          }
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
@@ -837,7 +882,25 @@ export async function forwardTrueForgeHarness(
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+              // Hunt-2 M-B3: flush the leftover buffer (see non-stream
+              // loop above) — same silent-drop shape in the streaming path.
+              buffer += decoder.decode();
+              const tail = buffer.trim();
+              if (tail.startsWith('data:')) {
+                await parseTurnSseEvent(currentEvent, tail.slice(5).trim(), delta => {
+                  const chunk = {
+                    id: completionId,
+                    object: 'chat.completion.chunk',
+                    created,
+                    model: servedModel,
+                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
+                  };
+                  streamController.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                });
+              }
+              break;
+            }
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() ?? '';
