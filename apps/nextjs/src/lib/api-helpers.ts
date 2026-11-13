@@ -123,6 +123,10 @@ export function evaluateMathExpression(expr: string): number {
 }
 
 import dns from 'node:dns/promises';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
+import tls from 'node:tls';
 import { isBlockedSsrfHost } from '@eluvix/router-core/ssrf-guard';
 
 export function isBlockedHost(hostname: string): boolean {
@@ -143,6 +147,163 @@ export async function isBlockedDns(hostname: string): Promise<boolean> {
     // If DNS resolution fails, allow caller to handle connection error
   }
   return false;
+}
+
+/**
+ * Thrown by fetchWithPinnedDns when the hostname or one of its resolved
+ * addresses is a blocked SSRF/metadata target.
+ */
+export class SsrfBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SsrfBlockedError';
+  }
+}
+
+export interface PinnedFetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  /** Guard mode; defaults to strict public-internet (loopback/LAN blocked). */
+  allowLoopbackAndLan?: boolean;
+}
+
+function isIpLiteral(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, '');
+  return /^\d+\.\d+\.\d+\.\d+$/.test(h) || h.includes(':');
+}
+
+/**
+ * Fetch a URL with DNS-pinned resolution (hunt-2 suspect S-C3).
+ *
+ * The naive check-then-fetch pattern resolves the hostname twice — once in
+ * isBlockedDns and once inside fetch() — so a DNS answer that flips between
+ * the two (TTL-0 rebinding) can steer the connection to a loopback or
+ * cloud-metadata address the check just cleared. This helper resolves the
+ * hostname exactly ONCE, refuses the URL if the literal host or ANY
+ * returned address is blocked, then connects the socket directly to the
+ * first validated address. The URL's hostname is preserved for TLS SNI,
+ * certificate validation, and the Host header; only the connection target
+ * is pinned.
+ *
+ * Implementation note: the pinning is done with `createConnection`, NOT
+ * with the `lookup` request option. Empirically, `http.request` in Node
+ * 24.22.1 never invokes a custom `lookup` (proven with a standalone
+ * script: `net.connect` calls it, `http.request`/`http.get` do not), so a
+ * lookup-based pin is silently unpinned. Connecting to the validated IP
+ * literal via `net.connect` / `tls.connect` (with `servername` for SNI)
+ * cannot re-resolve, which is the actual guarantee.
+ *
+ * Redirects are never followed (callers handle them per hop, as the web
+ * scraper does). Throws SsrfBlockedError for blocked targets; DNS and
+ * network failures propagate to the caller.
+ */
+export async function fetchWithPinnedDns(
+  url: string | URL,
+  init?: PinnedFetchInit
+): Promise<Response> {
+  const parsed = typeof url === 'string' ? new URL(url) : url;
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Only http and https protocols are supported (got "${parsed.protocol}")`);
+  }
+  const allowLocal = init?.allowLoopbackAndLan === true;
+  const hostname = parsed.hostname;
+  if (isBlockedSsrfHost(hostname, { allowLoopbackAndLan: allowLocal })) {
+    throw new SsrfBlockedError(
+      `Access to private, loopback, or metadata addresses is blocked (host "${hostname}")`
+    );
+  }
+
+  // Resolve exactly once. IP literals skip the lookup (net.connect does too).
+  let pinned: { address: string; family: number }[] | null = null;
+  if (!isIpLiteral(hostname)) {
+    let resolved;
+    try {
+      resolved = await dns.lookup(hostname, { all: true });
+    } catch (err: any) {
+      throw new Error(`DNS resolution failed for "${hostname}": ${err?.message || err}`);
+    }
+    if (!resolved || resolved.length === 0) {
+      throw new Error(`DNS resolution failed for "${hostname}": no addresses returned`);
+    }
+    for (const rec of resolved) {
+      if (isBlockedSsrfHost(rec.address, { allowLoopbackAndLan: allowLocal })) {
+        throw new SsrfBlockedError(
+          `Access to private, loopback, or metadata addresses is blocked (host "${hostname}" resolves to "${rec.address}")`
+        );
+      }
+    }
+    pinned = resolved.map((r) => ({ address: r.address, family: r.family }));
+  }
+
+  // The pinned connection target: the first validated address, or the
+  // literal host itself (IP literals need no lookup at all).
+  const targetAddress = pinned
+    ? pinned[0].address
+    : hostname.replace(/^\[|\]$/g, '');
+  const port = parsed.port
+    ? Number(parsed.port)
+    : parsed.protocol === 'https:'
+      ? 443
+      : 80;
+  const isHttps = parsed.protocol === 'https:';
+  // Host header keeps the original hostname (bracketed for IPv6 literals,
+  // port included when non-default) so virtual-host routing still works.
+  const defaultPort = isHttps ? 443 : 80;
+  const hostForHeader = isIpLiteral(hostname)
+    ? `${hostname.includes(':') ? `[${hostname.replace(/^\[|\]$/g, '')}]` : hostname}${port !== defaultPort ? `:${port}` : ''}`
+    : `${hostname}${port !== defaultPort ? `:${port}` : ''}`;
+
+  return new Promise<Response>((resolve, reject) => {
+    const lib = isHttps ? https : http;
+    const req = lib.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: init?.method || 'GET',
+        headers: { host: hostForHeader, ...init?.headers },
+        signal: init?.signal,
+        // Pin by connecting to the validated IP literal. Node never
+        // re-resolves a literal, so no second DNS lookup can occur.
+        createConnection: () =>
+          isHttps
+            ? tls.connect({
+                host: targetAddress,
+                port,
+                // SNI + cert validation against the original hostname
+                // (never an IP literal — Node rejects those as servername).
+                ...(isIpLiteral(hostname) ? {} : { servername: hostname }),
+              })
+            : net.connect({ host: targetAddress, port }),
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+        res.on('end', () => {
+          const headers = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (v === undefined) continue;
+            if (Array.isArray(v)) {
+              for (const item of v) headers.append(k, item);
+            } else {
+              headers.set(k, v);
+            }
+          }
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode ?? 200,
+              headers,
+            })
+          );
+        });
+        res.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 export function normalizeProbeUrl(endpoint: string, type: string): string {

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-import { evaluateMathExpression, isBlockedHost, isBlockedDns } from '@/lib/api-helpers';
+import { evaluateMathExpression, fetchWithPinnedDns, SsrfBlockedError } from '@/lib/api-helpers';
 
 export async function POST(req: Request) {
   try {
@@ -69,22 +69,22 @@ export async function POST(req: Request) {
         let res: Response | null = null;
 
         while (hops < 5) {
-          if (isBlockedHost(currentUrl.hostname)) {
-            return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
-          }
-          if (await isBlockedDns(currentUrl.hostname)) {
-            return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
-          }
-
+          // One pinned fetch per hop: the hostname is resolved exactly once
+          // and the connection can only go to a validated address, so a DNS
+          // answer that flips between the check and the fetch (TTL-0
+          // rebinding, hunt-2 suspect S-C3) cannot steer the request to a
+          // loopback/metadata address. Blocked targets surface as 403.
           try {
-            res = await fetch(currentUrl.toString(), {
+            res = await fetchWithPinnedDns(currentUrl.toString(), {
               signal: AbortSignal.timeout(8000),
               headers: {
                 'User-Agent': 'Eluvix-Scraper/1.0'
               },
-              redirect: 'manual'
             });
           } catch (fetchErr: any) {
+            if (fetchErr instanceof SsrfBlockedError) {
+              return NextResponse.json({ success: false, error: "Access to private, loopback, or metadata addresses is blocked" }, { status: 403 });
+            }
             return NextResponse.json({ success: false, error: `Failed to scrape URL: ${fetchErr.message}` }, { status: 502 });
           }
 
