@@ -1,0 +1,32 @@
+# Paperclip Integration (Switchyard × Agent Org Orchestration)
+
+Eluvix integrates deeply with [Paperclip](https://github.com/paperclipai/paperclip) across three progressive tiers — from zero-code OpenAI-compatible routing (Tier 0) to a full `eluvix_local` OpenCode adapter (Tier 1) and an intelligent Switchyard assignment plugin (`@eluvix/paperclip-plugin`, Tier 2).
+
+---
+
+## Architecture Overview
+
+1. **Tier 0 — Virtual Switchyard Models (`eluvix/*`)**:
+   - Point any Paperclip OpenAI-compatible AI connection at `http://127.0.0.1:3588/v1` with a `paperclip`-scoped `elx_...` API key.
+   - Select `eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, or `eluvix/frontier-verified` from `GET /api/v1/models`.
+   - Non-streaming completions emit `usage.cost` alongside `X-Eluvix-Cost-USD`, `X-Eluvix-Correlation-Id`, `X-Eluvix-Paperclip-Priority`, and `X-Eluvix-Paperclip-Bias`.
+
+2. **Tier 1 — `@eluvix/paperclip-adapter` (`eluvix_local`)**:
+   - Runs Eluvix's isolated OpenCode harness inside the Paperclip agent's working directory with mid-loop DLP, `x-eluvix-hops` recursion protection, and `x-paperclip-*` priority, budget-pressure, and sensitivity headers.
+   - Queries `GET /api/v1/paperclip/usage/:runId` after each run to report authoritative token counts and `costStatus: "reported"` USD spend.
+
+3. **Tier 2 — `@eluvix/paperclip-plugin` (`eluvix.switchyard`)**:
+   - Exposes five Switchyard tools (`eluvix:capabilities`, `eluvix:classify_task`, `eluvix:recommend_assignee`, `eluvix:explain_route`, `eluvix:budget`) and matching MCP tools (`switchyard_*`).
+   - Classifies task complexity, modalities, and PII sensitivity, scores candidate employees across capability fit, cost, latency, load, budget headroom, and historical SQLite outcome priors, and supports opt-in `off | advisory | shadow | auto` assignment modes.
+
+---
+
+## Visual Configuration (`PaperclipBridgeNode`)
+
+In the **Eluvix Visual Node Routing Editor**, add the **Paperclip Bridge** node (`paperclipBridgeNode`) from the Command Palette (`Cmd/Ctrl+K`) to configure:
+
+- **Paperclip Base URL** (default `http://127.0.0.1:3100`)
+- **Priority Policy** (`critical`, `high`, `medium`, `low` tier floors/ceilings)
+- **Budget Pressure Threshold** (cascade to cheaper/local upstreams when remaining budget drops below threshold)
+- **Sensitivity Floor** (`confidential` forced to local-only, `internal` local-preferred)
+- **Header Trust Mode** (`scoped-key` or `loopback`)

@@ -277,6 +277,36 @@ export function analyzeGraphDiagnostics(
     }
   }
 
+  for (const pc of nodes.filter((n) => n.type === 'paperclipBridgeNode')) {
+    const d = (pc.data || {}) as Record<string, any>;
+    const crit = d.priorityPolicy?.critical;
+    if (crit && crit.allowCloud === false) {
+      const hasLocalFrontier = nodes.some(
+        (n) => LOCAL_ENGINE_NODE_TYPES.has(n.type || '') && Number((n.data as any)?.maxComplexityScore || 2) >= 4
+      );
+      if (!hasLocalFrontier) {
+        diagnostics.push({
+          id: `paperclip-critical-no-local-frontier-${pc.id}`,
+          severity: 'warning',
+          code: 'AIRGAP_VIOLATION',
+          message:
+            'Paperclip critical priority policy sets allowCloud=false, but no local engine node has maxComplexityScore >= 4.',
+          nodeIds: [pc.id],
+        });
+      }
+    }
+    const pct = d.budgetPressure?.thresholdPct;
+    if (typeof pct === 'number' && (pct < 0 || pct > 100)) {
+      diagnostics.push({
+        id: `paperclip-budget-pct-${pc.id}`,
+        severity: 'error',
+        code: 'UNCONNECTED_ENGINE',
+        message: `Paperclip budgetPressure.thresholdPct (${pct}) must be between 0 and 100.`,
+        nodeIds: [pc.id],
+      });
+    }
+  }
+
   return {
     diagnostics,
     estimatedTotalVramGb: roundedTotalVram,

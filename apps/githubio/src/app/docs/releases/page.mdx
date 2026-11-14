@@ -4,6 +4,18 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.3.0 — Paperclip Agent Org Integration (`eluvix_local` Adapter, `@eluvix/paperclip-plugin` & Priority-Aware Switchyard) *(November 12, 2026)*
+
+### 📎 Three-Tier Paperclip Integration
+- **Tier 0 Virtual Switchyard Models (`eluvix/*`) & `usage.cost` Reporting**:
+  - Added `eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, and `eluvix/frontier-verified` to `GET /api/v1/models`, emitting `usage.cost` on non-streaming completions alongside `X-Eluvix-Correlation-Id`, `X-Eluvix-Paperclip-Priority`, and `X-Eluvix-Paperclip-Bias`.
+- **Tier 1 `@eluvix/paperclip-adapter` (`eluvix_local`)**:
+  - External Paperclip adapter driving Eluvix's isolated OpenCode harness with loopback URL validation, secret-free `ELUVIX_API_KEY` env bindings, `x-eluvix-hops` recursion protection, and authoritative `costStatus: "reported"` usage attribution via `GET /api/v1/paperclip/usage/:runId`.
+- **Tier 2 `@eluvix/paperclip-plugin` (`eluvix.switchyard`) & `PaperclipBridgeNode`**:
+  - Five Switchyard tools (`eluvix:capabilities`, `eluvix:classify_task`, `eluvix:recommend_assignee`, `eluvix:explain_route`, `eluvix:budget`), matching MCP tools (`switchyard_*`), opt-in `off | advisory | shadow | auto` assignment modes with checkout-lock and tree-depth guards, and visual configuration via `paperclipBridgeNode` in the **Eluvix Visual Node Routing Editor**.
+
+---
+
 ## v1.2.0 — Prompt Caching, Universal Structured Outputs, Streaming Output Guard DLP, Real OTLP Exporter, Hashed Scoped Keys, Secret References, Tamper-Evident Audit Chain, Live Engine Signals, Batch API, Rerank & Prompt Registry *(November 11, 2026)*
 
 ### 🎯 Wire-Protocol Correctness & Real OpenTelemetry Exporter

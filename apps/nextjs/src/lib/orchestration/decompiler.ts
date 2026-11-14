@@ -314,6 +314,24 @@ export function decompileConfigToGraph(config: RouterConfig): {
     });
   }
 
+  if (config.integrations?.paperclip) {
+    const pcId = 'paperclip-bridge-1';
+    nodes.push({
+      id: pcId,
+      type: 'paperclipBridgeNode',
+      position: { x: 900, y: 860 },
+      data: {
+        ...config.integrations.paperclip,
+      },
+    });
+    edges.push({
+      id: `e-${pcId}-${swId}`,
+      source: pcId,
+      target: swId,
+      animated: true,
+    });
+  }
+
   if (config.knowledge?.enabled) {
     const kbId = 'knowledge-base-1';
     nodes.push({

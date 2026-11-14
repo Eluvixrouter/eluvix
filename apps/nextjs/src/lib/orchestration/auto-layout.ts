@@ -17,6 +17,7 @@ const NODE_CARD_HEIGHT_ESTIMATE: Record<string, number> = {
   semanticGuardNode: 290,
   memoryNode: 310,
   knowledgeBaseNode: 320,
+  paperclipBridgeNode: 340,
   semanticCacheNode: 290,
   confidentialEnclaveNode: 330,
   crsNode: 330,
@@ -78,6 +79,7 @@ export function getSemanticBaseRank(node: Node, incomingSources: Node[]): number
     t === 'semanticGuardNode' ||
     t === 'memoryNode' ||
     t === 'knowledgeBaseNode' ||
+    t === 'paperclipBridgeNode' ||
     t === 'semanticCacheNode'
   ) {
     return 1;

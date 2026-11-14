@@ -103,6 +103,16 @@
       "types": "./dist/engine-signals.d.ts",
       "import": "./dist/engine-signals.js",
       "default": "./dist/engine-signals.js"
+    },
+    "./paperclip-context": {
+      "types": "./dist/paperclip-context.d.ts",
+      "import": "./dist/paperclip-context.js",
+      "default": "./dist/paperclip-context.js"
+    },
+    "./paperclip-assign": {
+      "types": "./dist/paperclip-assign.d.ts",
+      "import": "./dist/paperclip-assign.js",
+      "default": "./dist/paperclip-assign.js"
     }
   },
   "type": "module",

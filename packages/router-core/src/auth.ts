@@ -25,6 +25,7 @@ export type ApiKeyScope =
   | 'rerank'
   | 'prompts'
   | 'webhooks'
+  | 'paperclip'
   | '*';
 
 export interface AuthConfig {

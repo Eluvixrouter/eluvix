@@ -471,6 +471,35 @@ Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `nt
 
 ---
 
+## 15. Paperclip Integration & Correlation API (v1.3)
+
+All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope.
+
+### `GET /api/v1/paperclip/whoami`
+Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, `egressPolicy`, and `rolling24hSpendUsd`.
+
+### `GET /api/v1/paperclip/capabilities`
+Returns Switchyard `strategy`, `virtualModels` (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`), `paperclipPolicy`, and sanitized upstream fleet telemetry.
+
+### `POST /api/v1/paperclip/classify`
+Classifies a Paperclip issue (`{ title, description, priority, labels, sensitivity }`) into `complexity`, `modalities`, `piiDetected`, `sensitivity`, `suggestedTier`, and `taskClass`.
+
+### `POST /api/v1/paperclip/recommend-assignee`
+Scores and ranks candidate Paperclip employees (`{ task, candidates, weights, topN }`) using capability fit, cost, latency, load, budget headroom, and SQLite outcome priors.
+
+### `POST /api/v1/paperclip/feedback`
+Records completed/reassigned assignment outcomes (`{ issueId, agentId, taskClass, success, costUsd, durationMs }`) into `paperclip_assignment_outcomes`.
+
+### `GET /api/v1/paperclip/usage/:runId`
+Returns aggregated `inputTokens`, `outputTokens`, `cachedInputTokens`, `costUsd`, `dominantModel`, and `byModel` breakdown for `correlation_id = runId`.
+
+### Paperclip Telemetry Response Headers
+- `X-Eluvix-Correlation-Id`: Correlated Paperclip run ID (`x-paperclip-run-id`).
+- `X-Eluvix-Paperclip-Priority`: Resolved issue priority (`critical`, `high`, `medium`, `low`).
+- `X-Eluvix-Paperclip-Bias`: Applied Switchyard routing bias tags (`tier-floor`, `tier-ceiling`, `prefer-local`, `local-only`, `budget-cascade`).
+
+---
+
 ## HTTP Status Codes & Error Handling
 
 | Status Code | Description | Typical Cause |

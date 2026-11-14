@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
-import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
+import {
+  parsePaperclipHeaders,
+  resolveBearerToken,
+  type RequestScope,
+} from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
 import { resolveSessionIdentity, extractApiTokenFromHeaders } from '@/lib/caller-identity';
 import { classifyChatError } from '@/lib/chat-error';
@@ -10,6 +14,7 @@ export async function POST(req: Request) {
   // Verify named elx_ API key if used (Authorization: Bearer or x-api-key)
   let keyUserId: string | undefined;
   let keyOrigin: RequestScope['origin'] | undefined;
+  let keyHasPaperclipScope = false;
   const rawToken = extractApiTokenFromHeaders(req);
   if (rawToken && rawToken.startsWith('elx_')) {
     const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
@@ -57,6 +62,10 @@ export async function POST(req: Request) {
     }
     keyUserId = resolved.userId;
     keyOrigin = resolved.origin;
+    keyHasPaperclipScope =
+      !resolved.scopes ||
+      resolved.scopes.includes('*') ||
+      resolved.scopes.includes('paperclip');
   }
 
   let body: any;
@@ -220,11 +229,20 @@ export async function POST(req: Request) {
       };
     }
 
+    const pcCfg = router.getConfig()?.integrations?.paperclip;
+    const isAdminOrSessionCaller = !rawToken || !rawToken.startsWith('elx_');
+    const trustPcHeaders =
+      keyHasPaperclipScope ||
+      isAdminOrSessionCaller ||
+      pcCfg?.trustHeadersFrom === 'loopback';
+    const paperclip = parsePaperclipHeaders(req.headers, { trusted: trustPcHeaders });
+
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {
       signal: req.signal,
       scope,
-      hops
+      hops,
+      paperclip
     });
 
     const contentType = response.headers.get('content-type') || '';
@@ -364,6 +382,19 @@ export async function POST(req: Request) {
     }
 
     const data = await response.json();
+    if (
+      data &&
+      typeof data === 'object' &&
+      data.usage &&
+      typeof data.usage === 'object' &&
+      data.usage.cost === undefined &&
+      traceHeaders['x-eluvix-cost-usd'] !== undefined
+    ) {
+      const parsedCost = Number(traceHeaders['x-eluvix-cost-usd']);
+      if (Number.isFinite(parsedCost)) {
+        data.usage.cost = parsedCost;
+      }
+    }
     return NextResponse.json(data, {
       status: response.status,
       headers: traceHeaders
