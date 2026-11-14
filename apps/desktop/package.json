@@ -20,7 +20,7 @@
     "@eluvix/router-core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^26.6.6",
     "electron": "^45.0.0",
     "electron-builder": "^26.18.0",
     "typescript": "^5.4.5"
