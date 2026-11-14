@@ -16,7 +16,15 @@ export interface CustomPiiPattern {
 
 export interface PromptGuardConfig {
   enabled: boolean;
-  mode?: 'heuristic' | 'classifier' | 'llm-guard';
+  /**
+   * Only 'heuristic' exists. The former 'classifier' and 'llm-guard' modes
+   * were declared for years but never implemented (audit M-11): they are
+   * removed from the type, validateConfig rejects them on save, and
+   * sanitizeLoadedConfig coerces them to 'heuristic' + block on load.
+   * Values arriving from untyped sources still trigger the loud runtime
+   * warning in noteUnimplementedGuardMode() below.
+   */
+  mode?: 'heuristic';
   threshold?: number; // e.g. 0.85
   guardModel?: string;
   upstreamGuardId?: string;
@@ -47,6 +55,13 @@ export interface PrivacyGuardConfig {
   customPatterns?: CustomPiiPattern[];
   whitelist?: string[]; // terms or tokens exempted from redaction
   auditLogging?: boolean;
+  /**
+   * Audit M-12: with action 'warn', detected PII is REDACTED by default.
+   * Set this to true to restore the legacy behavior (forward unredacted,
+   * log the detection types only). Deliberately opt-in: forwarding known
+   * PII because a warning was logged is how leaks happen.
+   */
+  allowDetectedPii?: boolean;
 }
 
 // Common prompt injection attack patterns & system prompt leakage keywords
@@ -99,15 +114,45 @@ const PII_PATTERNS: Array<{ regex: RegExp; label: string; placeholder: string; k
     key: 'apiKey'
   },
   {
-    // Social Security Numbers (US SSN: XXX-XX-XXXX)
-    regex: /\b\d{3}-\d{2}-\d{4}\b/g,
+    // JWTs (three base64url segments; header segment starts with eyJ)
+    regex: /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b/g,
+    label: 'jwt_token',
+    placeholder: '[REDACTED_JWT]',
+    key: 'apiKey'
+  },
+  {
+    // PEM private key block headers
+    regex: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g,
+    label: 'private_key',
+    placeholder: '[REDACTED_PRIVATE_KEY]',
+    key: 'apiKey'
+  },
+  {
+    // Generic Bearer tokens in Authorization-style text
+    regex: /\bBearer\s+[a-zA-Z0-9._~+/-]{16,}=*/g,
+    label: 'bearer_token',
+    placeholder: '[REDACTED_BEARER_TOKEN]',
+    key: 'apiKey'
+  },
+  {
+    // Social Security Numbers (US SSN: XXX-XX-XXXX or XXX XX XXXX)
+    regex: /\b\d{3}[- ]\d{2}[- ]\d{4}\b/g,
     label: 'us_ssn',
     placeholder: '[REDACTED_SSN]',
     key: 'ssn'
   },
   {
-    // Credit Cards (Visa, MasterCard, Amex, Discover)
+    // Credit Cards (Visa, MasterCard, Amex, Discover) — contiguous digits
     regex: /\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b/g,
+    label: 'credit_card',
+    placeholder: '[REDACTED_CREDIT_CARD]',
+    key: 'creditCard'
+  },
+  {
+    // Credit Cards — grouped presentation formats (4-4-4-4 and Amex 4-6-5,
+    // space or dash separated). Audit M-12: grouped numbers sailed past
+    // the contiguous-only pattern above.
+    regex: /\b(?:\d{4}[- ]){3}\d{4}\b|\b\d{4}[- ]\d{6}[- ]\d{5}\b/g,
     label: 'credit_card',
     placeholder: '[REDACTED_CREDIT_CARD]',
     key: 'creditCard'
@@ -135,11 +180,14 @@ const PII_PATTERNS: Array<{ regex: RegExp; label: string; placeholder: string; k
   }
 ];
 
-// Prompt-guard modes 'classifier' and 'llm-guard' are declared in
-// PromptGuardConfig but NOT implemented — only the regex heuristics below
-// exist. Silently accepting the config would let an operator believe
-// model-based screening is active when it is not, so warn loudly (once per
-// mode per process) and apply the heuristics.
+// Prompt-guard modes 'classifier' and 'llm-guard' were declared in
+// PromptGuardConfig for years but never implemented — only the regex
+// heuristics below exist (audit M-11). They are now REMOVED from the type:
+// validateConfig rejects them on save and sanitizeLoadedConfig coerces
+// them on load. Values can still arrive here from untyped sources (raw
+// JSON, JS callers), so warn loudly (once per mode per process) and apply
+// the heuristics rather than silently pretending model-based screening
+// is active.
 const warnedUnimplementedGuardModes = new Set<string>();
 
 function noteUnimplementedGuardMode(config?: PromptGuardConfig): void {
@@ -166,6 +214,142 @@ function simpleHash(str: string): string {
   return crypto.createHash('sha256').update(`${HASH_SALT}:${str}`).digest('hex').slice(0, 16);
 }
 
+// ---------------------------------------------------------------------------
+// Scan normalization (audit H-6)
+//
+// The heuristic patterns are plain-English regexes, so any encoding of the
+// trigger phrases defeated them: Cyrillic/Greek homoglyphs, zero-width
+// splits, fullwidth forms, or a base64/hex blob carrying the payload.
+// Before scanning, every text is expanded into scan variants — the raw
+// text, the normalized text (NFKC + zero-width stripped + homoglyph
+// folded), and bounded decode-and-rescan candidates — and a match in ANY
+// variant counts.
+// ---------------------------------------------------------------------------
+
+const ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF\u2060\u00AD\u180E]/g;
+
+// Common Cyrillic / Greek lookalikes of Latin letters.
+const HOMOGLYPH_MAP: Record<string, string> = {
+  // Cyrillic
+  '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u0440': 'p', '\u0441': 'c',
+  '\u0445': 'x', '\u0443': 'y', '\u0456': 'i', '\u0458': 'j', '\u0455': 's',
+  '\u04BB': 'h', '\u0501': 'd', '\u043A': 'k', '\u043C': 'm', '\u043D': 'h',
+  '\u0442': 't', '\u0410': 'A', '\u0412': 'B', '\u0415': 'E', '\u041A': 'K',
+  '\u041C': 'M', '\u041D': 'H', '\u041E': 'O', '\u0420': 'P', '\u0421': 'C',
+  '\u0422': 'T', '\u0425': 'X',
+  // Greek
+  '\u03B1': 'a', '\u03BF': 'o', '\u03B5': 'e', '\u03B9': 'i', '\u03BA': 'k',
+  '\u03BD': 'v', '\u03C4': 't', '\u03C5': 'u', '\u03C7': 'x', '\u03C1': 'p',
+  '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z', '\u0397': 'H',
+  '\u0399': 'I', '\u039A': 'K', '\u039C': 'M', '\u039D': 'N', '\u039F': 'O',
+  '\u03A1': 'P', '\u03A4': 'T', '\u03A5': 'Y', '\u03A7': 'X'
+};
+
+export function normalizeForScan(text: string): string {
+  if (!text) return text;
+  const base = text.normalize('NFKC').replace(ZERO_WIDTH_RE, '');
+  let folded = '';
+  for (const ch of base) folded += HOMOGLYPH_MAP[ch] ?? ch;
+  return folded;
+}
+
+// Bounds for decode-and-rescan: at most this many decoded candidates per
+// text, each truncated to this many characters.
+const MAX_DECODED_CANDIDATES = 8;
+const MAX_DECODED_CHARS = 4096;
+
+function isMostlyPrintable(s: string): boolean {
+  if (!s) return false;
+  let printable = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if ((c >= 0x20 && c < 0x7f) || c === 0x0a || c === 0x0d || c === 0x09) printable++;
+  }
+  return printable / s.length >= 0.85;
+}
+
+export function extractDecodedCandidates(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (decoded: string) => {
+    if (out.length >= MAX_DECODED_CANDIDATES) return;
+    // Only rescan decodings that look like text (printable + contains a
+    // word); random binary decodings of hashes/ids are noise, not payloads.
+    if (!isMostlyPrintable(decoded) || !/[a-zA-Z]{3,}/.test(decoded)) return;
+    const trimmed = decoded.slice(0, MAX_DECODED_CHARS);
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  };
+  const b64re = /[A-Za-z0-9+/=_-]{24,}/g;
+  for (const m of text.match(b64re) || []) {
+    if (out.length >= MAX_DECODED_CANDIDATES) break;
+    const cleaned = m.replace(/=+$/, '');
+    if (cleaned.length % 4 === 1) continue; // cannot be valid base64
+    try {
+      push(Buffer.from(m, 'base64').toString('utf8'));
+    } catch {
+      /* not decodable — ignore */
+    }
+  }
+  const hexre = /\b(?:[0-9a-fA-F]{2}){12,}\b/g;
+  for (const m of text.match(hexre) || []) {
+    if (out.length >= MAX_DECODED_CANDIDATES) break;
+    try {
+      push(Buffer.from(m, 'hex').toString('utf8'));
+    } catch {
+      /* not decodable — ignore */
+    }
+  }
+  return out;
+}
+
+/** Raw + normalized + decoded variants of a text; a match in any counts. */
+function collectScanVariants(content: string): string[] {
+  const variants: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string) => {
+    if (s && !seen.has(s)) {
+      seen.add(s);
+      variants.push(s);
+    }
+  };
+  push(content);
+  const normalized = normalizeForScan(content);
+  push(normalized);
+  for (const source of [content, normalized]) {
+    for (const decoded of extractDecodedCandidates(source)) {
+      push(decoded);
+      push(normalizeForScan(decoded));
+    }
+  }
+  return variants;
+}
+
+// ---------------------------------------------------------------------------
+// Threshold semantics (audit M-11): a threshold above the highest pattern
+// weight used to silently disable EVERY pattern — the config looked
+// stricter while the guard did nothing. Clamp to the max weight and say
+// so, once per distinct value.
+// ---------------------------------------------------------------------------
+
+const MAX_PATTERN_WEIGHT = Math.max(...INJECTION_PATTERNS.map((p) => p.weight));
+const warnedThresholds = new Set<number>();
+
+export function effectiveGuardThreshold(requested: number): number {
+  if (requested > MAX_PATTERN_WEIGHT) {
+    if (!warnedThresholds.has(requested)) {
+      warnedThresholds.add(requested);
+      console.warn(
+        `[Prompt Guard] WARNING: configured threshold ${requested} exceeds the highest pattern weight (${MAX_PATTERN_WEIGHT}); clamping the threshold so the strongest patterns can still fire.`
+      );
+    }
+    return MAX_PATTERN_WEIGHT;
+  }
+  return requested;
+}
+
 /**
  * Fast sub-millisecond local heuristic injection scanner
  */
@@ -174,16 +358,22 @@ export function checkPromptHeuristics(content: string, configOrThreshold: number
     return { passed: true, score: 0 };
   }
 
-  const threshold = typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80);
+  const threshold = effectiveGuardThreshold(
+    typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80)
+  );
   const config = typeof configOrThreshold === 'object' ? configOrThreshold : undefined;
 
   noteUnimplementedGuardMode(config);
 
+  // Scan variants: raw text plus its normalized/decoded forms (H-6), so an
+  // encoded or lookalike-obfuscated payload cannot slip past the regexes.
+  const variants = collectScanVariants(content);
+
   // 1. Check custom banned phrases
   if (config?.bannedPhrases && config.bannedPhrases.length > 0) {
-    const lowerContent = content.toLowerCase();
+    const lowerVariants = variants.map((v) => v.toLowerCase());
     for (const phrase of config.bannedPhrases) {
-      if (phrase.trim() && lowerContent.includes(phrase.trim().toLowerCase())) {
+      if (phrase.trim() && lowerVariants.some((v) => v.includes(phrase.trim().toLowerCase()))) {
         return {
           passed: false,
           score: 1.0,
@@ -206,15 +396,13 @@ export function checkPromptHeuristics(content: string, configOrThreshold: number
       if (pattern.label === 'unconditional_compliance' && config.threatVectors.unconditional_compliance === false) continue;
     }
 
-    if (pattern.regex.test(content)) {
-      if (pattern.weight >= threshold) {
-        return {
-          passed: false,
-          score: pattern.weight,
-          reason: `Potential prompt injection / adversarial pattern detected: ${pattern.label}`,
-          matchedRule: pattern.label
-        };
-      }
+    if (pattern.weight >= threshold && variants.some((v) => pattern.regex.test(v))) {
+      return {
+        passed: false,
+        score: pattern.weight,
+        reason: `Potential prompt injection / adversarial pattern detected: ${pattern.label}`,
+        matchedRule: pattern.label
+      };
     }
   }
 
@@ -227,28 +415,113 @@ export type MessageContentPart =
 
 export interface ChatMessageLike {
   role: string;
-  content: string | MessageContentPart[];
+  content: string | MessageContentPart[] | Array<Record<string, any>>;
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 /**
- * Checks an entire chat request against prompt injection rules
+ * All scannable text in one message (audit H-7): plain content, the text
+ * of EVERY content-part shape (text / input_text / output_text / … — not
+ * just the canonical `{type:'text'}`), image URLs, and the serialized
+ * tool_calls (function arguments are a classic indirect-injection and
+ * PII channel that used to bypass both guards entirely).
  */
-export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshold: number | PromptGuardConfig = 0.80): GuardCheckResult {
-  noteUnimplementedGuardMode(typeof configOrThreshold === 'object' ? configOrThreshold : undefined);
-  for (const msg of messages) {
-    const text = typeof msg.content === 'string'
-      ? msg.content
-      : Array.isArray(msg.content)
-        ? msg.content.filter(p => p.type === 'text').map((p: any) => p.text).join('\n')
-        : '';
-    if (text) {
-      const result = checkPromptHeuristics(text, configOrThreshold);
-      if (!result.passed) {
-        return result;
+export function extractMessageText(msg: ChatMessageLike): string {
+  const pieces: string[] = [];
+  if (typeof msg.content === 'string') {
+    pieces.push(msg.content);
+  } else if (Array.isArray(msg.content)) {
+    for (const part of msg.content as any[]) {
+      if (!part || typeof part !== 'object') continue;
+      if (typeof part.text === 'string') pieces.push(part.text);
+      if (part.type === 'image_url' && typeof part.image_url?.url === 'string') {
+        pieces.push(part.image_url.url);
       }
     }
   }
+  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+    try {
+      pieces.push(JSON.stringify(msg.tool_calls));
+    } catch {
+      /* unserializable tool_calls — nothing scannable */
+    }
+  }
+  return pieces.join('\n');
+}
+
+/**
+ * Checks an entire chat request against prompt injection rules.
+ *
+ * Audit H-7: this used to scan only user/system string-or-text-part
+ * content, so assistant/tool/developer turns, tool_calls arguments, and
+ * non-canonical content parts were unscanned — and a payload split across
+ * two messages matched nothing anywhere. Now every message is scanned
+ * individually AND the whole conversation is scanned concatenated, which
+ * is what catches split payloads.
+ */
+export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshold: number | PromptGuardConfig = 0.80): GuardCheckResult {
+  noteUnimplementedGuardMode(typeof configOrThreshold === 'object' ? configOrThreshold : undefined);
+  const texts: string[] = [];
+  for (const msg of messages) {
+    const text = extractMessageText(msg);
+    texts.push(text);
+    if (!text) continue;
+    const result = checkPromptHeuristics(text, configOrThreshold);
+    if (!result.passed) {
+      return result;
+    }
+  }
+  if (texts.length > 1) {
+    const joined = checkPromptHeuristics(texts.join('\n'), configOrThreshold);
+    if (!joined.passed) {
+      return joined;
+    }
+  }
   return { passed: true, score: 0 };
+}
+
+/**
+ * Response-side guard scan (audit H-8, remediation decision D8).
+ *
+ * Model output used to be trusted blindly: a reply could carry live
+ * credentials or injection-shaped text straight to the client — and,
+ * worse, into long-term memory via write-back — without any scan. This
+ * scans completed assistant text with BOTH pattern sets: the privacy set
+ * (credential/PII shapes) and the injection heuristics. Callers decide
+ * what to do with a detection; per D8 the client-facing path ships in
+ * WARN mode (log + marker header), while the memory write-back path
+ * treats any detection as grounds to skip the write.
+ */
+export interface ResponseGuardScan {
+  detected: boolean;
+  /** Union of the injection matchedRule and the privacy type labels. */
+  rules: string[];
+  injection: GuardCheckResult;
+  piiTypes: string[];
+}
+
+export function scanResponseContent(
+  content: string,
+  opts?: { promptGuard?: PromptGuardConfig; privacyGuard?: PrivacyGuardConfig }
+): ResponseGuardScan {
+  if (!content || typeof content !== 'string') {
+    return { detected: false, rules: [], injection: { passed: true, score: 0 }, piiTypes: [] };
+  }
+  const injection = checkPromptHeuristics(content, opts?.promptGuard ?? { enabled: true, threshold: 0.80 });
+  const pii = scanAndMaskPii(content, opts?.privacyGuard);
+  const rules: string[] = [];
+  if (!injection.passed && injection.matchedRule) rules.push(injection.matchedRule);
+  for (const t of pii.types) {
+    if (!rules.includes(t)) rules.push(t);
+  }
+  return {
+    detected: !injection.passed || pii.detected,
+    rules,
+    injection,
+    piiTypes: pii.types
+  };
 }
 
 /**
@@ -256,7 +529,9 @@ export function validateChatPrompt(messages: ChatMessageLike[], configOrThreshol
  */
 export function stripPromptThreats(content: string, configOrThreshold: number | PromptGuardConfig = 0.80): string {
   if (!content || typeof content !== 'string') return content;
-  const threshold = typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80);
+  const threshold = effectiveGuardThreshold(
+    typeof configOrThreshold === 'number' ? configOrThreshold : (configOrThreshold.threshold ?? 0.80)
+  );
   const config = typeof configOrThreshold === 'object' ? configOrThreshold : undefined;
 
   let cleaned = content;
@@ -383,17 +658,28 @@ export function applyPrivacyGuard<T extends ChatMessageLike>(
   }
 
   const modifiedMessages = messages.map(m => {
-    if (typeof m.content === 'string') {
-      return { ...m };
-    } else if (Array.isArray(m.content)) {
-      return {
-        ...m,
-        content: m.content.map(part => ({ ...part }))
-      };
+    const base: any = { ...m };
+    if (Array.isArray(m.content)) {
+      base.content = (m.content as any[]).map(part =>
+        part && typeof part === 'object' ? { ...part } : part
+      );
     }
-    return { ...m };
+    if (Array.isArray((m as any).tool_calls)) {
+      // Deep-clone so redaction below never mutates the caller's messages.
+      try {
+        base.tool_calls = JSON.parse(JSON.stringify((m as any).tool_calls));
+      } catch {
+        base.tool_calls = (m as any).tool_calls;
+      }
+    }
+    return base as T;
   });
   const detectedPiiTypes: Set<string> = new Set();
+
+  // Audit M-12: 'warn' used to forward detected PII unredacted, protected
+  // only by a log line. It now redacts by default; forwarding unredacted
+  // requires the explicit allowDetectedPii opt-in.
+  const redact = config.action === 'anonymize' || (config.action === 'warn' && !config.allowDetectedPii);
 
   for (let i = 0; i < modifiedMessages.length; i++) {
     const msg = modifiedMessages[i];
@@ -401,23 +687,49 @@ export function applyPrivacyGuard<T extends ChatMessageLike>(
       const { detected, redacted, types } = scanAndMaskPii(msg.content, config);
       if (detected) {
         types.forEach(t => detectedPiiTypes.add(t));
-        if (config.action === 'anonymize') {
+        if (redact) {
           modifiedMessages[i].content = redacted;
         }
       }
     } else if (Array.isArray(msg.content)) {
       for (let j = 0; j < msg.content.length; j++) {
-        const part = msg.content[j];
-        if (part.type === 'text') {
+        const part: any = msg.content[j];
+        // Any text-bearing part shape, not just the canonical text type.
+        if (part && typeof part.text === 'string') {
           const { detected, redacted, types } = scanAndMaskPii(part.text, config);
           if (detected) {
             types.forEach(t => detectedPiiTypes.add(t));
-            if (config.action === 'anonymize') {
-              (modifiedMessages[i].content as MessageContentPart[])[j] = {
-                type: 'text',
-                text: redacted
-              };
+            if (redact) {
+              (modifiedMessages[i].content as any[])[j] = { ...part, text: redacted };
             }
+          }
+        }
+      }
+    }
+
+    // tool_calls arguments (audit M-12): a serialized-JSON PII channel
+    // that bypassed this guard entirely.
+    const calls = (modifiedMessages[i] as any).tool_calls;
+    if (Array.isArray(calls)) {
+      for (let k = 0; k < calls.length; k++) {
+        const call = calls[k];
+        const args = call?.function?.arguments;
+        if (typeof args === 'string') {
+          const { detected, redacted, types } = scanAndMaskPii(args, config);
+          if (detected) {
+            types.forEach(t => detectedPiiTypes.add(t));
+            if (redact) {
+              calls[k] = { ...call, function: { ...call.function, arguments: redacted } };
+            }
+          }
+        } else if (call != null) {
+          // Non-standard call shape: at least detect (redaction of an
+          // unknown structure is not attempted).
+          try {
+            const { detected, types } = scanAndMaskPii(JSON.stringify(call), config);
+            if (detected) types.forEach(t => detectedPiiTypes.add(t));
+          } catch {
+            /* unserializable — nothing scannable */
           }
         }
       }
@@ -425,13 +737,18 @@ export function applyPrivacyGuard<T extends ChatMessageLike>(
   }
 
   if (detectedPiiTypes.size > 0 && config.action === 'warn') {
-    // 'warn' means the messages pass through unredacted — but never
-    // silently. Log the detection TYPES only; the PII content itself must
-    // never be written to the log.
-    console.warn(
-      `[Privacy Guard Warning] Detected sensitive personal data (${Array.from(detectedPiiTypes).join(', ')}) — ` +
-      `proceeding without redaction (action: 'warn').`
-    );
+    // Never log the PII content itself — detection TYPES only.
+    if (config.allowDetectedPii) {
+      console.warn(
+        `[Privacy Guard Warning] Detected sensitive personal data (${Array.from(detectedPiiTypes).join(', ')}) — ` +
+        `proceeding without redaction (action: 'warn', allowDetectedPii: true).`
+      );
+    } else {
+      console.warn(
+        `[Privacy Guard Warning] Detected sensitive personal data (${Array.from(detectedPiiTypes).join(', ')}) — ` +
+        `detected PII was redacted before forwarding (action: 'warn' redacts by default; set privacyGuard.allowDetectedPii: true to forward unredacted).`
+      );
+    }
   }
 
   if (detectedPiiTypes.size > 0 && config.action === 'block') {

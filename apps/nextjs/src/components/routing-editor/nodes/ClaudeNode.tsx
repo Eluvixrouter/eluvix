@@ -24,7 +24,13 @@ export default function ClaudeNode({ id, data }: { id: string; data: any }) {
   const [expanded, setExpanded] = useState<boolean>(false);
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids. Callbacks below read the latest node data
+  // through this ref instead of closing over the `data` prop, so their
+  // identity stays stable while still seeing current values.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback((updates: Record<string, any>) => {
     if (dataRef.current) {
@@ -42,8 +48,8 @@ export default function ClaudeNode({ id, data }: { id: string; data: any }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: id || data?.id || 'claude-direct',
-          name: data?.label || 'Anthropic Claude',
+          id: id || dataRef.current?.id || 'claude-direct',
+          name: dataRef.current?.label || 'Anthropic Claude',
           type: 'anthropic',
           endpoint: targetEndpoint,
           apiKey: targetKey || undefined
@@ -66,13 +72,18 @@ export default function ClaudeNode({ id, data }: { id: string; data: any }) {
       setStatus('offline');
       syncData({ endpoint: targetEndpoint, apiKey: targetKey, status: 'offline' });
     }
-  }, [endpoint, apiKey, id, data?.id, data?.label, syncData]);
+  }, [endpoint, apiKey, id, syncData]);
 
-  // Initial detection if apiKey is provided
+  // Initial detection if apiKey is provided. The probe is kicked off from a
+  // timer callback rather than synchronously in the effect body, so no
+  // setState happens synchronously in the effect. A zero-delay timer starts
+  // the probe before the next paint, so the 'checking' feedback is unchanged.
   useEffect(() => {
-    if (apiKey) {
-      detectModels();
-    }
+    if (!apiKey) return undefined;
+    const timer = setTimeout(() => {
+      void detectModels();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [apiKey, detectModels]);
 
   const handleEndpointChange = (e: React.ChangeEvent<HTMLInputElement>) => {

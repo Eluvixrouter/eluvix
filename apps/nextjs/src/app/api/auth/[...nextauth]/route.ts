@@ -1,6 +1,26 @@
 import NextAuth from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { authenticateEluvixCredentials, getOrCreateAuthConfig } from "@eluvix/router-core";
+import {
+  getLoginThrottleKey,
+  loginLockoutRemainingMs,
+  recordLoginFailure,
+  recordLoginSuccess
+} from "@/lib/login-throttle";
+import { migrateLegacyCredential } from "@/lib/legacy-credential";
+
+import crypto from "node:crypto";
+
+function secureCompare(a: string, b: string): boolean {
+  try {
+    const enc = new TextEncoder();
+    const hashA = crypto.createHash("sha256").update(enc.encode(a)).digest();
+    const hashB = crypto.createHash("sha256").update(enc.encode(b)).digest();
+    return crypto.timingSafeEqual(hashA, hashB);
+  } catch {
+    return false;
+  }
+}
 
 const authConfig = getOrCreateAuthConfig();
 
@@ -13,15 +33,51 @@ const handler = NextAuth({
         username: { label: "Username", type: "text" },
         password: { label: "Password", type: "password" }
       },
-      async authorize(credentials) {
-        if (!credentials?.password) return null;
-        
+      async authorize(credentials, req) {
+        if (!credentials?.password || typeof credentials.password !== 'string') return null;
+
+        // Per-IP throttling (audit L-3): a locked-out IP gets no password
+        // check at all, so lockout windows cannot be used as an oracle.
+        const throttleKey = getLoginThrottleKey(req as any);
+        const lockoutRemaining = loginLockoutRemainingMs(throttleKey);
+        if (lockoutRemaining > 0) {
+          console.warn(
+            `[Auth] Login attempt rejected during throttle lockout (key ${throttleKey}, ${Math.ceil(lockoutRemaining / 1000)}s remaining).`
+          );
+          return null;
+        }
+
         const res = await authenticateEluvixCredentials(
           credentials.username,
           credentials.password
         );
 
         if (res.authenticated && res.userId) {
+          recordLoginSuccess(throttleKey);
+
+          // Legacy Enclavix credential (audit L-4, decision D6): new main's
+          // authenticateEluvixCredentials already *accepts* the legacy
+          // password, but the migration half of D6 — writing it into the
+          // current auth.json and retiring the legacy files — still lives
+          // here. Migrate only for local break-glass logins whose password
+          // matches the legacy credential and not the current admin one.
+          const legacyPassword = process.env.LEGACY_ADMIN_PASSWORD;
+          const currentAuth = getOrCreateAuthConfig();
+          const currentPassword =
+            process.env.ADMIN_PASSWORD || currentAuth.adminPassword;
+          if (
+            res.authSource === 'local' &&
+            legacyPassword &&
+            secureCompare(credentials.password, legacyPassword) &&
+            !(currentPassword && secureCompare(credentials.password, currentPassword))
+          ) {
+            console.warn(
+              '[Auth] Login succeeded with the DEPRECATED legacy Enclavix credential. Migrating it to the current auth config...'
+            );
+            const migration = migrateLegacyCredential(legacyPassword);
+            console.warn(`[Auth] Legacy credential migration: ${migration.detail}`);
+          }
+
           return {
             id: res.userId,
             name: res.displayName || res.username || "Admin",
@@ -32,7 +88,13 @@ const handler = NextAuth({
             authSource: res.authSource || "local",
           } as any;
         }
-        
+
+        const { failures, lockoutMs } = recordLoginFailure(throttleKey);
+        if (lockoutMs > 0) {
+          console.warn(
+            `[Auth] Login failure #${failures} for key ${throttleKey}; throttling further attempts for ${Math.ceil(lockoutMs / 1000)}s.`
+          );
+        }
         return null;
       }
     })

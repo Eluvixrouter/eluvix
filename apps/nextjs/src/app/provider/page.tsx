@@ -96,6 +96,7 @@ export default function ProviderPage() {
   // Form states
   const [serverUrl, setServerUrl] = useState('https://api.billama.dev');
   const [nodeToken, setNodeToken] = useState('');
+  const [nodeTokenConfigured, setNodeTokenConfigured] = useState(false);
   const [nodeName, setNodeName] = useState('');
   const [engineUrl, setEngineUrl] = useState('http://localhost:11434');
   const [engineType, setEngineType] = useState('ollama');
@@ -616,7 +617,11 @@ export default function ProviderPage() {
         setStatus(data.status);
         if (data.settings) {
           setServerUrl(data.settings.server_url || 'https://api.billama.dev');
-          setNodeToken(data.settings.node_token || '');
+          // The API no longer returns the stored token (redacted to a
+          // boolean flag); the field starts empty and saving an empty
+          // field keeps the stored token.
+          setNodeToken('');
+          setNodeTokenConfigured(Boolean(data.settings.node_token_configured));
           setNodeName(data.settings.node_name || '');
           setEngineUrl(data.settings.engine_url || 'http://localhost:11434');
           setEngineType(data.settings.engine_type || 'ollama');
@@ -638,9 +643,14 @@ export default function ProviderPage() {
   };
 
   useEffect(() => {
-    fetchStatus();
+    const timer = setTimeout(() => {
+      fetchStatus();
+    }, 0);
     const interval = setInterval(fetchStatus, 4000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, []);
 
   const handleToggle = async () => {
@@ -868,7 +878,7 @@ export default function ProviderPage() {
                     type="password"
                     value={nodeToken}
                     onChange={(e) => setNodeToken(e.target.value)}
-                    placeholder="blm_node_... (optional for local/test)"
+                    placeholder={nodeTokenConfigured ? '•••••••• configured — leave blank to keep the stored token' : 'blm_node_... (required to enable the provider agent)'}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 font-mono focus:border-amber-400 outline-none"
                   />
                 </div>

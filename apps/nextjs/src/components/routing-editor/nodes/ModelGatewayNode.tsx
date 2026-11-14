@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function ModelGatewayNode({ id, data }: { id: string; data: any }) {
@@ -11,16 +11,22 @@ export default function ModelGatewayNode({ id, data }: { id: string; data: any }
   const cacheTtl = data?.cacheTtlSeconds ?? 3600;
   const [rateLimitRpm, setRateLimitRpm] = useState(data?.rateLimitRpm ?? 60);
 
-  // Ensure default structure
-  if (data) {
-    if (!data.primaryModel) data.primaryModel = primaryModel;
-    if (!data.fallbackStrategy) data.fallbackStrategy = fallbackStrategy;
-    if (data.cacheEnabled === undefined) data.cacheEnabled = cacheEnabled;
-    if (data.cacheTtlSeconds === undefined) data.cacheTtlSeconds = cacheTtl;
-    if (data.cacheSimilarityThreshold === undefined) data.cacheSimilarityThreshold = 0.95;
-    if (data.rateLimitRpm === undefined) data.rateLimitRpm = rateLimitRpm;
-    if (data.rateLimitTpm === undefined) data.rateLimitTpm = 100000;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // primaryModel uses an `=== undefined` guard because its text input can
+  // be cleared to '' — a `!data.primaryModel` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (data.primaryModel === undefined) missing.primaryModel = primaryModel;
+    if (!data.fallbackStrategy) missing.fallbackStrategy = fallbackStrategy;
+    if (data.cacheEnabled === undefined) missing.cacheEnabled = cacheEnabled;
+    if (data.cacheTtlSeconds === undefined) missing.cacheTtlSeconds = cacheTtl;
+    if (data.cacheSimilarityThreshold === undefined) missing.cacheSimilarityThreshold = 0.95;
+    if (data.rateLimitRpm === undefined) missing.rateLimitRpm = rateLimitRpm;
+    if (data.rateLimitTpm === undefined) missing.rateLimitTpm = 100000;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, primaryModel, fallbackStrategy, cacheEnabled, cacheTtl, rateLimitRpm]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

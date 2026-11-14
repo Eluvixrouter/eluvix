@@ -144,6 +144,19 @@ export async function middleware(req: NextRequest) {
       ) {
         return NextResponse.next();
       }
+      // Model listing (GET only): OpenAI-compatible clients configured by
+      // the Configurator (OpenCode, Continue) enumerate models with their
+      // named key. The key is verified inside the models route handlers —
+      // an invalid elx_-shaped token gets a 401 there, never data. This
+      // widens the passthrough by exactly one read-only endpoint family;
+      // see the Tier 4 PR body for the full rationale.
+      if (
+        req.method === 'GET' &&
+        /^elx_[A-Za-z]{24,64}$/.test(token) &&
+        pathname.startsWith('/api/v1/models')
+      ) {
+        return NextResponse.next();
+      }
       return NextResponse.json(
         {
           error: {

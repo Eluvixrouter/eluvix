@@ -146,6 +146,21 @@ if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Release tags are signed (git tag -s). Fail fast, before mutating
+# anything, if no signing key is configured. This must precede the
+# missing-tag path below, which also creates a (signed) tag — but a
+# dry run creates nothing, so it must not fail on a missing key.
+if [ "${DRY_RUN}" != true ]; then
+  SIGNING_KEY="$(git config user.signingkey || true)"
+  if [ -z "${SIGNING_KEY}" ]; then
+    echo "Error: git user.signingkey is not configured — release tags must be signed."
+    echo "Configure it with your GPG key id, for example:"
+    echo "  git config user.signingkey <KEYID>"
+    echo "(List your keys with: gpg --list-secret-keys --keyid-format long)"
+    exit 1
+  fi
+fi
+
 # Hunt-2 L6: the requested version is already the current version, but its
 # tag is missing (the tag-existence check above already ruled out the
 # tag-present case). There are no files to change and nothing to commit,
@@ -156,7 +171,7 @@ if [ "${NEW_VERSION}" = "${CURRENT_VERSION}" ]; then
     exit 0
   fi
   echo ">> Already at version ${CURRENT_VERSION}; creating missing tag ${TAG_NAME} (no files changed)."
-  git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+  git tag -s "${TAG_NAME}" -m "Release ${TAG_NAME}"
   if [ "${PUSH_FLAG}" = true ]; then
     echo ">> Pushing tag to origin..."
     git push origin "${TAG_NAME}"
@@ -219,8 +234,8 @@ fi
 git add "${STAGED_FILES[@]}"
 git commit -m "chore(release): bump version to ${NEW_VERSION}"
 
-echo ">> Creating git tag ${TAG_NAME}..."
-git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+echo ">> Creating signed git tag ${TAG_NAME}..."
+git tag -s "${TAG_NAME}" -m "Release ${TAG_NAME}"
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 

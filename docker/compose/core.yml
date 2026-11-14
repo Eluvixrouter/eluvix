@@ -7,6 +7,12 @@ services:
     profiles: ["core", "all"]
     ports:
       - "127.0.0.1:${SWITCHYARD_PORT:-8080}:8080"
+    # The sim's /v1/config endpoint refuses all requests unless a token is
+    # set (fail closed). Pass one through from the host environment; without
+    # it, live config reads/writes to the sim return 503 (the sim still
+    # serves canned chat completions). Never commit a real token here.
+    environment:
+      - SWITCHYARD_AUTH_TOKEN=${SWITCHYARD_AUTH_TOKEN:-}
     restart: unless-stopped
     networks:
       - eluvix-net

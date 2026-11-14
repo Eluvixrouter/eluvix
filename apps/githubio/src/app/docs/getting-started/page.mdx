@@ -122,15 +122,10 @@ chmod +x scripts/docker-detect-and-spinup.sh
 
 This utility detects whether NVIDIA Container Toolkit or AMD ROCm (`/dev/kfd`) is accessible, determines your GPU architecture (e.g. `gfx1100`, `gfx1030`), measures available VRAM, and boots the matching container configuration.
 
-### 2. Antigravity Agent CLI Bootstrapper (`install.sh`)
-Eluvix includes an automated Unix bootstrapper script to install the **Google Antigravity CLI** (`agy`):
+### 2. Antigravity Agent CLI (`agy`)
+Eluvix can route to Google's **Antigravity CLI** (`agy`) as an agent upstream. Eluvix does not ship an installer for it: install `agy` using Google's official Antigravity installer and documentation, and keep it updated through Google's own update channel. (Eluvix previously bundled a third-party bootstrapper script for this; it was removed — a download-and-execute script is only as trustworthy as whoever serves the download, so get the CLI from the vendor.)
 
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-The script automatically detects your platform (Linux x86_64/arm64, macOS Darwin, Android Termux, musl/glibc), verifies SHA-256 hashes, installs `agy` to `~/.local/bin`, and verifies PATH configuration.
+Once installed, make sure `agy` is on your `PATH` — Eluvix looks in `~/.local/bin`, `~/bin`, `/usr/local/bin`, and `/usr/bin`, in addition to the `PATH` — or set the upstream's **CLI Path** explicitly in the layout editor. Eluvix validates that path before use.
 
 ---
 

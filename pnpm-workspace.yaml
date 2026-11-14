@@ -4,5 +4,10 @@ packages:
 allowBuilds:
   better-sqlite3: true
   electron: true
+  # electron-builder 26 added electron-winstaller as a hard dep of
+  # electron-builder-squirrel-windows; its install script only copies a
+  # pre-bundled 7z binary for the host arch (no network). Without this,
+  # pnpm 11 refuses `pnpm install` with ERR_PNPM_IGNORED_BUILDS.
+  electron-winstaller: true
   esbuild: true
   unrs-resolver: true

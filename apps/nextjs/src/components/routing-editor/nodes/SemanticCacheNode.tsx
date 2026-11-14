@@ -11,16 +11,28 @@ export default function SemanticCacheNode({ id, data }: { id: string; data: any 
   const [ttlSeconds, setTtlSeconds] = useState(data?.ttlSeconds ?? 3600);
   const [bypassOnTools, setBypassOnTools] = useState(data?.bypassOnTools !== false);
 
-  useEffect(() => {
-    if (data?.mode !== undefined) setMode(data.mode);
-    if (data?.similarityThreshold !== undefined) setSimilarityThreshold(data.similarityThreshold);
-    if (data?.scopeIsolation !== undefined) setScopeIsolation(data.scopeIsolation);
-    if (data?.ttlSeconds !== undefined) setTtlSeconds(data.ttlSeconds);
-    if (data?.bypassOnTools !== undefined) setBypassOnTools(data.bypassOnTools !== false);
-  }, [data?.mode, data?.similarityThreshold, data?.scopeIsolation, data?.ttlSeconds, data?.bypassOnTools]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.mode !== undefined) setMode(data.mode);
+      if (data?.similarityThreshold !== undefined) setSimilarityThreshold(data.similarityThreshold);
+      if (data?.scopeIsolation !== undefined) setScopeIsolation(data.scopeIsolation);
+      if (data?.ttlSeconds !== undefined) setTtlSeconds(data.ttlSeconds);
+      if (data?.bypassOnTools !== undefined) setBypassOnTools(data.bypassOnTools !== false);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

@@ -3,14 +3,24 @@ global:
   environment: production
 
 # 1. Switchyard Sovereign Balancer & Gateway
+# NOTE: this service is the canned-response SIMULATOR (docker/switchyard),
+# not the real Switchyard router — see helm/eluvix/README.md and
+# values-prod.yaml before treating any Helm install as production.
 switchyard:
   enabled: true
   image:
     repository: eluvix-switchyard
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8080
+  # Token guarding the sim's /v1/config endpoint. The sim refuses ALL
+  # /v1/config requests (503) when this is empty, and requires the Bearer
+  # token on GET and POST when set. Pass a real value via
+  # --set switchyard.authToken=... (never commit one here); the ingress
+  # routes /v1 to this service, so leaving it empty is the safe default
+  # and setting it is required before any config read/write works.
+  authToken: ""
   service:
     type: ClusterIP
     port: 8080
@@ -34,7 +44,7 @@ nextjs:
   enabled: true
   image:
     repository: eluvix-nextjs
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 3588
@@ -43,10 +53,10 @@ nextjs:
     port: 3588
   env:
     NODE_ENV: production
-  persistence:
-    enabled: true
-    storageClass: local-path
-    size: 2Gi
+  # No persistence block: a previous revision mounted a PVC at
+  # /app/apps/nextjs/data, a path the app never reads, so it persisted
+  # nothing. App state lives under $XDG_CONFIG_HOME/eluvix inside the pod
+  # and is ephemeral unless an operator mounts that path deliberately.
   resources:
     limits:
       cpu: 1000m
@@ -60,7 +70,7 @@ ollama:
   enabled: true
   image:
     repository: ollama/ollama
-    tag: latest
+    tag: "0.40.16"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 11434
@@ -73,7 +83,10 @@ ollama:
     size: 20Gi
     mountPath: /root/.ollama
   env:
-    OLLAMA_ORIGINS: "*"
+    # Only the dashboard's own origins may call Ollama from a browser
+    # (audit L-16). "*" would let any visited website drive the local
+    # Ollama API (pull/generate/delete) from the user's browser.
+    OLLAMA_ORIGINS: "http://localhost:3588,http://127.0.0.1:3588,https://localhost:3588,https://127.0.0.1:3588,http://eluvix.local,https://eluvix.local,http://localhost,https://localhost"
     OLLAMA_HOST: "0.0.0.0:11434"
   resources:
     limits:
@@ -96,7 +109,7 @@ agentRouter:
   enabled: true
   image:
     repository: eluvix-agent-router
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8002
@@ -116,7 +129,7 @@ agentGateway:
   enabled: true
   image:
     repository: eluvix-agentgateway
-    tag: latest
+    tag: "1.0.4"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8003
@@ -132,8 +145,12 @@ agentGateway:
       memory: 64Mi
 
 # 6. Ingress Configuration
+# Disabled by default in the production values (audit M-27 / decision
+# D10): the ingress serves the dashboard and API over plain HTTP with
+# no auth of its own. Enable it only behind TLS. The local k3d values
+# (values-local.yaml) turn it back on for the loopback-bound dev stack.
 ingress:
-  enabled: true
+  enabled: false
   className: traefik
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: web

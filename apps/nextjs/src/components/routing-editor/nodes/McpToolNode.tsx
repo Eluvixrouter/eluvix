@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function McpToolNode({ id, data }: { id: string; data: any }) {
@@ -10,13 +10,19 @@ export default function McpToolNode({ id, data }: { id: string; data: any }) {
   const [executionMode, setExecutionMode] = useState<'auto' | 'confirm' | 'dry-run'>(data?.executionMode || 'auto');
   const [timeoutMs, setTimeoutMs] = useState<number>(data?.timeoutMs ?? 5000);
 
-  // Ensure default structure
-  if (data) {
-    if (!data.toolName) data.toolName = toolName;
-    if (!data.mcpEndpoint) data.mcpEndpoint = mcpEndpoint;
-    if (!data.executionMode) data.executionMode = executionMode;
-    if (data.timeoutMs === undefined) data.timeoutMs = timeoutMs;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // toolName/mcpEndpoint use `=== undefined` guards because their text
+  // inputs can be cleared to '' — a `!data.x` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (data.toolName === undefined) missing.toolName = toolName;
+    if (data.mcpEndpoint === undefined) missing.mcpEndpoint = mcpEndpoint;
+    if (!data.executionMode) missing.executionMode = executionMode;
+    if (data.timeoutMs === undefined) missing.timeoutMs = timeoutMs;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, toolName, mcpEndpoint, executionMode, timeoutMs]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

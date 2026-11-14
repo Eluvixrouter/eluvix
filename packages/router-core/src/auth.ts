@@ -115,6 +115,16 @@ export function getOrCreateAuthConfig(appName = 'eluvix'): AuthConfigResult {
     });
   }
 
+  // Re-assert the restrictive mode on every load (audit S-4, Tier 4):
+  // writeFileSync's `mode` only applies at creation, so a pre-existing
+  // auth.json with loose permissions (copied in, restored from backup,
+  // created by another tool) would otherwise stay world-readable forever.
+  try {
+    fs.chmodSync(authFile, 0o600);
+  } catch {
+    // Best effort — e.g. filesystems without POSIX modes.
+  }
+
   const effectiveAdminPassword = process.env.ADMIN_PASSWORD || authConfig.adminPassword;
   const effectiveNextAuthSecret = process.env.NEXTAUTH_SECRET || authConfig.nextAuthSecret;
 
@@ -395,10 +405,16 @@ export function resolveBearerToken(
     candidateAdmins.push(adminPasswordOrAppName);
   }
   const a = Buffer.from(token);
+  // Compare SHA-256 digests rather than the raw strings (audit S-7,
+  // Tier 4): both sides are always 32 bytes, so the comparison is
+  // constant-time AND independent of the candidate's length — a length
+  // check on the raw values would leak the expected secret's length
+  // through timing.
+  const presentedDigest = crypto.createHash('sha256').update(token, 'utf8').digest();
   for (const cand of candidateAdmins) {
     if (!cand) continue;
-    const b = Buffer.from(cand);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+    const candidateDigest = crypto.createHash('sha256').update(cand, 'utf8').digest();
+    if (crypto.timingSafeEqual(presentedDigest, candidateDigest)) {
       return {
         valid: true,
         isAdmin: true,

@@ -1,3 +1,6 @@
+# NOTE: the trueforge sim is purely in-memory and never reads
+# /root/.trueforge, so no volume is mounted for it on purpose: harness
+# state does NOT persist across restarts.
 services:
   trueforge:
     build:
@@ -7,8 +10,6 @@ services:
     profiles: ["harnesses", "all"]
     ports:
       - "127.0.0.1:${TRUEFORGE_PORT:-8790}:8790"
-    volumes:
-      - trueforge_data:/root/.trueforge
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -43,6 +44,12 @@ services:
     profiles: ["harnesses", "sandbox", "all"]
     ports:
       - "127.0.0.1:${SANDBOX_PORT:-3986}:3986"
+    # When set, /v1/execute requires this token (Bearer or x-sandbox-token)
+    # and /health stays open so healthchecks keep passing. When unset,
+    # /v1/execute is open to the compose network — see docker/sandbox
+    # server.mjs. Never commit a real token here.
+    environment:
+      - SANDBOX_AUTH_TOKEN=${SANDBOX_AUTH_TOKEN:-}
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -51,7 +58,3 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-
-volumes:
-  trueforge_data:
-    driver: local

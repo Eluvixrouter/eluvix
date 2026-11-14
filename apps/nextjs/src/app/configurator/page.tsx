@@ -23,7 +23,6 @@ interface ServerData {
     rootCaPath: string | null;
   };
   auth: {
-    adminPassword: string;
     authFile: string;
   };
   clients: {
@@ -110,7 +109,11 @@ export default function ConfiguratorPage() {
     return protocol === 'https' ? data.server.httpsBaseUrl : data.server.httpBaseUrl;
   }, [data, protocol]);
 
-  const apiKey = data?.auth.adminPassword || 'YOUR_ADMIN_PASSWORD';
+  // The data API no longer returns the admin password (audit L-1); the
+  // manual-setup snippets below use a placeholder the operator replaces
+  // — or, better, they use "Apply" above, which writes a scoped per-client
+  // key into the client config automatically.
+  const apiKey = 'YOUR_ELUVIX_API_KEY';
 
   const selectedModelsList = useMemo(() => {
     if (!data) return [];

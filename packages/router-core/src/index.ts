@@ -179,6 +179,14 @@ export interface RouterConfig {
    * 'local-only' fails closed: routing only ever considers upstreams served
    * from this machine / LAN, even as a fallback. Absent = 'allow-egress'
    * (legacy behavior) so hand-written configs keep working.
+   *
+   * Scope note (audit M-7): the policy constrains UPSTREAM SELECTION
+   * only. Two configured channels sit outside it: an external memory
+   * provider (mem0/OpenViking — recall sends the user's last message to
+   * the configured endpoint on every request) and the provider agent
+   * (registration/heartbeat to its serverUrl). The router logs a loud
+   * startup warning naming any non-local exception channels rather than
+   * letting the policy's guarantee read as total.
    */
   egressPolicy?: EgressPolicy;
   confidentialPolicy?: ConfidentialPolicy;
@@ -323,6 +331,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 export * from './provider.js';
 export * from './antigravity-models.js';
+export * from './fetch-policy.js';
 import {
   discoverAntigravityModels,
   getCachedAntigravityModels,
@@ -335,6 +344,7 @@ import {
   tryResolveCliExecutable,
   ANTIGRAVITY_CLI_BINARIES
 } from './cli-exec.js';
+import { fetchWithSafeRedirects, assertEndpointNotMetadata } from './fetch-policy.js';
 import * as dbModule from './db.js';
 
 function logRequest(...args: Parameters<typeof dbModule.logRequest>) {
@@ -342,6 +352,9 @@ function logRequest(...args: Parameters<typeof dbModule.logRequest>) {
 }
 function getRequestLogs(...args: Parameters<typeof dbModule.getRequestLogs>) {
   return dbModule.getRequestLogs(...args);
+}
+function getProviderSettings(...args: Parameters<typeof dbModule.getProviderSettings>) {
+  return dbModule.getProviderSettings(...args);
 }
 function getRollingSpendUsd(...args: Parameters<typeof dbModule.getRollingSpendUsd>) {
   return dbModule.getRollingSpendUsd(...args);
@@ -365,7 +378,7 @@ function recordBanditArmOutcome(params: Parameters<typeof dbModule.recordBanditA
     // Tolerate partial ../db.js mocks in unit tests
   }
 }
-import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats } from './guard.js';
+import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats, scanResponseContent } from './guard.js';
 import {
   type ContextProvider,
   type KnowledgeBaseConfig,
@@ -627,6 +640,47 @@ import {
   executeAudioSpeechForward,
 } from './forwarders/embeddings-audio.js';
 
+/**
+ * Whether an endpoint URL's host is local (loopback, RFC1918, or a
+ * .local/.lan/.internal name) — the host half of isLocalUpstream
+ * (now in ./cost.js), shared with the egress-policy exception check,
+ * which judges bare channel URLs (memory provider, provider-agent
+ * server) rather than upstreams. Kept here because cost.js does not
+ * export it.
+ */
+/**
+ * Whether an endpoint URL's host is local (loopback, RFC1918, or a
+ * .local/.lan/.internal name) — the host half of isLocalUpstream,
+ * shared with the egress-policy exception check, which judges bare
+ * channel URLs (memory provider, provider-agent server) rather than
+ * upstreams.
+ */
+export function endpointHostIsLocal(endpoint: string): boolean {
+  let host: string;
+  try {
+    host = new URL(endpoint).hostname.toLowerCase().replace(/^\[|\]$/g, '').trim();
+  } catch {
+    return false;
+  }
+  if (host.startsWith('::ffff:')) {
+    const mapped = host.slice(7);
+    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (hexMatch) {
+      const high = parseInt(hexMatch[1], 16);
+      const low = parseInt(hexMatch[2], 16);
+      host = `${(high >>> 8) & 255}.${high & 255}.${(low >>> 8) & 255}.${low & 255}`;
+    } else {
+      host = mapped;
+    }
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.internal')) return true;
+  return false;
+}
+
 function extractMessageText(content: string | MessageContentPart[] | undefined): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -784,6 +838,55 @@ export class Eluvix {
     if (this.config.memory?.enabled) {
       this.contextProvider = createContextProvider(this.config.memory);
     }
+    this.warnOnLocalOnlyEgressExceptions();
+  }
+
+  /**
+   * egressPolicy 'local-only' constrains upstream SELECTION only (see
+   * the enforcement in routeChatCompletion, and the scope note on
+   * RouterConfig.egressPolicy). Two configured channels sit outside
+   * that selection and would otherwise silently break the operator's
+   * expectation that nothing leaves the machine: external memory
+   * providers (recall POSTs the user's last message to the configured
+   * endpoint on every request) and the provider agent (registration /
+   * heartbeat POSTs hostname, GPU inventory, model catalog and node
+   * token to its server). Per audit decision D9 these are NOT
+   * hard-blocked; startup names them loudly instead.
+   */
+  private warnOnLocalOnlyEgressExceptions(): void {
+    if (this.config.egressPolicy !== 'local-only') return;
+    const exceptions: string[] = [];
+
+    const memory = this.config.memory;
+    if (memory?.enabled && memory.provider && memory.provider !== 'builtin' && memory.endpoint) {
+      if (!endpointHostIsLocal(memory.endpoint)) {
+        exceptions.push(
+          `memory provider "${memory.provider}" endpoint ${memory.endpoint} (recall sends the user's last message to it on every request)`
+        );
+      }
+    }
+
+    try {
+      const providerSettings = getProviderSettings();
+      if (providerSettings?.enabled) {
+        const serverUrl = providerSettings.server_url || 'https://api.billama.dev';
+        if (!endpointHostIsLocal(serverUrl)) {
+          exceptions.push(
+            `provider agent server ${serverUrl} (registration/heartbeat posts hostname, GPU inventory, model catalog and node token to it)`
+          );
+        }
+      }
+    } catch {
+      // Provider settings are optional; an unreadable settings store
+      // must never break router construction.
+    }
+
+    if (exceptions.length > 0) {
+      console.warn(
+        `[Switchyard Egress] WARNING: egressPolicy=local-only constrains upstream selection only — ` +
+          `it does NOT cover these configured channels, which will still leave this machine: ${exceptions.join('; ')}`
+      );
+    }
   }
 
   public getOtelExporter(): OtlpTraceExporter {
@@ -836,6 +939,29 @@ export class Eluvix {
     return results;
   }
 
+  /**
+   * Response-side guard gate for memory write-back (audit H-8): completed
+   * assistant text is scanned with both guard pattern sets BEFORE it may
+   * enter long-term memory. This runs regardless of the configured guard
+   * modes — a poisoned or credential-laden reply must not be stored
+   * unscanned just because the request-side guards are disabled. Returns
+   * true when the text is clean enough to store. Detection types/rules
+   * only are logged; the content itself never is.
+   */
+  private assistantTextSafeForMemory(text: string): boolean {
+    const scan = scanResponseContent(text, {
+      promptGuard: { enabled: true, ...(this.config.promptGuard || {}) },
+      privacyGuard: this.config.privacyGuard
+    });
+    if (scan.detected) {
+      console.warn(
+        `[Response Guard] Memory write-back skipped: completed assistant reply matched guard rules (${scan.rules.join(', ')}).`
+      );
+      return false;
+    }
+    return true;
+  }
+
   public async routeChatCompletion(
     request: ChatRequest,
     options?: {
@@ -880,7 +1006,8 @@ export class Eluvix {
         customPatterns: this.config.privacyGuard.customPatterns,
         redactionStyle: this.config.privacyGuard.redactionStyle,
         whitelist: this.config.privacyGuard.whitelist,
-        auditLogging: this.config.privacyGuard.auditLogging
+        auditLogging: this.config.privacyGuard.auditLogging,
+        allowDetectedPii: this.config.privacyGuard.allowDetectedPii
       });
 
       if (!privacyResult.passed) {
@@ -1076,7 +1203,8 @@ export class Eluvix {
               customPatterns: this.config.privacyGuard.customPatterns,
               redactionStyle: this.config.privacyGuard.redactionStyle,
               whitelist: this.config.privacyGuard.whitelist,
-              auditLogging: false
+              auditLogging: false,
+              allowDetectedPii: this.config.privacyGuard.allowDetectedPii
             });
             if (check.passed && check.modifiedMessages[0]) {
               scrubbed.push({
@@ -2376,6 +2504,7 @@ export class Eluvix {
             let responseBody: any = response.body;
             let assistantOutputText = '';
             let schemaValidationFailed = false;
+            let responseGuardRules: string[] | null = null;
 
             if (!effectiveRequest.stream && response.headers.get('content-type')?.includes('application/json')) {
               try {
@@ -2481,6 +2610,24 @@ export class Eluvix {
                   }
                 }
 
+                // Response-side guard (audit H-8, decision D8): scan the
+                // completed reply in WARN mode — log + marker header, the
+                // body is returned unmodified this release. Placed after
+                // schema validation / fence repair and the output guard so
+                // it scans the final text the client actually receives.
+                if (assistantOutputText && this.config.promptGuard?.enabled) {
+                  const respScan = scanResponseContent(assistantOutputText, {
+                    promptGuard: this.config.promptGuard,
+                    privacyGuard: this.config.privacyGuard
+                  });
+                  if (respScan.detected) {
+                    responseGuardRules = respScan.rules;
+                    console.warn(
+                      `[Response Guard Warning] Upstream response matched guard rules (${respScan.rules.join(', ')}); returning as-is (warn mode). Content is never logged.`
+                    );
+                  }
+                }
+
                 rawData = JSON.stringify(parsed);
                 if (!schemaValidationFailed && cacheConfig?.enabled && cacheKey) {
                   this.setCachedResponse(cacheKey, parsed, lastUserQuery);
@@ -2507,6 +2654,10 @@ export class Eluvix {
                 responseBody = teeSseStreamForMemory(
                   responseBody as ReadableStream<Uint8Array>,
                   (fullAssistantText) => {
+                    // H-8: the assembled reply is scanned before write-back
+                    // even though the streamed response itself cannot be
+                    // un-sent — a poisoned reply must not enter memory.
+                    if (!this.assistantTextSafeForMemory(fullAssistantText)) return;
                     void providerRef
                       .remember(
                         {
@@ -2527,7 +2678,13 @@ export class Eluvix {
 
             globalCircuitBreaker.recordSuccess(upstream.id);
 
-            if (!effectiveRequest.stream && canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
+            if (
+              !effectiveRequest.stream &&
+              canRemember &&
+              assistantOutputText.trim().length > 0 &&
+              this.contextProvider &&
+              this.assistantTextSafeForMemory(assistantOutputText)
+            ) {
               void this.contextProvider
                 .remember(
                   {
@@ -2603,7 +2760,12 @@ export class Eluvix {
               responseBody = teeSseStreamForMemory(
                 responseBody as ReadableStream<Uint8Array>,
                 (fullAssistantText) => {
-                  if (providerRef) {
+                  // H-8 (adapted to the two-tee structure on new main):
+                  // this is the tee that actually carries non-antigravity
+                  // streams — the assembled reply must be scanned before
+                  // write-back here too, not only in the antigravity/cli
+                  // remember-only tee above.
+                  if (providerRef && this.assistantTextSafeForMemory(fullAssistantText)) {
                     void providerRef
                       .remember(
                         {
@@ -2663,6 +2825,10 @@ export class Eluvix {
               headers: new Headers(response.headers)
             });
             newResponse.headers.set('x-eluvix-upstream', upstream.id);
+            if (responseGuardRules) {
+              newResponse.headers.set('x-eluvix-guard', 'response-warn');
+              newResponse.headers.set('x-eluvix-guard-rules', responseGuardRules.join(','));
+            }
             newResponse.headers.set('x-eluvix-model', servedModel);
             if (cacheReadTokens > 0) {
               newResponse.headers.set('x-eluvix-cache-read-tokens', String(cacheReadTokens));
@@ -3238,6 +3404,9 @@ export class Eluvix {
     // Egress policy enforcement: a local-only configuration must never send
     // prompts to external services — not as the primary pick, and not as a
     // fallback when the local engines are down. Fail closed instead.
+    // Scope: this governs upstream selection only. The memory-provider
+    // recall channel and the provider-agent channel are separate paths
+    // the policy does not govern — see warnOnLocalOnlyEgressExceptions.
     if (this.config.egressPolicy === 'local-only') {
       const localUpstreams = matchingUpstreams.filter(u => isLocalUpstream(u));
       const excluded = matchingUpstreams.filter(u => !isLocalUpstream(u));
@@ -4484,7 +4653,7 @@ export class Eluvix {
     const fetchStartTime = Date.now();
 
     try {
-      const fetchFn = this.deps?.fetch || fetch;
+      const fetchFn = this.deps?.fetch || fetchWithSafeRedirects;
       const res = await fetchFn(url, {
         ...fetchOptions,
         signal: controller.signal

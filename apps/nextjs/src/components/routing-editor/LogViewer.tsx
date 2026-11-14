@@ -6,16 +6,24 @@ interface LogViewerProps {
 }
 
 export default function LogViewer({ containerName, onClose }: LogViewerProps) {
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>(() =>
+    containerName ? [`Connecting to log stream for ${containerName}...`] : []
+  );
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Show the connecting line (or clear the list) when the viewed container
+  // changes, during render instead of in the subscription effect below.
+  const [prevContainerName, setPrevContainerName] = useState<string | null>(containerName);
+  if (containerName !== prevContainerName) {
+    setPrevContainerName(containerName);
+    setLogs(containerName ? [`Connecting to log stream for ${containerName}...`] : []);
+  }
 
   useEffect(() => {
     if (!containerName) {
-      setLogs([]);
       return;
     }
 
-    setLogs([`Connecting to log stream for ${containerName}...`]);
     const eventSource = new EventSource(`/api/v1/docker/logs?container=${containerName}`);
 
     eventSource.onmessage = (event) => {

@@ -11,16 +11,28 @@ export default function KnowledgeBaseNode({ id, data }: { id: string; data: any 
   const [maxTokens, setMaxTokens] = useState(data?.maxTokens ?? 1000);
   const [citationMode, setCitationMode] = useState(data?.citationMode || 'inline-uris');
 
-  useEffect(() => {
-    if (data?.backend !== undefined) setBackend(data.backend);
-    if (data?.collectionUri !== undefined) setCollectionUri(data.collectionUri);
-    if (data?.topK !== undefined) setTopK(data.topK);
-    if (data?.maxTokens !== undefined) setMaxTokens(data.maxTokens);
-    if (data?.citationMode !== undefined) setCitationMode(data.citationMode);
-  }, [data?.backend, data?.collectionUri, data?.topK, data?.maxTokens, data?.citationMode]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.backend !== undefined) setBackend(data.backend);
+      if (data?.collectionUri !== undefined) setCollectionUri(data.collectionUri);
+      if (data?.topK !== undefined) setTopK(data.topK);
+      if (data?.maxTokens !== undefined) setMaxTokens(data.maxTokens);
+      if (data?.citationMode !== undefined) setCitationMode(data.citationMode);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

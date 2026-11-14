@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export interface CodexNodeData {
@@ -60,13 +60,17 @@ export default function CodexNode({ id, data }: { id: string; data: CodexNodeDat
     }
   }, [id, data, updateNodeData]);
 
-  // Ensure defaults are assigned on initial render
-  if (data) {
-    if (!data.model) data.model = model;
-    if (!data.environment) data.environment = environment;
-    if (!data.approvalMode) data.approvalMode = approvalMode;
-    if (!data.reasoningEffort) data.reasoningEffort = reasoningEffort;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.model) missing.model = model;
+    if (!data.environment) missing.environment = environment;
+    if (!data.approvalMode) missing.approvalMode = approvalMode;
+    if (!data.reasoningEffort) missing.reasoningEffort = reasoningEffort;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, model, environment, approvalMode, reasoningEffort]);
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;

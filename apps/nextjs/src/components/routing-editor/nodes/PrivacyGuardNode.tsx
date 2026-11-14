@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function PrivacyGuardNode({ id, data }: { id: string; data: any }) {
@@ -16,16 +16,25 @@ export default function PrivacyGuardNode({ id, data }: { id: string; data: any }
   const [redactionStyle, setRedactionStyle] = useState(data?.redactionStyle || 'token');
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; reading/writing it during render is
+  // what react-hooks/refs forbids. Callbacks below read the latest node data
+  // through this ref instead of closing over the `data` prop.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
-  // Ensure default structure
-  if (data) {
-    if (!data.action) data.action = action;
-    if (!data.redactionStyle) data.redactionStyle = redactionStyle;
-    if (data.auditLogging === undefined) data.auditLogging = true;
-    if (!data.whitelist) data.whitelist = [];
-    if (!data.customPatterns) data.customPatterns = [];
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.action) missing.action = action;
+    if (!data.redactionStyle) missing.redactionStyle = redactionStyle;
+    if (data.auditLogging === undefined) missing.auditLogging = true;
+    if (!data.whitelist) missing.whitelist = [];
+    if (!data.customPatterns) missing.customPatterns = [];
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, action, redactionStyle]);
 
   const syncData = useCallback((updated: any) => {
     if (dataRef.current) {

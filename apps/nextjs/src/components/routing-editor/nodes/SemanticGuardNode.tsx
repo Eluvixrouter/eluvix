@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function SemanticGuardNode({ id, data }: { id: string; data: any }) {
@@ -10,22 +10,28 @@ export default function SemanticGuardNode({ id, data }: { id: string; data: any 
   const [similarityThreshold, setSimilarityThreshold] = useState(data?.threshold ?? 0.82);
   const [action, setAction] = useState(data?.enforcementAction || data?.action || 'block');
 
-  // Ensure default structure
-  if (data) {
-    if (!data.routeName) data.routeName = routeName;
-    if (!data.encoder) data.encoder = encoder;
-    if (data.threshold === undefined) data.threshold = similarityThreshold;
-    if (!data.enforcementAction) data.enforcementAction = action;
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // routeName uses an `=== undefined` guard because its text input can be
+  // cleared to '' — a `!data.routeName` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (data.routeName === undefined) missing.routeName = routeName;
+    if (!data.encoder) missing.encoder = encoder;
+    if (data.threshold === undefined) missing.threshold = similarityThreshold;
+    if (!data.enforcementAction) missing.enforcementAction = action;
     if (!data.threatVectors) {
-      data.threatVectors = {
+      missing.threatVectors = {
         instructionOverride: true,
         danJailbreak: true,
         systemPromptLeak: true,
         obfuscation: true
       };
     }
-    if (!data.bannedPhrases) data.bannedPhrases = [];
-  }
+    if (!data.bannedPhrases) missing.bannedPhrases = [];
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, routeName, encoder, similarityThreshold, action]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

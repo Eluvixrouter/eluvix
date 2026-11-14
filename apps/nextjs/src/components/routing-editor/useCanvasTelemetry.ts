@@ -75,11 +75,19 @@ export function useCanvasTelemetry(enabled: boolean, pollIntervalMs = 8000) {
     }
   }, []);
 
+  // Initial refresh, kicked off from a timer callback rather than
+  // synchronously in the effect body (react-hooks/set-state-in-effect);
+  // the first snapshot still lands before the next paint.
   useEffect(() => {
     if (!enabled) return;
-    refresh();
-    const timer = setInterval(refresh, pollIntervalMs);
-    return () => clearInterval(timer);
+    const timer = setTimeout(() => {
+      refresh();
+    }, 0);
+    const interval = setInterval(refresh, pollIntervalMs);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
   }, [enabled, pollIntervalMs, refresh]);
 
   return { snapshot, refresh };

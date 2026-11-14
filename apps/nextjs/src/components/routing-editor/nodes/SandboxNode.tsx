@@ -12,17 +12,29 @@ export default function SandboxNode({ id, data }: { id: string; data: any }) {
   const [timeoutSec, setTimeoutSec] = useState(data?.timeoutSec ?? 30);
   const [memoryLimitMb, setMemoryLimitMb] = useState(data?.memoryLimitMb ?? 512);
 
-  useEffect(() => {
-    if (data?.runtime !== undefined) setRuntime(data.runtime);
-    if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
-    if (data?.image !== undefined) setImage(data.image);
-    if (data?.networkPolicy !== undefined) setNetworkPolicy(data.networkPolicy);
-    if (data?.timeoutSec !== undefined) setTimeoutSec(data.timeoutSec);
-    if (data?.memoryLimitMb !== undefined) setMemoryLimitMb(data.memoryLimitMb);
-  }, [data?.runtime, data?.endpoint, data?.image, data?.networkPolicy, data?.timeoutSec, data?.memoryLimitMb]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.runtime !== undefined) setRuntime(data.runtime);
+      if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
+      if (data?.image !== undefined) setImage(data.image);
+      if (data?.networkPolicy !== undefined) setNetworkPolicy(data.networkPolicy);
+      if (data?.timeoutSec !== undefined) setTimeoutSec(data.timeoutSec);
+      if (data?.memoryLimitMb !== undefined) setMemoryLimitMb(data.memoryLimitMb);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {
