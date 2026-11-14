@@ -131,6 +131,6 @@
     "autocannon": "^9.0.0",
     "openai": "^7.55.0",
     "typescript": "^5.0.0",
-    "vitest": "^2.1.9"
+    "vitest": "^5.1.0"
   }
 }
