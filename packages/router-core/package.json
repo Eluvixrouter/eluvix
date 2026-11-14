@@ -130,7 +130,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "autocannon": "^9.0.0",
     "openai": "^7.55.0",
-    "typescript": "^5.0.0",
+    "typescript": "^7.0.2",
     "vitest": "^2.1.9"
   }
 }
