@@ -3,7 +3,7 @@ import { exec } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
-import { isValidContainerName } from '@/lib/api-helpers';
+import { isValidContainerName, isAuthorizedAdmin } from '@/lib/api-helpers';
 import {
   DOCKER_SERVICE_CATALOG,
   type DockerServiceCategory,
@@ -29,6 +29,9 @@ function getProjectRoot(): string {
 }
 
 export async function POST(req: Request) {
+  if (!isAuthorizedAdmin(req)) {
+    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  }
   try {
     const rootDir = getProjectRoot();
     console.log(`[Docker Up] Executing hardware detection & modular docker compose up in ${rootDir}`);
