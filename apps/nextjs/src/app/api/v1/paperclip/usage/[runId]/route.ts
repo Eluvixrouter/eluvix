@@ -6,12 +6,13 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(
   req: Request,
-  context: { params: { runId: string } }
+  context: { params: Promise<{ runId: string }> }
 ) {
   const auth = await requirePaperclipCaller(req);
   if (!auth.ok) return auth.response;
 
-  const runId = decodeURIComponent(context.params?.runId || '').trim();
+  const resolvedParams = await context.params;
+  const runId = decodeURIComponent(resolvedParams?.runId || '').trim();
   if (!runId || !/^[A-Za-z0-9_.:-]{1,128}$/.test(runId)) {
     return NextResponse.json(
       { error: { message: 'Invalid runId parameter.', type: 'invalid_request_error' } },

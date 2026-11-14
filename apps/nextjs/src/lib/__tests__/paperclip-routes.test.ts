@@ -161,7 +161,7 @@ describe('Paperclip Next.js Routes & Editor Bridge', () => {
     const usageReq = new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/usage/run-next-1', {
       headers: { Authorization: `Bearer ${paperclipToken}` },
     });
-    const usageRes = await getUsage(usageReq, { params: { runId: 'run-next-1' } });
+    const usageRes = await getUsage(usageReq, { params: Promise.resolve({ runId: 'run-next-1' }) });
     expect(usageRes.status).toBe(200);
     const usage = await usageRes.json();
     expect(usage.requests).toBe(1);
