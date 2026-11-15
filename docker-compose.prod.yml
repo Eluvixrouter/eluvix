@@ -12,9 +12,17 @@ services:
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3588}
       - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      # Persist real app state: the dashboard keeps config.json, auth.json,
+      # layouts and telemetry under $XDG_CONFIG_HOME/eluvix (see
+      # packages/router-core/src/paths.ts). Pointing XDG_CONFIG_HOME at the
+      # mounted volume makes ./data/eluvix/ the durable home. (The previous
+      # mount, ./data:/app/apps/nextjs/data, pointed at a path the app never
+      # reads, so nothing actually persisted.)
+      - XDG_CONFIG_HOME=/data
     volumes:
-      # Mount the sqlite DB for chat history & metrics persistence
-      - ./data:/app/apps/nextjs/data
+      - ./data:/data
+    networks:
+      - eluvix-net
     restart: unless-stopped
     depends_on:
       - switchyard
@@ -27,4 +35,14 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       - NODE_ENV=production
+      # The sim's /v1/config endpoint refuses all requests unless a token is
+      # set (fail closed). Without it, config reads/writes return 503; the
+      # sim still serves canned chat completions. Never commit a real token.
+      - SWITCHYARD_AUTH_TOKEN=${SWITCHYARD_AUTH_TOKEN:-}
+    networks:
+      - eluvix-net
     restart: unless-stopped
+
+networks:
+  eluvix-net:
+    driver: bridge

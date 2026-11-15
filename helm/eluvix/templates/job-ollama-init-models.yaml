@@ -24,6 +24,11 @@ spec:
         - name: ollama-pull
           image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
           imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: OLLAMA_HOST
               value: "http://{{ include "eluvix.fullname" . }}-ollama:{{ .Values.ollama.service.port }}"

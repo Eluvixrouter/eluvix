@@ -21,22 +21,28 @@ export default function SpeculativeCascadeNode({ id, data }: { id: string; data:
     typeof data?.shadowSampleRate === 'number' ? data.shadowSampleRate : 0.05
   );
 
-  useEffect(() => {
-    if (typeof data?.confidenceThreshold === 'number') setConfidenceThreshold(data.confidenceThreshold);
-    if (typeof data?.maxDraftLatencyMs === 'number') setMaxDraftLatencyMs(data.maxDraftLatencyMs);
-    if (data?.validateJsonSchema !== undefined) setValidateJsonSchema(data.validateJsonSchema !== false);
-    if (data?.validateCodeFences !== undefined) setValidateCodeFences(data.validateCodeFences !== false);
-    if (typeof data?.shadowSampleRate === 'number') setShadowSampleRate(data.shadowSampleRate);
-  }, [
-    data?.confidenceThreshold,
-    data?.maxDraftLatencyMs,
-    data?.validateJsonSchema,
-    data?.validateCodeFences,
-    data?.shadowSampleRate,
-  ]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (typeof data?.confidenceThreshold === 'number') setConfidenceThreshold(data.confidenceThreshold);
+      if (typeof data?.maxDraftLatencyMs === 'number') setMaxDraftLatencyMs(data.maxDraftLatencyMs);
+      if (data?.validateJsonSchema !== undefined) setValidateJsonSchema(data.validateJsonSchema !== false);
+      if (data?.validateCodeFences !== undefined) setValidateCodeFences(data.validateCodeFences !== false);
+      if (typeof data?.shadowSampleRate === 'number') setShadowSampleRate(data.shadowSampleRate);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: Record<string, any>) => {

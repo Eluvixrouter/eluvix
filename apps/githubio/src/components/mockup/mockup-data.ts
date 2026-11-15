@@ -475,13 +475,13 @@ Key fixes:
     title: 'Medical Summary with Patient SSN & API Keys',
     category: 'Privacy Shield',
     rawPrompt: `Patient John Doe (SSN: 342-88-9124, DOB: 04/12/1982) was diagnosed with Acute Bronchitis. 
-Please sync this to internal health API using key sk-live-99238472910384719284910238471.`,
+Please sync this to internal health API using key sk-example-do-not-use-000000000000.`,
     maskedPrompt: `Patient [PERSON_NAME_1] (SSN: [REDACTED_SSN_1], DOB: [DATE_OF_BIRTH_1]) was diagnosed with Acute Bronchitis. 
 Please sync this to internal health API using key [REDACTED_API_KEY_1].`,
     sanitizationDetails: [
       'Masked Person: "John Doe" -> [PERSON_NAME_1]',
       'Redacted SSN: "342-88-9124" -> [REDACTED_SSN_1] (SHA: 8f3c7a10...)',
-      'Redacted Secret: "sk-live-99..." -> [REDACTED_API_KEY_1] (SHA: e491bc02...)',
+      'Redacted Secret: "sk-example-..." -> [REDACTED_API_KEY_1] (SHA: e491bc02...)',
       'Airgapped Policy Triggered: Request forced to local sovereign hardware.',
     ],
     chosenRoute: 'Local Ollama Engine (Airgapped)',

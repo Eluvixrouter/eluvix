@@ -36,6 +36,7 @@ export default function Home() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [copiedSnippet, setCopiedSnippet] = useState(false);
   const [billamaKey, setBillamaKey] = useState('');
+  const [billamaKeyConfigured, setBillamaKeyConfigured] = useState(false);
   const [detectingMap, setDetectingMap] = useState<Record<string, boolean>>({});
   const [detectResults, setDetectResults] = useState<Record<string, { count: number; message: string; isError?: boolean }>>({});
   const [isDetectingAll, setIsDetectingAll] = useState(false);
@@ -63,8 +64,10 @@ export default function Home() {
         if (data && Array.isArray(data.upstreams)) {
           setConfig(data);
           const billama = data.upstreams.find((u) => u.type === 'billama' || u.id === 'billama-cloud');
-          if (billama && billama.apiKey) {
-            setBillamaKey(billama.apiKey);
+          // The config API redacts apiKey to a boolean flag; the stored
+          // key is kept server-side when the field is saved empty.
+          if (billama && (billama as any).apiKeyConfigured) {
+            setBillamaKeyConfigured(true);
           }
         }
       })
@@ -764,7 +767,7 @@ export default function Home() {
                   type="password"
                   value={billamaKey}
                   onChange={(e) => setBillamaKey(e.target.value)}
-                  placeholder="sk-bl-..."
+                  placeholder={billamaKeyConfigured ? '•••••••• configured — leave blank to keep the stored key' : 'sk-bl-...'}
                   className="w-full px-3 py-2 bg-slate-950/90 border border-blue-500/40 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-400 transition"
                 />
                 <button

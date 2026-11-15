@@ -39,22 +39,33 @@ export default function AudioVoiceNode({ id, data }: { id: string; data: any }) 
   const [expanded, setExpanded] = useState<boolean>(false);
 
   const dataRef = useRef(data);
-  dataRef.current = data;
-
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
   useEffect(() => {
-    if (!data) return;
-    setEndpoint(data.endpoint || 'http://localhost:8005');
-    setPriority(data.priority ?? 20);
-    if (data.audio) {
-      setMode(data.audio.mode || 'both');
-      setSttPreset(data.audio.sttBackend || data.audio.sttPreset || 'speaches');
-      setTtsPreset(data.audio.ttsBackend || data.audio.ttsPreset || 'kokoro');
-      setTtsEndpoint(data.audio.ttsEndpoint || 'http://localhost:8880');
-      setDefaultVoice(data.audio.defaultVoice || 'af_heart');
-      setResponseFormat(data.audio.responseFormat || 'mp3');
-      setScrubTranscriptPii(data.audio.scrubTranscriptPii ?? true);
+    dataRef.current = data;
+  });
+
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      setEndpoint(data.endpoint || 'http://localhost:8005');
+      setPriority(data.priority ?? 20);
+      if (data.audio) {
+        setMode(data.audio.mode || 'both');
+        setSttPreset(data.audio.sttBackend || data.audio.sttPreset || 'speaches');
+        setTtsPreset(data.audio.ttsBackend || data.audio.ttsPreset || 'kokoro');
+        setTtsEndpoint(data.audio.ttsEndpoint || 'http://localhost:8880');
+        setDefaultVoice(data.audio.defaultVoice || 'af_heart');
+        setResponseFormat(data.audio.responseFormat || 'mp3');
+        setScrubTranscriptPii(data.audio.scrubTranscriptPii ?? true);
+      }
     }
-  }, [data]);
+  }
 
   const syncData = useCallback(
     (patch: Record<string, any>) => {

@@ -28,7 +28,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
   try {
-    if (req.method === 'GET' && req.url === '/health') {
+    // Match on the pathname, not the raw URL: /health?anything must not 404.
+    if (req.method === 'GET' && (req.url === '/health' || req.url.startsWith('/health?'))) {
       res.end(JSON.stringify({ status: 'ok', service: 'eluvix-lightrag', indexed: docs.length }));
       return;
     }
@@ -42,12 +43,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const texts = Array.isArray(body.texts) ? body.texts : body.text ? [body.text] : [];
+      // Report only what was actually indexed: empty strings are skipped
+      // below, so reporting texts.length overstated the count.
+      let indexed = 0;
       for (const t of texts) {
         if (typeof t === 'string' && t.trim()) {
           docs.push({ text: t.trim(), source: body.file_source || 'lightrag://local', createdAt: Date.now() });
+          indexed++;
         }
       }
-      res.end(JSON.stringify({ status: 'success', count: texts.length }));
+      res.end(JSON.stringify({ status: 'success', count: indexed }));
       return;
     }
     if (req.method === 'POST' && req.url === '/query') {

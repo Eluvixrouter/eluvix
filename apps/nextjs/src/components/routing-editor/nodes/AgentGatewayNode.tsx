@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import NodeHealthIndicator from '../NodeHealthIndicator';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
@@ -12,14 +12,20 @@ export default function AgentGatewayNode({ id, data }: { id: string; data: any }
   const [toolTimeoutMs, setToolTimeoutMs] = useState<number>(data?.toolTimeoutMs ?? 10000);
   const [sanitizeOutput, setSanitizeOutput] = useState<boolean>(data?.sanitizeToolOutput !== false);
 
-  // Ensure default structure
-  if (data) {
-    if (!data.accessPolicy) data.accessPolicy = accessPolicy;
-    if (!data.mcpEndpoint) data.mcpEndpoint = mcpEndpoint;
-    if (data.enableNativeTools === undefined) data.enableNativeTools = enableNativeTools;
-    if (data.toolTimeoutMs === undefined) data.toolTimeoutMs = toolTimeoutMs;
-    if (data.sanitizeToolOutput === undefined) data.sanitizeToolOutput = sanitizeOutput;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // mcpEndpoint uses an `=== undefined` guard because the text input can be
+  // cleared to '' — a `!data.mcpEndpoint` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.accessPolicy) missing.accessPolicy = accessPolicy;
+    if (data.mcpEndpoint === undefined) missing.mcpEndpoint = mcpEndpoint;
+    if (data.enableNativeTools === undefined) missing.enableNativeTools = enableNativeTools;
+    if (data.toolTimeoutMs === undefined) missing.toolTimeoutMs = toolTimeoutMs;
+    if (data.sanitizeToolOutput === undefined) missing.sanitizeToolOutput = sanitizeOutput;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, accessPolicy, mcpEndpoint, enableNativeTools, toolTimeoutMs, sanitizeOutput]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

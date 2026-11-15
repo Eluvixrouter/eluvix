@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { detectUpstreamModelDetails, inspectRamalamaCli, UpstreamConfig } from '@eluvix/router-core';
-import { getRouter, getConfig, saveConfig } from '@/lib/router';
+import { getRouter, getConfig, saveConfig, redactConfigForApi } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 import dns from 'node:dns/promises';
@@ -65,17 +65,14 @@ export async function POST(req: Request) {
       }
 
       const returnedConfig = getConfig();
-      if (caller.role !== 'admin') {
-        returnedConfig.upstreams = returnedConfig.upstreams.map(u => ({
-          ...u,
-          apiKey: u.apiKey ? '[REDACTED]' : undefined,
-        }));
-      }
 
       return NextResponse.json({
         success: true,
         detected: detectedMap,
-        config: returnedConfig
+        // Admins see the raw config; everyone else gets the redacted
+        // shape (audit M-29: apiKeyConfigured flags, never the keys).
+        // redactConfigForApi clones, so the live config is never mutated.
+        config: caller.role === 'admin' ? returnedConfig : redactConfigForApi(returnedConfig)
       });
     }
 

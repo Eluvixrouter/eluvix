@@ -4,7 +4,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getOrCreateAuthConfig, getAppPaths, getCachedAntigravityModels } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
-import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,10 +27,8 @@ function resolveHostname(): string {
   return raw;
 }
 
-export async function GET(req: Request) {
+export async function GET() {
   try {
-    const identity = await resolveCallerIdentity(req);
-    const isAdmin = identity.ok && identity.role === 'admin';
     const auth = getOrCreateAuthConfig();
     const hostname = resolveHostname();
     const httpsPort = parseInt(process.env.PORT || '3588', 10);
@@ -149,7 +146,9 @@ export async function GET(req: Request) {
           rootCaPath
         },
         auth: {
-          adminPassword: isAdmin ? auth.adminPassword : '[REDACTED]',
+          // The admin password is never returned (audit L-1). The auth
+          // file path stays so the page can tell the operator where the
+          // credential lives; manual setup snippets use a placeholder.
           authFile: auth.authFile
         },
         clients: {

@@ -82,30 +82,41 @@ export default function ComfyUINode({ id, data }: { id: string; data: any }) {
   );
 
   const dataRef = useRef(data);
-  dataRef.current = data;
-
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
   useEffect(() => {
-    if (!data) return;
-    setEndpoint(data.endpoint || 'http://localhost:8188');
-    setPriority(data.priority ?? 22);
-    setSelectedModel(data.selectedModel || data.comfyui?.checkpoint || '*');
-    if (Array.isArray(data.models)) setModels(data.models);
-    if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
-    if (data.comfyui) {
-      setWorkflowPreset(data.comfyui.workflowPreset || 'flux-txt2img');
-      setSteps(data.comfyui.steps ?? 20);
-      setCfg(data.comfyui.cfg ?? 3.5);
-      setSamplerName(data.comfyui.samplerName || 'euler');
-      setScheduler(data.comfyui.scheduler || 'simple');
-      setWidth(data.comfyui.width ?? 1024);
-      setHeight(data.comfyui.height ?? 1024);
-      setVramMode(data.comfyui.vramMode || 'normalvram');
-      setReserveVramGb(data.comfyui.reserveVramGb ?? 4);
-      setPostProcessArtCraftApp(data.comfyui.postProcessArtCraftApp || '');
-      setLoopbackEluvixUrl(data.comfyui.loopbackEluvixUrl || 'http://127.0.0.1:3588/v1');
-      setMcpEnabled(data.comfyui.mcpEnabled ?? true);
+    dataRef.current = data;
+  });
+
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      setEndpoint(data.endpoint || 'http://localhost:8188');
+      setPriority(data.priority ?? 22);
+      setSelectedModel(data.selectedModel || data.comfyui?.checkpoint || '*');
+      if (Array.isArray(data.models)) setModels(data.models);
+      if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
+      if (data.comfyui) {
+        setWorkflowPreset(data.comfyui.workflowPreset || 'flux-txt2img');
+        setSteps(data.comfyui.steps ?? 20);
+        setCfg(data.comfyui.cfg ?? 3.5);
+        setSamplerName(data.comfyui.samplerName || 'euler');
+        setScheduler(data.comfyui.scheduler || 'simple');
+        setWidth(data.comfyui.width ?? 1024);
+        setHeight(data.comfyui.height ?? 1024);
+        setVramMode(data.comfyui.vramMode || 'normalvram');
+        setReserveVramGb(data.comfyui.reserveVramGb ?? 4);
+        setPostProcessArtCraftApp(data.comfyui.postProcessArtCraftApp || '');
+        setLoopbackEluvixUrl(data.comfyui.loopbackEluvixUrl || 'http://127.0.0.1:3588/v1');
+        setMcpEnabled(data.comfyui.mcpEnabled ?? true);
+      }
     }
-  }, [data]);
+  }
 
   const syncData = useCallback(
     (patch: Record<string, any>) => {

@@ -27,6 +27,7 @@ import { forwardOpenHandsHarness } from './openhands.js';
 import { forwardPlandexHarness } from './plandex.js';
 import { forwardSweAgentHarness } from './swe-agent.js';
 import { forwardTrueForgeHarness } from './trueforge.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 import type { HarnessKind } from './types.js';
 
 /**
@@ -136,7 +137,7 @@ export async function forwardHarnessRequest(
   }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithSafeRedirects(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(request),

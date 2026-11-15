@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export interface ClaudeCodeNodeData {
@@ -65,13 +65,17 @@ export default function ClaudeCodeNode({ id, data }: { id: string; data: ClaudeC
     }
   }, [id, data, updateNodeData]);
 
-  // Ensure defaults are assigned on initial render
-  if (data) {
-    if (!data.model) data.model = model;
-    if (!data.permissionMode) data.permissionMode = permissionMode;
-    if (data.extendedThinking === undefined) data.extendedThinking = extendedThinking;
-    if (data.thinkingBudget === undefined) data.thinkingBudget = thinkingBudget;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.model) missing.model = model;
+    if (!data.permissionMode) missing.permissionMode = permissionMode;
+    if (data.extendedThinking === undefined) missing.extendedThinking = extendedThinking;
+    if (data.thinkingBudget === undefined) missing.thinkingBudget = thinkingBudget;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, model, permissionMode, extendedThinking, thinkingBudget]);
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;

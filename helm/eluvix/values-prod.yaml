@@ -1,0 +1,91 @@
+# Production values overlay — READ THIS FIRST.
+#
+# The chart's default values.yaml is labeled `global.environment: production`
+# but is really a local-dev/k3d starting point: three of its five components
+# are canned-response SIMULATORS, and all five image names are local-only
+# (they exist in no registry; only scripts/k3d-cluster.sh's local build +
+# `k3d image import` makes them resolvable). Installing the chart with
+# defaults outside that script therefore yields a broken or misleadingly
+# fake "production" stack.
+#
+# This overlay is the production starting point. It does NOT make the sims
+# real — nothing in this repo can, because no real Switchyard, agent-router,
+# or agentgateway image exists here. Before any real production use you MUST:
+#
+#   1. Replace the simulator images with real service images:
+#        - switchyard:     SIMULATOR (docker/switchyard) — no real image in repo
+#        - agentRouter:    SIMULATOR (docker/agent-router) — no real image in repo
+#        - agentGateway:   SIMULATOR (docker/agentgateway) — no real image in repo
+#        - nextjs:         REAL dashboard (apps/nextjs) — build and push it
+#        - ollama:         REAL upstream image (ollama/ollama) — pin a digest,
+#                          do not ship `latest`
+#   2. Publish every image to a registry you control and set repository/tag
+#      below to the published coordinates with pullPolicy IfNotPresent (or
+#      Always for mutable tags). Local-only names will ImagePullBackOff.
+#   3. Configure ingress TLS (values.yaml ships `tls: []` and the traefik
+#      `web` entrypoint — plain HTTP) and set switchyard.authToken (see
+#      below): the ingress routes /v1 to the switchyard service, and the
+#      sim's /v1/config endpoint refuses all requests while the token is
+#      empty, which is the safe default.
+#   4. Check the services the chart does NOT cover (see helm/eluvix/README.md):
+#      memory (openviking, lightrag, graphiti), harnesses (trueforge,
+#      opencode, sandbox), and inference (vllm, vllm-sr, sglang) have no
+#      in-cluster equivalent; the chart's routing ConfigMap lists only the
+#      ollama upstream, so Helm dashboards silently lack those features.
+#
+# Usage: helm upgrade --install eluvix ./helm/eluvix -f ./helm/eluvix/values-prod.yaml
+# (plus --set overrides for image repositories, tags, and authToken).
+# values-local.yaml remains the file for the k3d local-dev flow.
+
+global:
+  platform: kubernetes
+  environment: production
+
+switchyard:
+  # SIMULATOR — replace image.repository/tag with a real Switchyard image
+  # before production use; see the header comment above.
+  image:
+    repository: eluvix-switchyard
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Required for /v1/config to answer at all (the sim refuses with 503
+  # while empty). Pass via --set, never commit a real token here.
+  authToken: ""
+
+nextjs:
+  # REAL dashboard — build apps/nextjs, push it, and point here.
+  image:
+    repository: eluvix-nextjs
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+
+ollama:
+  # REAL upstream image — pin a digest in production, not `latest`.
+  image:
+    repository: ollama/ollama
+    tag: latest
+    pullPolicy: IfNotPresent
+
+agentRouter:
+  # SIMULATOR — replace image.repository/tag with a real agent-router image
+  # before production use; see the header comment above.
+  image:
+    repository: eluvix-agent-router
+    tag: latest
+    pullPolicy: IfNotPresent
+
+agentGateway:
+  # SIMULATOR — replace image.repository/tag with a real agentgateway image
+  # before production use; see the header comment above.
+  image:
+    repository: eluvix-agentgateway
+    tag: latest
+    pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  # Production ingress MUST terminate TLS; the default chart ships tls: []
+  # on the traefik `web` (plain HTTP) entrypoint. Add your tls secret here.
+  tls: []

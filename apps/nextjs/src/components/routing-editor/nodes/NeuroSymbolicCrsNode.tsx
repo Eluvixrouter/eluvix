@@ -30,28 +30,31 @@ export default function NeuroSymbolicCrsNode({ id, data }: { id: string; data: a
     data?.sampleShadowByte || '0xfa'
   );
 
-  useEffect(() => {
-    if (data?.crsPolicy !== undefined) setCrsPolicy(data.crsPolicy);
-    if (data?.slicerMode !== undefined) setSlicerMode(data.slicerMode);
-    if (data?.sanitizerArch !== undefined) setSanitizerArch(data.sanitizerArch);
-    if (data?.targetSink !== undefined) setTargetSink(data.targetSink);
-    if (data?.stallThresholdSeconds !== undefined) setStallThresholdSeconds(data.stallThresholdSeconds);
-    if (data?.defaultBitWidth !== undefined) setDefaultBitWidth(data.defaultBitWidth);
-    if (data?.sampleFaultAddr !== undefined) setSampleFaultAddr(data.sampleFaultAddr);
-    if (data?.sampleShadowByte !== undefined) setSampleShadowByte(data.sampleShadowByte);
-  }, [
-    data?.crsPolicy,
-    data?.slicerMode,
-    data?.sanitizerArch,
-    data?.targetSink,
-    data?.stallThresholdSeconds,
-    data?.defaultBitWidth,
-    data?.sampleFaultAddr,
-    data?.sampleShadowByte
-  ]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.crsPolicy !== undefined) setCrsPolicy(data.crsPolicy);
+      if (data?.slicerMode !== undefined) setSlicerMode(data.slicerMode);
+      if (data?.sanitizerArch !== undefined) setSanitizerArch(data.sanitizerArch);
+      if (data?.targetSink !== undefined) setTargetSink(data.targetSink);
+      if (data?.stallThresholdSeconds !== undefined) setStallThresholdSeconds(data.stallThresholdSeconds);
+      if (data?.defaultBitWidth !== undefined) setDefaultBitWidth(data.defaultBitWidth);
+      if (data?.sampleFaultAddr !== undefined) setSampleFaultAddr(data.sampleFaultAddr);
+      if (data?.sampleShadowByte !== undefined) setSampleShadowByte(data.sampleShadowByte);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

@@ -1,9 +1,13 @@
 import { NextResponse } from 'next/server';
-import { getConfig, saveConfig, ConfigValidationError } from '@/lib/router';
+import { getConfig, saveConfig, redactConfigForApi, ConfigValidationError } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
+// Non-admin responses use redactConfigForApi (audit M-29): upstream/memory
+// apiKeys leave this process only as boolean "configured" flags. Admins
+// see the raw config (server-side use). saveConfig() preserves the stored
+// key when a redacted config is posted back.
 export async function GET(req: Request) {
   const identity = await resolveCallerIdentity(req);
   const isAdmin = identity.ok && identity.role === 'admin';
@@ -11,18 +15,7 @@ export async function GET(req: Request) {
   if (isAdmin) {
     return NextResponse.json(rawConfig);
   }
-  const sanitized = {
-    ...rawConfig,
-    upstreams: rawConfig.upstreams?.map(u => ({
-      ...u,
-      apiKey: u.apiKey ? '[REDACTED]' : undefined
-    })),
-    memory: rawConfig.memory ? {
-      ...rawConfig.memory,
-      apiKey: rawConfig.memory.apiKey ? '[REDACTED]' : undefined
-    } : undefined
-  };
-  return NextResponse.json(sanitized);
+  return NextResponse.json(redactConfigForApi(rawConfig));
 }
 
 export async function POST(req: Request) {
@@ -50,18 +43,7 @@ export async function POST(req: Request) {
     if (isAdmin) {
       return NextResponse.json({ success: true, config: updated });
     }
-    const sanitized = {
-      ...updated,
-      upstreams: updated.upstreams?.map(u => ({
-        ...u,
-        apiKey: u.apiKey ? '[REDACTED]' : undefined
-      })),
-      memory: updated.memory ? {
-        ...updated.memory,
-        apiKey: updated.memory.apiKey ? '[REDACTED]' : undefined
-      } : undefined
-    };
-    return NextResponse.json({ success: true, config: sanitized });
+    return NextResponse.json({ success: true, config: redactConfigForApi(updated) });
   } catch (error) {
     const err = error as Error;
     const isValidationError = err instanceof ConfigValidationError || err.message.startsWith('Invalid');

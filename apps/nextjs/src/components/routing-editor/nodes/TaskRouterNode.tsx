@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import NodeHealthIndicator from '../NodeHealthIndicator';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
@@ -26,13 +26,17 @@ export default function TaskRouterNode({ id, data }: { id: string; data: any }) 
   const [confidenceThreshold, setConfidenceThreshold] = useState(data?.confidenceThreshold ?? 0.75);
   const routes: TaskIntentRoute[] = data?.routes || DEFAULT_INTENT_ROUTES;
 
-  // Ensure default structure
-  if (data) {
-    if (!data.preference) data.preference = preference;
-    if (!data.classificationEngine) data.classificationEngine = engine;
-    if (data.confidenceThreshold === undefined) data.confidenceThreshold = confidenceThreshold;
-    if (!data.routes) data.routes = routes;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.preference) missing.preference = preference;
+    if (!data.classificationEngine) missing.classificationEngine = engine;
+    if (data.confidenceThreshold === undefined) missing.confidenceThreshold = confidenceThreshold;
+    if (!data.routes) missing.routes = DEFAULT_INTENT_ROUTES;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, preference, engine, confidenceThreshold]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

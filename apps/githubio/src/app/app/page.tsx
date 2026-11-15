@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { MockupDashboard } from '@/components/mockup/MockupDashboard';
 import { MockupEditor } from '@/components/mockup/MockupEditor';
@@ -21,17 +21,17 @@ const TABS: { id: AppTab; label: string; icon: string; badge?: string }[] = [
 ];
 
 export default function AppMockupPage() {
-  const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
-
-  // Handle URL hash on mount (e.g. /app#editor or /app#playground)
-  useEffect(() => {
+  // Derive the initial tab from the URL hash during render (e.g. /app#editor
+  // or /app#playground) instead of syncing it through a mount effect.
+  const [activeTab, setActiveTab] = useState<AppTab>(() => {
     if (typeof window !== 'undefined') {
       const hash = window.location.hash.replace('#', '') as AppTab;
       if (TABS.some((t) => t.id === hash)) {
-        setActiveTab(hash);
+        return hash;
       }
     }
-  }, []);
+    return 'dashboard';
+  });
 
   function handleSelectTab(tabId: AppTab) {
     setActiveTab(tabId);

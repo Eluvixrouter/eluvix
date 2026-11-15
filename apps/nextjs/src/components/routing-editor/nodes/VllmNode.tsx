@@ -65,34 +65,47 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
   );
 
   const dataRef = useRef(data);
-  dataRef.current = data;
-
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids. Callbacks below read the latest node data
+  // through this ref instead of closing over the `data` prop, so their
+  // identity stays stable while still seeing current values.
   useEffect(() => {
-    if (!data) return;
-    setEndpoint(data.endpoint || 'http://localhost:8000');
-    setPriority(data.priority ?? 22);
-    setVisionCapable(data.visionCapable ?? false);
-    setSelectedModel(data.selectedModel || '*');
-    if (Array.isArray(data.models)) setModels(data.models);
-    if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
-    setDisaggregationRole(
-      data.disaggregation?.role === 'pd-pair' ? 'pd-disaggregated' : (data.disaggregation?.role || 'colocated')
-    );
-    setKvConnector(
-      data.disaggregation?.kvConnector || (data.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
-    );
-    setKvCacheDtype(data.disaggregation?.kvCacheDtype || 'fp8_e4m3');
-    setTensorParallelSize(data.disaggregation?.tensorParallelSize ?? 4);
-    setRdmaDevice(data.disaggregation?.rdmaDevice || 'mlx5_0:1');
-    setDecodeEndpoint(data.disaggregation?.decodeEndpoint || 'http://localhost:8200');
-    setConfidentialEnabled(Boolean(data.confidential?.enabled));
-    setConfidentialArch(data.confidential?.architecture || 'sev-snp-h100-cc');
-    setQuantFormat(data.quantization?.format || 'fp8_e4m3');
-    setOutlierMitigation(data.quantization?.outlierMitigation || 'hadamard-quarot');
-    setFabricTopology(data.fabric?.topology || 'rail-dlb-oooddp');
-    setSrv6UsidCarrier(data.fabric?.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::');
-    setAttentionBackend(data.attentionKernel?.backend || 'fa3-fp8-hadamard');
-  }, [data]);
+    dataRef.current = data;
+  });
+
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      setEndpoint(data.endpoint || 'http://localhost:8000');
+      setPriority(data.priority ?? 22);
+      setVisionCapable(data.visionCapable ?? false);
+      setSelectedModel(data.selectedModel || '*');
+      if (Array.isArray(data.models)) setModels(data.models);
+      if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
+      setDisaggregationRole(
+        data.disaggregation?.role === 'pd-pair' ? 'pd-disaggregated' : (data.disaggregation?.role || 'colocated')
+      );
+      setKvConnector(
+        data.disaggregation?.kvConnector || (data.disaggregation?.role && data.disaggregation.role !== 'colocated' ? 'NixlConnector' : 'none')
+      );
+      setKvCacheDtype(data.disaggregation?.kvCacheDtype || 'fp8_e4m3');
+      setTensorParallelSize(data.disaggregation?.tensorParallelSize ?? 4);
+      setRdmaDevice(data.disaggregation?.rdmaDevice || 'mlx5_0:1');
+      setDecodeEndpoint(data.disaggregation?.decodeEndpoint || 'http://localhost:8200');
+      setConfidentialEnabled(Boolean(data.confidential?.enabled));
+      setConfidentialArch(data.confidential?.architecture || 'sev-snp-h100-cc');
+      setQuantFormat(data.quantization?.format || 'fp8_e4m3');
+      setOutlierMitigation(data.quantization?.outlierMitigation || 'hadamard-quarot');
+      setFabricTopology(data.fabric?.topology || 'rail-dlb-oooddp');
+      setSrv6UsidCarrier(data.fabric?.srv6UsidCarrier || 'fcbb:bb00:0202:0104:0040::');
+      setAttentionBackend(data.attentionKernel?.backend || 'fa3-fp8-hadamard');
+    }
+  }
 
   const syncData = useCallback((updates: Record<string, any>) => {
     if (dataRef.current) {
@@ -110,7 +123,7 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: id || data?.id || 'vllm',
+          id: id || dataRef.current?.id || 'vllm',
           name: 'vLLM Engine',
           type: 'vllm',
           endpoint: targetEndpoint
@@ -148,10 +161,17 @@ export default function VllmNode({ id, data }: { id: string; data: any }) {
       setStatus('offline');
       syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
     }
-  }, [endpoint, id, data?.id, syncData]);
+  }, [endpoint, id, syncData]);
 
+  // Initial detection. The probe is kicked off from a timer callback rather
+  // than synchronously in the effect body, so no setState happens
+  // synchronously in the effect. A zero-delay timer starts the probe before
+  // the next paint, so the 'checking' feedback is unchanged.
   useEffect(() => {
-    detectModels();
+    const timer = setTimeout(() => {
+      void detectModels();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [detectModels]);
 
   const handleEndpointChange = (e: React.ChangeEvent<HTMLInputElement>) => {

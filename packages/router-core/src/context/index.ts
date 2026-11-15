@@ -61,7 +61,7 @@ export function createContextProvider(config?: MemoryConfig): ContextProvider {
   if (providerType === 'supermemory') {
     return new SupermemoryContextProvider(config);
   }
-  return new BuiltinContextProvider();
+  return new BuiltinContextProvider(config);
 }
 
 export function formatMemorySystemBlock(blocks: RecallBlock[], providerId: string): string {

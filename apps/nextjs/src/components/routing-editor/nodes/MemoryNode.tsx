@@ -15,26 +15,30 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
   const [allowCloudEgress, setAllowCloudEgress] = useState(Boolean(data?.allowCloudEgress));
   const [cloudMode, setCloudMode] = useState(data?.cloudMode || 'filter');
 
-  useEffect(() => {
-    if (data?.provider !== undefined) setProvider(data.provider);
-    if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
-    if (data?.recallBudgetTokens !== undefined) setRecallBudgetTokens(data.recallBudgetTokens);
-    if (data?.readingLevel !== undefined) setReadingLevel(data.readingLevel);
-    if (data?.writeBack !== undefined) setWriteBack(data.writeBack !== false);
-    if (data?.allowCloudEgress !== undefined) setAllowCloudEgress(Boolean(data.allowCloudEgress));
-    if (data?.cloudMode !== undefined) setCloudMode(data.cloudMode);
-  }, [
-    data?.provider,
-    data?.endpoint,
-    data?.recallBudgetTokens,
-    data?.readingLevel,
-    data?.writeBack,
-    data?.allowCloudEgress,
-    data?.cloudMode
-  ]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.provider !== undefined) setProvider(data.provider);
+      if (data?.endpoint !== undefined) setEndpoint(data.endpoint);
+      if (data?.recallBudgetTokens !== undefined) setRecallBudgetTokens(data.recallBudgetTokens);
+      if (data?.readingLevel !== undefined) setReadingLevel(data.readingLevel);
+      if (data?.writeBack !== undefined) setWriteBack(data.writeBack !== false);
+      if (data?.allowCloudEgress !== undefined) setAllowCloudEgress(Boolean(data.allowCloudEgress));
+      if (data?.cloudMode !== undefined) setCloudMode(data.cloudMode);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

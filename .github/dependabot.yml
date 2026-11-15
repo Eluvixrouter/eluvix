@@ -1,0 +1,27 @@
+# Dependabot configuration (added with the Tier 7c pipeline hardening).
+# Weekly, grouped minor/patch updates keep dependency and action pins
+# from silently rotting; major updates arrive as individual PRs.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

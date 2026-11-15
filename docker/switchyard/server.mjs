@@ -98,14 +98,25 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/v1/config' || url.pathname === '/config') {
+      // The config endpoint mutates live routing state, so it is never served
+      // open: a token must be configured AND presented, on GET as well as POST.
+      // With no token configured the endpoint refuses outright (fail closed)
+      // instead of serving the config to anyone who reaches the port — the
+      // previous behavior, which left it open in dev compose and Helm where
+      // no token was ever set. Set SWITCHYARD_AUTH_TOKEN in the environment
+      // (compose/Helm wire it through; see docker/compose/core.yml and
+      // helm/eluvix/values.yaml) to enable this endpoint.
       const expectedToken = process.env.SWITCHYARD_AUTH_TOKEN || process.env.ADMIN_PASSWORD;
-      if (expectedToken && req.method === 'POST') {
-        const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-        if (authHeader !== expectedToken) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
-          return;
-        }
+      if (!expectedToken) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Config endpoint disabled: no SWITCHYARD_AUTH_TOKEN configured' }));
+        return;
+      }
+      const authHeader = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (authHeader !== expectedToken) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
+        return;
       }
 
       if (req.method === 'GET') {

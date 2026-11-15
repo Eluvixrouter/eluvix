@@ -36,9 +36,19 @@ check_prereqs() {
 }
 
 get_status() {
+  # Exit nonzero when the runtime is missing: callers checking exit status
+  # must not read this as a successful status collection.
   if ! check_prereqs &>/dev/null; then
     check_prereqs || true
-    return 0
+    return 1
+  fi
+
+  # get_status pipes kubectl output through jq; without it, nodes/pods
+  # silently reported as [] — indistinguishable from an empty cluster.
+  # Fail loudly instead.
+  if ! command -v jq &>/dev/null; then
+    echo "{\"installed\": false, \"error\": \"Missing required tool: jq (needed to parse cluster status)\"}"
+    return 1
   fi
 
   local k3d_ver kubectl_ver helm_ver
@@ -57,8 +67,11 @@ get_status() {
     if kubectl cluster-info --context "k3d-${CLUSTER_NAME}" &>/dev/null; then
       cluster_running=true
       
-      # Query nodes
-      nodes="$(kubectl get nodes --context "k3d-${CLUSTER_NAME}" -o json 2>/dev/null | jq -c '[.items[] | {name: .metadata.name, status: .status.conditions[-1].type, ready: (.status.conditions[-1].status == "True"), roles: (.metadata.labels | to_entries | map(select(.key | contains("node-role.kubernetes.io/"))) | map(.key | split("/") | .[1]))}]' 2>/dev/null || echo '[]')"
+      # Query nodes. Readiness comes from the condition whose type is
+      # "Ready" — NOT conditions[-1]: the last condition in the list is
+      # not guaranteed to be the Ready condition, so a healthy node could
+      # be reported not-ready (or vice versa).
+      nodes="$(kubectl get nodes --context "k3d-${CLUSTER_NAME}" -o json 2>/dev/null | jq -c '[.items[] | {name: .metadata.name, status: ((first(.status.conditions[] | select(.type == "Ready")) | .status) // "Unknown"), ready: (((first(.status.conditions[] | select(.type == "Ready")) | .status) // "False") == "True"), roles: (.metadata.labels | to_entries | map(select(.key | contains("node-role.kubernetes.io/"))) | map(.key | split("/") | .[1]))}]' 2>/dev/null || echo '[]')"
 
       # Query pods in eluvix namespace
       pods="$(kubectl get pods -n "${NAMESPACE}" --context "k3d-${CLUSTER_NAME}" -o json 2>/dev/null | jq -c '[.items[] | {name: .metadata.name, status: .status.phase, ready: (.status.containerStatuses[0].ready // false), restarts: (.status.containerStatuses[0].restartCount // 0), component: .metadata.labels["app.kubernetes.io/component"]}]' 2>/dev/null || echo '[]')"
@@ -96,30 +109,14 @@ get_status() {
 EOF
 }
 
-cluster_up() {
-  echo "🔍 [Eluvix k3d] Checking prerequisites..."
-  check_prereqs
-
-  cd "${ROOT_DIR}"
-  if k3d cluster list --no-headers 2>/dev/null | grep -q "^${CLUSTER_NAME}\b"; then
-    echo "ℹ️ Cluster '${CLUSTER_NAME}' already exists. Ensuring nodes are active..."
-    k3d cluster start "${CLUSTER_NAME}" || true
-  else
-    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with mapped host ports (3588, 8080, 11434, 8002, 8003)..."
-    k3d cluster create --config "${K3D_CONFIG}"
-  fi
-
-  echo "⏳ Waiting for cluster nodes to become ready..."
-  kubectl wait --for=condition=Ready nodes --all --context "k3d-${CLUSTER_NAME}" --timeout=90s
-
-  echo "📦 Ensuring namespace '${NAMESPACE}' exists..."
-  kubectl create namespace "${NAMESPACE}" --context "k3d-${CLUSTER_NAME}" --dry-run=client -o yaml | kubectl apply --context "k3d-${CLUSTER_NAME}" -f -
-
-  # The chart references local-only images (eluvix-nextjs, eluvix-switchyard,
-  # eluvix-agent-router, eluvix-agentgateway) that exist in no registry.
-  # Build them from the repo and import them into the cluster, or the pods
-  # sit in ImagePullBackOff forever. `set -e` makes any build/import failure
-  # abort loudly instead of reporting a hollow success.
+# The chart references local-only images (eluvix-nextjs, eluvix-switchyard,
+# eluvix-agent-router, eluvix-agentgateway) that exist in no registry.
+# Build them from the repo and import them into the cluster, or the pods
+# sit in ImagePullBackOff forever. `set -e` makes any build/import failure
+# abort loudly instead of reporting a hollow success. Shared by `up` (for
+# new clusters) and `deploy` (always — deploy is the explicit "push new
+# images" path).
+build_and_import_images() {
   echo "🔨 Building Eluvix application images..."
   docker build -t eluvix-nextjs:latest -f apps/nextjs/Dockerfile .
   docker build -t eluvix-switchyard:latest docker/switchyard
@@ -133,6 +130,38 @@ cluster_up() {
     eluvix-agent-router:latest \
     eluvix-agentgateway:latest \
     --cluster "${CLUSTER_NAME}"
+}
+
+cluster_up() {
+  echo "🔍 [Eluvix k3d] Checking prerequisites..."
+  check_prereqs
+
+  cd "${ROOT_DIR}"
+  local cluster_existed=false
+  if k3d cluster list --no-headers 2>/dev/null | grep -q "^${CLUSTER_NAME}\b"; then
+    cluster_existed=true
+    echo "ℹ️ Cluster '${CLUSTER_NAME}' already exists. Ensuring nodes are active..."
+    k3d cluster start "${CLUSTER_NAME}" || true
+  else
+    echo "🚀 Creating k3d cluster '${CLUSTER_NAME}' with mapped host ports (3588, 8080, 11434, 8002, 8003)..."
+    k3d cluster create --config "${K3D_CONFIG}"
+  fi
+
+  echo "⏳ Waiting for cluster nodes to become ready..."
+  kubectl wait --for=condition=Ready nodes --all --context "k3d-${CLUSTER_NAME}" --timeout=90s
+
+  echo "📦 Ensuring namespace '${NAMESPACE}' exists..."
+  kubectl create namespace "${NAMESPACE}" --context "k3d-${CLUSTER_NAME}" --dry-run=client -o yaml | kubectl apply --context "k3d-${CLUSTER_NAME}" -f -
+
+  # Rebuilding all four images on every `up` — even when the cluster
+  # already exists and the images were already imported — made `up` slow
+  # for no benefit. Skip the rebuild for existing clusters; a rebuild is
+  # still forced with ELUVIX_REBUILD_IMAGES=1, and `deploy` always builds.
+  if [ "${cluster_existed}" = "true" ] && [ "${ELUVIX_REBUILD_IMAGES:-0}" != "1" ]; then
+    echo "ℹ️ Cluster already existed: skipping image rebuild/import (images were imported when the cluster was created). Set ELUVIX_REBUILD_IMAGES=1 to force a rebuild."
+  else
+    build_and_import_images
+  fi
 
   echo "🚀 Deploying Eluvix Helm Chart..."
   helm upgrade --install eluvix "${ROOT_DIR}/helm/eluvix" \
@@ -184,6 +213,18 @@ case "${ACTION}" in
   deploy)
     echo "🚀 Deploying/Upgrading Eluvix Helm release..."
     check_prereqs
+    # `deploy` previously ran only `helm upgrade --install`, while `up`
+    # builds + imports the local-only images the chart references — so a
+    # deploy to a fresh cluster (or after an image change) left pods in
+    # ImagePullBackOff while reporting a successful deploy. Build + import
+    # here too, and fail fast if the cluster does not exist yet (run `up`
+    # first) instead of failing later inside helm.
+    if ! k3d cluster list --no-headers 2>/dev/null | grep -q "^${CLUSTER_NAME}\b"; then
+      echo "❌ Cluster '${CLUSTER_NAME}' does not exist. Run '$0 up' first to create it."
+      exit 1
+    fi
+    cd "${ROOT_DIR}"
+    build_and_import_images
     helm upgrade --install eluvix "${ROOT_DIR}/helm/eluvix" \
       -f "${ROOT_DIR}/helm/eluvix/values-local.yaml" \
       --namespace "${NAMESPACE}" \

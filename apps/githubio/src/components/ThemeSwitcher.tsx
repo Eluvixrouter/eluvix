@@ -17,25 +17,30 @@ const CATEGORY_TABS: { key: ThemeCategory | 'all'; label: string }[] = [
 ];
 
 export function ThemeSwitcher() {
-  const [currentThemeId, setCurrentThemeId] = useState<string>(DEFAULT_THEME_ID);
+  // Derive the initial theme from storage during render instead of syncing
+  // it through a mount effect. The try/catch also covers server prerender,
+  // where localStorage is not defined.
+  const [currentThemeId, setCurrentThemeId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('eluvix-theme');
+      if (saved) {
+        return getThemeById(saved).id;
+      }
+    } catch {
+      // Ignore localStorage security exceptions
+    }
+    return DEFAULT_THEME_ID;
+  });
   const [isOpen, setIsOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState<ThemeCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Initialize theme on mount
+  // Apply the current theme to the document. This only writes to the DOM
+  // (applyTheme is idempotent), it never sets state.
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('eluvix-theme');
-      if (saved) {
-        const theme = getThemeById(saved);
-        setCurrentThemeId(theme.id);
-        applyTheme(theme);
-      }
-    } catch {
-      // Ignore localStorage security exceptions
-    }
-  }, []);
+    applyTheme(getThemeById(currentThemeId));
+  }, [currentThemeId]);
 
   // Close on outside click or Escape
   useEffect(() => {

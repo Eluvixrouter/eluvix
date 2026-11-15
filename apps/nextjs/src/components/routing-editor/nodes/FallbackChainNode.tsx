@@ -9,14 +9,26 @@ export default function FallbackChainNode({ id, data }: { id: string; data: any 
   const [cooldownSeconds, setCooldownSeconds] = useState(data?.cooldownSeconds ?? 60);
   const [retryOn429, setRetryOn429] = useState(data?.retryOn429 !== false);
 
-  useEffect(() => {
-    if (data?.failureThreshold !== undefined) setFailureThreshold(data.failureThreshold);
-    if (data?.cooldownSeconds !== undefined) setCooldownSeconds(data.cooldownSeconds);
-    if (data?.retryOn429 !== undefined) setRetryOn429(data.retryOn429 !== false);
-  }, [data?.failureThreshold, data?.cooldownSeconds, data?.retryOn429]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.failureThreshold !== undefined) setFailureThreshold(data.failureThreshold);
+      if (data?.cooldownSeconds !== undefined) setCooldownSeconds(data.cooldownSeconds);
+      if (data?.retryOn429 !== undefined) setRetryOn429(data.retryOn429 !== false);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

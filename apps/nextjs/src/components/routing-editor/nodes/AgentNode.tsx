@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 export default function AgentNode({ id, data }: { id: string; data: any }) {
@@ -12,15 +12,22 @@ export default function AgentNode({ id, data }: { id: string; data: any }) {
   const [maxTokens, setMaxTokens] = useState(data?.maxTokens ?? 2048);
   const [memoryEnabled, setMemoryEnabled] = useState(data?.memoryEnabled !== false);
 
-  // Ensure default structure
-  if (data) {
-    if (!data.agentName) data.agentName = agentName;
-    if (!data.modelName) data.modelName = modelName;
-    if (!data.systemInstructions) data.systemInstructions = systemInstructions;
-    if (data.temperature === undefined) data.temperature = temperature;
-    if (data.maxTokens === undefined) data.maxTokens = maxTokens;
-    if (data.memoryEnabled === undefined) data.memoryEnabled = memoryEnabled;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // agentName/modelName/systemInstructions use `=== undefined` guards
+  // because their text inputs can be cleared to '' — a `!data.x` guard
+  // would re-fire forever on a cleared field.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (data.agentName === undefined) missing.agentName = agentName;
+    if (data.modelName === undefined) missing.modelName = modelName;
+    if (data.systemInstructions === undefined) missing.systemInstructions = systemInstructions;
+    if (data.temperature === undefined) missing.temperature = temperature;
+    if (data.maxTokens === undefined) missing.maxTokens = maxTokens;
+    if (data.memoryEnabled === undefined) missing.memoryEnabled = memoryEnabled;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, agentName, modelName, systemInstructions, temperature, maxTokens, memoryEnabled]);
 
   const syncData = (updates: Record<string, any>) => {
     if (data) Object.assign(data, updates);

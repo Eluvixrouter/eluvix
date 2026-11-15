@@ -41,7 +41,20 @@ function parseBody(req) {
 const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
-  // Restrict to internal: validate Host header against DNS rebinding
+  const pathname = (req.url || '/').split('?')[0];
+
+  // Health is answered BEFORE every gate, and reveals nothing sensitive.
+  // The token check below used to run first, so the day an operator set
+  // SANDBOX_AUTH_TOKEN, the compose/Dockerfile healthchecks (which send
+  // no token) reported the container permanently unhealthy.
+  if (req.method === 'GET' && pathname === '/health') {
+    res.end(JSON.stringify({ status: 'ok', service: 'eluvix-sandbox', runtime: 'isolated-vm' }));
+    return;
+  }
+
+  // Defense-in-depth only — NOT authentication. A client controls its own
+  // Host header and can simply omit Origin, so neither check proves the
+  // caller is internal. The only real gate is the token below.
   const host = (req.headers.host || '').split(':')[0].toLowerCase();
   const allowedHosts = new Set(['localhost', '127.0.0.1', '::1', 'sandbox', 'eluvix-sandbox']);
   if (!allowedHosts.has(host) && !host.endsWith('.internal')) {
@@ -50,7 +63,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Restrict to internal: block external cross-origin requests
   const origin = req.headers.origin;
   if (origin && origin !== 'null' && !isLocalOrigin(origin)) {
     res.statusCode = 403;
@@ -58,10 +70,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Internal token verification if SANDBOX_AUTH_TOKEN is configured
+  // The real gate for code execution: when SANDBOX_AUTH_TOKEN is set,
+  // /v1/execute requires it (Bearer or x-sandbox-token). Wire it through
+  // compose (docker/compose/harnesses.yml passes SANDBOX_AUTH_TOKEN
+  // through from the host environment). When unset, /v1/execute remains
+  // open to the compose network and the host — that is a known residual,
+  // not a closed gate: the dashboard editor calls this endpoint directly
+  // from the browser, which has no channel for a shared token, so
+  // fail-closed here would break the sandbox node feature outright.
+  // Closing it properly needs a dashboard token-distribution change.
   if (EXPECTED_INTERNAL_TOKEN) {
     const authHeader = req.headers.authorization || '';
-    const token = req.headers['x-sandbox-token'] || 
+    const token = req.headers['x-sandbox-token'] ||
       (authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null);
     if (!token || token !== EXPECTED_INTERNAL_TOKEN) {
       res.statusCode = 401;
@@ -70,12 +90,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
-    res.end(JSON.stringify({ status: 'ok', service: 'eluvix-sandbox', runtime: 'isolated-vm' }));
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/v1/execute') {
+  if (req.method === 'POST' && pathname === '/v1/execute') {
     let body;
     try {
       body = await parseBody(req);

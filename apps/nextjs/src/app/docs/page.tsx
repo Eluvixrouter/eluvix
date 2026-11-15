@@ -14,21 +14,32 @@ export default function DocsPage() {
   const [copiedCodeIndex, setCopiedCodeIndex] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState('https://localhost:3588');
 
+  // Client-only values (origin, URL hash) cannot be derived during render —
+  // the server has no window — so they are read after mount. The reads happen
+  // in a timer callback rather than synchronously in the effect body, which
+  // is the shape react-hooks/set-state-in-effect requires; a zero-delay
+  // timer still runs before the next paint.
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window === 'undefined') return undefined;
+    const timer = setTimeout(() => {
       setBaseUrl(window.location.origin);
       // Read hash on load
       const hash = window.location.hash.replace('#', '');
       if (hash && DOC_SECTIONS.some((s) => s.id === hash)) {
         setActiveSectionId(hash);
       }
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   const handleSelectSection = (id: string) => {
     setActiveSectionId(id);
     if (typeof window !== 'undefined') {
-      window.location.hash = id;
+      // Record the section in the URL for deep-linking. pushState is
+      // exactly equivalent here to assigning location.hash: the page has no
+      // element with the section id, so the assignment never scrolled
+      // anywhere — it only updated the URL and added a history entry.
+      window.history.pushState(null, '', `#${id}`);
     }
   };
 

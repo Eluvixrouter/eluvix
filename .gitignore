@@ -13,3 +13,17 @@ release/
 *.tmp*
 *.tsbuildinfo
 docker-compose.override.yml
+
+# Credential-bearing files that must never land in the repo (audit L-19).
+# Note: apps/nextjs/.eluvix-config.json stays tracked DELIBERATELY — the
+# desktop app reads a shipped default from it. Keep it free of real
+# secrets: use .env / the admin password flow for credentials instead.
+auth.json
+keys.json
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials*
+.npmrc

@@ -1,6 +1,13 @@
 import { setBounded } from '../bounded-map.js';
 import type { ChatMessage } from '../index.js';
-import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import {
+  assertProviderEndpointAllowed,
+  type ContextProvider,
+  type MemoryConfig,
+  type RecallBlock,
+  type RecallResult,
+  type RequestScope
+} from './types.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -25,6 +32,8 @@ export class OpenVikingContextProvider implements ContextProvider {
 
   constructor(config: MemoryConfig = {}) {
     this.endpoint = (config.endpoint || 'http://127.0.0.1:1933').trim().replace(/\/+$/, '');
+    // H-9/M-18: refuse remote plaintext endpoints at construction.
+    assertProviderEndpointAllowed(this.endpoint, 'OpenViking');
     this.apiKey = config.apiKey || process.env.OPENVIKING_API_KEY;
     this.timeoutMs = config.recallTimeoutMs ?? 1500;
     this.autoCommitTurns = Math.max(1, config.autoCommitTurns ?? 5);
@@ -76,10 +85,24 @@ export class OpenVikingContextProvider implements ContextProvider {
     }
 
     const userId = scope.userId || 'default';
-    const targetUris =
-      Array.isArray(this.scopePrefixes) && this.scopePrefixes.length > 0
-        ? this.scopePrefixes
-        : [`viking://user/${userId}/memories`];
+    const userPrefix = `viking://user/${userId}`;
+    let targetUris: string[];
+    if (Array.isArray(this.scopePrefixes) && this.scopePrefixes.length > 0) {
+      // Audit H-9: scopePrefixes may only NARROW the search within the
+      // requesting user's own prefix. Previously the configured list
+      // REPLACED the per-user target outright, so one user's recall could
+      // be pointed at (or leak) another user's tree.
+      for (const prefix of this.scopePrefixes) {
+        if (prefix !== userPrefix && !prefix.startsWith(`${userPrefix}/`)) {
+          throw new Error(
+            `openviking.scopePrefixes entry '${prefix}' is outside the requesting user's prefix '${userPrefix}/' — scopePrefixes can only narrow within the per-user prefix`
+          );
+        }
+      }
+      targetUris = this.scopePrefixes;
+    } else {
+      targetUris = [`${userPrefix}/memories`];
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -110,7 +133,7 @@ export class OpenVikingContextProvider implements ContextProvider {
       }
 
       const data: any = await res.json();
-      const rawItems: any[] = Array.isArray(data?.result?.memories)
+      const allItems: any[] = Array.isArray(data?.result?.memories)
         ? data.result.memories
         : Array.isArray(data?.result?.resources)
         ? data.result.resources
@@ -121,6 +144,37 @@ export class OpenVikingContextProvider implements ContextProvider {
         : Array.isArray(data?.items)
         ? data.items
         : [];
+
+      // Audit H-9: do not trust the server to have scoped results to the
+      // requesting user. Drop entries whose owner field names someone
+      // else, and entries whose URI falls outside the user's prefix.
+      // Entries carrying neither an owner field nor a URI are kept but
+      // counted as unattributed (logged as a count, never content).
+      let foreignDropped = 0;
+      let unattributed = 0;
+      const rawItems = allItems.filter((entry) => {
+        const owner = entry?.user_id ?? entry?.userId ?? entry?.owner ?? entry?.metadata?.user_id;
+        if (owner != null && String(owner) !== '') {
+          if (String(owner) !== userId) {
+            foreignDropped++;
+            return false;
+          }
+          return true;
+        }
+        const uri = typeof entry?.uri === 'string' ? entry.uri : '';
+        if (uri) {
+          if (uri === userPrefix || uri.startsWith(`${userPrefix}/`)) return true;
+          foreignDropped++;
+          return false;
+        }
+        unattributed++;
+        return true;
+      });
+      if (foreignDropped > 0 || unattributed > 0) {
+        console.log(
+          `[OpenVikingContextProvider] recall ownership filter: dropped ${foreignDropped} foreign-owned/out-of-prefix, kept ${unattributed} unattributed (no owner field or URI) of ${allItems.length} returned`
+        );
+      }
 
       const blocks: RecallBlock[] = [];
       let usedTokens = 0;

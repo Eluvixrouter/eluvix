@@ -1,6 +1,6 @@
 import { addMemoryItem, searchMemoryItems } from '../db.js';
 import type { ChatMessage } from '../index.js';
-import type { ContextProvider, RecallBlock, RecallResult, RequestScope } from './types.js';
+import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -15,6 +15,15 @@ function extractText(msg: ChatMessage): string {
 
 export class BuiltinContextProvider implements ContextProvider {
   public readonly id = 'builtin';
+  private readonly retentionDays?: number;
+
+  constructor(config: MemoryConfig = {}) {
+    // Audit M-20: optional retention window. Unset/invalid = keep forever.
+    this.retentionDays =
+      typeof config.retentionDays === 'number' && config.retentionDays > 0
+        ? config.retentionDays
+        : undefined;
+  }
 
   public async health(): Promise<boolean> {
     return true;
@@ -32,7 +41,18 @@ export class BuiltinContextProvider implements ContextProvider {
     }
 
     const userId = scope.userId || 'default';
-    const items = searchMemoryItems(trimmed, userId, 10);
+    let items = searchMemoryItems(trimmed, userId, 10);
+    if (this.retentionDays !== undefined) {
+      // M-20: recall excludes items older than the retention window.
+      // (Exclusion at recall time — stored rows are not deleted. Items
+      // whose created_at cannot be parsed are kept rather than silently
+      // dropped.)
+      const cutoff = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
+      items = items.filter((item) => {
+        const created = Date.parse(item.created_at);
+        return Number.isNaN(created) || created >= cutoff;
+      });
+    }
     const blocks: RecallBlock[] = [];
     let usedTokens = 0;
     const maxTokens = Math.max(64, budgetTokens || 800);

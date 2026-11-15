@@ -1,5 +1,10 @@
 appId: com.eluvix.desktop
 productName: Eluvix
+# Path-safe binary name for all platforms. Without this, electron-builder
+# derives executableName from the npm package name (@eluvix/desktop →
+# @eluvixdesktop), and builder 26 rejects '@' in executable names used in
+# file paths when building the AppImage.
+executableName: eluvixdesktop
 artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
 
 directories:

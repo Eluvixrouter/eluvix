@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { getOrCreateAuthConfig } from '@eluvix/router-core';
+import { createNamedApiKey, listNamedApiKeys, revokeNamedApiKey } from '@eluvix/router-core';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +20,13 @@ interface ApplyRequestBody {
   models: SelectedModel[];
 }
 
+/**
+ * Atomic write at mode 0o600 (audit H-11 follow-on): the files written
+ * here contain an API key, and the rename makes the final file inherit
+ * the tmp file's restrictive mode. The pre-existing tool configs may
+ * hold OTHER providers' credentials too, so tightening them is a
+ * deliberate, disclosed behavior change.
+ */
 function atomicWriteFile(filePath: string, content: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
@@ -38,6 +45,42 @@ function atomicWriteFile(filePath: string, content: string): void {
     } catch {}
     throw err;
   }
+}
+
+/**
+ * Mints the scoped named key a configured client will authenticate with
+ * (audit H-11: client configs used to receive the master admin password).
+ * One live key per client: keys minted by earlier applies for the same
+ * client are revoked once the new config is safely on disk; if the write
+ * fails, the NEW key is revoked instead so the previously written config
+ * keeps working. Each client gets its own key identity (userId
+ * `client-<name>`), which also partitions that client's memory scope.
+ */
+function mintClientKey(client: 'opencode' | 'continue'): {
+  key: string;
+  commit: () => void;
+  rollback: () => void;
+} {
+  const label = `configurator:${client}`;
+  const staleIds = listNamedApiKeys()
+    .filter(k => k.label === label)
+    .map(k => k.id);
+  const created = createNamedApiKey({ label, origin: 'client', userId: `client-${client}` });
+  return {
+    key: created.key,
+    commit: () => {
+      for (const id of staleIds) {
+        try {
+          revokeNamedApiKey(id);
+        } catch {}
+      }
+    },
+    rollback: () => {
+      try {
+        revokeNamedApiKey(created.id);
+      } catch {}
+    }
+  };
 }
 
 export async function POST(req: Request) {
@@ -60,7 +103,6 @@ export async function POST(req: Request) {
       );
     }
 
-    const auth = getOrCreateAuthConfig();
     const envHost = process.env.ELUVIX_HOST;
     const rawHost = process.env.HOSTNAME || '';
     const hostname = envHost || (!rawHost || /^[0-9a-f]{12,}$/i.test(rawHost) || rawHost === '0.0.0.0' ? '127.0.0.1' : rawHost);
@@ -92,9 +134,10 @@ export async function POST(req: Request) {
         try {
           const raw = fs.readFileSync(opencodePath, 'utf8');
           opencodeConfig = JSON.parse(raw);
-          // Create backup
+          // Create backup (mode-aware write: the backup contains the
+          // previous config, credentials included)
           const backupPath = `${opencodePath}.bak-${timestamp}`;
-          fs.writeFileSync(backupPath, raw, { encoding: 'utf8', mode: 0o600 });
+          atomicWriteFile(backupPath, raw);
         } catch (err: any) {
           console.warn('[Configurator] Could not parse existing opencode.json:', err.message);
         }
@@ -116,11 +159,13 @@ export async function POST(req: Request) {
         };
       });
 
+      // Scoped per-client key, NOT the master admin password (H-11).
+      const minted = mintClientKey('opencode');
       opencodeConfig.provider.Eluvix = {
         name: 'Eluvix Router (local)',
         npm: '@ai-sdk/openai-compatible',
         options: {
-          apiKey: auth.adminPassword,
+          apiKey: minted.key,
           baseURL: baseURL
         },
         models: modelsMap
@@ -130,7 +175,13 @@ export async function POST(req: Request) {
       opencodeConfig.model = 'Eluvix/auto';
       opencodeConfig.small_model = 'Eluvix/auto';
 
-      atomicWriteFile(opencodePath, JSON.stringify(opencodeConfig, null, 2));
+      try {
+        atomicWriteFile(opencodePath, JSON.stringify(opencodeConfig, null, 2));
+        minted.commit();
+      } catch (err) {
+        minted.rollback();
+        throw err;
+      }
 
       return NextResponse.json({
         success: true,
@@ -179,6 +230,9 @@ export async function POST(req: Request) {
         return !(isEluvixBase || isEluvixTitle);
       });
 
+      // Scoped per-client key, NOT the master admin password (H-11).
+      const minted = mintClientKey('continue');
+
       // Add selected models
       models.forEach(m => {
         continueConfig.models.push({
@@ -186,12 +240,18 @@ export async function POST(req: Request) {
           provider: 'openai',
           model: m.id,
           apiBase: baseURL,
-          apiKey: auth.adminPassword,
+          apiKey: minted.key,
           contextLength: m.contextLimit
         });
       });
 
-      atomicWriteFile(continuePath, JSON.stringify(continueConfig, null, 2));
+      try {
+        atomicWriteFile(continuePath, JSON.stringify(continueConfig, null, 2));
+        minted.commit();
+      } catch (err) {
+        minted.rollback();
+        throw err;
+      }
 
       return NextResponse.json({
         success: true,

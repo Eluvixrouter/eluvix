@@ -19,6 +19,7 @@ import {
   toArtCraftHarnessMcpServers,
   resolveArtCraftAutoApproveTools,
 } from '../artcraft-mcp.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 function resolveEffectiveTrueForgeMcpAndAutoApprove(
   upstream: UpstreamConfig,
@@ -134,7 +135,7 @@ async function respondToApproval(
   // their note delta; this POST is what unblocks the server.
   const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
   try {
-    await fetch(
+    await fetchWithSafeRedirects(
       `${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}/events`,
       {
         method: 'POST',
@@ -493,7 +494,7 @@ export async function forwardTrueForgeHarness(
     const cacheable = reuseSession && Boolean(scope?.sessionId);
 
     const createSession = async (): Promise<{ id: string } | { errorRes: Response }> => {
-      const sessionRes = await fetch(`${baseUrl}/api/v1/sessions`, {
+      const sessionRes = await fetchWithSafeRedirects(`${baseUrl}/api/v1/sessions`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -531,7 +532,7 @@ export async function forwardTrueForgeHarness(
 
     // 2. Start turn (POST /api/v1/sessions/{id}/turns)
     const startTurn = (sessionId: string) =>
-      fetch(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns`, {
+      fetchWithSafeRedirects(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/turns`, {
         method: 'POST',
         headers: {
           ...headers,

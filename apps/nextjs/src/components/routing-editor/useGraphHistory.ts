@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { Node, Edge } from '@xyflow/react';
 
 export interface GraphHistoryEntry {
@@ -66,8 +66,14 @@ export function useGraphHistory() {
   const pastRef = useRef<GraphHistoryEntry[]>([]);
   const futureRef = useRef<GraphHistoryEntry[]>([]);
 
-  pastRef.current = past;
-  futureRef.current = future;
+  // Keep the refs mirroring state after render, not during it
+  // (react-hooks/refs). The stable callbacks below read the latest stacks
+  // through these refs; effects flush before event handlers run, so the
+  // refs are always current when a callback fires.
+  useEffect(() => {
+    pastRef.current = past;
+    futureRef.current = future;
+  });
 
   const recordSnapshot = useCallback((nodes: Node[], edges: Edge[], label = 'Edit graph') => {
     const fingerprint = computeHistoryFingerprint(nodes, edges);

@@ -190,3 +190,27 @@ export function isValidContainerName(name: string): boolean {
   const trimmed = name.trim().toLowerCase();
   return ALLOWED_DOCKER_SERVICES.has(trimmed);
 }
+
+import crypto from 'crypto';
+
+export function isAuthorizedAdmin(req: Request): boolean {
+  const adminSecret = process.env.ENCLAVIX_ADMIN_TOKEN || process.env.ELUVIX_ADMIN_TOKEN || process.env.ADMIN_TOKEN;
+  const authHeader = req.headers.get('authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers.get('x-admin-token') || req.headers.get('x-enclavix-token') || req.headers.get('x-eluvix-token') || '';
+
+  if (adminSecret) {
+    if (!token || token.length !== adminSecret.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(adminSecret));
+  }
+
+  // In production, an admin token is strictly required
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+
+  // In development, allow local loopback requests
+  const host = req.headers.get('host') || '';
+  return host.startsWith('localhost') || host.startsWith('127.0.0.1');
+}

@@ -7,6 +7,10 @@ switchyard:
   service:
     # NodePort so the k3d host-port mappings (k3d-config.yaml maps host
     # ports onto the cluster nodes) land on a real listener.
+    # The low nodePorts in this file (8080 here, plus 3588, 11434, 8002,
+    # 8003) are valid ONLY because k3d-config.yaml widens the apiserver
+    # NodePort range to 1-65535 — see the comment on that flag before
+    # changing either side of this coupling.
     type: NodePort
     port: 8080
     nodePort: 8080
@@ -31,10 +35,8 @@ nextjs:
     requests:
       cpu: 50m
       memory: 128Mi
-  persistence:
-    enabled: true
-    storageClass: local-path
-    size: 1Gi
+  # No persistence: see the note on nextjs in values.yaml — the old PVC
+  # mounted a path the app never reads.
 
 ollama:
   replicaCount: 1

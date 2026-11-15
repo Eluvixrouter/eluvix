@@ -22,6 +22,11 @@ spec:
         - name: agentgateway
           image: "{{ .Values.agentGateway.image.repository }}:{{ .Values.agentGateway.image.tag }}"
           imagePullPolicy: {{ .Values.agentGateway.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.agentGateway.port }}

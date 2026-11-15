@@ -12,7 +12,13 @@ export async function POST(req: Request) {
 
     agent.updateConfig({
       serverUrl: body.serverUrl,
-      nodeToken: body.nodeToken,
+      // The settings GET is redacted (M-29), so the form posts an empty
+      // token when the operator didn't type a new one: empty means "keep
+      // the stored token", never "clear it". Omitting the field entirely
+      // is what preserves it — updateConfig spreads its argument.
+      ...(typeof body.nodeToken === 'string' && body.nodeToken.length > 0
+        ? { nodeToken: body.nodeToken }
+        : {}),
       nodeName: body.nodeName,
       engineUrl: body.engineUrl,
       engineType: body.engineType,

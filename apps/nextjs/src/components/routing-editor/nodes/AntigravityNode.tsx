@@ -118,22 +118,37 @@ export default function AntigravityNode({ id, data }: { id: string; data: Antigr
     }
   }, []);
 
+  // Discover models on mount. The fetch is kicked off from a timer callback
+  // rather than synchronously in the effect body: the effect subscribes /
+  // kicks off the async work, and the state updates happen in callbacks,
+  // which is the shape react-hooks/set-state-in-effect requires. A zero-delay
+  // timer starts the fetch before the next paint, so the syncing feedback
+  // is unchanged.
   useEffect(() => {
-    fetchDiscoveredModels(false);
+    const timer = setTimeout(() => {
+      void fetchDiscoveredModels(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [fetchDiscoveredModels]);
 
-  // Ensure defaults are assigned on initial render
-  if (data) {
-    if (!data.model) data.model = model;
-    if (!data.effort) data.effort = effort;
-    if (data.cleanHeadless === undefined) data.cleanHeadless = cleanHeadless;
-    if (!data.executionMode) data.executionMode = executionMode;
-    if (!data.cliPath) data.cliPath = cliPath;
-    if (!data.endpoint) data.endpoint = endpoint;
-    if (!data.sandboxMode) data.sandboxMode = sandboxMode;
-    if (!data.agentBehavior) data.agentBehavior = agentBehavior;
-    if (data.enableWriteTools === undefined) data.enableWriteTools = enableWriteTools;
-  }
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once.
+  // cliPath/endpoint use `=== undefined` guards because their text inputs
+  // can be cleared to '' — a `!data.x` guard would re-fire forever.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.model) missing.model = model;
+    if (!data.effort) missing.effort = effort;
+    if (data.cleanHeadless === undefined) missing.cleanHeadless = cleanHeadless;
+    if (!data.executionMode) missing.executionMode = executionMode;
+    if (data.cliPath === undefined) missing.cliPath = cliPath;
+    if (data.endpoint === undefined) missing.endpoint = endpoint;
+    if (!data.sandboxMode) missing.sandboxMode = sandboxMode;
+    if (!data.agentBehavior) missing.agentBehavior = agentBehavior;
+    if (data.enableWriteTools === undefined) missing.enableWriteTools = enableWriteTools;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData, model, effort, cleanHeadless, executionMode, cliPath, endpoint, sandboxMode, agentBehavior, enableWriteTools]);
 
   const activePreset = modelPresets.find(p => p.id === model);
   const supportedEfforts = activePreset?.efforts || (model.startsWith('gpt-oss-120b') ? ['medium'] : ['low', 'medium', 'high']);

@@ -1,5 +1,12 @@
 import type { ChatMessage } from '../index.js';
-import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import {
+  assertProviderEndpointAllowed,
+  type ContextProvider,
+  type MemoryConfig,
+  type RecallBlock,
+  type RecallResult,
+  type RequestScope
+} from './types.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -20,6 +27,8 @@ export class Mem0ContextProvider implements ContextProvider {
 
   constructor(config: MemoryConfig = {}) {
     this.endpoint = (config.endpoint || 'http://127.0.0.1:8888').trim().replace(/\/+$/, '');
+    // H-9/M-18: refuse remote plaintext endpoints at construction.
+    assertProviderEndpointAllowed(this.endpoint, 'Mem0');
     this.apiKey = config.apiKey || process.env.MEM0_API_KEY;
     this.timeoutMs = config.recallTimeoutMs ?? 1500;
   }
@@ -92,11 +101,38 @@ export class Mem0ContextProvider implements ContextProvider {
       }
 
       const data: any = await res.json();
-      const rawItems: any[] = Array.isArray(data?.results)
+      const allItems: any[] = Array.isArray(data?.results)
         ? data.results
         : Array.isArray(data)
         ? data
         : [];
+
+      // Audit H-9: never trust the server to have scoped the search to
+      // the requesting user. Drop any entry whose owner field is present
+      // and names someone else. Entries with NO owner field are kept but
+      // counted as unattributed (mem0's response format does not guarantee
+      // one) — the count is logged, never the content.
+      const requestingUser = scope.userId || 'default';
+      let foreignDropped = 0;
+      let unattributed = 0;
+      const rawItems = allItems.filter((entry) => {
+        const owner =
+          entry?.user_id ?? entry?.userId ?? entry?.owner ?? entry?.metadata?.user_id;
+        if (owner != null && String(owner) !== '') {
+          if (String(owner) !== requestingUser) {
+            foreignDropped++;
+            return false;
+          }
+          return true;
+        }
+        unattributed++;
+        return true;
+      });
+      if (foreignDropped > 0 || unattributed > 0) {
+        console.log(
+          `[Mem0ContextProvider] recall ownership filter: dropped ${foreignDropped} foreign-owned, kept ${unattributed} unattributed (no owner field) of ${allItems.length} returned`
+        );
+      }
 
       const blocks: RecallBlock[] = [];
       let usedTokens = 0;

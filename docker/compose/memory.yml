@@ -1,3 +1,7 @@
+# NOTE: the memory sims (openviking, lightrag, graphiti) are purely
+# in-memory (Maps/arrays in server.mjs) and never read /data. No volumes
+# are mounted here on purpose: state does NOT persist across restarts,
+# and mounting a volume would falsely imply that it does.
 services:
   openviking:
     build:
@@ -7,8 +11,6 @@ services:
     profiles: ["memory", "all"]
     ports:
       - "127.0.0.1:${OPENVIKING_PORT:-1933}:1933"
-    volumes:
-      - openviking_data:/data
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -26,8 +28,6 @@ services:
     profiles: ["memory", "all"]
     ports:
       - "127.0.0.1:${LIGHTRAG_PORT:-9621}:9621"
-    volumes:
-      - lightrag_data:/data
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -45,8 +45,6 @@ services:
     profiles: ["memory", "all"]
     ports:
       - "127.0.0.1:${GRAPHITI_PORT:-8004}:8004"
-    volumes:
-      - graphiti_data:/data
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -55,11 +53,3 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
-
-volumes:
-  openviking_data:
-    driver: local
-  lightrag_data:
-    driver: local
-  graphiti_data:
-    driver: local

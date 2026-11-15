@@ -8,6 +8,7 @@ import {
   ANTIGRAVITY_CLI_BINARIES,
 } from './cli-exec.js';
 import { parseComfyModelsResponse } from './comfyui.js';
+import { fetchWithSafeRedirects, assertEndpointNotMetadata } from './fetch-policy.js';
 
 export interface DiscoveredModel {
   id: string;
@@ -51,6 +52,16 @@ export async function detectUpstreamModelDetails(
     return { models, details };
   }
 
+  // S-2: refuse to probe cloud-metadata / link-local targets from the
+  // router-core side too. The Next.js detect-models route runs its own
+  // check, but desktop and other consumers call this function directly.
+  // (TOCTOU residual: the check resolves the host, then fetch resolves
+  // it again at connect time; fully closing the race needs a dispatcher
+  // that pins the validated address — out of scope, accepted.)
+  if (/^https?:\/\//i.test(upstream.endpoint)) {
+    await assertEndpointNotMetadata(upstream.endpoint);
+  }
+
   if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
     const kind =
       upstream.harness?.kind || (upstream.endpoint.startsWith('acp://') ? 'acp' : 'trueforge');
@@ -59,7 +70,7 @@ export async function detectUpstreamModelDetails(
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(`${base}/v1/models`, {
+        const res = await fetchWithSafeRedirects(`${base}/v1/models`, {
           method: 'GET',
           headers: { Accept: 'application/json' },
           signal: controller.signal,
@@ -110,7 +121,7 @@ export async function detectUpstreamModelDetails(
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await fetch(url, {
+        const res = await fetchWithSafeRedirects(url, {
           method: 'GET',
           headers: { Accept: 'application/json' },
           signal: controller.signal,
@@ -188,7 +199,7 @@ export async function detectUpstreamModelDetails(
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      const res = await fetch(url, {
+      const res = await fetchWithSafeRedirects(url, {
         method: 'GET',
         headers,
         signal: controller.signal,

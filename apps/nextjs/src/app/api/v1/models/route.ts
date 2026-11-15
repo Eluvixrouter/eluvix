@@ -5,28 +5,24 @@ import {
   resolveBearerToken,
 } from '@eluvix/router-core';
 import { getRouter } from '@/lib/router';
+import { namedKeyAuthorized } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  const authHeader = req?.headers?.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      if (!resolved.valid) {
-        return NextResponse.json(
-          {
-            error: {
-              message: 'Incorrect API key provided.',
-              type: 'invalid_request_error',
-              code: 'invalid_api_key'
-            }
-          },
-          { status: 401 }
-        );
-      }
-    }
+  // Middleware passes elx_-shaped tokens through for model listing;
+  // verify the key here so a forged one cannot enumerate models.
+  if (!namedKeyAuthorized(req)) {
+    return NextResponse.json(
+      {
+        error: {
+          message: 'Incorrect API key provided.',
+          type: 'invalid_request_error',
+          code: 'invalid_api_key'
+        }
+      },
+      { status: 401 }
+    );
   }
   const router = getRouter();
   const upstreams = router.getUpstreams();

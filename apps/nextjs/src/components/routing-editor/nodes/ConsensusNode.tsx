@@ -9,14 +9,26 @@ export default function ConsensusNode({ id, data }: { id: string; data: any }) {
   const [judgeModel, setJudgeModel] = useState(data?.judgeModel || 'auto');
   const [minQuorum, setMinQuorum] = useState(data?.minQuorum ?? 2);
 
-  useEffect(() => {
-    if (data?.strategy !== undefined) setStrategy(data.strategy);
-    if (data?.judgeModel !== undefined) setJudgeModel(data.judgeModel);
-    if (data?.minQuorum !== undefined) setMinQuorum(data.minQuorum);
-  }, [data?.strategy, data?.judgeModel, data?.minQuorum]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.strategy !== undefined) setStrategy(data.strategy);
+      if (data?.judgeModel !== undefined) setJudgeModel(data.judgeModel);
+      if (data?.minQuorum !== undefined) setMinQuorum(data.minQuorum);
+    }
+  }
 
   const dataRef = useRef(data);
-  dataRef.current = data;
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids.
+  useEffect(() => {
+    dataRef.current = data;
+  });
 
   const syncData = useCallback(
     (updated: any) => {

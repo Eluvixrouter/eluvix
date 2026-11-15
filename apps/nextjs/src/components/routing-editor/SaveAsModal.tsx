@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 interface SaveAsModalProps {
   isOpen: boolean;
@@ -42,7 +42,34 @@ export default function SaveAsModal({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
+  // Reset the form when the modal opens or its initial values change, done
+  // during render instead of in an effect (react-hooks/set-state-in-effect):
+  // React discards the render and re-renders with the new state before
+  // committing. The comparison mirrors the old effect's dependency list.
+  const [prevFormProps, setPrevFormProps] = useState({
+    isOpen,
+    initialName,
+    initialSlug,
+    initialDescription,
+    initialCategory,
+    initialTags,
+  });
+  if (
+    isOpen !== prevFormProps.isOpen ||
+    initialName !== prevFormProps.initialName ||
+    initialSlug !== prevFormProps.initialSlug ||
+    initialDescription !== prevFormProps.initialDescription ||
+    initialCategory !== prevFormProps.initialCategory ||
+    initialTags !== prevFormProps.initialTags
+  ) {
+    setPrevFormProps({
+      isOpen,
+      initialName,
+      initialSlug,
+      initialDescription,
+      initialCategory,
+      initialTags,
+    });
     if (isOpen) {
       setName(initialName || '');
       setSlug(initialSlug || '');
@@ -53,7 +80,7 @@ export default function SaveAsModal({
       setOverwrite(false);
       setError(null);
     }
-  }, [isOpen, initialName, initialSlug, initialDescription, initialCategory, initialTags]);
+  }
 
   const handleNameChange = (val: string) => {
     setName(val);

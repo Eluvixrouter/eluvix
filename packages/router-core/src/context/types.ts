@@ -58,6 +58,47 @@ export interface MemoryConfig {
     readingLevel?: 'L0' | 'L1' | 'L2';
     scopePrefixes?: string[];
   };
+  /**
+   * Retention window in days (audit M-20). When set, the builtin provider's
+   * recall excludes items older than this many days. Unset (the default)
+   * keeps items forever — the previous behavior. External providers
+   * (mem0/openviking) manage their own retention server-side.
+   */
+  retentionDays?: number;
+}
+
+/** True for loopback hostnames (localhost, 127.0.0.0/8, ::1). */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '::1' ||
+    host === '[::1]' ||
+    /^127\./.test(host)
+  );
+}
+
+/**
+ * Memory-provider endpoint policy (audit H-9/M-18): a provider endpoint
+ * receives the user's memory queries and stored turns, so it must be
+ * https: — plain http: is allowed only for loopback endpoints (the local
+ * default deployment). Enforced at provider construction so a config
+ * pointing memory traffic at a remote plaintext endpoint fails fast
+ * instead of silently exfiltrating.
+ */
+export function assertProviderEndpointAllowed(endpoint: string, providerName: string): void {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`${providerName} memory provider endpoint is not a valid URL: ${endpoint}`);
+  }
+  if (url.protocol === 'https:') return;
+  if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return;
+  throw new Error(
+    `${providerName} memory provider endpoint must use https: (plain http: is only allowed for loopback hosts): ${endpoint}`
+  );
 }
 
 export interface KnowledgeBaseConfig {

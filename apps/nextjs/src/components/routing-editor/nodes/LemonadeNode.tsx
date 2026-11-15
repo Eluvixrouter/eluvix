@@ -26,16 +26,29 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
   const [expanded, setExpanded] = useState<boolean>(false);
 
   const dataRef = useRef(data);
-  dataRef.current = data;
-
+  // Keep the ref current after render; assigning it during render is what
+  // react-hooks/refs forbids. Callbacks below read the latest node data
+  // through this ref instead of closing over the `data` prop, so their
+  // identity stays stable while still seeing current values.
   useEffect(() => {
-    if (!data) return;
-    setEndpoint(data.endpoint || 'http://localhost:13305');
-    setPriority(data.priority ?? 25);
-    setSelectedModel(data.selectedModel || '*');
-    if (Array.isArray(data.models)) setModels(data.models);
-    if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
-  }, [data]);
+    dataRef.current = data;
+  });
+
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      setEndpoint(data.endpoint || 'http://localhost:13305');
+      setPriority(data.priority ?? 25);
+      setSelectedModel(data.selectedModel || '*');
+      if (Array.isArray(data.models)) setModels(data.models);
+      if (Array.isArray(data.modelDetails)) setDetails(data.modelDetails);
+    }
+  }
 
   const syncData = useCallback((updates: Record<string, any>) => {
     if (dataRef.current) {
@@ -53,7 +66,7 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: id || data?.id || 'lemonade',
+          id: id || dataRef.current?.id || 'lemonade',
           name: 'Lemonade Local',
           type: 'lemonade',
           endpoint: targetEndpoint
@@ -91,10 +104,17 @@ export default function LemonadeNode({ id, data }: { id: string; data: any }) {
       setStatus('offline');
       syncData({ endpoint: targetEndpoint, models: preservedModels, status: 'offline' });
     }
-  }, [endpoint, id, data?.id, syncData]);
+  }, [endpoint, id, syncData]);
 
+  // Initial detection. The probe is kicked off from a timer callback rather
+  // than synchronously in the effect body, so no setState happens
+  // synchronously in the effect. A zero-delay timer starts the probe before
+  // the next paint, so the 'checking' feedback is unchanged.
   useEffect(() => {
-    detectModels();
+    const timer = setTimeout(() => {
+      void detectModels();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [detectModels]);
 
   const handleEndpointChange = (e: React.ChangeEvent<HTMLInputElement>) => {

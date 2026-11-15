@@ -28,7 +28,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
   try {
-    if (req.method === 'GET' && req.url === '/health') {
+    // Match on the pathname, not the raw URL: /health?anything must not 404.
+    if (req.method === 'GET' && (req.url === '/health' || req.url.startsWith('/health?'))) {
       res.end(JSON.stringify({ status: 'ok', service: 'eluvix-graphiti', groups: factsByGroup.size }));
       return;
     }
@@ -45,6 +46,9 @@ const server = http.createServer(async (req, res) => {
       const msgs = Array.isArray(body.messages) ? body.messages : [];
       const list = factsByGroup.get(groupId) || [];
       const nowIso = new Date().toISOString();
+      // Report only what was actually stored: empty-content messages are
+      // skipped below, so reporting msgs.length overstated the count.
+      let stored = 0;
       for (const m of msgs) {
         const content = typeof m.content === 'string' ? m.content.trim() : '';
         if (content) {
@@ -55,10 +59,11 @@ const server = http.createServer(async (req, res) => {
             valid_at: m.timestamp || nowIso,
             invalid_at: null
           });
+          stored++;
         }
       }
       factsByGroup.set(groupId, list.slice(-200));
-      res.end(JSON.stringify({ status: 'ok', added: msgs.length }));
+      res.end(JSON.stringify({ status: 'ok', added: stored }));
       return;
     }
     if (req.method === 'POST' && req.url === '/search') {

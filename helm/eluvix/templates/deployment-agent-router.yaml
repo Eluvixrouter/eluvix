@@ -22,6 +22,11 @@ spec:
         - name: agent-router
           image: "{{ .Values.agentRouter.image.repository }}:{{ .Values.agentRouter.image.tag }}"
           imagePullPolicy: {{ .Values.agentRouter.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.agentRouter.port }}

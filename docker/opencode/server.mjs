@@ -60,7 +60,10 @@ function parseBody(req) {
       try {
         resolve(JSON.parse(raw));
       } catch {
-        resolve({ _raw: raw });
+        // Malformed JSON is a client error, not an empty message: the old
+        // {_raw} fallback made a malformed POST return 200 with an empty
+        // "Processed" reply, hiding the error from the caller.
+        reject(new Error('Malformed JSON'));
       }
     });
     req.on('error', reject);
@@ -86,7 +89,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/session') {
-      const body = await parseBody(req);
+      let body;
+      try {
+        body = await parseBody(req);
+      } catch (err) {
+        const tooLarge = err && err.message === 'Payload too large';
+        res.writeHead(tooLarge ? 413 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: tooLarge ? 'Payload too large (limit 5MB)' : 'Malformed JSON' }));
+        return;
+      }
       const id = `oc_elx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const kvPrefixHash =
         body.kvPrefixHash ||
@@ -117,7 +128,15 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'Session not found' }));
         return;
       }
-      const body = await parseBody(req);
+      let body;
+      try {
+        body = await parseBody(req);
+      } catch (err) {
+        const tooLarge = err && err.message === 'Payload too large';
+        res.writeHead(tooLarge ? 413 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: tooLarge ? 'Payload too large (limit 5MB)' : 'Malformed JSON' }));
+        return;
+      }
       const agent = body.agent || 'build';
       const rawPrompt = Array.isArray(body.parts)
         ? body.parts.filter(p => p?.type === 'text').map(p => p.text).join('\n')

@@ -53,23 +53,30 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     data?.budgetExhaustedAction || 'prefer-local'
   );
 
-  // Resynchronize local state when layout or node data reference changes
-  useEffect(() => {
-    if (!data) return;
-    setStrategy(data.strategy || 'cost-complexity');
-    setRoutes(Array.isArray(data.routes) && data.routes.length > 0 ? data.routes : DEFAULT_ROUTES);
-    setKvPrefixAffinity(data.kvPrefixAffinity ?? true);
-    setMediaIntentRouting(data.mediaIntentRouting ?? true);
-    setPrefillIsolationThreshold(data.prefillIsolationThresholdTokens ?? 4096);
-    setEnablePrefillIsolation(data.prefillIsolationThresholdTokens !== undefined);
-    setConfidentialPolicy(data.confidentialPolicy || 'disabled');
-    setQuantizationPolicy(data.quantizationPolicy || 'disabled');
-    setFabricPolicy(data.fabricPolicy || 'disabled');
-    setCrsPolicy(data.crsPolicy || 'disabled');
-    setAttentionPolicy(data.attentionPolicy || 'disabled');
-    setMaxDailySpendUsd(typeof data.maxDailySpendUsd === 'number' ? data.maxDailySpendUsd : 0);
-    setBudgetExhaustedAction(data.budgetExhaustedAction || 'prefer-local');
-  }, [data]);
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing, so no
+  // cascading post-commit render happens.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      setStrategy(data.strategy || 'cost-complexity');
+      setRoutes(Array.isArray(data.routes) && data.routes.length > 0 ? data.routes : DEFAULT_ROUTES);
+      setKvPrefixAffinity(data.kvPrefixAffinity ?? true);
+      setMediaIntentRouting(data.mediaIntentRouting ?? true);
+      setPrefillIsolationThreshold(data.prefillIsolationThresholdTokens ?? 4096);
+      setEnablePrefillIsolation(data.prefillIsolationThresholdTokens !== undefined);
+      setConfidentialPolicy(data.confidentialPolicy || 'disabled');
+      setQuantizationPolicy(data.quantizationPolicy || 'disabled');
+      setFabricPolicy(data.fabricPolicy || 'disabled');
+      setCrsPolicy(data.crsPolicy || 'disabled');
+      setAttentionPolicy(data.attentionPolicy || 'disabled');
+      setMaxDailySpendUsd(typeof data.maxDailySpendUsd === 'number' ? data.maxDailySpendUsd : 0);
+      setBudgetExhaustedAction(data.budgetExhaustedAction || 'prefer-local');
+    }
+  }
 
   // Synchronize with node data
   const syncData = useCallback((updates: Record<string, any>) => {
@@ -81,20 +88,26 @@ export default function SwitchyardNode({ id, data }: { id: string; data: any }) 
     }
   }, [id, data, updateNodeData]);
 
-  // Ensure data object holds defaults without overwriting new layout props with stale state
-  if (data) {
-    if (!data.strategy) data.strategy = 'cost-complexity';
-    if (!data.routes) data.routes = DEFAULT_ROUTES;
-    if (data.timeoutMs === undefined) data.timeoutMs = 60000;
-    if (data.retryCount === undefined) data.retryCount = 1;
-    if (data.spilloverThresholdMs === undefined) data.spilloverThresholdMs = 30000;
-    if (data.codeEscalation === undefined) data.codeEscalation = true;
-    if (data.kvPrefixAffinity === undefined) data.kvPrefixAffinity = true;
+  // Persist missing defaults into the node data via the store, never by
+  // mutating the `data` prop. Guarded so each default is written once; the
+  // compiler defaults the same values for missing fields, so this only
+  // keeps saved layouts self-contained.
+  useEffect(() => {
+    if (!data || !id) return;
+    const missing: Record<string, unknown> = {};
+    if (!data.strategy) missing.strategy = 'cost-complexity';
+    if (!data.routes) missing.routes = DEFAULT_ROUTES;
+    if (data.timeoutMs === undefined) missing.timeoutMs = 60000;
+    if (data.retryCount === undefined) missing.retryCount = 1;
+    if (data.spilloverThresholdMs === undefined) missing.spilloverThresholdMs = 30000;
+    if (data.codeEscalation === undefined) missing.codeEscalation = true;
+    if (data.kvPrefixAffinity === undefined) missing.kvPrefixAffinity = true;
     if (!data.complexityThresholds) {
-      data.complexityThresholds = { moderate: 300, heavy: 1500, frontier: 6000 };
+      missing.complexityThresholds = { moderate: 300, heavy: 1500, frontier: 6000 };
     }
-    if (data.maxCostPerRequest === undefined) data.maxCostPerRequest = 0.05;
-  }
+    if (data.maxCostPerRequest === undefined) missing.maxCostPerRequest = 0.05;
+    if (Object.keys(missing).length > 0) updateNodeData(id, missing);
+  }, [data, id, updateNodeData]);
 
   const handleStrategyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;

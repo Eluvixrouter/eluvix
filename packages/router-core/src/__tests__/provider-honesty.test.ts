@@ -13,7 +13,11 @@ import { getProviderSettings, saveProviderSettings } from '../db.js';
  * never landed, and no fabricated GPU telemetry.
  */
 
-const SERVER = 'http://billama.test';
+// https: the provider agent now refuses plaintext-http server URLs for
+// non-loopback hosts (security remediation S-5). The engine URL below
+// stays http on purpose — it is a local engine endpoint and carries no
+// node token, so it is not scheme-validated.
+const SERVER = 'https://billama.test';
 const ENGINE = 'http://engine.test';
 
 function jsonResponse(body: any, status = 200): Response {
