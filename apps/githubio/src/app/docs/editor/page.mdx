@@ -87,6 +87,8 @@ The Routing Editor organizes nodes into functional categories:
   - Tool filter modes: `all`, `whitelist`, `blacklist`.
   - Output PII sanitization: Scrubs sensitive data from tool returns before feeding to LLMs.
   - OpenBao Secret Mapping: Directly maps encrypted API keys into tool runtime environments.
+- **Paperclip Bridge (`paperclipBridgeNode`)**:
+  - Connects Switchyard to a Paperclip agent org server with priority policies (`critical`, `high`, `medium`, `low`), budget-pressure cascade thresholds, `confidential`/`internal` sensitivity floors, HMAC context signing (`hmacSecret`, `requireSignedContext`), and an interactive **Probe** health check (`POST /api/v1/paperclip/health`).
 
 ### 4. Tools & Observability
 - **MCP Tool (`mcpToolNode`)**:

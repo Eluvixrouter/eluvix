@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { recordPaperclipAssignmentOutcome } from '@eluvix/router-core';
-import { requirePaperclipCaller } from '@/lib/paperclip-route-helpers';
+import { resolveAndRecordPaperclipFeedback } from '@eluvix/router-core';
+import { assertPaperclipCompanyScope, requirePaperclipCaller } from '@/lib/paperclip-route-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,15 +26,35 @@ export async function POST(req: Request) {
     );
   }
 
-  recordPaperclipAssignmentOutcome({
+  const companyId =
+    typeof body.companyId === 'string'
+      ? body.companyId
+      : typeof body.task?.companyId === 'string'
+      ? body.task.companyId
+      : undefined;
+  const companyErr = assertPaperclipCompanyScope(auth.identity, companyId);
+  if (companyErr) return companyErr;
+
+  const result = resolveAndRecordPaperclipFeedback({
     userId: auth.identity.userId,
+    companyId,
+    allowedCompanyIds: auth.identity.paperclip?.companyIds,
     issueId: body.issueId,
     agentId: body.agentId,
-    taskClass: typeof body.taskClass === 'string' ? body.taskClass : 'text:moderate',
+    runId: typeof body.runId === 'string' ? body.runId : undefined,
+    task: body.task && typeof body.task === 'object' ? body.task : undefined,
+    title: typeof body.title === 'string' ? body.title : undefined,
+    description: typeof body.description === 'string' ? body.description : undefined,
+    priority: body.priority,
+    labels: Array.isArray(body.labels) ? body.labels.map(String) : undefined,
+    sensitivity: body.sensitivity,
+    taskClass: typeof body.taskClass === 'string' ? body.taskClass : undefined,
     success: Boolean(body.success),
-    costUsd: typeof body.costUsd === 'number' ? body.costUsd : 0,
-    durationMs: typeof body.durationMs === 'number' ? body.durationMs : 0,
+    reopened: Boolean(body.reopened),
+    outcomeStatus: typeof body.outcomeStatus === 'string' ? body.outcomeStatus : undefined,
+    costUsd: typeof body.costUsd === 'number' ? body.costUsd : undefined,
+    durationMs: typeof body.durationMs === 'number' ? body.durationMs : undefined,
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json(result);
 }

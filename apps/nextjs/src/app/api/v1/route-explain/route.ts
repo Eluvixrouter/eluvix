@@ -1,7 +1,16 @@
 import { NextResponse } from 'next/server';
-import { Eluvix, resolveBearerToken, type RequestScope, type RouterConfig } from '@eluvix/router-core';
+import {
+  Eluvix,
+  isPaperclipCompanyAllowed,
+  mergeEffectiveHops,
+  parseVerifiedPaperclipRequest,
+  resolveBearerToken,
+  type PaperclipKeyPolicy,
+  type RequestScope,
+  type RouterConfig
+} from '@eluvix/router-core';
 import { getRouter, getConfig } from '@/lib/router';
-import { resolveCallerIdentity } from '@/lib/caller-identity';
+import { resolveCallerIdentity, extractApiTokenFromHeaders } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,20 +25,24 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   let keyUserId: string | undefined;
   let keyOrigin: RequestScope['origin'] | undefined;
-  const authHeader = req?.headers?.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      if (!resolved.valid) {
-        return NextResponse.json(
-          { error: 'Incorrect API key provided.' },
-          { status: 401 }
-        );
-      }
-      keyUserId = resolved.userId;
-      keyOrigin = resolved.origin;
+  let keyHasPaperclipScope = false;
+  let keyPaperclipPolicy: PaperclipKeyPolicy | undefined;
+  const token = req?.headers ? extractApiTokenFromHeaders(req) : null;
+  if (token && token.startsWith('elx_')) {
+    const resolved = resolveBearerToken(token);
+    if (!resolved.valid) {
+      return NextResponse.json(
+        { error: 'Incorrect API key provided.' },
+        { status: 401 }
+      );
     }
+    keyUserId = resolved.userId;
+    keyOrigin = resolved.origin;
+    keyHasPaperclipScope =
+      !Array.isArray(resolved.scopes) ||
+      resolved.scopes.length === 0 ||
+      resolved.scopes.includes('paperclip');
+    keyPaperclipPolicy = resolved.paperclip;
   }
 
   let body: any;
@@ -139,6 +152,38 @@ export async function POST(req: Request) {
       metadata.attentionPolicy = attentionPolicyHeader;
     }
 
+    const pcCfg = routerConfig?.integrations?.paperclip;
+    const isAdminOrSessionCaller = !token || !token.startsWith('elx_');
+    const paperclip = parseVerifiedPaperclipRequest(req?.headers, {
+      config: pcCfg,
+      keyPolicy: keyPaperclipPolicy,
+      hasPaperclipScope: keyHasPaperclipScope,
+      isAdminOrSessionCaller,
+      bodyPaperclip: body.paperclip,
+    });
+    const rawCompanyHdr = req?.headers?.get('x-paperclip-company-id')?.trim();
+    const candidateCompany =
+      rawCompanyHdr ||
+      paperclip.companyId ||
+      (typeof body?.paperclip?.companyId === 'string'
+        ? body.paperclip.companyId.trim()
+        : undefined);
+    if (
+      keyPaperclipPolicy?.companyIds &&
+      keyPaperclipPolicy.companyIds.length > 0 &&
+      !isPaperclipCompanyAllowed(candidateCompany, keyPaperclipPolicy)
+    ) {
+      return NextResponse.json(
+        {
+          error: candidateCompany
+            ? `API key is not authorized for Paperclip company "${candidateCompany}".`
+            : 'API key requires an authorized "companyId" or "x-paperclip-company-id".',
+        },
+        { status: 403 }
+      );
+    }
+    const effectiveHops = mergeEffectiveHops(hops, paperclip);
+
     const explanation = router.explainRoute(
       {
         model: body.model || defaultModel,
@@ -149,8 +194,9 @@ export async function POST(req: Request) {
       },
       {
         scope,
-        hops,
-        memoryTainted: Boolean(body.memoryTainted)
+        hops: effectiveHops,
+        memoryTainted: Boolean(body.memoryTainted),
+        paperclip,
       }
     );
     return NextResponse.json(explanation);

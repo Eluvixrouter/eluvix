@@ -631,36 +631,43 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
     title: 'Paperclip Agent Org Integration',
     category: 'Agent Ecosystem',
     icon: '📎',
-    summary: 'Deep Paperclip integration: eluvix/* virtual models, eluvix_local OpenCode adapter, priority/budget/sensitivity routing, and Switchyard assignee recommendation.',
+    summary: 'Deep Paperclip integration: eluvix/* virtual models, eluvix_local OpenCode adapter, HMAC context signing, per-key ceilings, React UI slots, and Thompson/embedding assignee learning.',
     content: {
-      overview: 'Eluvix integrates with Paperclip across Tier 0 (virtual Switchyard models), Tier 1 (@eluvix/paperclip-adapter running eluvix_local OpenCode harness), and Tier 2 (@eluvix/paperclip-plugin for task classification and opt-in auto-assignment).',
+      overview: 'Eluvix integrates with Paperclip across Tier 0 (virtual Switchyard models), Tier 1 (@eluvix/paperclip-adapter running eluvix_local with mid-run virtual tier escalation), and Tier 2 (@eluvix/paperclip-plugin with 5 React UI slots, auto-with-approval proposals, and SQLite Thompson/semantic assignee learning).',
       subsections: [
         {
           title: 'Paperclip API Endpoints (/api/v1/paperclip/*)',
-          body: 'All Paperclip integration routes require a valid Bearer token with the "paperclip" (or "*") scope and enforce per-user SQLite isolation.',
+          body: 'All Paperclip integration routes require a valid Bearer token with the "paperclip" (or "*") scope (or an authenticated dashboard session for /health), enforce per-user & optional companyIds SQLite isolation (403 on cross-company access), and cap effective Switchyard tiers/cost via per-key paperclip policies.',
           table: {
             headers: ['Method & Path', 'Description'],
             rows: [
-              ['GET /api/v1/paperclip/whoami', 'Verifies key identity, Paperclip integration status, egress policy, and rolling 24h spend.'],
+              ['GET /api/v1/paperclip/whoami', 'Verifies key identity, Paperclip integration status, company/tier/cost ceilings, egress policy, and rolling 24h spend.'],
               ['GET /api/v1/paperclip/capabilities', 'Returns Switchyard strategy, virtual models (eluvix/*), Paperclip policy, and sanitized upstream fleet.'],
               ['POST /api/v1/paperclip/classify', 'Classifies task title/description/priority/labels into complexity, modalities, sensitivity, and suggested tier.'],
-              ['POST /api/v1/paperclip/recommend-assignee', 'Ranks candidate Paperclip agents using capability fit, cost, latency, load, budget, and SQLite outcome priors.'],
-              ['POST /api/v1/paperclip/feedback', 'Records assignment outcome priors into paperclip_assignment_outcomes for Thompson-style historical scoring.'],
-              ['GET /api/v1/paperclip/usage/:runId', 'Aggregates authoritative token counts, dominant model, and USD cost by correlation_id for a Paperclip run.'],
+              ['POST /api/v1/paperclip/recommend-assignee', 'Ranks candidate Paperclip agents using /v1/embeddings semantic fit, decayed cost-weighted Beta posteriors, 7d burn-rate forecast, live load, and hierarchy affinity.'],
+              ['POST /api/v1/paperclip/feedback', 'Records assignment outcome priors into paperclip_assignment_outcomes for decayed cost-weighted Thompson scoring.'],
+              ['GET /api/v1/paperclip/usage/:runId', 'Aggregates authoritative token counts, dominant model, and USD cost by correlation_id for a Paperclip run (company-scoped).'],
+              ['GET / POST /api/v1/paperclip/health', 'SSRF-guarded live health probe (validates DNS/host against cloud IMDS) querying Paperclip /api/health for PaperclipBridgeNode.'],
             ],
           },
         },
         {
-          title: 'Paperclip Request & Response Headers',
-          body: 'Trusted x-paperclip-* headers bias Switchyard upstream selection and correlate telemetry.',
+          title: 'Paperclip Security, Request & Response Headers',
+          body: 'Trusted x-paperclip-* headers bias Switchyard upstream selection, optionally signed via HMAC-SHA256 (X-Paperclip-Context-Ts + X-Paperclip-Context-Sig, 300s skew window), and emit correlated telemetry and OTLP paperclip.* span attributes.',
           table: {
             headers: ['Header', 'Description'],
             rows: [
+              ['X-Paperclip-Context-Ts', 'Epoch millisecond timestamp paired with X-Paperclip-Context-Sig for HMAC-SHA256 replay protection (300s max skew).'],
+              ['X-Paperclip-Context-Sig', 'HMAC-SHA256 signature (v1.<ts>.<hex>) authenticating canonical x-paperclip-* context and routing bias headers.'],
               ['X-Eluvix-Correlation-Id', 'Echoes the correlated Paperclip run ID (x-paperclip-run-id) persisted on request_logs.'],
               ['X-Eluvix-Paperclip-Priority', 'Echoes the resolved Paperclip issue priority (critical, high, medium, low).'],
-              ['X-Eluvix-Paperclip-Bias', 'Comma-separated Switchyard routing bias tags applied (tier-floor, tier-ceiling, prefer-local, local-only, budget-cascade).'],
+              ['X-Eluvix-Paperclip-Bias', 'Comma-separated Switchyard routing bias tags applied (tier-floor, tier-ceiling, prefer-local, local-only, budget-cascade, key-tier-ceiling, key-cost-ceiling).'],
             ],
           },
+        },
+        {
+          title: 'Plugin UI Slots, Auto-With-Approval & Mid-Run Tier Escalation',
+          body: '@eluvix/paperclip-plugin exports a bundled React UI (taskDetailView issue card, /switchyard company page, dashboardWidget, sidebar link, detailTab agent performance panel) and an auto-with-approval mode backed by ctx.state proposals. When @eluvix/paperclip-adapter (eluvix_local) hits a transient 429 or 5xx error during a heartbeat, escalateOnFailure steps up one virtual tier (fast-local -> code-specialist -> heavy-reasoning -> frontier-verified) within that single run without mutating agent configuration.',
         },
       ],
     },

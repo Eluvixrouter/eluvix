@@ -1399,6 +1399,10 @@ function generateEluvixConfig(
           | 'scoped-key',
         ...(paperclipData.budgetPressure ? { budgetPressure: paperclipData.budgetPressure } : {}),
         ...(paperclipData.priorityPolicy ? { priorityPolicy: paperclipData.priorityPolicy } : {}),
+        ...(paperclipData.hmacSecret ? { hmacSecret: String(paperclipData.hmacSecret) } : {}),
+        ...(typeof paperclipData.requireSignedContext === 'boolean'
+          ? { requireSignedContext: paperclipData.requireSignedContext }
+          : {}),
       }
     : undefined;
   const knowledgeConfig = kbNode

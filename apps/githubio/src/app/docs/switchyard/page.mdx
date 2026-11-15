@@ -121,10 +121,13 @@ Tracks cumulative USD spend across a rolling 24-hour window in SQLite (`getRolli
 - **`strict-local`**: Restricts candidates exclusively to `\$0.00` local engines; returns HTTP `429` (`X-Eluvix-Budget-Guard: DENIED_DAILY_SPEND_CAP`) if no local engine is healthy.
 - **`reject`**: Immediately rejects requests with HTTP `429` until rolling 24-hour expenditure drops below the ceiling.
 
-### 3. Modality-Aware Media Intent Routing (`mediaIntentRouting`)
+### 3. Modality-Aware Media Intent & Paperclip Org Bias (`mediaIntentRouting`, `integrations.paperclip`)
 When `mediaIntentRouting` is enabled (default `true`), Switchyard classifies every `model: "auto"` prompt across `text`, `code`, `vision-input`, `image-gen`, `video-gen`, and `mesh-3d`:
 - Conversational, coding, tool-calling, and vision-input chat completions automatically **exclude** synthesis-only ComfyUI nodes.
 - Generative synthesis prompts automatically steer to matching ComfyUI workflow presets (`flux-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`).
+
+When Paperclip integration (`integrations.paperclip`) is enabled and HMAC-verified/scoped context arrives (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`):
+- Issue priority, remaining budget percentage, and sensitivity dynamically bias tier floors/ceilings and local-only egress (`X-Eluvix-Paperclip-Bias`), while per-key `maxTier` / `maxCostPer1kUsd` ceilings enforce strict upper bounds (`key-tier-ceiling`, `key-cost-ceiling`).
 
 ---
 

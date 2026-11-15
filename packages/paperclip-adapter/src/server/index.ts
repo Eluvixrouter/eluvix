@@ -17,12 +17,22 @@ export const label = 'Eluvix Switchyard (OpenCode Harness)';
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
     if (!raw || typeof raw !== 'object') return null;
-    const sid = (raw as Record<string, unknown>).sessionId;
-    return typeof sid === 'string' && sid ? { sessionId: sid } : null;
+    const r = raw as Record<string, unknown>;
+    const sid = r.sessionId;
+    if (typeof sid !== 'string' || !sid) return null;
+    return {
+      sessionId: sid,
+      ...(typeof r.cwd === 'string' && r.cwd ? { cwd: r.cwd } : {}),
+      ...(typeof r.model === 'string' && r.model ? { model: r.model } : {}),
+    };
   },
   serialize(params) {
     if (!params || typeof params.sessionId !== 'string' || !params.sessionId) return null;
-    return { sessionId: params.sessionId };
+    return {
+      sessionId: params.sessionId,
+      ...(typeof params.cwd === 'string' && params.cwd ? { cwd: params.cwd } : {}),
+      ...(typeof params.model === 'string' && params.model ? { model: params.model } : {}),
+    };
   },
   getDisplayId(params) {
     return typeof params?.sessionId === 'string' ? params.sessionId : null;
@@ -76,6 +86,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: 'toggle',
         default: true,
         group: 'Harness',
+      },
+      {
+        key: 'escalateOnFailure',
+        label: 'Mid-Run Virtual Tier Escalation',
+        type: 'toggle',
+        default: true,
+        hint: 'Automatically escalate virtual tier on transient/capacity failures within a heartbeat, resetting next heartbeat.',
+        group: 'Routing',
       },
       {
         key: 'approvalPolicy',

@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getAppPaths } from './paths.js';
 import { recordAuditEvent } from './audit.js';
+import type { PaperclipKeyPolicy } from './paperclip-context.js';
 import {
   authenticateLdapUser,
   resolveLdapConfig,
@@ -151,6 +152,7 @@ export interface NamedApiKey {
   expiresAt?: string;
   maxDailySpendUsd?: number;
   rpm?: number;
+  paperclip?: PaperclipKeyPolicy;
   createdAt: string;
 }
 
@@ -257,6 +259,7 @@ export function createNamedApiKey(
     expiresAt?: string;
     maxDailySpendUsd?: number;
     rpm?: number;
+    paperclip?: PaperclipKeyPolicy;
     actorId?: string;
   },
   appName = 'eluvix'
@@ -285,6 +288,7 @@ export function createNamedApiKey(
       ? { maxDailySpendUsd: input.maxDailySpendUsd }
       : {}),
     ...(typeof input.rpm === 'number' && input.rpm > 0 ? { rpm: input.rpm } : {}),
+    ...(input.paperclip ? { paperclip: input.paperclip } : {}),
     createdAt,
   };
 
@@ -385,6 +389,7 @@ export function resolveBearerToken(
   expiresAt?: string;
   maxDailySpendUsd?: number;
   rpm?: number;
+  paperclip?: PaperclipKeyPolicy;
 } {
   if (!token) {
     return { valid: false, reason: 'invalid-key', userId: 'default', origin: 'client' };
@@ -523,6 +528,7 @@ export function resolveBearerToken(
         expiresAt: entry.expiresAt,
         maxDailySpendUsd: entry.maxDailySpendUsd,
         rpm: entry.rpm,
+        ...(entry.paperclip ? { paperclip: entry.paperclip } : {}),
       };
     }
   }

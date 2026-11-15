@@ -29,10 +29,15 @@ import {
   getStoredResponse,
   saveStoredResponse,
   PAPERCLIP_VIRTUAL_MODELS,
+  parseVerifiedPaperclipRequest,
+  mergeEffectiveHops,
   classifyPaperclipTask,
+  evaluatePaperclipCandidateAssignments,
   recommendPaperclipAssignees,
   getPaperclipOutcomePriors,
   recordPaperclipAssignmentOutcome,
+  recordPaperclipIssueClassification,
+  resolveAndRecordPaperclipFeedback,
   getPaperclipUsageByCorrelation,
   globalCircuitBreaker,
   getEffectiveCostPer1kTokens,
@@ -646,9 +651,21 @@ export class DesktopRouterServer extends EventEmitter {
             abortController.abort(new DOMException('Client closed connection', 'AbortError'));
           }
         });
+        const rawHops = req.headers['x-eluvix-hops'];
+        const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
+        const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+        const pcCfg = this.router.getConfig()?.integrations?.paperclip;
+        const paperclip = parseVerifiedPaperclipRequest(req.headers, {
+          config: pcCfg,
+          isAdminOrSessionCaller: true,
+        });
+        const effectiveHops = mergeEffectiveHops(hops, paperclip);
+
         const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
           signal: abortController.signal,
-          scope: { userId: 'default', origin: 'client' }
+          scope: { userId: 'default', origin: 'client' },
+          hops: effectiveHops,
+          paperclip,
         });
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || chosenUpstreamName;
@@ -703,6 +720,25 @@ export class DesktopRouterServer extends EventEmitter {
         }
 
         const data = await upstreamResponse.json().catch(() => ({}));
+        const costHdr = upstreamResponse.headers.get('x-eluvix-cost-usd');
+        if (data && typeof data === 'object' && costHdr !== null) {
+          const parsedCost = Number(costHdr);
+          if (Number.isFinite(parsedCost)) {
+            if (data.usage && typeof data.usage === 'object') {
+              if (data.usage.cost === undefined) data.usage.cost = parsedCost;
+            } else if (paperclip?.runId) {
+              const estPrompt = parseInt(upstreamResponse.headers.get('x-eluvix-tokens') || '0', 10) || 0;
+              const contentStr = String(data.choices?.[0]?.message?.content || '');
+              const estCompletion = Math.max(1, Math.ceil(contentStr.length / 4));
+              data.usage = {
+                prompt_tokens: estPrompt,
+                completion_tokens: estCompletion,
+                total_tokens: estPrompt + estCompletion,
+                cost: parsedCost,
+              };
+            }
+          }
+        }
         res.writeHead(upstreamResponse.status, {
           ...forwardedHeaders,
           'Content-Type': 'application/json'
@@ -785,6 +821,22 @@ export class DesktopRouterServer extends EventEmitter {
             ? new Eluvix(body.configOverride as RouterConfig)
             : this.router;
 
+        const rawExplainHops = req.headers['x-eluvix-hops'];
+        const explainHopsHdr = Array.isArray(rawExplainHops) ? rawExplainHops[0] : rawExplainHops;
+        const baseExplainHops = Math.max(
+          0,
+          Number.isFinite(Number(body.hops))
+            ? Number(body.hops)
+            : parseInt(explainHopsHdr || '0', 10) || 0
+        );
+        const explainPcCfg = activeRouter.getConfig()?.integrations?.paperclip;
+        const explainPaperclip = parseVerifiedPaperclipRequest(req.headers, {
+          config: explainPcCfg,
+          isAdminOrSessionCaller: true,
+          bodyPaperclip: body.paperclip,
+        });
+        const effectiveExplainHops = mergeEffectiveHops(baseExplainHops, explainPaperclip);
+
         const explanation = activeRouter.explainRoute(
           {
             model: typeof body.model === 'string' && body.model.trim() ? body.model.trim() : undefined,
@@ -799,9 +851,10 @@ export class DesktopRouterServer extends EventEmitter {
           },
           {
             scope: { userId: 'default', origin: body.origin === 'harness' ? 'harness' : 'client' },
-            hops: typeof body.hops === 'number' ? body.hops : 0,
+            hops: effectiveExplainHops,
             memoryTainted: Boolean(body.memoryTainted),
-            memoryTokens: typeof body.memoryTokens === 'number' ? body.memoryTokens : 0
+            memoryTokens: typeof body.memoryTokens === 'number' ? body.memoryTokens : 0,
+            paperclip: explainPaperclip,
           }
         );
 
@@ -1746,14 +1799,26 @@ export class DesktopRouterServer extends EventEmitter {
 
       if ((pathname === '/v1/paperclip/classify' || pathname === '/api/v1/paperclip/classify') && req.method === 'POST') {
         const body = JSON.parse((await this.readBody(req)) || '{}');
+        const issueId = typeof body.issueId === 'string' ? body.issueId : undefined;
+        const companyId = typeof body.companyId === 'string' ? body.companyId : undefined;
         const classification = classifyPaperclipTask({
-          issueId: typeof body.issueId === 'string' ? body.issueId : undefined,
+          issueId,
           title: String(body.title || ''),
           description: typeof body.description === 'string' ? body.description : undefined,
           priority: body.priority,
           labels: Array.isArray(body.labels) ? body.labels.map(String) : undefined,
           sensitivity: body.sensitivity,
         });
+        if (issueId) {
+          recordPaperclipIssueClassification({
+            issueId,
+            userId: 'default',
+            companyId,
+            taskClass: classification.taskClass,
+            title: String(body.title || ''),
+            priority: typeof body.priority === 'string' ? body.priority : undefined,
+          });
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(classification));
         return;
@@ -1768,9 +1833,28 @@ export class DesktopRouterServer extends EventEmitter {
           priority: body.task?.priority,
           labels: Array.isArray(body.task?.labels) ? body.task.labels.map(String) : undefined,
           sensitivity: body.task?.sensitivity,
+          parentAssigneeAgentId:
+            typeof body.task?.parentAssigneeAgentId === 'string'
+              ? body.task.parentAssigneeAgentId
+              : undefined,
         };
         const classification = classifyPaperclipTask(task);
-        const priors = getPaperclipOutcomePriors(classification.taskClass, 'default');
+        const companyId =
+          typeof body.companyId === 'string'
+            ? body.companyId
+            : typeof body.task?.companyId === 'string'
+            ? body.task.companyId
+            : undefined;
+        if (task.issueId) {
+          recordPaperclipIssueClassification({
+            issueId: task.issueId,
+            userId: 'default',
+            companyId,
+            taskClass: classification.taskClass,
+            title: task.title,
+            priority: typeof task.priority === 'string' ? task.priority : undefined,
+          });
+        }
         const fleet = this.router.getUpstreams().map((u) => ({
           id: u.id,
           name: u.name,
@@ -1781,35 +1865,48 @@ export class DesktopRouterServer extends EventEmitter {
           costPer1kTokens: getEffectiveCostPer1kTokens(u),
           estimatedLatencyMs: u.latencyMs ?? (isLocalUpstream(u) ? 750 : 1400),
         }));
-        const result = recommendPaperclipAssignees(
-          task,
-          (body.candidates || []) as PaperclipCandidateAgent[],
-          fleet,
-          body.weights,
-          priors
-        );
+        const candidates = (body.candidates || []) as PaperclipCandidateAgent[];
         const topN = typeof body.topN === 'number' && body.topN > 0 ? Math.min(20, body.topN) : undefined;
+        const result = await evaluatePaperclipCandidateAssignments({
+          router: this.router,
+          task,
+          candidates,
+          fleet,
+          userId: 'default',
+          weights: body.weights,
+          topN: topN ?? Math.max(5, candidates.length || 5),
+          explore: Boolean(body.explore),
+          exploreSeed: typeof body.exploreSeed === 'number' ? body.exploreSeed : undefined,
+          useEmbeddings: typeof body.useEmbeddings === 'boolean' ? body.useEmbeddings : undefined,
+        });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          ...result,
-          recommendations: topN ? result.recommendations.slice(0, topN) : result.recommendations,
-        }));
+        res.end(JSON.stringify(result));
         return;
       }
 
       if ((pathname === '/v1/paperclip/feedback' || pathname === '/api/v1/paperclip/feedback') && req.method === 'POST') {
         const body = JSON.parse((await this.readBody(req)) || '{}');
-        recordPaperclipAssignmentOutcome({
+        const result = resolveAndRecordPaperclipFeedback({
           userId: 'default',
+          companyId: typeof body.companyId === 'string' ? body.companyId : undefined,
           issueId: String(body.issueId || ''),
           agentId: String(body.agentId || ''),
-          taskClass: String(body.taskClass || 'text:moderate'),
+          runId: typeof body.runId === 'string' ? body.runId : undefined,
+          task: body.task && typeof body.task === 'object' ? body.task : undefined,
+          title: typeof body.title === 'string' ? body.title : undefined,
+          description: typeof body.description === 'string' ? body.description : undefined,
+          priority: body.priority,
+          labels: Array.isArray(body.labels) ? body.labels.map(String) : undefined,
+          sensitivity: body.sensitivity,
+          taskClass: typeof body.taskClass === 'string' ? body.taskClass : undefined,
           success: Boolean(body.success),
-          costUsd: typeof body.costUsd === 'number' ? body.costUsd : 0,
-          durationMs: typeof body.durationMs === 'number' ? body.durationMs : 0,
+          reopened: Boolean(body.reopened),
+          outcomeStatus: typeof body.outcomeStatus === 'string' ? body.outcomeStatus : undefined,
+          costUsd: typeof body.costUsd === 'number' ? body.costUsd : undefined,
+          durationMs: typeof body.durationMs === 'number' ? body.durationMs : undefined,
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify(result));
         return;
       }
 
@@ -1829,8 +1926,17 @@ export class DesktopRouterServer extends EventEmitter {
       console.error('[Eluvix Server Error]', err);
       if (res.destroyed || res.writableEnded) return;
       const status = typeof err?.statusCode === 'number' ? err.statusCode : 500;
+      const errType = status === 429 ? 'rate_limit_error' : 'api_error';
       res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: err.message || 'Internal Eluvix Error', type: 'api_error' } }));
+      res.end(
+        JSON.stringify({
+          error: {
+            message: err.message || 'Internal Eluvix Error',
+            type: errType,
+            ...(typeof err?.code === 'string' ? { code: err.code } : {}),
+          },
+        })
+      );
     }
   }
 

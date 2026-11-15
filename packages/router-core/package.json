@@ -113,6 +113,11 @@
       "types": "./dist/paperclip-assign.d.ts",
       "import": "./dist/paperclip-assign.js",
       "default": "./dist/paperclip-assign.js"
+    },
+    "./paperclip-auth": {
+      "types": "./dist/paperclip-auth.d.ts",
+      "import": "./dist/paperclip-auth.js",
+      "default": "./dist/paperclip-auth.js"
     }
   },
   "type": "module",

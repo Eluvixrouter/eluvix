@@ -3,6 +3,7 @@ import {
   resolveBearerToken,
   getOrCreateAuthConfig,
   type ApiKeyScope,
+  type PaperclipKeyPolicy,
 } from '@eluvix/router-core';
 
 /**
@@ -23,6 +24,7 @@ export type CallerIdentityResult =
       groups?: string[];
       authSource?: 'ldap' | 'local';
       via: 'api-key' | 'admin' | 'session';
+      paperclip?: PaperclipKeyPolicy;
     }
   | {
       ok: false;
@@ -127,6 +129,7 @@ export async function resolveCallerIdentity(
             userId: resolved.userId,
             role: resolved.role || 'operator',
             via: 'api-key',
+            ...(resolved.paperclip ? { paperclip: resolved.paperclip } : {}),
           }
         : { ok: false, reason: resolved.reason || 'invalid-key' };
     }

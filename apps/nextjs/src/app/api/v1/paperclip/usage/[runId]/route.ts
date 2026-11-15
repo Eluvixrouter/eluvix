@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getPaperclipUsageByCorrelation } from '@eluvix/router-core';
-import { requirePaperclipCaller } from '@/lib/paperclip-route-helpers';
+import { assertPaperclipCompanyScope, requirePaperclipCaller } from '@/lib/paperclip-route-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +19,12 @@ export async function GET(
     );
   }
 
-  const summary = getPaperclipUsageByCorrelation(runId, auth.identity.userId);
+  const url = new URL(req.url);
+  const queryCompanyId = url.searchParams.get('companyId')?.trim() || undefined;
+  const companyErr = assertPaperclipCompanyScope(auth.identity, queryCompanyId);
+  if (companyErr) return companyErr;
+
+  const scopedCompanies = queryCompanyId ? [queryCompanyId] : auth.identity.paperclip?.companyIds;
+  const summary = getPaperclipUsageByCorrelation(runId, auth.identity.userId, scopedCompanies);
   return NextResponse.json(summary);
 }

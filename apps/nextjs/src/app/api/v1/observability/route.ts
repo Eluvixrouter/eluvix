@@ -4,6 +4,7 @@ import {
   getDb,
   getCachedAntigravityModels,
   getRollingSpendUsd,
+  getPaperclipObservabilitySummary,
   getVramArbiterStats,
   listBanditArms,
 } from '@eluvix/router-core';
@@ -235,6 +236,9 @@ export async function GET(req: Request) {
     const estimatedSavings = (localRequestsCount * 0.005).toFixed(3);
     const activeCfg = getConfig();
     const rolling24hSpendUsd = getRollingSpendUsd(24, isAdmin ? undefined : (caller.ok ? caller.userId : 'anonymous'));
+    const paperclipSummary = getPaperclipObservabilitySummary({
+      userId: isAdmin ? undefined : caller.ok ? caller.userId : 'anonymous',
+    });
     const maxDailySpendUsd =
       typeof activeCfg.switchyard?.maxDailySpendUsd === 'number' && activeCfg.switchyard.maxDailySpendUsd > 0
         ? activeCfg.switchyard.maxDailySpendUsd
@@ -266,6 +270,7 @@ export async function GET(req: Request) {
           activeUpstreamsCount: upstreamsHealth.filter(u => u.status === 'online').length,
           totalUpstreamsCount: upstreamsHealth.length,
         },
+        paperclip: paperclipSummary,
         modelDistribution,
         upstreamDistribution,
         upstreams: upstreamsHealth,

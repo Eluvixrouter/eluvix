@@ -4998,7 +4998,8 @@ export default function RoutingEditor() {
                   applyDiff.promptGuardChanged ||
                   applyDiff.privacyGuardChanged ||
                   applyDiff.switchyardChanged ||
-                  applyDiff.modelGatewayChanged) && (
+                  applyDiff.modelGatewayChanged ||
+                  applyDiff.paperclipChanged) && (
                   <div>
                     <h4 className="text-purple-300 font-semibold mb-1.5">⚙️ Policies &amp; Topologies Updated</h4>
                     <div className="flex flex-wrap gap-1.5">
@@ -5080,6 +5081,11 @@ export default function RoutingEditor() {
                       {applyDiff.modelGatewayChanged && (
                         <span className="bg-slate-800 border border-slate-600 text-slate-200 text-xs px-2 py-0.5 rounded font-mono">
                           🚪 Model Gateways
+                        </span>
+                      )}
+                      {applyDiff.paperclipChanged && (
+                        <span className="bg-amber-950/60 border border-amber-500/50 text-amber-200 text-xs px-2 py-0.5 rounded font-mono">
+                          📎 Paperclip Bridge
                         </span>
                       )}
                     </div>

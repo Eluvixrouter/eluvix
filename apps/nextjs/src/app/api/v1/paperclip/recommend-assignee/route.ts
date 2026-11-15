@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import {
   classifyPaperclipTask,
-  getPaperclipOutcomePriors,
-  recommendPaperclipAssignees,
+  evaluatePaperclipCandidateAssignments,
+  recordPaperclipIssueClassification,
   type PaperclipCandidateAgent,
 } from '@eluvix/router-core';
 import {
+  assertPaperclipCompanyScope,
   buildPaperclipFleetSummary,
   requirePaperclipCaller,
 } from '@/lib/paperclip-route-helpers';
+import { getRouter } from '@/lib/router';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,17 +38,48 @@ export async function POST(req: Request) {
     priority: body.task.priority,
     labels: Array.isArray(body.task.labels) ? body.task.labels.map(String) : undefined,
     sensitivity: body.task.sensitivity,
+    parentAssigneeAgentId:
+      typeof body.task.parentAssigneeAgentId === 'string'
+        ? body.task.parentAssigneeAgentId
+        : undefined,
   };
 
   const classification = classifyPaperclipTask(task);
-  const priors = getPaperclipOutcomePriors(classification.taskClass, auth.identity.userId);
+  const companyId =
+    typeof body.companyId === 'string'
+      ? body.companyId
+      : typeof body.task.companyId === 'string'
+      ? body.task.companyId
+      : undefined;
+  const companyErr = assertPaperclipCompanyScope(auth.identity, companyId);
+  if (companyErr) return companyErr;
+
+  if (task.issueId) {
+    recordPaperclipIssueClassification({
+      issueId: task.issueId,
+      userId: auth.identity.userId,
+      companyId,
+      taskClass: classification.taskClass,
+      title: task.title,
+      priority: typeof task.priority === 'string' ? task.priority : undefined,
+    });
+  }
   const fleet = buildPaperclipFleetSummary();
   const candidates = body.candidates as PaperclipCandidateAgent[];
-  const result = recommendPaperclipAssignees(task, candidates, fleet, body.weights, priors);
-
   const topN = typeof body.topN === 'number' && body.topN > 0 ? Math.min(20, body.topN) : undefined;
-  return NextResponse.json({
-    ...result,
-    recommendations: topN ? result.recommendations.slice(0, topN) : result.recommendations,
+  const result = await evaluatePaperclipCandidateAssignments({
+    router: getRouter(),
+    task,
+    candidates,
+    fleet,
+    userId: auth.identity.userId,
+    companyIds: auth.identity.paperclip?.companyIds,
+    weights: body.weights,
+    topN: topN ?? Math.max(5, candidates.length || 5),
+    explore: Boolean(body.explore),
+    exploreSeed: typeof body.exploreSeed === 'number' ? body.exploreSeed : undefined,
+    useEmbeddings: typeof body.useEmbeddings === 'boolean' ? body.useEmbeddings : undefined,
   });
+
+  return NextResponse.json(result);
 }

@@ -15,6 +15,7 @@
  * branch, as before.
  */
 export type ChatErrorKind =
+  | 'loop-detected'
   | 'no-upstream'
   | 'all-upstreams-failed'
   | 'client-aborted'
@@ -23,6 +24,10 @@ export type ChatErrorKind =
 
 export function classifyChatError(err: Error): ChatErrorKind {
   const msg = err.message || '';
+
+  if (msg.includes('Routing loop detected')) {
+    return 'loop-detected';
+  }
 
   if (
     msg.startsWith('No upstream available') ||

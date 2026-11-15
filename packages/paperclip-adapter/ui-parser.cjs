@@ -28,6 +28,21 @@ function parseStdoutLine(line, ts) {
         },
       ];
     }
+    if (ev.type === 'escalation') {
+      return [
+        {
+          kind: 'system',
+          ts: at,
+          text:
+            '⚡ escalated virtual tier ' +
+            (ev.from || 'unknown') +
+            ' → ' +
+            (ev.to || 'unknown') +
+            (ev.status ? ' (HTTP ' + ev.status + ')' : '') +
+            (ev.reason ? ' — ' + ev.reason : ''),
+        },
+      ];
+    }
     if (ev.type === 'assistant' || ev.type === 'text') {
       return [{ kind: 'assistant', ts: at, text: String(ev.text || ev.content || '') }];
     }

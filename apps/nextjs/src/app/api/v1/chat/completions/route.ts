@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import {
-  parsePaperclipHeaders,
+  isPaperclipCompanyAllowed,
+  mergeEffectiveHops,
+  parseVerifiedPaperclipRequest,
   resolveBearerToken,
+  type PaperclipKeyPolicy,
   type RequestScope,
 } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
@@ -15,6 +18,7 @@ export async function POST(req: Request) {
   let keyUserId: string | undefined;
   let keyOrigin: RequestScope['origin'] | undefined;
   let keyHasPaperclipScope = false;
+  let keyPaperclipPolicy: PaperclipKeyPolicy | undefined;
   const rawToken = extractApiTokenFromHeaders(req);
   if (rawToken && rawToken.startsWith('elx_')) {
     const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
@@ -66,6 +70,7 @@ export async function POST(req: Request) {
       !resolved.scopes ||
       resolved.scopes.includes('*') ||
       resolved.scopes.includes('paperclip');
+    keyPaperclipPolicy = resolved.paperclip;
   }
 
   let body: any;
@@ -231,17 +236,38 @@ export async function POST(req: Request) {
 
     const pcCfg = router.getConfig()?.integrations?.paperclip;
     const isAdminOrSessionCaller = !rawToken || !rawToken.startsWith('elx_');
-    const trustPcHeaders =
-      keyHasPaperclipScope ||
-      isAdminOrSessionCaller ||
-      pcCfg?.trustHeadersFrom === 'loopback';
-    const paperclip = parsePaperclipHeaders(req.headers, { trusted: trustPcHeaders });
+    const paperclip = parseVerifiedPaperclipRequest(req.headers, {
+      config: pcCfg,
+      keyPolicy: keyPaperclipPolicy,
+      hasPaperclipScope: keyHasPaperclipScope,
+      isAdminOrSessionCaller,
+    });
+    const rawCompanyHdr = req.headers.get('x-paperclip-company-id')?.trim();
+    if (
+      keyPaperclipPolicy?.companyIds &&
+      keyPaperclipPolicy.companyIds.length > 0 &&
+      !isPaperclipCompanyAllowed(rawCompanyHdr || paperclip.companyId, keyPaperclipPolicy)
+    ) {
+      return NextResponse.json(
+        {
+          error: {
+            message: rawCompanyHdr
+              ? `API key is not authorized for Paperclip company "${rawCompanyHdr}".`
+              : 'API key requires an authorized "x-paperclip-company-id" header.',
+            type: 'invalid_request_error',
+            code: 'company_scope_forbidden',
+          },
+        },
+        { status: 403 }
+      );
+    }
+    const effectiveHops = mergeEffectiveHops(hops, paperclip);
 
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {
       signal: req.signal,
       scope,
-      hops,
+      hops: effectiveHops,
       paperclip
     });
 
@@ -350,8 +376,31 @@ export async function POST(req: Request) {
             controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkTools)}\n\n`));
           }
 
-          // Chunk 3: Finish reason
-          const chunkStop = {
+          // Chunk 3: Finish reason (with usage + usage.cost when available)
+          const rawJsonUsage =
+            json.usage && typeof json.usage === 'object' ? { ...json.usage } : undefined;
+          const parsedHeaderCost =
+            traceHeaders['x-eluvix-cost-usd'] !== undefined
+              ? Number(traceHeaders['x-eluvix-cost-usd'])
+              : NaN;
+          const estPromptTokens = parseInt(traceHeaders['x-eluvix-tokens'] || '0', 10) || 0;
+          const estCompletionTokens = Math.max(1, Math.ceil(String(content || '').length / 4));
+          const chunkUsage = rawJsonUsage
+            ? {
+                ...rawJsonUsage,
+                ...(rawJsonUsage.cost === undefined && Number.isFinite(parsedHeaderCost)
+                  ? { cost: parsedHeaderCost }
+                  : {}),
+              }
+            : (paperclip?.runId || body.stream_options?.include_usage) && Number.isFinite(parsedHeaderCost)
+            ? {
+                prompt_tokens: estPromptTokens,
+                completion_tokens: estCompletionTokens,
+                total_tokens: estPromptTokens + estCompletionTokens,
+                cost: parsedHeaderCost,
+              }
+            : undefined;
+          const chunkStop: Record<string, any> = {
             id,
             object: 'chat.completion.chunk',
             created,
@@ -360,7 +409,8 @@ export async function POST(req: Request) {
               index: 0,
               delta: {},
               finish_reason: finishReason
-            }]
+            }],
+            ...(chunkUsage ? { usage: chunkUsage } : {}),
           };
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunkStop)}\n\n`));
 
@@ -385,14 +435,25 @@ export async function POST(req: Request) {
     if (
       data &&
       typeof data === 'object' &&
-      data.usage &&
-      typeof data.usage === 'object' &&
-      data.usage.cost === undefined &&
       traceHeaders['x-eluvix-cost-usd'] !== undefined
     ) {
       const parsedCost = Number(traceHeaders['x-eluvix-cost-usd']);
       if (Number.isFinite(parsedCost)) {
-        data.usage.cost = parsedCost;
+        if (data.usage && typeof data.usage === 'object') {
+          if (data.usage.cost === undefined) {
+            data.usage.cost = parsedCost;
+          }
+        } else if (paperclip?.runId) {
+          const estPrompt = parseInt(traceHeaders['x-eluvix-tokens'] || '0', 10) || 0;
+          const contentStr = String(data.choices?.[0]?.message?.content || '');
+          const estCompletion = Math.max(1, Math.ceil(contentStr.length / 4));
+          data.usage = {
+            prompt_tokens: estPrompt,
+            completion_tokens: estCompletion,
+            total_tokens: estPrompt + estCompletion,
+            cost: parsedCost,
+          };
+        }
       }
     }
     return NextResponse.json(data, {
@@ -403,6 +464,20 @@ export async function POST(req: Request) {
     const err = error as Error;
     const msg = err.message || 'Internal server error';
     const kind = classifyChatError(err);
+
+    if (kind === 'loop-detected') {
+      return NextResponse.json(
+        {
+          error: {
+            message: msg,
+            type: 'rate_limit_error',
+            param: null,
+            code: 'agent_recursion_limit_exceeded'
+          }
+        },
+        { status: 429 }
+      );
+    }
 
     if (kind === 'no-upstream') {
       const isVision = msg.includes('with vision capability');

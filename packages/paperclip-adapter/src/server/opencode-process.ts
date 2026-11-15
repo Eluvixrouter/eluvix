@@ -21,6 +21,9 @@ export function buildOpenCodeConfigContent(opts: {
   paperclipHeaders: Record<string, string>;
   egressPolicy?: string;
   runtimeMcp?: { url?: string; token?: string };
+  stepTiering?: boolean;
+  approvalPolicy?: string;
+  autoApproveTools?: string;
 }): string {
   const headers: Record<string, string> = {
     ...opts.paperclipHeaders,
@@ -28,11 +31,48 @@ export function buildOpenCodeConfigContent(opts: {
   if (opts.egressPolicy && opts.egressPolicy !== 'inherit') {
     headers['x-eluvix-egress'] = opts.egressPolicy;
   }
+  if (opts.stepTiering !== undefined) {
+    headers['x-eluvix-step-tiering'] = opts.stepTiering ? '1' : '0';
+  }
+  if (opts.approvalPolicy) {
+    headers['x-eluvix-approval-policy'] = opts.approvalPolicy;
+  }
 
   const normalizedModel = opts.model.trim() || 'eluvix/auto';
   const modelKey = normalizedModel.startsWith('eluvix/')
     ? normalizedModel.slice('eluvix/'.length)
     : normalizedModel;
+
+  const modelsMap: Record<string, { name: string }> = {
+    auto: { name: 'eluvix/auto' },
+    'fast-local': { name: 'eluvix/fast-local' },
+    'code-specialist': { name: 'eluvix/code-specialist' },
+    'heavy-reasoning': { name: 'eluvix/heavy-reasoning' },
+    'frontier-verified': { name: 'eluvix/frontier-verified' },
+    [modelKey]: { name: normalizedModel },
+  };
+
+  const allowList = String(opts.autoApproveTools || '')
+    .split(/[\n,]/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  let permission: Record<string, string> | undefined;
+  if (opts.approvalPolicy === 'deny-all') {
+    permission = { edit: 'deny', bash: 'deny', webfetch: 'deny' };
+  } else if (opts.approvalPolicy === 'allowlist') {
+    permission = {
+      edit: allowList.includes('edit') || allowList.includes('write_file') ? 'allow' : 'ask',
+      bash: allowList.includes('bash') || allowList.includes('run_command') ? 'allow' : 'ask',
+      webfetch: allowList.includes('webfetch') ? 'allow' : 'ask',
+    };
+  } else if (opts.approvalPolicy === 'auto-approve-readonly') {
+    permission = {
+      edit: 'ask',
+      bash: 'ask',
+      read: 'allow',
+    };
+  }
 
   const configObj: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
@@ -45,14 +85,12 @@ export function buildOpenCodeConfigContent(opts: {
           apiKey: opts.eluvixApiKey,
           headers,
         },
-        models: {
-          [modelKey]: {
-            name: normalizedModel,
-          },
-        },
+        models: modelsMap,
       },
     },
     model: `eluvix/${modelKey}`,
+    ...(opts.stepTiering !== false ? { small_model: 'eluvix/fast-local' } : {}),
+    ...(permission ? { permission } : {}),
   };
 
   if (opts.runtimeMcp?.url) {

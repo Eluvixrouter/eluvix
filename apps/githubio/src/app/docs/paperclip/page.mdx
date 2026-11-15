@@ -13,11 +13,20 @@ Eluvix integrates deeply with [Paperclip](https://github.com/paperclipai/papercl
 
 2. **Tier 1 — `@eluvix/paperclip-adapter` (`eluvix_local`)**:
    - Runs Eluvix's isolated OpenCode harness inside the Paperclip agent's working directory with mid-loop DLP, `x-eluvix-hops` recursion protection, and `x-paperclip-*` priority, budget-pressure, and sensitivity headers.
+   - Supports mid-run virtual tier escalation (`escalateOnFailure`, `fast-local` &rarr; `code-specialist` &rarr; `heavy-reasoning` &rarr; `frontier-verified`) on HTTP `429`/`5xx` without mutating agent configuration.
    - Queries `GET /api/v1/paperclip/usage/:runId` after each run to report authoritative token counts and `costStatus: "reported"` USD spend.
 
 3. **Tier 2 — `@eluvix/paperclip-plugin` (`eluvix.switchyard`)**:
-   - Exposes five Switchyard tools (`eluvix:capabilities`, `eluvix:classify_task`, `eluvix:recommend_assignee`, `eluvix:explain_route`, `eluvix:budget`) and matching MCP tools (`switchyard_*`).
-   - Classifies task complexity, modalities, and PII sensitivity, scores candidate employees across capability fit, cost, latency, load, budget headroom, and historical SQLite outcome priors, and supports opt-in `off | advisory | shadow | auto` assignment modes.
+   - Exposes five Switchyard tools (`eluvix:capabilities`, `eluvix:classify_task`, `eluvix:recommend_assignee`, `eluvix:explain_route`, `eluvix:budget`), matching MCP tools (`switchyard_*`), and host UI actions (`eluvix:approve_assignment`, `eluvix:dismiss_assignment`, `eluvix:assign_candidate`, `eluvix:explain_route`).
+   - Classifies task complexity, modalities, and PII sensitivity, scores candidate employees across `/v1/embeddings` semantic fit, decayed cost-weighted Beta posteriors, 7-day budget exhaustion forecasts, live `openIssueCount` load, and `reportsTo`/parent hierarchy affinity.
+   - Supports `off | advisory | shadow | auto | auto-with-approval` assignment modes (with pending approval proposals persisted in `ctx.state` and 48h outcome feedback) plus bundled React UI slots (`taskDetailView`, `page` `/switchyard`, `dashboardWidget`, `sidebar`, `detailTab`).
+
+---
+
+## Security & Scoped Key Governance
+
+- **HMAC Context Signing (`X-Paperclip-Context-Ts`, `X-Paperclip-Context-Sig`)**: Signs canonical `x-paperclip-*` context headers with HMAC-SHA256 (`v1.<ts>.<hex>`, 300s skew tolerance). When `requireSignedContext: true`, tampered, expired, or unsigned bias headers are untrusted and ignored.
+- **Per-Key Company & Cost/Tier Ceilings**: Scoped keys can set `paperclip: { companyIds, maxTier, maxCostPer1kUsd, hmacSecret, allowUnsignedContext }` to restrict cross-company access (`403`) and clamp routing below key ceilings (`key-tier-ceiling`, `key-cost-ceiling`).
 
 ---
 
@@ -25,8 +34,10 @@ Eluvix integrates deeply with [Paperclip](https://github.com/paperclipai/papercl
 
 In the **Eluvix Visual Node Routing Editor**, add the **Paperclip Bridge** node (`paperclipBridgeNode`) from the Command Palette (`Cmd/Ctrl+K`) to configure:
 
-- **Paperclip Base URL** (default `http://127.0.0.1:3100`)
+- **Paperclip Base URL** (default `http://127.0.0.1:3100`) & interactive **Probe** button (`POST /api/v1/paperclip/health`, SSRF-guarded)
 - **Priority Policy** (`critical`, `high`, `medium`, `low` tier floors/ceilings)
 - **Budget Pressure Threshold** (cascade to cheaper/local upstreams when remaining budget drops below threshold)
 - **Sensitivity Floor** (`confidential` forced to local-only, `internal` local-preferred)
-- **Header Trust Mode** (`scoped-key` or `loopback`)
+- **Header Trust & HMAC Signing** (`scoped-key` or `loopback`, optional `hmacSecret` & `requireSignedContext`)
+
+Verify the full local integration offline at any time with `node scripts/paperclip-e2e.mjs`.

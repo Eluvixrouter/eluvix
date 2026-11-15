@@ -38,6 +38,14 @@ export interface PaperclipSensitivityFloorConfig {
   internal?: 'local-preferred';
 }
 
+export interface PaperclipKeyPolicy {
+  maxTier?: PaperclipStepTier;
+  maxCostPer1kUsd?: number;
+  companyIds?: string[];
+  hmacSecret?: string;
+  allowUnsignedContext?: boolean;
+}
+
 export interface PaperclipIntegrationConfig {
   enabled: boolean;
   paperclipBaseUrl?: string;
@@ -45,6 +53,8 @@ export interface PaperclipIntegrationConfig {
   budgetPressure?: PaperclipBudgetPressureConfig;
   sensitivityFloor?: PaperclipSensitivityFloorConfig;
   trustHeadersFrom?: 'loopback' | 'scoped-key';
+  hmacSecret?: string;
+  requireSignedContext?: boolean;
 }
 
 export const DEFAULT_PAPERCLIP_PRIORITY_POLICY: Record<
@@ -97,6 +107,8 @@ export function resolveVirtualTierAlias(model?: string | null): PaperclipStepTie
   return found?.tier;
 }
 
+export type PaperclipSignatureStatus = 'valid' | 'unsigned' | 'invalid' | 'expired';
+
 export interface PaperclipRequestContext {
   trusted: boolean;
   runId?: string;
@@ -106,7 +118,72 @@ export interface PaperclipRequestContext {
   priority?: PaperclipIssuePriority;
   budgetRemainingPct?: number;
   sensitivity?: PaperclipSensitivity;
+  hop?: number;
+  signatureStatus?: PaperclipSignatureStatus;
+  keyPolicy?: PaperclipKeyPolicy;
   droppedHeaders: string[];
+}
+
+export function mergeEffectiveHops(
+  eluvixHops: number,
+  paperclip?: PaperclipRequestContext
+): number {
+  const base = Number.isFinite(eluvixHops) && eluvixHops > 0 ? Math.floor(eluvixHops) : 0;
+  const pcHop =
+    typeof paperclip?.hop === 'number' && Number.isFinite(paperclip.hop) && paperclip.hop > 0
+      ? Math.floor(paperclip.hop)
+      : 0;
+  return Math.max(base, pcHop);
+}
+
+/**
+ * Merges Paperclip context from HTTP headers and optional structured JSON body
+ * (e.g., `/v1/route-explain`), running all values through header sanitization.
+ */
+export function parsePaperclipContextFromHeadersAndBody(
+  headers: Record<string, string | string[] | undefined> | Headers | undefined,
+  bodyPaperclip: Record<string, any> | undefined,
+  opts?: { trusted?: boolean }
+): PaperclipRequestContext {
+  const headerCtx = parsePaperclipHeaders(headers, opts);
+  if (!bodyPaperclip || typeof bodyPaperclip !== 'object') {
+    return headerCtx;
+  }
+  const mergedHeaders: Record<string, string | undefined> = {
+    'x-paperclip-run-id':
+      bodyPaperclip.runId !== undefined ? String(bodyPaperclip.runId) : headerCtx.runId,
+    'x-paperclip-issue-id':
+      bodyPaperclip.issueId !== undefined ? String(bodyPaperclip.issueId) : headerCtx.issueId,
+    'x-paperclip-agent-id':
+      bodyPaperclip.agentId !== undefined ? String(bodyPaperclip.agentId) : headerCtx.agentId,
+    'x-paperclip-company-id':
+      bodyPaperclip.companyId !== undefined ? String(bodyPaperclip.companyId) : headerCtx.companyId,
+    'x-paperclip-issue-priority':
+      bodyPaperclip.priority !== undefined ? String(bodyPaperclip.priority) : headerCtx.priority,
+    'x-paperclip-budget-remaining-pct':
+      bodyPaperclip.budgetRemainingPct !== undefined
+        ? String(bodyPaperclip.budgetRemainingPct)
+        : headerCtx.budgetRemainingPct !== undefined
+        ? String(headerCtx.budgetRemainingPct)
+        : undefined,
+    'x-paperclip-sensitivity':
+      bodyPaperclip.sensitivity !== undefined
+        ? String(bodyPaperclip.sensitivity)
+        : headerCtx.sensitivity,
+    'x-paperclip-hop':
+      bodyPaperclip.hop !== undefined
+        ? String(bodyPaperclip.hop)
+        : headerCtx.hop !== undefined
+        ? String(headerCtx.hop)
+        : undefined,
+  };
+  const bodyParsed = parsePaperclipHeaders(mergedHeaders, opts);
+  return {
+    ...bodyParsed,
+    droppedHeaders: Array.from(
+      new Set([...headerCtx.droppedHeaders, ...bodyParsed.droppedHeaders])
+    ),
+  };
 }
 
 export interface ResolvedPaperclipBias {
@@ -226,6 +303,17 @@ export function parsePaperclipHeaders(
     }
   }
 
+  let hop: number | undefined;
+  const rawHop = readHeader(headers, 'x-paperclip-hop')?.trim();
+  if (rawHop !== undefined && rawHop !== '') {
+    const parsed = Number(rawHop);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 100) {
+      hop = parsed;
+    } else {
+      droppedHeaders.push('x-paperclip-hop');
+    }
+  }
+
   return {
     trusted,
     runId,
@@ -235,6 +323,7 @@ export function parsePaperclipHeaders(
     priority,
     budgetRemainingPct,
     sensitivity,
+    hop,
     droppedHeaders,
   };
 }
@@ -259,9 +348,40 @@ function tighterMaxTier(
 
 export function resolvePaperclipRoutingBias(
   ctx: PaperclipRequestContext | undefined,
-  config?: PaperclipIntegrationConfig
+  config?: PaperclipIntegrationConfig,
+  explicitKeyPolicy?: PaperclipKeyPolicy
 ): ResolvedPaperclipBias {
+  const keyPolicy = explicitKeyPolicy ?? ctx?.keyPolicy;
+  const keyHasCeilings = Boolean(
+    keyPolicy &&
+      (keyPolicy.maxTier !== undefined ||
+        (typeof keyPolicy.maxCostPer1kUsd === 'number' &&
+          Number.isFinite(keyPolicy.maxCostPer1kUsd) &&
+          keyPolicy.maxCostPer1kUsd >= 0))
+  );
+
   if (!ctx || !ctx.trusted || !config?.enabled) {
+    if (keyHasCeilings && keyPolicy) {
+      const biasTags: string[] = [];
+      if (keyPolicy.maxTier) biasTags.push('key-tier-ceiling');
+      const keyCostCap =
+        typeof keyPolicy.maxCostPer1kUsd === 'number' &&
+        Number.isFinite(keyPolicy.maxCostPer1kUsd) &&
+        keyPolicy.maxCostPer1kUsd >= 0
+          ? keyPolicy.maxCostPer1kUsd
+          : undefined;
+      if (keyCostCap !== undefined) biasTags.push('key-cost-ceiling');
+      return {
+        active: true,
+        maxTier: keyPolicy.maxTier,
+        preferLocal: false,
+        maxCostPer1kUsd: keyCostCap,
+        allowCloud: true,
+        budgetPressureTriggered: false,
+        sensitivityForcedLocal: false,
+        biasTags,
+      };
+    }
     return {
       active: false,
       preferLocal: false,
@@ -340,6 +460,23 @@ export function resolvePaperclipRoutingBias(
   } else if (ctx.sensitivity === 'internal' && sensCfg.internal === 'local-preferred') {
     preferLocal = true;
     if (!biasTags.includes('prefer-local')) biasTags.push('prefer-local');
+  }
+
+  // 4. Per-key ceiling clamping (S2: cannot be bypassed by priority headers or virtual tiers)
+  if (keyPolicy?.maxTier) {
+    maxTier = tighterMaxTier(maxTier, keyPolicy.maxTier);
+    if (!biasTags.includes('key-tier-ceiling')) biasTags.push('key-tier-ceiling');
+  }
+  if (
+    typeof keyPolicy?.maxCostPer1kUsd === 'number' &&
+    Number.isFinite(keyPolicy.maxCostPer1kUsd) &&
+    keyPolicy.maxCostPer1kUsd >= 0
+  ) {
+    maxCostPer1kUsd =
+      maxCostPer1kUsd === undefined
+        ? keyPolicy.maxCostPer1kUsd
+        : Math.min(maxCostPer1kUsd, keyPolicy.maxCostPer1kUsd);
+    if (!biasTags.includes('key-cost-ceiling')) biasTags.push('key-cost-ceiling');
   }
 
   // Ensure minTier never exceeds maxTier if both set

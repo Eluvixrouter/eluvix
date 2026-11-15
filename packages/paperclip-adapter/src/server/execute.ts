@@ -21,6 +21,22 @@ export interface ExecuteDeps {
   spawnServer?: typeof spawnOpenCodeServer;
 }
 
+const VIRTUAL_TIER_ESCALATION: Record<string, string> = {
+  'eluvix/fast-local': 'eluvix/code-specialist',
+  'eluvix/code-specialist': 'eluvix/heavy-reasoning',
+  'eluvix/heavy-reasoning': 'eluvix/frontier-verified',
+  'eluvix/auto': 'eluvix/heavy-reasoning',
+};
+
+export function nextEscalatedVirtualTier(currentModel: string): string | null {
+  const key = String(currentModel || '').trim().toLowerCase();
+  return VIRTUAL_TIER_ESCALATION[key] || null;
+}
+
+function isEscalatableHttpStatus(status?: number): boolean {
+  return status === 429 || (typeof status === 'number' && status >= 500 && status <= 599);
+}
+
 function buildPromptFromContext(ctx: AdapterExecutionContext): string {
   const c = ctx.context || {};
   if (typeof c.prompt === 'string' && c.prompt.trim()) return c.prompt;
@@ -110,33 +126,20 @@ export async function executeEluvixLocal(
 
   const model = String(ctx.config.model || 'eluvix/auto');
   const egressPolicy = String(ctx.config.egressPolicy || 'inherit');
-  const opencodeConfigContent = buildOpenCodeConfigContent({
-    eluvixBaseUrl,
-    eluvixApiKey,
-    model,
-    paperclipHeaders: pcHeaders,
-    egressPolicy,
-    runtimeMcp: ctx.runtimeMcp,
-  });
-
   const cwd = String(ctx.config.cwd || process.cwd());
+  const stepTiering = ctx.config.stepTiering !== false;
+  const escalateOnFailure = ctx.config.escalateOnFailure !== false;
+  const approvalPolicy =
+    typeof ctx.config.approvalPolicy === 'string'
+      ? ctx.config.approvalPolicy
+      : 'auto-approve-readonly';
+  const autoApproveTools =
+    typeof ctx.config.autoApproveTools === 'string'
+      ? ctx.config.autoApproveTools
+      : undefined;
+
   const binary = String(ctx.config.opencodeBinary || 'opencode');
   const timeoutSec = Math.max(30, Number(ctx.config.timeoutSec || 1800));
-
-  const childEnv: Record<string, string | undefined> = {
-    PATH: process.env.PATH,
-    HOME: process.env.HOME,
-    TMPDIR: process.env.TMPDIR,
-    ...envMap,
-    OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-    OPENCODE_CONFIG_CONTENT: opencodeConfigContent,
-    PAPERCLIP_AGENT_ID: ctx.agent.id,
-    PAPERCLIP_COMPANY_ID: ctx.agent.companyId,
-    PAPERCLIP_RUN_ID: ctx.runId,
-    PAPERCLIP_API_URL: paperclipApiUrl,
-    ...(ctx.authToken ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
-    ...(taskId ? { PAPERCLIP_TASK_ID: taskId } : {}),
-  };
 
   let server: SpawnedOpenCodeServer | null = null;
   let timedOut = false;
@@ -150,112 +153,211 @@ export async function executeEluvixLocal(
     ctx.signal.addEventListener('abort', () => timeoutController.abort());
   }
 
+  const rawSessionParams = ctx.runtime?.sessionParams as Record<string, unknown> | undefined | null;
   let sessionId =
-    typeof ctx.runtime?.sessionParams?.sessionId === 'string'
-      ? ctx.runtime.sessionParams.sessionId
+    typeof rawSessionParams?.sessionId === 'string'
+      ? rawSessionParams.sessionId
       : undefined;
+  const savedCwd =
+    typeof rawSessionParams?.cwd === 'string' ? rawSessionParams.cwd : undefined;
+  const savedModel =
+    typeof rawSessionParams?.model === 'string' ? rawSessionParams.model : undefined;
+  if (sessionId && ((savedCwd && savedCwd !== cwd) || (savedModel && savedModel !== model))) {
+    await ctx.onLog(
+      'stderr',
+      `[eluvix_local] Resetting OpenCode session ${sessionId} because workspace or model changed (${savedCwd || 'unknown'} -> ${cwd}, ${savedModel || 'unknown'} -> ${model}).\n`
+    );
+    sessionId = undefined;
+  }
+
+  let activeModel = model;
+  let escalatedFrom: string | undefined;
   let assistantText = '';
   let exitCode = 0;
   let errorMessage: string | null = null;
+  const maxAttempts = escalateOnFailure ? 3 : 1;
 
   try {
-    server = await spawnFn({
-      binary,
-      cwd,
-      env: childEnv,
-      signal: timeoutController.signal,
-      onLog: async (stream, chunk) => {
-        await ctx.onLog(stream, redactSecrets(chunk));
-      },
-    });
-
-    if (!sessionId) {
-      const sessRes = await fetchFn(`${server.baseUrl}/session`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `paperclip-${ctx.runId}` }),
-        signal: timeoutController.signal,
-      });
-      if (!sessRes.ok) {
-        throw new Error(`Failed to create OpenCode session (${sessRes.status})`);
-      }
-      const sessJson: any = await sessRes.json();
-      sessionId = String(sessJson.id || sessJson.sessionId || ctx.runId);
-    }
-
-    const promptText = buildPromptFromContext(ctx);
-    const msgRes = await fetchFn(
-      `${server.baseUrl}/session/${encodeURIComponent(sessionId)}/message`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          parts: [{ type: 'text', text: promptText }],
-        }),
-        signal: timeoutController.signal,
-      }
-    );
-
-    if (!msgRes.ok) {
-      const errText = await msgRes.text().catch(() => '');
-      const mapped = mapEluvixErrorToPaperclipFamily(msgRes.status, undefined, errText);
-      exitCode = 1;
-      errorMessage = redactSecrets(errText || `OpenCode message failed (${msgRes.status})`);
-      return {
-        exitCode,
-        signal: null,
-        timedOut,
-        errorMessage,
-        errorFamily: mapped.errorFamily,
-        retryNotBefore: mapped.retryNotBefore,
-        sessionParams: sessionId ? { sessionId } : null,
-        sessionDisplayId: sessionId || null,
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const attemptHeaders: Record<string, string> = {
+        ...pcHeaders,
+        ...(escalatedFrom ? { 'x-eluvix-escalated-from': escalatedFrom } : {}),
       };
-    }
+      const opencodeConfigContent = buildOpenCodeConfigContent({
+        eluvixBaseUrl,
+        eluvixApiKey,
+        model: activeModel,
+        paperclipHeaders: attemptHeaders,
+        egressPolicy,
+        runtimeMcp: ctx.runtimeMcp,
+        stepTiering,
+        approvalPolicy,
+        autoApproveTools,
+      });
 
-    const msgJson: any = await msgRes.json().catch(() => ({}));
-    const parts: any[] = Array.isArray(msgJson?.parts) ? msgJson.parts : [];
-    for (const part of parts) {
-      if (part?.type === 'text' && typeof part.text === 'string') {
-        assistantText += part.text;
-        await ctx.onLog(
-          'stdout',
-          JSON.stringify({ type: 'assistant', text: redactSecrets(part.text) }) + '\n'
+      const childEnv: Record<string, string | undefined> = {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        TMPDIR: process.env.TMPDIR,
+        ...envMap,
+        OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+        OPENCODE_CONFIG_CONTENT: opencodeConfigContent,
+        PAPERCLIP_AGENT_ID: ctx.agent.id,
+        PAPERCLIP_COMPANY_ID: ctx.agent.companyId,
+        PAPERCLIP_RUN_ID: ctx.runId,
+        PAPERCLIP_API_URL: paperclipApiUrl,
+        ...(ctx.authToken ? { PAPERCLIP_API_KEY: ctx.authToken } : {}),
+        ...(taskId ? { PAPERCLIP_TASK_ID: taskId } : {}),
+      };
+
+      server = null;
+      try {
+        server = await spawnFn({
+          binary,
+          cwd,
+          env: childEnv,
+          signal: timeoutController.signal,
+          onLog: async (stream, chunk) => {
+            await ctx.onLog(stream, redactSecrets(chunk));
+          },
+        });
+        const serverBaseUrl = server.baseUrl || (server as any).url;
+
+        if (!sessionId) {
+          const sessRes = await fetchFn(`${serverBaseUrl}/session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: `paperclip-${ctx.runId}` }),
+            signal: timeoutController.signal,
+          });
+          if (!sessRes.ok) {
+            throw new Error(`Failed to create OpenCode session (${sessRes.status})`);
+          }
+          const sessJson: any = await sessRes.json();
+          sessionId = String(sessJson.id || sessJson.sessionId || ctx.runId);
+        }
+
+        const promptText = buildPromptFromContext(ctx);
+        const msgRes = await fetchFn(
+          `${serverBaseUrl}/session/${encodeURIComponent(sessionId)}/message`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              parts: [{ type: 'text', text: promptText }],
+            }),
+            signal: timeoutController.signal,
+          }
         );
-      } else if (part?.type === 'tool-invocation' || part?.type === 'tool') {
-        await ctx.onLog(
-          'stdout',
-          JSON.stringify({
-            type: 'tool_call',
-            name: part.toolName || part.name || 'tool',
-            input: part.input || part.args || {},
-          }) + '\n'
-        );
+
+        if (!msgRes.ok) {
+          const errText = await msgRes.text().catch(() => '');
+          const nextTier =
+            escalateOnFailure && !timedOut && isEscalatableHttpStatus(msgRes.status)
+              ? nextEscalatedVirtualTier(activeModel)
+              : null;
+          if (nextTier && attempt + 1 < maxAttempts) {
+            await ctx.onLog(
+              'stdout',
+              JSON.stringify({
+                type: 'escalation',
+                from: activeModel,
+                to: nextTier,
+                status: msgRes.status,
+                reason: redactSecrets(errText || `HTTP ${msgRes.status}`),
+              }) + '\n'
+            );
+            escalatedFrom = activeModel;
+            activeModel = nextTier;
+            sessionId = undefined;
+            continue;
+          }
+
+          const mapped = mapEluvixErrorToPaperclipFamily(msgRes.status, undefined, errText);
+          exitCode = 1;
+          errorMessage = redactSecrets(errText || `OpenCode message failed (${msgRes.status})`);
+          return {
+            exitCode,
+            signal: null,
+            timedOut,
+            errorMessage,
+            errorFamily: mapped.errorFamily,
+            retryNotBefore: mapped.retryNotBefore,
+            sessionParams: !escalatedFrom && sessionId ? { sessionId, cwd, model } : null,
+            sessionDisplayId: sessionId || null,
+          };
+        }
+
+        const msgJson: any = await msgRes.json().catch(() => ({}));
+        const parts: any[] = Array.isArray(msgJson?.parts) ? msgJson.parts : [];
+        for (const part of parts) {
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            assistantText += part.text;
+            await ctx.onLog(
+              'stdout',
+              JSON.stringify({ type: 'assistant', text: redactSecrets(part.text) }) + '\n'
+            );
+          } else if (part?.type === 'tool-invocation' || part?.type === 'tool') {
+            await ctx.onLog(
+              'stdout',
+              JSON.stringify({
+                type: 'tool_call',
+                name: part.toolName || part.name || 'tool',
+                input: part.input || part.args || {},
+              }) + '\n'
+            );
+          }
+        }
+        if (!assistantText && typeof msgJson?.text === 'string') {
+          assistantText = msgJson.text;
+          await ctx.onLog(
+            'stdout',
+            JSON.stringify({ type: 'assistant', text: redactSecrets(assistantText) }) + '\n'
+          );
+        }
+
+        exitCode = 0;
+        errorMessage = null;
+        break;
+      } catch (err: any) {
+        const nextTier =
+          escalateOnFailure && !timedOut ? nextEscalatedVirtualTier(activeModel) : null;
+        if (nextTier && attempt + 1 < maxAttempts) {
+          await ctx.onLog(
+            'stdout',
+            JSON.stringify({
+              type: 'escalation',
+              from: activeModel,
+              to: nextTier,
+              reason: redactSecrets(err?.message || 'Execution error'),
+            }) + '\n'
+          );
+          escalatedFrom = activeModel;
+          activeModel = nextTier;
+          sessionId = undefined;
+          continue;
+        }
+        exitCode = 1;
+        errorMessage = redactSecrets(err?.message || 'Execution failed');
+        break;
+      } finally {
+        if (server) {
+          await server.stop().catch(() => {});
+          server = null;
+        }
       }
     }
-    if (!assistantText && typeof msgJson?.text === 'string') {
-      assistantText = msgJson.text;
-      await ctx.onLog(
-        'stdout',
-        JSON.stringify({ type: 'assistant', text: redactSecrets(assistantText) }) + '\n'
-      );
-    }
-  } catch (err: any) {
-    exitCode = 1;
-    errorMessage = redactSecrets(err?.message || 'Execution failed');
   } finally {
     clearTimeout(timeoutHandle);
-    if (server) {
-      await server.stop().catch(() => {});
-    }
   }
 
-  // Fetch authoritative per-run usage & cost from Eluvix
+  // Fetch authoritative per-run usage & cost from Eluvix (polling until settled)
   const usageSummary = await fetchEluvixUsageForRun({
     baseUrl: eluvixBaseUrl,
     apiKey: eluvixApiKey,
     runId: ctx.runId,
     fetchImpl: fetchFn,
+    signal: ctx.signal,
   });
 
   if (usageSummary) {
@@ -300,7 +402,7 @@ export async function executeEluvixLocal(
     signal: timedOut ? 'SIGTERM' : null,
     timedOut,
     errorMessage,
-    sessionParams: sessionId ? { sessionId } : null,
+    sessionParams: sessionId ? { sessionId, cwd, model } : null,
     sessionDisplayId: sessionId || null,
     usage: usageSummary
       ? {

@@ -3,6 +3,7 @@ import {
   globalCircuitBreaker,
   getEffectiveCostPer1kTokens,
   isLocalUpstream,
+  isPaperclipCompanyAllowed,
   type PaperclipFleetUpstreamSummary,
 } from '@eluvix/router-core';
 import { resolveCallerIdentity, type CallerIdentityResult } from '@/lib/caller-identity';
@@ -40,6 +41,31 @@ export async function requirePaperclipCaller(
     };
   }
   return { ok: true, identity };
+}
+
+export function assertPaperclipCompanyScope(
+  identity: Extract<CallerIdentityResult, { ok: true }>,
+  companyId?: string
+): NextResponse | null {
+  const allowedCompanies = identity.paperclip?.companyIds;
+  if (!allowedCompanies || allowedCompanies.length === 0) {
+    return null;
+  }
+  if (!isPaperclipCompanyAllowed(companyId, identity.paperclip)) {
+    return NextResponse.json(
+      {
+        error: {
+          message: companyId
+            ? `API key is not authorized for Paperclip company "${companyId}".`
+            : 'API key requires an authorized "companyId" within its companyIds allowlist.',
+          type: 'invalid_request_error',
+          code: 'company_scope_forbidden',
+        },
+      },
+      { status: 403 }
+    );
+  }
+  return null;
 }
 
 export function buildPaperclipFleetSummary(): PaperclipFleetUpstreamSummary[] {

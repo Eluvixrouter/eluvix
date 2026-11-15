@@ -473,10 +473,10 @@ Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `nt
 
 ## 15. Paperclip Integration & Correlation API (v1.3)
 
-All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope.
+All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope (or an authenticated dashboard session for `/api/v1/paperclip/health`), enforce per-key `companyIds` isolation (`403` on cross-company access), and apply per-key `maxTier` / `maxCostPer1kUsd` ceilings.
 
 ### `GET /api/v1/paperclip/whoami`
-Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, `egressPolicy`, and `rolling24hSpendUsd`.
+Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, per-key `paperclip` policy (`companyIds`, `maxTier`, `maxCostPer1kUsd`), `egressPolicy`, and `rolling24hSpendUsd`.
 
 ### `GET /api/v1/paperclip/capabilities`
 Returns Switchyard `strategy`, `virtualModels` (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`), `paperclipPolicy`, and sanitized upstream fleet telemetry.
@@ -485,18 +485,23 @@ Returns Switchyard `strategy`, `virtualModels` (`eluvix/auto`, `eluvix/fast-loca
 Classifies a Paperclip issue (`{ title, description, priority, labels, sensitivity }`) into `complexity`, `modalities`, `piiDetected`, `sensitivity`, `suggestedTier`, and `taskClass`.
 
 ### `POST /api/v1/paperclip/recommend-assignee`
-Scores and ranks candidate Paperclip employees (`{ task, candidates, weights, topN }`) using capability fit, cost, latency, load, budget headroom, and SQLite outcome priors.
+Scores and ranks candidate Paperclip employees (`{ task, candidates, parentAssigneeAgentId, weights, topN, explore, useEmbeddings }`) using `/v1/embeddings` semantic fit (with automatic keyword fallback), decayed cost-weighted Beta posteriors, 7-day budget exhaustion forecasts, live `openIssueCount` load, and `reportsTo`/parent affinity.
 
 ### `POST /api/v1/paperclip/feedback`
-Records completed/reassigned assignment outcomes (`{ issueId, agentId, taskClass, success, costUsd, durationMs }`) into `paperclip_assignment_outcomes`.
+Records completed/reassigned assignment outcomes (`{ issueId, agentId, companyId, taskClass, success, costUsd, durationMs }`) into `paperclip_assignment_outcomes`.
 
 ### `GET /api/v1/paperclip/usage/:runId`
-Returns aggregated `inputTokens`, `outputTokens`, `cachedInputTokens`, `costUsd`, `dominantModel`, and `byModel` breakdown for `correlation_id = runId`.
+Returns company-scoped aggregated `inputTokens`, `outputTokens`, `cachedInputTokens`, `costUsd`, `dominantModel`, and `byModel` breakdown for `correlation_id = runId`.
 
-### Paperclip Telemetry Response Headers
+### `GET / POST /api/v1/paperclip/health`
+SSRF-guarded live health probe validating `paperclipBaseUrl` against cloud IMDS rules and probing `<paperclipBaseUrl>/api/health` for `PaperclipBridgeNode`.
+
+### Paperclip Security & Telemetry Headers
+- `X-Paperclip-Context-Ts`: Epoch millisecond timestamp paired with `X-Paperclip-Context-Sig` (`300s` replay window).
+- `X-Paperclip-Context-Sig`: HMAC-SHA256 signature (`v1.<ts>.<hex>`) authenticating canonical `x-paperclip-*` context headers.
 - `X-Eluvix-Correlation-Id`: Correlated Paperclip run ID (`x-paperclip-run-id`).
 - `X-Eluvix-Paperclip-Priority`: Resolved issue priority (`critical`, `high`, `medium`, `low`).
-- `X-Eluvix-Paperclip-Bias`: Applied Switchyard routing bias tags (`tier-floor`, `tier-ceiling`, `prefer-local`, `local-only`, `budget-cascade`).
+- `X-Eluvix-Paperclip-Bias`: Applied Switchyard routing bias tags (`tier-floor`, `tier-ceiling`, `prefer-local`, `local-only`, `budget-cascade`, `key-tier-ceiling`, `key-cost-ceiling`).
 
 ---
 

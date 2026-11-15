@@ -33,9 +33,55 @@ import {
   type ResolvedPaperclipBias,
   PAPERCLIP_STEP_TIER_RANK,
   PAPERCLIP_VIRTUAL_MODELS,
+  mergeEffectiveHops,
   resolvePaperclipRoutingBias,
   resolveVirtualTierAlias,
 } from './paperclip-context.js';
+
+function paperclipLogFields(paperclip?: PaperclipRequestContext) {
+  if (!paperclip) return {};
+  return {
+    correlation_id: paperclip.runId,
+    pc_issue_id: paperclip.issueId,
+    pc_agent_id: paperclip.agentId,
+    pc_company_id: paperclip.companyId,
+    pc_priority: paperclip.priority,
+  };
+}
+
+function paperclipSpanAttributes(
+  paperclip?: PaperclipRequestContext,
+  paperclipBias?: ResolvedPaperclipBias
+): Record<string, string> {
+  if (!paperclip) return {};
+  return {
+    ...(paperclip.runId ? { 'paperclip.run_id': paperclip.runId } : {}),
+    ...(paperclip.issueId ? { 'paperclip.issue_id': paperclip.issueId } : {}),
+    ...(paperclip.agentId ? { 'paperclip.agent_id': paperclip.agentId } : {}),
+    ...(paperclip.companyId ? { 'paperclip.company_id': paperclip.companyId } : {}),
+    ...(paperclip.priority ? { 'paperclip.priority': paperclip.priority } : {}),
+    ...(paperclipBias?.active ? { 'paperclip.routing_bias': paperclipBias.biasTags.join(',') } : {}),
+  };
+}
+
+function applyPaperclipResponseHeaders(
+  headers: Headers,
+  paperclip?: PaperclipRequestContext,
+  paperclipBias?: ResolvedPaperclipBias
+): void {
+  if (paperclip?.runId) {
+    headers.set('x-eluvix-correlation-id', paperclip.runId);
+  }
+  if (paperclip?.priority) {
+    headers.set('x-eluvix-paperclip-priority', paperclip.priority);
+  }
+  if (paperclipBias?.active) {
+    const biasLabel = paperclipBias.relaxed
+      ? 'relaxed'
+      : paperclipBias.biasTags.join(',') || 'none';
+    headers.set('x-eluvix-paperclip-bias', biasLabel);
+  }
+}
 
 export type RoutingStrategy = 
   | 'cost-complexity' 
@@ -213,6 +259,7 @@ export * from './db.js';
 export * from './paperclip-context.js';
 export * from './paperclip-assign.js';
 export * from './paperclip-store.js';
+export * from './paperclip-auth.js';
 export * from './tls.js';
 export * from './guard.js';
 export * from './auth.js';
@@ -379,7 +426,8 @@ import {
   recallKnowledgeBase,
   stripMemoryFromMessages,
   stripKnowledgeFromMessages,
-  teeSseStreamForMemory
+  teeSseStreamForMemory,
+  transformSseStreamWithUsageCost
 } from './context/index.js';
 import { type HarnessConfig, buildChildEnv, forwardHarnessRequest } from './harness/index.js';
 import { type SandboxConfig } from './sandbox/index.js';
@@ -658,6 +706,7 @@ export interface ChatRequest {
   messages: ChatMessage[];
   temperature?: number;
   stream?: boolean;
+  stream_options?: { include_usage?: boolean; [key: string]: any };
   tools?: any[];
   tool_choice?: any;
   // Advisory only (forwarded to upstreams that understand it); NEVER
@@ -845,9 +894,14 @@ export class Eluvix {
       paperclip?: PaperclipRequestContext;
     }
   ): Promise<Response> {
-    const hops = options?.hops ?? 0;
+    const hops = mergeEffectiveHops(options?.hops ?? 0, options?.paperclip);
     if (hops >= 2) {
-      throw new Error('Routing loop detected: maximum x-eluvix-hops (2) exceeded.');
+      const loopErr = new Error(
+        `Routing loop detected: maximum x-eluvix-hops (2) exceeded (hops=${hops}).`
+      ) as Error & { statusCode?: number; code?: string };
+      loopErr.statusCode = 429;
+      loopErr.code = 'agent_recursion_limit_exceeded';
+      throw loopErr;
     }
 
     const scope: RequestScope = {
@@ -1695,8 +1749,15 @@ export class Eluvix {
       if (cached && Date.now() - cached.timestamp < ttlMs) {
         const hitHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
-          'X-Eluvix-Cache': 'HIT'
+          'X-Eluvix-Cache': 'HIT',
+          'x-eluvix-cost-usd': '0.000000'
         };
+        if (options?.paperclip?.runId) {
+          hitHeaders['x-eluvix-correlation-id'] = options.paperclip.runId;
+        }
+        if (options?.paperclip?.priority) {
+          hitHeaders['x-eluvix-paperclip-priority'] = options.paperclip.priority;
+        }
         if (this.config.memory?.enabled) {
           hitHeaders['x-eluvix-memory'] = memoryStatus;
           hitHeaders['x-eluvix-memory-tokens'] = String(memoryTokens);
@@ -1713,7 +1774,9 @@ export class Eluvix {
           duration_ms: 0,
           prompt_tokens: complexity.tokenEstimate,
           completion_tokens: (cached.response as any)?.usage?.completion_tokens || 0,
-          user_id: scope.userId
+          cost_usd: 0,
+          user_id: scope.userId,
+          ...paperclipLogFields(options?.paperclip),
         });
         return new Response(JSON.stringify(cached.response), {
           status: 200,
@@ -1784,7 +1847,17 @@ export class Eluvix {
                   messages: stripKnowledgeFromMessages(reqForCandidate.messages)
                 };
               }
-              return this.forwardRequest(u, reqForCandidate, consensusTimeout, sig, complexity.score, scope, hops);
+              return this.forwardRequest(
+                u,
+                reqForCandidate,
+                consensusTimeout,
+                sig,
+                complexity.score,
+                scope,
+                hops,
+                Boolean(effectiveRequest.stream && (options?.paperclip?.runId || effectiveRequest.stream_options?.include_usage)),
+                options?.paperclip
+              );
             },
             options?.signal
           );
@@ -1799,6 +1872,7 @@ export class Eluvix {
             consensusRes.headers.set('x-eluvix-knowledge', knowledgeStatus);
           }
           consensusRes.headers.set('x-eluvix-consensus-group', activeConsensus.id);
+          applyPaperclipResponseHeaders(consensusRes.headers, options?.paperclip);
 
           const duration_ms = Date.now() - routeStartTime;
           let assistantOutputText = '';
@@ -1845,7 +1919,8 @@ export class Eluvix {
               ttft_ms: duration_ms,
               itl_ms: undefined,
               kv_cache_kb: 0,
-              user_id: scope.userId
+              user_id: scope.userId,
+              ...paperclipLogFields(options?.paperclip),
             });
           } else if (
             effectiveRequest.stream &&
@@ -1859,8 +1934,21 @@ export class Eluvix {
             // standard streaming path does.
             const consensusStreamStart = routeStartTime;
             const consensusProviderRef = canRemember ? this.contextProvider : undefined;
+            const consensusModel = activeConsensus.judgeModel || effectiveRequest.model;
+            let consensusUsage: { promptTokens: number; completionTokens: number; costUsd: number } | undefined;
+            let consensusBody: ReadableStream<Uint8Array> = consensusRes.body as ReadableStream<Uint8Array>;
+            if (options?.paperclip?.runId || effectiveRequest.stream_options?.include_usage) {
+              consensusBody = transformSseStreamWithUsageCost(consensusBody, {
+                fallbackModel: consensusModel,
+                fallbackPromptTokens: promptTokens,
+                computeCostUsd: () => 0,
+                onUsage: (u) => {
+                  consensusUsage = u;
+                },
+              });
+            }
             const teeBody = teeSseStreamForMemory(
-              consensusRes.body as ReadableStream<Uint8Array>,
+              consensusBody,
               (fullAssistantText) => {
                 if (consensusProviderRef && fullAssistantText.trim().length > 0) {
                   void consensusProviderRef
@@ -1874,16 +1962,20 @@ export class Eluvix {
                     .catch(() => {});
                 }
                 logRequest({
-                  model: activeConsensus.judgeModel || effectiveRequest.model,
+                  model: consensusModel,
                   upstream_id: `consensus:${activeConsensus.id}`,
                   status: consensusRes.status,
                   duration_ms: Date.now() - consensusStreamStart,
-                  prompt_tokens: promptTokens,
-                  completion_tokens: Math.max(1, Math.ceil(fullAssistantText.length / 4)),
+                  prompt_tokens: consensusUsage?.promptTokens ?? promptTokens,
+                  completion_tokens:
+                    consensusUsage?.completionTokens ??
+                    Math.max(1, Math.ceil(fullAssistantText.length / 4)),
                   ttft_ms: duration_ms,
                   itl_ms: undefined,
                   kv_cache_kb: 0,
-                  user_id: scope.userId
+                  cost_usd: consensusUsage?.costUsd ?? 0,
+                  user_id: scope.userId,
+                  ...paperclipLogFields(options?.paperclip),
                 });
               }
             );
@@ -2022,7 +2114,9 @@ export class Eluvix {
               options?.signal,
               complexity.score,
               scope,
-              hops + 1
+              hops + 1,
+              false,
+              options?.paperclip
             );
             const draftDurationMs = Date.now() - draftStart;
             if (draftRes.ok) {
@@ -2084,6 +2178,7 @@ export class Eluvix {
                   ttft_ms: draftDurationMs,
                   cost_usd: draftCostUsd,
                   user_id: scope?.userId || 'default',
+                  ...paperclipLogFields(options?.paperclip),
                 });
 
                 if (cacheConfig?.enabled && cacheKey && !effectiveRequest.stream) {
@@ -2107,6 +2202,7 @@ export class Eluvix {
                 acceptedHeaders.set('x-eluvix-tokens', String(draftPromptTokens));
                 acceptedHeaders.set('x-eluvix-ttft-ms', String(draftDurationMs));
                 acceptedHeaders.set('x-eluvix-cost-usd', draftCostUsd.toFixed(6));
+                applyPaperclipResponseHeaders(acceptedHeaders, options?.paperclip, selection.paperclipBias);
                 if (selection.vendorAlias?.aliasApplied) {
                   acceptedHeaders.set(
                     'x-eluvix-model-alias',
@@ -2117,12 +2213,26 @@ export class Eluvix {
                 if (effectiveRequest.stream && !hasToolCalls) {
                   acceptedHeaders.set('Content-Type', 'text/event-stream; charset=utf-8');
                   acceptedHeaders.set('Cache-Control', 'no-cache');
+                  const sseUsage =
+                    parsedDraft?.usage || options?.paperclip?.runId
+                      ? {
+                          prompt_tokens: Number(parsedDraft?.usage?.prompt_tokens ?? draftPromptTokens),
+                          completion_tokens: Number(parsedDraft?.usage?.completion_tokens ?? draftCompletionTokens),
+                          total_tokens: Number(
+                            parsedDraft?.usage?.total_tokens ?? draftPromptTokens + draftCompletionTokens
+                          ),
+                          cost:
+                            parsedDraft?.usage?.cost !== undefined
+                              ? Number(parsedDraft.usage.cost)
+                              : draftCostUsd,
+                        }
+                      : undefined;
                   const sseStream = synthesizeOpenAiSseFromText({
                     text: draftText,
                     model: draftServedModel,
                     id: parsedDraft.id,
                     finishReason: finishReason || 'stop',
-                    usage: parsedDraft.usage,
+                    usage: sseUsage,
                   });
                   return new Response(sseStream, { status: 200, headers: acceptedHeaders });
                 }
@@ -2357,7 +2467,9 @@ export class Eluvix {
             options?.signal,
             complexity.score,
             scope,
-            hops
+            hops,
+            Boolean(effectiveRequest.stream && (options?.paperclip?.runId || effectiveRequest.stream_options?.include_usage)),
+            options?.paperclip
           );
           const duration_ms = Date.now() - startTime;
           
@@ -2582,11 +2694,7 @@ export class Eluvix {
                 kv_cache_kb: kvCacheKb,
                 cost_usd: syncCostUsd,
                 user_id: scope?.userId || 'default',
-                correlation_id: options?.paperclip?.runId,
-                pc_issue_id: options?.paperclip?.issueId,
-                pc_agent_id: options?.paperclip?.agentId,
-                pc_company_id: options?.paperclip?.companyId,
-                pc_priority: options?.paperclip?.priority,
+                ...paperclipLogFields(options?.paperclip),
               });
             } else if (
               responseBody &&
@@ -2594,12 +2702,81 @@ export class Eluvix {
               !(upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://'))
             ) {
               const streamStartTime = startTime;
+              const providerRef = canRemember ? this.contextProvider : undefined;
+              const wantsStreamUsageCost = Boolean(
+                options?.paperclip?.runId || effectiveRequest.stream_options?.include_usage
+              );
+              let streamReportedUsage:
+                | { promptTokens: number; completionTokens: number; costUsd: number; hasTextContent: boolean }
+                | undefined;
+              let streamLogged = false;
+              const finalizeStreamLog = (
+                pt: number,
+                ct: number,
+                cost: number,
+                fullAssistantText: string
+              ) => {
+                if (streamLogged) return;
+                streamLogged = true;
+                const finalDuration = Date.now() - streamStartTime;
+                const finalDecode = Math.max(0, finalDuration - ttftMs);
+                const finalItl =
+                  ct > 1
+                    ? Number((finalDecode / (ct - 1)).toFixed(2))
+                    : Number((finalDecode || finalDuration).toFixed(2));
+                recordBanditArmOutcome({
+                  upstreamId: upstream.id,
+                  complexityTier: complexity.label,
+                  success: finalDuration <= slaThresholdMs,
+                  weight: finalDuration <= slaThresholdMs ? 1.0 : 0.4,
+                  ttftMs,
+                  itlMs: finalItl,
+                });
+                maybeTriggerAsyncDistillation(upstream, servedModel, fullAssistantText);
+                logRequest({
+                  model: servedModel,
+                  upstream_id: upstream.id,
+                  status: response.status,
+                  duration_ms: finalDuration,
+                  prompt_tokens: pt,
+                  completion_tokens: ct,
+                  cache_read_tokens: cacheReadTokens,
+                  cache_write_tokens: cacheWriteTokens,
+                  ttft_ms: ttftMs,
+                  itl_ms: finalItl,
+                  kv_cache_kb: kvCacheKb,
+                  cost_usd: cost,
+                  user_id: scope?.userId || 'default',
+                  ...paperclipLogFields(options?.paperclip),
+                });
+              };
+
+              if (wantsStreamUsageCost) {
+                responseBody = transformSseStreamWithUsageCost(
+                  responseBody as ReadableStream<Uint8Array>,
+                  {
+                    fallbackModel: servedModel,
+                    fallbackPromptTokens: promptTokens,
+                    computeCostUsd: (pt, ct) =>
+                      estimateUpstreamRequestCostUsd(upstream, pt, ct, {
+                        cacheReadTokens,
+                        cacheWriteTokens,
+                      }),
+                    onUsage: (u) => {
+                      streamReportedUsage = u;
+                      if (!u.hasTextContent) {
+                        finalizeStreamLog(u.promptTokens, u.completionTokens, u.costUsd, '');
+                      }
+                    },
+                  }
+                );
+              }
+
               // If the remember-only tee above already wrapped this body,
               // this tee must log only — remembering here too wrote every
               // streamed turn to memory twice. (For antigravity/cli://
               // upstreams this branch never runs, so their memory path is
               // still the remember-only tee above.)
-              const providerRef = canRemember ? this.contextProvider : undefined;
               responseBody = teeSseStreamForMemory(
                 responseBody as ReadableStream<Uint8Array>,
                 (fullAssistantText) => {
@@ -2614,45 +2791,17 @@ export class Eluvix {
                       )
                       .catch(() => {});
                   }
-                  const finalDuration = Date.now() - streamStartTime;
-                  const estimatedCompletion = Math.max(1, Math.ceil(fullAssistantText.length / 4));
-                  const finalDecode = Math.max(0, finalDuration - ttftMs);
-                  const finalItl = estimatedCompletion > 1
-                    ? Number((finalDecode / (estimatedCompletion - 1)).toFixed(2))
-                    : Number((finalDecode || finalDuration).toFixed(2));
-                  const streamCostUsd = estimateUpstreamRequestCostUsd(upstream, promptTokens, estimatedCompletion, {
-                    cacheReadTokens,
-                    cacheWriteTokens,
-                  });
-                  recordBanditArmOutcome({
-                    upstreamId: upstream.id,
-                    complexityTier: complexity.label,
-                    success: finalDuration <= slaThresholdMs,
-                    weight: finalDuration <= slaThresholdMs ? 1.0 : 0.4,
-                    ttftMs,
-                    itlMs: finalItl,
-                  });
-                  maybeTriggerAsyncDistillation(upstream, servedModel, fullAssistantText);
-                  logRequest({
-                    model: servedModel,
-                    upstream_id: upstream.id,
-                    status: response.status,
-                    duration_ms: finalDuration,
-                    prompt_tokens: promptTokens,
-                    completion_tokens: estimatedCompletion,
-                    cache_read_tokens: cacheReadTokens,
-                    cache_write_tokens: cacheWriteTokens,
-                    ttft_ms: ttftMs,
-                    itl_ms: finalItl,
-                    kv_cache_kb: kvCacheKb,
-                    cost_usd: streamCostUsd,
-                    user_id: scope?.userId || 'default',
-                    correlation_id: options?.paperclip?.runId,
-                    pc_issue_id: options?.paperclip?.issueId,
-                    pc_agent_id: options?.paperclip?.agentId,
-                    pc_company_id: options?.paperclip?.companyId,
-                    pc_priority: options?.paperclip?.priority,
-                  });
+                  const estimatedCompletion =
+                    streamReportedUsage?.completionTokens ??
+                    Math.max(1, Math.ceil(fullAssistantText.length / 4));
+                  const pt = streamReportedUsage?.promptTokens ?? promptTokens;
+                  const streamCostUsd =
+                    streamReportedUsage?.costUsd ??
+                    estimateUpstreamRequestCostUsd(upstream, pt, estimatedCompletion, {
+                      cacheReadTokens,
+                      cacheWriteTokens,
+                    });
+                  finalizeStreamLog(pt, estimatedCompletion, streamCostUsd, fullAssistantText);
                 }
               );
             }
@@ -2693,18 +2842,7 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
             newResponse.headers.set('x-eluvix-cost-usd', syncCostUsd.toFixed(6));
-            if (options?.paperclip?.runId) {
-              newResponse.headers.set('x-eluvix-correlation-id', options.paperclip.runId);
-            }
-            if (options?.paperclip?.priority) {
-              newResponse.headers.set('x-eluvix-paperclip-priority', options.paperclip.priority);
-            }
-            if (selection.paperclipBias?.active) {
-              const biasLabel = selection.paperclipBias.relaxed
-                ? 'relaxed'
-                : selection.paperclipBias.biasTags.join(',') || 'none';
-              newResponse.headers.set('x-eluvix-paperclip-bias', biasLabel);
-            }
+            applyPaperclipResponseHeaders(newResponse.headers, options?.paperclip, selection.paperclipBias);
             if (selection.budgetFallback) {
               newResponse.headers.set('x-eluvix-budget-fallback', 'local-sovereign');
             }
@@ -2943,6 +3081,7 @@ export class Eluvix {
                     ...(selection.vendorAlias?.aliasApplied
                       ? { 'eluvix.vendor_alias': selection.vendorAlias.originalModel }
                       : {}),
+                    ...paperclipSpanAttributes(options?.paperclip, selection.paperclipBias),
                   },
                 },
                 {
@@ -3013,6 +3152,7 @@ export class Eluvix {
                   ...(cascadeHeaderStatus
                     ? { 'eluvix.cascade_mode': cascadeHeaderStatus }
                     : {}),
+                  ...paperclipSpanAttributes(options?.paperclip, selection.paperclipBias),
                   ...(this.config.observability.captureInputs
                     ? {
                         'gen_ai.prompt': lastUserQuery,
@@ -3083,11 +3223,32 @@ export class Eluvix {
       model: request.model || this.config.defaultModel || 'auto'
     };
     const fallbackModality = classifyRequestModality(effectiveRequest);
+    const effectiveHops = mergeEffectiveHops(options?.hops ?? 0, options?.paperclip);
+    if (effectiveHops >= 2) {
+      return {
+        model: effectiveRequest.model,
+        strategy: this.config.switchyard?.strategy || this.config.strategy || 'cost-complexity',
+        egressPolicy: this.config.egressPolicy,
+        modality: fallbackModality,
+        complexity: { score: 0, label: 'unknown', tokenEstimate: 0, hasImages: false, hasTools: false },
+        steps: [
+          {
+            stage: 'loop-guard',
+            detail: `blocked: effective hops (${effectiveHops}) >= 2 exceeds recursion limit`,
+            kept: [],
+            removed: this.config.upstreams.map(u => u.id)
+          }
+        ],
+        rankedUpstreams: [],
+        chosenUpstreamId: null,
+        error: `Routing loop detected: maximum x-eluvix-hops (2) exceeded (hops=${effectiveHops}).`
+      };
+    }
     try {
       const selection = this.selectTargetUpstreams(effectiveRequest, {
         silent: true,
         scope: options?.scope,
-        hops: options?.hops,
+        hops: effectiveHops,
         memoryTainted: options?.memoryTainted,
         memoryTokens: options?.memoryTokens,
         paperclip: options?.paperclip
@@ -3216,7 +3377,7 @@ export class Eluvix {
 
     // Loop Guard: requests originating from an agent harness (or with hops > 0)
     // must never route back into another harness upstream, preventing recursive loops.
-    const hops = options?.hops ?? 0;
+    const hops = mergeEffectiveHops(options?.hops ?? 0, options?.paperclip);
     const isHarnessOrigin = options?.scope?.origin === 'harness' || hops > 0;
     if (isHarnessOrigin) {
       const nonHarness = matchingUpstreams.filter(u => u.type !== 'harness' && !u.endpoint.startsWith('acp://'));
@@ -3684,9 +3845,21 @@ export class Eluvix {
     if (virtualTier) {
       if (virtualTier === 'fast-local') {
         paperclipBias.preferLocal = true;
-        paperclipBias.maxTier = virtualTier;
+        paperclipBias.maxTier = paperclipBias.maxTier
+          ? PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier] <= PAPERCLIP_STEP_TIER_RANK[virtualTier]
+            ? paperclipBias.maxTier
+            : virtualTier
+          : virtualTier;
       } else {
         paperclipBias.minTier = paperclipBias.minTier || virtualTier;
+      }
+      if (
+        paperclipBias.minTier &&
+        paperclipBias.maxTier &&
+        PAPERCLIP_STEP_TIER_RANK[paperclipBias.minTier] >
+          PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier]
+      ) {
+        paperclipBias.minTier = paperclipBias.maxTier;
       }
       if (!paperclipBias.biasTags.includes('virtual-tier')) {
         paperclipBias.biasTags.push('virtual-tier');
@@ -4381,7 +4554,9 @@ export class Eluvix {
     clientSignal?: AbortSignal,
     complexityScore: 1 | 2 | 3 | 4 = 1,
     scope?: RequestScope,
-    hops = 0
+    hops = 0,
+    includeStreamUsage = false,
+    paperclip?: PaperclipRequestContext
   ): Promise<Response> {
     // Translate 'auto' to a concrete model that this upstream supports
     let effectiveModel = request.model;
@@ -4409,7 +4584,7 @@ export class Eluvix {
     }
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
-      return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs, scope?.userId ?? 'default');
+      return this.forwardAntigravityCli(upstream, effectiveRequest, complexityScore, clientSignal, timeoutMs, scope?.userId ?? 'default', paperclip);
     }
 
     if (upstream.type === 'comfyui') {
@@ -4438,9 +4613,23 @@ export class Eluvix {
       headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
     }
 
+    const outboundRequest =
+      includeStreamUsage &&
+      effectiveRequest.stream &&
+      upstream.type !== 'anthropic' &&
+      !upstream.endpoint.includes('anthropic.com')
+        ? {
+            ...effectiveRequest,
+            stream_options: {
+              ...(effectiveRequest.stream_options || {}),
+              include_usage: true,
+            },
+          }
+        : effectiveRequest;
+
     // Translate Structured Outputs (`response_format`) into the engine's native grammar fields
     const structuredTranslation = translateStructuredOutputFormat(
-      effectiveRequest as unknown as Record<string, any>,
+      outboundRequest as unknown as Record<string, any>,
       upstream
     );
 
@@ -4595,7 +4784,8 @@ export class Eluvix {
     complexityScore: 1 | 2 | 3 | 4 = 1,
     clientSignal?: AbortSignal,
     upstreamTimeoutMs = 60000,
-    userId = 'default'
+    userId = 'default',
+    paperclip?: PaperclipRequestContext
   ): Promise<Response> {
     const startTime = Date.now();
     // The config-supplied cliPath is resolved through the central gate:
@@ -4884,7 +5074,9 @@ export class Eluvix {
               duration_ms: Date.now() - startTime,
               prompt_tokens: exactPromptTokens,
               completion_tokens: exactCompletionTokens,
-              user_id: userId
+              cost_usd: 0,
+              user_id: userId,
+              ...paperclipLogFields(paperclip),
             });
             return;
           }
@@ -4923,7 +5115,8 @@ export class Eluvix {
                 usage: {
                   prompt_tokens: exactPromptTokens,
                   completion_tokens: exactCompletionTokens,
-                  total_tokens: exactPromptTokens + exactCompletionTokens
+                  total_tokens: exactPromptTokens + exactCompletionTokens,
+                  cost: 0
                 }
               };
               try {
@@ -4946,7 +5139,9 @@ export class Eluvix {
             duration_ms: Date.now() - startTime,
             prompt_tokens: exactPromptTokens,
             completion_tokens: exactCompletionTokens,
-            user_id: userId
+            cost_usd: 0,
+            user_id: userId,
+            ...paperclipLogFields(paperclip),
           });
         });
       });

@@ -1,0 +1,2166 @@
+diff --git i/packages/adapter-utils/src/acpx-engine/execute.ts w/packages/adapter-utils/src/acpx-engine/execute.ts
+index 3e12f701..9323d90e 100644
+--- i/packages/adapter-utils/src/acpx-engine/execute.ts
++++ w/packages/adapter-utils/src/acpx-engine/execute.ts
+@@ -72,6 +72,9 @@ import {
+   asString,
+   buildInvocationEnvForLogs,
+   buildPaperclipEnv,
++  buildPaperclipRoutingHeaders,
++  mergePaperclipHeadersIntoCustomHeadersText,
++  shouldInjectPaperclipRoutingHeaders,
+   ensureAbsoluteDirectory,
+   ensurePathInEnv,
+   ensurePaperclipSkillSymlink,
+@@ -2099,6 +2102,27 @@ async function buildRuntime(input: {
+     env.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS);
+     resolvedAdapterEnv.ANTHROPIC_CUSTOM_HEADERS = env.ANTHROPIC_CUSTOM_HEADERS;
+   }
++  const acpxMergedEnv = { ...process.env, ...env };
++  if (
++    acpxAgent === "claude" &&
++    shouldInjectPaperclipRoutingHeaders({
++      baseUrl: env.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL,
++      env: acpxMergedEnv,
++      config,
++    })
++  ) {
++    const routingHeaders = buildPaperclipRoutingHeaders({
++      runId,
++      agent,
++      context,
++      config,
++      env: acpxMergedEnv,
++    });
++    env.ANTHROPIC_CUSTOM_HEADERS = mergePaperclipHeadersIntoCustomHeadersText(
++      env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS,
++      routingHeaders,
++    );
++  }
+   if (authToken) env.PAPERCLIP_API_KEY = authToken;
+   if (input.ctx.observability) {
+     applyObservabilityEnvironment(env, input.ctx.observability);
+diff --git i/packages/adapter-utils/src/billing.ts w/packages/adapter-utils/src/billing.ts
+index ed74851f..73ead79e 100644
+--- i/packages/adapter-utils/src/billing.ts
++++ w/packages/adapter-utils/src/billing.ts
+@@ -1,8 +1,87 @@
+-function readEnv(env: NodeJS.ProcessEnv, key: string): string | null {
++function readEnv(env: NodeJS.ProcessEnv | Record<string, string | undefined>, key: string): string | null {
+   const value = env[key];
+   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+ }
+ 
++function sameHttpOrigin(a: string, b: string): boolean {
++  try {
++    return new URL(a).origin === new URL(b).origin;
++  } catch {
++    return false;
++  }
++}
++
++export function isEluvixTarget(input: {
++  baseUrl?: string | null;
++  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
++  routing?: unknown;
++}): boolean {
++  const env = input.env ?? {};
++  const routing = input.routing && typeof input.routing === "object"
++    ? (input.routing as { costSource?: unknown; baseUrl?: unknown; kind?: unknown })
++    : undefined;
++
++  if (routing?.costSource === "eluvix") return true;
++
++  const explicitBiller = readEnv(env, "PAPERCLIP_AI_BILLER") ?? readEnv(env, "ELUVIX_BILLER");
++  if (explicitBiller?.toLowerCase() === "eluvix") return true;
++
++  const envCostSource = readEnv(env, "PAPERCLIP_COST_SOURCE")?.toLowerCase();
++  if (envCostSource === "eluvix") return true;
++
++  if (readEnv(env, "PAPERCLIP_ELUVIX_ENABLED") === "1" || readEnv(env, "ELUVIX_GATEWAY") === "1") {
++    return true;
++  }
++
++  for (const keyName of [
++    "OPENAI_API_KEY",
++    "PAPERCLIP_AI_PROVIDER_KEY",
++    "ANTHROPIC_API_KEY",
++    "ANTHROPIC_AUTH_TOKEN",
++    "ELUVIX_API_KEY",
++  ]) {
++    const token = readEnv(env, keyName);
++    if (token && token.startsWith("elx_")) return true;
++  }
++
++  const baseUrl =
++    (typeof input.baseUrl === "string" && input.baseUrl.trim()) ||
++    (typeof routing?.baseUrl === "string" && routing.baseUrl.trim()) ||
++    readEnv(env, "OPENAI_BASE_URL") ||
++    readEnv(env, "OPENAI_API_BASE") ||
++    readEnv(env, "OPENAI_API_BASE_URL") ||
++    readEnv(env, "ANTHROPIC_BASE_URL") ||
++    readEnv(env, "PAPERCLIP_AI_PROVIDER_URL");
++
++  if (!baseUrl) return false;
++  try {
++    const parsed = new URL(baseUrl);
++    if (parsed.hostname === "eluvix" || parsed.hostname.endsWith(".eluvix")) return true;
++    const configuredEluvixUrl = readEnv(env, "ELUVIX_BASE_URL") ?? readEnv(env, "ELUVIX_GATEWAY_URL");
++    if (configuredEluvixUrl && sameHttpOrigin(baseUrl, configuredEluvixUrl)) return true;
++  } catch {
++    return false;
++  }
++
++  return false;
++}
++
++export function isReportedCostSourceEnabled(input: {
++  routing?: unknown;
++  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
++  biller?: string | null;
++}): boolean {
++  if (input.biller === "eluvix") return true;
++  const routing = input.routing && typeof input.routing === "object"
++    ? (input.routing as { costSource?: unknown })
++    : undefined;
++  if (routing?.costSource === "eluvix" || routing?.costSource === "provider_reported") {
++    return true;
++  }
++  const envCostSource = readEnv(input.env ?? {}, "PAPERCLIP_COST_SOURCE")?.toLowerCase();
++  return envCostSource === "eluvix" || envCostSource === "provider_reported";
++}
++
+ export function inferOpenAiCompatibleBiller(
+   env: NodeJS.ProcessEnv,
+   fallback: string | null = "openai",
+@@ -10,17 +89,20 @@ export function inferOpenAiCompatibleBiller(
+   const explicitOpenRouterKey = readEnv(env, "OPENROUTER_API_KEY");
+   if (explicitOpenRouterKey) return "openrouter";
+ 
++  const explicitBiller = readEnv(env, "PAPERCLIP_AI_BILLER") ?? readEnv(env, "ELUVIX_BILLER");
++  if (explicitBiller) return explicitBiller;
++
+   const baseUrl =
+     readEnv(env, "OPENAI_BASE_URL") ??
+     readEnv(env, "OPENAI_API_BASE") ??
+     readEnv(env, "OPENAI_API_BASE_URL");
++
++  if (isEluvixTarget({ baseUrl, env })) return "eluvix";
++
+   if (baseUrl) {
+     try {
+       const url = new URL(baseUrl);
+       if (url.protocol === "https:" && url.hostname === "openrouter.ai") return "openrouter";
+-      if ((url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1") && url.port === "3588") {
+-        return "eluvix";
+-      }
+       // An OpenAI-compatible endpoint does not imply OpenAI prices. Do not
+       // assign direct-provider estimates to a proxy or an unknown endpoint.
+       if (url.protocol !== "https:" || url.hostname !== "api.openai.com") return "unknown";
+@@ -34,19 +116,15 @@ export function inferOpenAiCompatibleBiller(
+ 
+ /** Managed Responses routes use their own credentials and prices, including
+  * no-auth endpoints. Absence of OPENAI_API_KEY never makes them ChatGPT plans. */
+-export function resolveManagedOpenAiBilling(routing: unknown) {
++export function resolveManagedOpenAiBilling(
++  routing: unknown,
++  env?: NodeJS.ProcessEnv | Record<string, string | undefined>,
++) {
+   if (!routing || typeof routing !== "object") return undefined;
+-  const r = routing as { kind?: unknown; baseUrl?: unknown };
++  const r = routing as { kind?: unknown; baseUrl?: unknown; costSource?: unknown };
+   let biller = r.kind === "openrouter" ? "openrouter" : "unknown";
+-  if (biller === "unknown" && typeof r.baseUrl === "string") {
+-    try {
+-      const url = new URL(r.baseUrl);
+-      if ((url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1") && url.port === "3588") {
+-        biller = "eluvix";
+-      }
+-    } catch {
+-      // ignore invalid URL
+-    }
++  if (biller === "unknown" && isEluvixTarget({ routing: r, env })) {
++    biller = "eluvix";
+   }
+   return {
+     provider: "openai",
+diff --git i/packages/adapter-utils/src/eluvix-headers.test.ts w/packages/adapter-utils/src/eluvix-headers.test.ts
+new file mode 100644
+index 00000000..9032aa4e
+--- /dev/null
++++ w/packages/adapter-utils/src/eluvix-headers.test.ts
+@@ -0,0 +1,142 @@
++import { createHmac } from "node:crypto";
++import { describe, expect, it } from "vitest";
++import {
++  inferOpenAiCompatibleBiller,
++  isEluvixTarget,
++  isReportedCostSourceEnabled,
++  resolveManagedOpenAiBilling,
++} from "./billing.js";
++import {
++  buildPaperclipRoutingHeaders,
++  canonicalPaperclipSignaturePayload,
++  mergePaperclipHeadersIntoCustomHeadersText,
++  shouldInjectPaperclipRoutingHeaders,
++  signPaperclipRoutingHeaders,
++} from "./eluvix-headers.js";
++
++describe("Eluvix opt-in billing & cost-source attribution (F1)", () => {
++  it("does not misclassify generic localhost, OpenRouter, or custom gateways as Eluvix", () => {
++    expect(isEluvixTarget({ baseUrl: "http://127.0.0.1:3588/v1" })).toBe(false);
++    expect(isEluvixTarget({ baseUrl: "https://openrouter.ai/api/v1", env: { OPENROUTER_API_KEY: "sk-or-v1-test" } })).toBe(false);
++    expect(isEluvixTarget({ routing: { kind: "custom", baseUrl: "http://gateway.example/v1" } })).toBe(false);
++    expect(resolveManagedOpenAiBilling({ kind: "custom", baseUrl: "http://127.0.0.1:8080/v1" })).toEqual({
++      provider: "openai",
++      biller: "unknown",
++      billingType: "api",
++    });
++    expect(isReportedCostSourceEnabled({ biller: "openrouter", env: {} })).toBe(false);
++  });
++
++  it("activates Eluvix billing & reported cost-source only on explicit signals", () => {
++    expect(isEluvixTarget({ routing: { kind: "custom", baseUrl: "http://127.0.0.1:3588/v1", costSource: "eluvix" } })).toBe(true);
++    expect(isEluvixTarget({ env: { OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz" } })).toBe(true);
++    expect(isEluvixTarget({ baseUrl: "http://router.local:4000/v1", env: { ELUVIX_BASE_URL: "http://router.local:4000" } })).toBe(true);
++    expect(isEluvixTarget({ baseUrl: "https://eluvix.internal/v1" })).toBe(false);
++    expect(isEluvixTarget({ baseUrl: "https://router.eluvix/v1" })).toBe(true);
++
++    expect(
++      resolveManagedOpenAiBilling({ kind: "custom", baseUrl: "http://127.0.0.1:3588/v1", costSource: "eluvix" }),
++    ).toEqual({
++      provider: "openai",
++      biller: "eluvix",
++      billingType: "api",
++    });
++    expect(
++      inferOpenAiCompatibleBiller({ OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz", OPENAI_BASE_URL: "http://127.0.0.1:3588/v1" }),
++    ).toBe("eluvix");
++    expect(isReportedCostSourceEnabled({ biller: "eluvix" })).toBe(true);
++    expect(isReportedCostSourceEnabled({ routing: { costSource: "provider_reported" } })).toBe(true);
++    expect(isReportedCostSourceEnabled({ env: { PAPERCLIP_COST_SOURCE: "eluvix" } })).toBe(true);
++  });
++});
++
++describe("Execute-time Paperclip routing headers & HMAC signing (F2/F3)", () => {
++  it("gates injection away from direct vendor endpoints unless explicitly requested", () => {
++    expect(shouldInjectPaperclipRoutingHeaders({ baseUrl: "https://api.openai.com/v1", env: { ELUVIX_API_KEY: "elx_test" } })).toBe(false);
++    expect(shouldInjectPaperclipRoutingHeaders({ baseUrl: "http://127.0.0.1:3588/v1", env: { ELUVIX_API_KEY: "elx_test" } })).toBe(true);
++    expect(shouldInjectPaperclipRoutingHeaders({ baseUrl: "https://api.openai.com/v1", env: { PAPERCLIP_AI_BILLER: "eluvix" } })).toBe(true);
++    expect(shouldInjectPaperclipRoutingHeaders({ baseUrl: "https://api.openai.com/v1", env: { PAPERCLIP_ELUVIX_HMAC_SECRET: "secret" } })).toBe(false);
++    expect(shouldInjectPaperclipRoutingHeaders({ baseUrl: "https://gateway.example/v1", env: {} })).toBe(false);
++    expect(
++      shouldInjectPaperclipRoutingHeaders({
++        baseUrl: "http://127.0.0.1:3588/v1",
++        env: { PAPERCLIP_ELUVIX_HMAC_SECRET: "secret" },
++      }),
++    ).toBe(true);
++    expect(
++      shouldInjectPaperclipRoutingHeaders({
++        baseUrl: "https://gateway.example/v1",
++        config: { eluvixRouting: true },
++      }),
++    ).toBe(true);
++  });
++
++  it("extracts live context headers and signs canonical v1 HMAC-SHA256 signatures", () => {
++    const headers = buildPaperclipRoutingHeaders({
++      runId: "run-42",
++      agent: {
++        id: "agent-7",
++        companyId: "comp-1",
++        budgetMonthlyCents: 10000,
++        spentMonthlyCents: 8500,
++      },
++      context: {
++        taskId: "issue-99",
++        paperclipRoutingContext: {
++          priority: "critical",
++          sensitivity: "confidential",
++          hop: 2,
++        },
++      },
++      hmacSecret: "top-secret-hmac",
++      timestamp: "1763000000000",
++    });
++
++    expect(headers["x-paperclip-run-id"]).toBe("run-42");
++    expect(headers["x-paperclip-issue-id"]).toBe("issue-99");
++    expect(headers["x-paperclip-agent-id"]).toBe("agent-7");
++    expect(headers["x-paperclip-company-id"]).toBe("comp-1");
++    expect(headers["x-paperclip-issue-priority"]).toBe("critical");
++    expect(headers["x-paperclip-budget-remaining-pct"]).toBe("15");
++    expect(headers["x-paperclip-sensitivity"]).toBe("confidential");
++    expect(headers["x-paperclip-hop"]).toBe("2");
++    expect(headers["x-paperclip-context-ts"]).toBe("1763000000000");
++
++    const expectedPayload = canonicalPaperclipSignaturePayload({
++      ts: "1763000000000",
++      runId: "run-42",
++      issueId: "issue-99",
++      agentId: "agent-7",
++      companyId: "comp-1",
++      priority: "critical",
++      budgetRemainingPct: "15",
++      sensitivity: "confidential",
++      hop: "2",
++    });
++    expect(expectedPayload).toBe(
++      "v1|1763000000000|run-42|issue-99|agent-7|comp-1|critical|15|confidential|2",
++    );
++    const expectedMac = createHmac("sha256", "top-secret-hmac").update(expectedPayload, "utf8").digest("hex");
++    expect(headers["x-paperclip-context-sig"]).toBe(`v1.1763000000000.${expectedMac}`);
++  });
++
++  it("merges signed headers into ANTHROPIC_CUSTOM_HEADERS without clobbering X-Anthropic-Agent-Id", () => {
++    const signed = signPaperclipRoutingHeaders(
++      {
++        "x-paperclip-run-id": "run-2",
++        "x-paperclip-issue-priority": "high",
++        "x-paperclip-hop": "1",
++      },
++      "secret-key",
++      "1763000100000",
++    );
++    const merged = mergePaperclipHeadersIntoCustomHeadersText(
++      "X-Anthropic-Agent-Id: agent-123\nX-Paperclip-Run-Id: stale-run",
++      signed,
++    );
++    expect(merged).toContain("X-Anthropic-Agent-Id: agent-123");
++    expect(merged).toContain("x-paperclip-run-id: run-2");
++    expect(merged).not.toContain("stale-run");
++    expect(merged).toContain("x-paperclip-context-sig: v1.1763000100000.");
++  });
++});
+diff --git i/packages/adapter-utils/src/eluvix-headers.ts w/packages/adapter-utils/src/eluvix-headers.ts
+new file mode 100644
+index 00000000..0b9ce5cd
+--- /dev/null
++++ w/packages/adapter-utils/src/eluvix-headers.ts
+@@ -0,0 +1,315 @@
++import { createHmac } from "node:crypto";
++import { isEluvixTarget } from "./billing.js";
++
++const PRIORITIES = new Set(["critical", "high", "medium", "low"]);
++
++export interface PaperclipRoutingHeaderFields {
++  runId?: string | null;
++  issueId?: string | null;
++  agentId?: string | null;
++  companyId?: string | null;
++  priority?: string | null;
++  budgetRemainingPct?: number | string | null;
++  sensitivity?: string | null;
++  hop?: number | string | null;
++}
++
++export function sanitizePaperclipHeaderValue(value: unknown, maxLen = 256): string | null {
++  if (typeof value === "number") {
++    if (!Number.isFinite(value)) return null;
++    value = String(value);
++  }
++  if (typeof value !== "string") return null;
++  const cleaned = value.replace(/[\r\n\0]/g, "").trim();
++  if (!cleaned) return null;
++  return cleaned.slice(0, maxLen);
++}
++
++export function resolvePaperclipHmacSecret(
++  env?: Record<string, string | undefined>,
++  explicitSecret?: string | null,
++): string | null {
++  const candidates = [
++    explicitSecret,
++    env?.PAPERCLIP_ELUVIX_HMAC_SECRET,
++    env?.ELUVIX_PAPERCLIP_HMAC_SECRET,
++    process.env.PAPERCLIP_ELUVIX_HMAC_SECRET,
++    process.env.ELUVIX_PAPERCLIP_HMAC_SECRET,
++  ];
++  for (const candidate of candidates) {
++    if (typeof candidate === "string" && candidate.trim().length > 0) {
++      return candidate.trim();
++    }
++  }
++  return null;
++}
++
++export function canonicalPaperclipSignaturePayload(fields: {
++  ts: string;
++  runId?: string | null;
++  issueId?: string | null;
++  agentId?: string | null;
++  companyId?: string | null;
++  priority?: string | null;
++  budgetRemainingPct?: string | null;
++  sensitivity?: string | null;
++  hop?: string | null;
++}): string {
++  return [
++    "v1",
++    fields.ts,
++    fields.runId ?? "",
++    fields.issueId ?? "",
++    fields.agentId ?? "",
++    fields.companyId ?? "",
++    fields.priority ?? "",
++    fields.budgetRemainingPct ?? "",
++    fields.sensitivity ?? "",
++    fields.hop ?? "0",
++  ].join("|");
++}
++
++export function signPaperclipRoutingHeaders(
++  headers: Record<string, string>,
++  secret: string,
++  ts: string = String(Date.now()),
++): Record<string, string> {
++  const payload = canonicalPaperclipSignaturePayload({
++    ts,
++    runId: headers["x-paperclip-run-id"],
++    issueId: headers["x-paperclip-issue-id"],
++    agentId: headers["x-paperclip-agent-id"],
++    companyId: headers["x-paperclip-company-id"],
++    priority: headers["x-paperclip-issue-priority"],
++    budgetRemainingPct: headers["x-paperclip-budget-remaining-pct"],
++    sensitivity: headers["x-paperclip-sensitivity"],
++    hop: headers["x-paperclip-hop"] ?? "0",
++  });
++  const mac = createHmac("sha256", secret).update(payload, "utf8").digest("hex");
++  return {
++    ...headers,
++    "x-paperclip-context-ts": ts,
++    "x-paperclip-context-sig": `v1.${ts}.${mac}`,
++  };
++}
++
++export function shouldInjectPaperclipRoutingHeaders(input: {
++  baseUrl?: string | null;
++  env?: Record<string, string | undefined>;
++  config?: Record<string, unknown>;
++  routing?: unknown;
++}): boolean {
++  const cfg = input.config ?? {};
++  const env = input.env ?? {};
++  if (cfg.eluvixRouting === false || env.PAPERCLIP_ELUVIX_INJECT_HEADERS === "0") {
++    return false;
++  }
++  if (
++    cfg.eluvixRouting === true ||
++    cfg.injectPaperclipHeaders === true ||
++    env.PAPERCLIP_ELUVIX_INJECT_HEADERS === "1"
++  ) {
++    return true;
++  }
++  const routing = input.routing ?? cfg.managedAiRouting;
++  const routingCostSource =
++    routing && typeof routing === "object" ? (routing as { costSource?: unknown }).costSource : undefined;
++  const explicitBillerEluvix =
++    (env.PAPERCLIP_AI_BILLER ?? env.ELUVIX_BILLER)?.trim().toLowerCase() === "eluvix";
++  if (input.baseUrl && routingCostSource !== "eluvix" && !explicitBillerEluvix) {
++    try {
++      const host = new URL(input.baseUrl).hostname.toLowerCase();
++      if (host === "api.openai.com" || host === "api.anthropic.com" || host === "openrouter.ai") {
++        return false;
++      }
++    } catch {
++      // ignore invalid URL
++    }
++  }
++  if (isEluvixTarget({ baseUrl: input.baseUrl, env, routing })) {
++    return true;
++  }
++  // If an HMAC secret is explicitly configured alongside a non-vendor gateway
++  // or local URL, sign and attach routing headers for that gateway.
++  const secret = resolvePaperclipHmacSecret(env);
++  if (secret && input.baseUrl) {
++    return true;
++  }
++  return false;
++}
++
++function asObj(value: unknown): Record<string, unknown> | undefined {
++  return value && typeof value === "object" && !Array.isArray(value)
++    ? (value as Record<string, unknown>)
++    : undefined;
++}
++
++export function extractPaperclipRoutingContextFromAdapterContext(input: {
++  runId?: string | null;
++  agent?: {
++    id?: string | null;
++    companyId?: string | null;
++    budgetMonthlyCents?: number | null;
++    spentMonthlyCents?: number | null;
++  } | null;
++  context?: Record<string, unknown> | null;
++  config?: Record<string, unknown> | null;
++  env?: Record<string, string | undefined>;
++}): PaperclipRoutingHeaderFields {
++  const ctx = input.context ?? {};
++  const env = input.env ?? {};
++  const routingMeta = asObj(ctx.paperclipRoutingContext);
++  const issueObj = asObj(ctx.paperclipIssue);
++  const wakeObj = asObj(ctx.paperclipWake);
++  const wakeIssueObj = asObj(wakeObj?.issue);
++
++  const runId =
++    sanitizePaperclipHeaderValue(routingMeta?.runId) ??
++    sanitizePaperclipHeaderValue(input.runId) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_RUN_ID);
++  const companyId =
++    sanitizePaperclipHeaderValue(routingMeta?.companyId) ??
++    sanitizePaperclipHeaderValue(input.agent?.companyId) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_COMPANY_ID);
++  const agentId =
++    sanitizePaperclipHeaderValue(routingMeta?.agentId) ??
++    sanitizePaperclipHeaderValue(input.agent?.id) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_AGENT_ID);
++  const issueId =
++    sanitizePaperclipHeaderValue(routingMeta?.issueId) ??
++    sanitizePaperclipHeaderValue(ctx.taskId) ??
++    sanitizePaperclipHeaderValue(ctx.issueId) ??
++    sanitizePaperclipHeaderValue(issueObj?.id) ??
++    sanitizePaperclipHeaderValue(wakeIssueObj?.id) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_TASK_ID);
++
++  const rawPriority =
++    sanitizePaperclipHeaderValue(routingMeta?.priority) ??
++    sanitizePaperclipHeaderValue(ctx.issuePriority) ??
++    sanitizePaperclipHeaderValue(ctx.taskPriority) ??
++    sanitizePaperclipHeaderValue(issueObj?.priority) ??
++    sanitizePaperclipHeaderValue(wakeIssueObj?.priority) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_TASK_PRIORITY) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_ISSUE_PRIORITY);
++  const priority = rawPriority && PRIORITIES.has(rawPriority.toLowerCase())
++    ? rawPriority.toLowerCase()
++    : rawPriority;
++
++  let budgetRemainingPct: number | string | null =
++    (typeof routingMeta?.budgetRemainingPct === "number" || typeof routingMeta?.budgetRemainingPct === "string"
++      ? routingMeta.budgetRemainingPct
++      : null) ??
++    (typeof ctx.paperclipBudgetRemainingPct === "number" || typeof ctx.paperclipBudgetRemainingPct === "string"
++      ? ctx.paperclipBudgetRemainingPct
++      : null) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_BUDGET_REMAINING_PCT);
++
++  if (budgetRemainingPct === null && typeof input.agent?.budgetMonthlyCents === "number" && input.agent.budgetMonthlyCents > 0) {
++    const spent = typeof input.agent.spentMonthlyCents === "number" && Number.isFinite(input.agent.spentMonthlyCents)
++      ? Math.max(0, input.agent.spentMonthlyCents)
++      : 0;
++    const remaining = Math.max(0, Math.min(100, Math.round(((input.agent.budgetMonthlyCents - spent) / input.agent.budgetMonthlyCents) * 100)));
++    budgetRemainingPct = remaining;
++  }
++
++  const sensitivity =
++    sanitizePaperclipHeaderValue(routingMeta?.sensitivity) ??
++    sanitizePaperclipHeaderValue(ctx.paperclipSensitivity) ??
++    sanitizePaperclipHeaderValue(ctx.sensitivity) ??
++    sanitizePaperclipHeaderValue(issueObj?.sensitivity) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_TASK_SENSITIVITY) ??
++    sanitizePaperclipHeaderValue(env.PAPERCLIP_SENSITIVITY);
++
++  const rawHop =
++    routingMeta?.hop ??
++    ctx.paperclipHop ??
++    ctx.hop ??
++    env.PAPERCLIP_HOP ??
++    env.X_PAPERCLIP_HOP ??
++    0;
++  const parsedHop = typeof rawHop === "number" ? rawHop : Number(rawHop);
++  const hop = Number.isFinite(parsedHop) && parsedHop >= 0 ? Math.trunc(parsedHop) : 0;
++
++  return {
++    runId,
++    issueId,
++    agentId,
++    companyId,
++    priority,
++    budgetRemainingPct,
++    sensitivity,
++    hop,
++  };
++}
++
++export function buildPaperclipRoutingHeaders(input: {
++  runId?: string | null;
++  agent?: {
++    id?: string | null;
++    companyId?: string | null;
++    budgetMonthlyCents?: number | null;
++    spentMonthlyCents?: number | null;
++  } | null;
++  context?: Record<string, unknown> | null;
++  config?: Record<string, unknown> | null;
++  env?: Record<string, string | undefined>;
++  hmacSecret?: string | null;
++  timestamp?: string;
++}): Record<string, string> {
++  const fields = extractPaperclipRoutingContextFromAdapterContext(input);
++  const headers: Record<string, string> = {
++    "x-paperclip-hop": String(fields.hop ?? 0),
++  };
++  const companyId = sanitizePaperclipHeaderValue(fields.companyId);
++  const agentId = sanitizePaperclipHeaderValue(fields.agentId);
++  const runId = sanitizePaperclipHeaderValue(fields.runId);
++  const issueId = sanitizePaperclipHeaderValue(fields.issueId);
++  const priority = sanitizePaperclipHeaderValue(fields.priority);
++  const sensitivity = sanitizePaperclipHeaderValue(fields.sensitivity);
++
++  if (companyId) headers["x-paperclip-company-id"] = companyId;
++  if (agentId) headers["x-paperclip-agent-id"] = agentId;
++  if (runId) headers["x-paperclip-run-id"] = runId;
++  if (issueId) headers["x-paperclip-issue-id"] = issueId;
++  if (priority) headers["x-paperclip-issue-priority"] = priority;
++  if (sensitivity) headers["x-paperclip-sensitivity"] = sensitivity;
++
++  if (fields.budgetRemainingPct !== null && fields.budgetRemainingPct !== undefined && fields.budgetRemainingPct !== "") {
++    const pctNum = Number(fields.budgetRemainingPct);
++    if (Number.isFinite(pctNum)) {
++      headers["x-paperclip-budget-remaining-pct"] = String(Math.max(0, Math.min(100, Math.round(pctNum))));
++    }
++  }
++
++  const secret = resolvePaperclipHmacSecret(input.env, input.hmacSecret);
++  if (secret) {
++    return signPaperclipRoutingHeaders(headers, secret, input.timestamp);
++  }
++  return headers;
++}
++
++export function mergePaperclipHeadersIntoCustomHeadersText(
++  existing: string | undefined,
++  headers: Record<string, string>,
++): string {
++  const map = new Map<string, { name: string; value: string }>();
++  if (typeof existing === "string" && existing.trim().length > 0) {
++    for (const line of existing.split(/\r?\n/)) {
++      const colon = line.indexOf(":");
++      if (colon <= 0) continue;
++      const name = line.slice(0, colon).trim();
++      const value = sanitizePaperclipHeaderValue(line.slice(colon + 1));
++      if (!name || value === null) continue;
++      map.set(name.toLowerCase(), { name, value });
++    }
++  }
++  for (const [key, rawValue] of Object.entries(headers)) {
++    const cleanKey = sanitizePaperclipHeaderValue(key, 128);
++    const cleanVal = sanitizePaperclipHeaderValue(rawValue, 512);
++    if (!cleanKey || cleanVal === null) continue;
++    map.set(cleanKey.toLowerCase(), { name: cleanKey, value: cleanVal });
++  }
++  return Array.from(map.values())
++    .map(({ name, value }) => `${name}: ${value}`)
++    .join("\n");
++}
+diff --git i/packages/adapter-utils/src/index.ts w/packages/adapter-utils/src/index.ts
+index 8255a472..5534a51e 100644
+--- i/packages/adapter-utils/src/index.ts
++++ w/packages/adapter-utils/src/index.ts
+@@ -89,7 +89,12 @@ export type {
+   RuntimeStatusSink,
+   RuntimeStatusUpdate,
+ } from "./runtime-progress.js";
+-export { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "./billing.js";
++export {
++  inferOpenAiCompatibleBiller,
++  isEluvixTarget,
++  isReportedCostSourceEnabled,
++  resolveManagedOpenAiBilling,
++} from "./billing.js";
+ export {
+   ADAPTER_LOGIN_PANEL_MODES,
+   ADAPTER_LOGIN_TIMEOUT_POLICIES,
+diff --git i/packages/adapter-utils/src/server-utils.ts w/packages/adapter-utils/src/server-utils.ts
+index 13d0a046..de93a1c9 100644
+--- i/packages/adapter-utils/src/server-utils.ts
++++ w/packages/adapter-utils/src/server-utils.ts
+@@ -13,12 +13,18 @@ import {
+ import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
+ import { redactCommandText } from "./command-redaction.js";
+ import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+-import {
+-  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+-  resolvePaperclipRunnerModel,
+-  normalizeLegacyRunnerProvider,
+-  paperclipRunnerFollowsLifecycleDefault,
+-} from "./paperclip-runner-permissions.js";
++import { resolvePaperclipRunnerModel, normalizeLegacyRunnerProvider, paperclipRunnerFollowsLifecycleDefault, PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES } from "./paperclip-runner-permissions.js";
++export {
++  buildPaperclipRoutingHeaders,
++  canonicalPaperclipSignaturePayload,
++  extractPaperclipRoutingContextFromAdapterContext,
++  mergePaperclipHeadersIntoCustomHeadersText,
++  resolvePaperclipHmacSecret,
++  sanitizePaperclipHeaderValue,
++  shouldInjectPaperclipRoutingHeaders,
++  signPaperclipRoutingHeaders,
++  type PaperclipRoutingHeaderFields,
++} from "./eluvix-headers.js";
+ import type {
+   AdapterExecutionContext,
+   AgentRuntimeIdentity,
+diff --git i/packages/adapters/claude-local/src/server/eluvix-routing.test.ts w/packages/adapters/claude-local/src/server/eluvix-routing.test.ts
+new file mode 100644
+index 00000000..dd0c918b
+--- /dev/null
++++ w/packages/adapters/claude-local/src/server/eluvix-routing.test.ts
+@@ -0,0 +1,132 @@
++import { beforeEach, describe, expect, it, vi } from "vitest";
++import { buildPaperclipRoutingHeaders } from "@paperclipai/adapter-utils/server-utils";
++
++const { capturedOpts, runAdapterExecutionTargetProcess } = vi.hoisted(() => {
++  const capturedOpts: Array<{ env?: Record<string, string> }> = [];
++  const runAdapterExecutionTargetProcess = vi.fn();
++  return { capturedOpts, runAdapterExecutionTargetProcess };
++});
++
++vi.mock("./acp.js", () => ({
++  createClaudeAcpExecutor: () => vi.fn(),
++  resolveClaudeExecutionEngineForRun: async () => ({ engine: "cli", explicit: true }),
++}));
++
++vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
++  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
++    "@paperclipai/adapter-utils/execution-target",
++  );
++  return {
++    ...actual,
++    ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
++    ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(async () => undefined),
++    resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "claude"),
++    runAdapterExecutionTargetProcess,
++  };
++});
++
++import { execute } from "./execute.js";
++
++function buildProcResult() {
++  return {
++    exitCode: 0,
++    signal: null,
++    timedOut: false,
++    stdout: [
++      JSON.stringify({ type: "system", subtype: "init", session_id: "claude-sess-1", model: "claude-sonnet" }),
++      JSON.stringify({ type: "result", session_id: "claude-sess-1", subtype: "success", result: "ok" }),
++    ].join("\n"),
++    stderr: "",
++    pid: 123,
++    startedAt: new Date().toISOString(),
++  };
++}
++
++describe("claude-local Eluvix execute-time routing headers (F2/F3)", () => {
++  beforeEach(() => {
++    capturedOpts.length = 0;
++    runAdapterExecutionTargetProcess.mockReset();
++    runAdapterExecutionTargetProcess.mockImplementation(
++      async (_runId: string, _target: unknown, _command: string, args: string[], opts: { env?: Record<string, string> }) => {
++        if (args.includes("--version")) {
++          return { ...buildProcResult(), stdout: "2.1.284 (Claude Code)" };
++        }
++        capturedOpts.push(opts);
++        return buildProcResult();
++      },
++    );
++  });
++
++  it("injects signed x-paperclip-* headers into ANTHROPIC_CUSTOM_HEADERS and sets biller=eluvix when targeting Eluvix", async () => {
++    const result = await execute({
++      runId: "run-claude-1",
++      agent: {
++        id: "agent-claude-1",
++        companyId: "company-1",
++        name: "Claude Coder",
++        adapterType: "claude_local",
++        adapterConfig: {},
++        budgetMonthlyCents: 10000,
++        spentMonthlyCents: 7500,
++      } as any,
++      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
++      config: {
++        engine: "cli",
++        env: {
++          ANTHROPIC_BASE_URL: "http://127.0.0.1:3588",
++          ANTHROPIC_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++          PAPERCLIP_ELUVIX_HMAC_SECRET: "claude-hmac-secret",
++          ANTHROPIC_CUSTOM_HEADERS: "X-Anthropic-Agent-Id: agent-claude-1",
++        },
++      },
++      context: {
++        taskId: "issue-55",
++        paperclipRoutingContext: {
++          priority: "critical",
++          sensitivity: "confidential",
++          hop: 1,
++        },
++      },
++      onLog: async () => {},
++    });
++
++    expect(result.biller).toBe("eluvix");
++    expect(capturedOpts).toHaveLength(1);
++    const customHeaders = capturedOpts[0]?.env?.ANTHROPIC_CUSTOM_HEADERS ?? "";
++    expect(customHeaders).toContain("X-Anthropic-Agent-Id: agent-claude-1");
++    expect(customHeaders).toContain("x-paperclip-run-id: run-claude-1");
++    expect(customHeaders).toContain("x-paperclip-issue-id: issue-55");
++    expect(customHeaders).toContain("x-paperclip-issue-priority: critical");
++    expect(customHeaders).toContain("x-paperclip-budget-remaining-pct: 25");
++    expect(customHeaders).toContain("x-paperclip-sensitivity: confidential");
++    expect(customHeaders).toContain("x-paperclip-hop: 1");
++    expect(customHeaders).toContain("x-paperclip-context-sig: v1.");
++  });
++
++  it("does not inject x-paperclip-* headers when targeting api.anthropic.com directly", async () => {
++    await execute({
++      runId: "run-claude-2",
++      agent: {
++        id: "agent-claude-1",
++        companyId: "company-1",
++        name: "Claude Coder",
++        adapterType: "claude_local",
++        adapterConfig: {},
++      },
++      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
++      config: {
++        engine: "cli",
++        env: {
++          ANTHROPIC_BASE_URL: "https://api.anthropic.com",
++          ANTHROPIC_API_KEY: "sk-ant-real",
++        },
++      },
++      context: { taskId: "issue-56" },
++      onLog: async () => {},
++    });
++
++    expect(capturedOpts).toHaveLength(1);
++    expect(capturedOpts[0]?.env?.ANTHROPIC_CUSTOM_HEADERS ?? "").not.toContain("x-paperclip-run-id");
++    expect(buildPaperclipRoutingHeaders).toBeTypeOf("function");
++  });
++});
+diff --git i/packages/adapters/claude-local/src/server/execute.ts w/packages/adapters/claude-local/src/server/execute.ts
+index faecffe2..d29da53f 100644
+--- i/packages/adapters/claude-local/src/server/execute.ts
++++ w/packages/adapters/claude-local/src/server/execute.ts
+@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
+ import path from "node:path";
+ import { fileURLToPath } from "node:url";
+ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
++import { isEluvixTarget } from "@paperclipai/adapter-utils";
+ import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+ import {
+   adapterExecutionTargetIsRemote,
+@@ -36,6 +37,9 @@ import {
+   parseJson,
+   applyPaperclipWorkspaceEnv,
+   buildPaperclipEnv,
++  buildPaperclipRoutingHeaders,
++  mergePaperclipHeadersIntoCustomHeadersText,
++  shouldInjectPaperclipRoutingHeaders,
+   isPaperclipSkillSourceMissing,
+   readPaperclipRuntimeSkillEntries,
+   readPaperclipIssueWorkModeFromContext,
+@@ -175,6 +179,36 @@ function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscri
+   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+ }
+ 
++function injectClaudeEluvixHeaders(input: {
++  env: Record<string, string>;
++  runId: string;
++  agent: AdapterExecutionContext["agent"];
++  context: Record<string, unknown>;
++  config: Record<string, unknown>;
++}): void {
++  const { env, runId, agent, context, config } = input;
++  const claudeTargetBaseUrl = env.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL;
++  const mergedClaudeEnv = { ...process.env, ...env };
++  if (isOpenRouterUrl(claudeTargetBaseUrl)) {
++    env.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(
++      env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS,
++    );
++  }
++  if (shouldInjectPaperclipRoutingHeaders({ baseUrl: claudeTargetBaseUrl, env: mergedClaudeEnv, config })) {
++    const routingHeaders = buildPaperclipRoutingHeaders({
++      runId,
++      agent,
++      context,
++      config,
++      env: mergedClaudeEnv,
++    });
++    env.ANTHROPIC_CUSTOM_HEADERS = mergePaperclipHeadersIntoCustomHeadersText(
++      env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS,
++      routingHeaders,
++    );
++  }
++}
++
+ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
+   const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
+   const onLog = input.onLog ?? (async () => {});
+@@ -310,9 +344,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
+     env[key] = value;
+   }
+ 
+-  if (isOpenRouterUrl(env.ANTHROPIC_BASE_URL ?? process.env.ANTHROPIC_BASE_URL)) {
+-    env.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS);
+-  }
++  injectClaudeEluvixHeaders({ env, runId, agent, context, config });
+   if (authToken) {
+     env.PAPERCLIP_API_KEY = authToken;
+   }
+@@ -681,6 +713,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+     executionTargetIsRemote,
+     executionCwd: effectiveExecutionCwd,
+   });
++  injectClaudeEluvixHeaders({ env, runId, agent, context, config });
+   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
+     ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
+     : null;
+@@ -1284,7 +1317,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+       sessionParams: resolvedSessionParams,
+       sessionDisplayId: resolvedSessionId,
+       provider: "anthropic",
+-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
++      biller: isBedrockAuth(effectiveEnv)
++        ? "aws_bedrock"
++        : isEluvixTarget({
++              baseUrl: effectiveEnv.ANTHROPIC_BASE_URL,
++              env: effectiveEnv,
++              routing: config.managedAiRouting,
++            })
++          ? "eluvix"
++          : "anthropic",
+       model: Object.keys(parseObject(parsed.modelUsage)).length > 1 ? "mixed" : parsedStream.model || asString(parsed.model, model),
+       billingType,
+       costUsd: parsedStream.costUsd,
+diff --git i/packages/adapters/codex-local/src/server/acp.ts w/packages/adapters/codex-local/src/server/acp.ts
+index 814694b1..7da994b9 100644
+--- i/packages/adapters/codex-local/src/server/acp.ts
++++ w/packages/adapters/codex-local/src/server/acp.ts
+@@ -347,8 +347,6 @@ export function resolveCodexAcpBillingIdentity(
+   ctx: Pick<AdapterExecutionContext, "config"> &
+     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+ ): { provider: string; biller: string; billingType: AdapterBillingType } {
+-  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+-  if (managedBilling) return managedBilling;
+   const envConfig = parseObject(parseObject(ctx.config).env);
+   const target = readAdapterExecutionTarget({
+     executionTarget: ctx.executionTarget,
+@@ -361,6 +359,8 @@ export function resolveCodexAcpBillingIdentity(
+       Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+     ),
+   };
++  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting, mergedEnv);
++  if (managedBilling) return managedBilling;
+   const apiKey = typeof mergedEnv.OPENAI_API_KEY === "string" && mergedEnv.OPENAI_API_KEY.trim().length > 0;
+   const billingType: AdapterBillingType = apiKey ? "api" : "subscription";
+   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(mergedEnv, "openai");
+diff --git i/packages/adapters/codex-local/src/server/eluvix-routing.test.ts w/packages/adapters/codex-local/src/server/eluvix-routing.test.ts
+new file mode 100644
+index 00000000..8f5ecfe6
+--- /dev/null
++++ w/packages/adapters/codex-local/src/server/eluvix-routing.test.ts
+@@ -0,0 +1,121 @@
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { buildPaperclipRoutingHeaders } from "@paperclipai/adapter-utils/server-utils";
++import { resolveCodexAcpBillingIdentity } from "./acp.js";
++import { prepareCodexRuntimeConfig } from "./runtime-config.js";
++
++const cleanupPaths = new Set<string>();
++
++afterEach(async () => {
++  await Promise.all(
++    [...cleanupPaths].map(async (target) => {
++      await fs.rm(target, { recursive: true, force: true });
++      cleanupPaths.delete(target);
++    }),
++  );
++});
++
++describe("codex-local Eluvix routing headers & billing (F1/F2/F3)", () => {
++  it("injects signed x-paperclip-* headers into Eluvix provider in PAPERCLIP_CODEX_PROVIDERS", async () => {
++    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-eluvix-"));
++    cleanupPaths.add(home);
++
++    const headers = buildPaperclipRoutingHeaders({
++      runId: "run-codex-1",
++      agent: { id: "agent-codex-1", companyId: "comp-1", budgetMonthlyCents: 2000, spentMonthlyCents: 1800 },
++      context: { taskId: "issue-77", paperclipRoutingContext: { priority: "high", hop: 1 } },
++      hmacSecret: "codex-secret",
++      timestamp: "1763000200000",
++    });
++
++    const prepared = await prepareCodexRuntimeConfig({
++      codexHome: home,
++      env: {
++        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
++          providers: {
++            eluvix: {
++              name: "Eluvix",
++              base_url: "http://127.0.0.1:3588/v1",
++              env_key: "OPENAI_API_KEY",
++              wire_api: "responses",
++            },
++            direct: {
++              name: "Direct OpenAI",
++              base_url: "https://api.openai.com/v1",
++              env_key: "OPENAI_API_KEY",
++            },
++          },
++          model_provider: "eluvix",
++        }),
++        OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++      },
++      fullEnv: {
++        OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++      },
++      extraProviderHeaders: headers,
++    });
++
++    const content = await fs.readFile(path.join(home, "config.toml"), "utf8");
++    expect(content).toContain("[model_providers.eluvix]");
++    expect(content).toContain('x-paperclip-run-id = "run-codex-1"');
++    expect(content).toContain('x-paperclip-budget-remaining-pct = "10"');
++    expect(content).toContain('x-paperclip-context-sig = "v1.1763000200000.');
++    // Direct vendor section must not receive internal Paperclip headers.
++    const directSection = content.slice(content.indexOf("[model_providers.direct]"));
++    expect(directSection).not.toContain("x-paperclip-context-sig");
++
++    await prepared.cleanup();
++  });
++
++  it("synthesizes transient [model_providers.eluvix] when using OPENAI_BASE_URL + elx_ key without PAPERCLIP_CODEX_PROVIDERS", async () => {
++    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-direct-eluvix-"));
++    cleanupPaths.add(home);
++    const originalToml = 'model = "eluvix/auto"\n';
++    await fs.writeFile(path.join(home, "config.toml"), originalToml, "utf8");
++
++    const headers = buildPaperclipRoutingHeaders({
++      runId: "run-codex-2",
++      agent: { id: "agent-codex-2", companyId: "comp-1" },
++      context: { taskId: "issue-88" },
++    });
++
++    const prepared = await prepareCodexRuntimeConfig({
++      codexHome: home,
++      env: {
++        OPENAI_BASE_URL: "http://127.0.0.1:3588/v1",
++        OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++      },
++      extraProviderHeaders: headers,
++    });
++
++    const content = await fs.readFile(path.join(home, "config.toml"), "utf8");
++    expect(content).toContain('model_provider = "eluvix"');
++    expect(content).toContain("[model_providers.eluvix]");
++    expect(content).toContain('x-paperclip-run-id = "run-codex-2"');
++
++    await prepared.cleanup();
++    expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toBe(originalToml);
++  });
++
++  it("resolves biller=eluvix for ACP runs when managedAiRouting opts in or elx_ key is configured", () => {
++    const viaRouting = resolveCodexAcpBillingIdentity({
++      config: {
++        managedAiRouting: { kind: "custom", baseUrl: "http://127.0.0.1:3588/v1", costSource: "eluvix" },
++        env: {},
++      },
++    });
++    expect(viaRouting.biller).toBe("eluvix");
++
++    const viaKey = resolveCodexAcpBillingIdentity({
++      config: {
++        env: {
++          OPENAI_BASE_URL: "http://127.0.0.1:3588/v1",
++          OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++        },
++      },
++    });
++    expect(viaKey.biller).toBe("eluvix");
++  });
++});
+diff --git i/packages/adapters/codex-local/src/server/execute.ts w/packages/adapters/codex-local/src/server/execute.ts
+index fbba81bc..6a17eedd 100644
+--- i/packages/adapters/codex-local/src/server/execute.ts
++++ w/packages/adapters/codex-local/src/server/execute.ts
+@@ -42,6 +42,7 @@ import {
+   asNumber,
+   parseObject,
+   buildPaperclipEnv,
++  buildPaperclipRoutingHeaders,
+   buildInvocationEnvForLogs,
+   ensureAbsoluteDirectory,
+   ensurePaperclipSkillSymlink,
+@@ -773,8 +774,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+       (entry): entry is [string, string] => typeof entry[1] === "string",
+     ),
+   );
++  const fullEnvStrings = Object.fromEntries(
++    Object.entries({ ...process.env, ...envConfigStrings }).filter(
++      (entry): entry is [string, string] => typeof entry[1] === "string",
++    ),
++  );
++  const extraProviderHeaders = buildPaperclipRoutingHeaders({
++    runId: ctx.runId,
++    agent: ctx.agent,
++    context: ctx.context,
++    config,
++    env: fullEnvStrings,
++  });
+   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
+     env: envConfigStrings,
++    fullEnv: fullEnvStrings,
++    extraProviderHeaders,
++    config,
+     codexHome: configuredCodexHome && !runtimeSkillDigest ? null : effectiveCodexHome,
+   });
+   // Curated allowlist dir staged for the remote `home` asset (see below). Held
+@@ -1038,7 +1054,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+         (entry): entry is [string, string] => typeof entry[1] === "string",
+       ),
+     );
+-    const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting);
++    const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting, effectiveEnv);
+     const billingType = managedBilling?.billingType ?? resolveCodexBillingType(effectiveEnv);
+     const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
+     const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+diff --git i/packages/adapters/codex-local/src/server/runtime-config.ts w/packages/adapters/codex-local/src/server/runtime-config.ts
+index 912b3ef8..a8e91ac8 100644
+--- i/packages/adapters/codex-local/src/server/runtime-config.ts
++++ w/packages/adapters/codex-local/src/server/runtime-config.ts
+@@ -1,4 +1,5 @@
+ import { isOpenRouterUrl, openRouterAttributionHeaders, OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
++import { shouldInjectPaperclipRoutingHeaders } from "@paperclipai/adapter-utils/server-utils";
+ import fs from "node:fs/promises";
+ import path from "node:path";
+ 
+@@ -342,18 +343,72 @@ function configTomlBackupPath(configTomlPath: string): string {
+ //
+ // When the adapter config explicitly sets env.CODEX_HOME (a user-managed home),
+ // pass codexHome: null -- the file is left untouched and a note is surfaced.
++function isDirectVendorBaseUrl(rawUrl: unknown): boolean {
++  if (typeof rawUrl !== "string" || rawUrl.trim().length === 0) return false;
++  try {
++    const host = new URL(rawUrl).hostname.toLowerCase();
++    return host === "api.openai.com" || host === "api.anthropic.com" || host === "openrouter.ai";
++  } catch {
++    return false;
++  }
++}
++
+ export async function prepareCodexRuntimeConfig(input: {
+   env: Record<string, string>;
+   codexHome: string | null;
++  extraProviderHeaders?: Record<string, string>;
++  config?: Record<string, unknown>;
++  fullEnv?: Record<string, string>;
+ }): Promise<PreparedCodexRuntimeConfig> {
+   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
++  const headerEnv = input.fullEnv ?? input.env;
++  const extraHeaders = input.extraProviderHeaders && Object.keys(input.extraProviderHeaders).length > 0
++    ? input.extraProviderHeaders
++    : undefined;
+   const notes: string[] = [];
+-  const parsed = parseCodexProvidersConfig(
++  let parsed = parseCodexProvidersConfig(
+     input.env.PAPERCLIP_CODEX_PROVIDERS ?? process.env.PAPERCLIP_CODEX_PROVIDERS,
+     resolveEnv,
+     notes,
+   );
+ 
++  if (parsed && extraHeaders) {
++    for (const provider of Object.values(parsed.providers)) {
++      if (isDirectVendorBaseUrl(provider.base_url) && input.config?.eluvixRouting !== true) {
++        continue;
++      }
++      const baseUrl = typeof provider.base_url === "string"
++        ? provider.base_url
++        : resolveEnv("OPENAI_BASE_URL");
++      if (shouldInjectPaperclipRoutingHeaders({ baseUrl, env: headerEnv, config: input.config })) {
++        provider.http_headers = {
++          ...(isPlainObject(provider.http_headers) ? (provider.http_headers as Record<string, unknown>) : {}),
++          ...extraHeaders,
++        };
++      }
++    }
++  } else if (!parsed && extraHeaders && input.codexHome) {
++    const openAiBaseUrl = resolveEnv("OPENAI_BASE_URL")?.trim();
++    if (
++      openAiBaseUrl &&
++      !isDirectVendorBaseUrl(openAiBaseUrl) &&
++      shouldInjectPaperclipRoutingHeaders({ baseUrl: openAiBaseUrl, env: headerEnv, config: input.config })
++    ) {
++      parsed = {
++        providers: {
++          eluvix: {
++            name: "Eluvix",
++            base_url: openAiBaseUrl,
++            env_key: "OPENAI_API_KEY",
++            wire_api: "responses",
++            http_headers: { ...extraHeaders },
++          },
++        },
++        modelProvider: "eluvix",
++      };
++    }
++  }
++
+   if (!parsed) {
+     // Self-heal state left behind by a crashed run (cleanup() never ran).
+     if (input.codexHome) {
+diff --git i/packages/adapters/hermes/src/server/eluvix-routing.test.ts w/packages/adapters/hermes/src/server/eluvix-routing.test.ts
+new file mode 100644
+index 00000000..71aff964
+--- /dev/null
++++ w/packages/adapters/hermes/src/server/eluvix-routing.test.ts
+@@ -0,0 +1,130 @@
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, beforeEach, describe, expect, it } from "vitest";
++import { execute } from "./execute.js";
++
++describe("hermes Eluvix execute-time config.yaml header injection (F1/F2/F3)", () => {
++  let rootDir: string;
++  let hermesHome: string;
++  let command: string;
++  let capturePath: string;
++
++  beforeEach(async () => {
++    rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-eluvix-"));
++    hermesHome = path.join(rootDir, "hermes-home");
++    await fs.mkdir(path.join(hermesHome, "skills"), { recursive: true });
++    await fs.writeFile(path.join(hermesHome, "skills", "custom.md"), "skill", "utf8");
++    capturePath = path.join(rootDir, "capture.json");
++    command = path.join(rootDir, "hermes.cjs");
++    await fs.writeFile(
++      command,
++      `#!${process.execPath}
++const fs = require("node:fs");
++const path = require("node:path");
++const home = process.env.HERMES_HOME;
++const configYaml = fs.existsSync(path.join(home, "config.yaml"))
++  ? fs.readFileSync(path.join(home, "config.yaml"), "utf8")
++  : null;
++const hasSkillsSymlink = fs.existsSync(path.join(home, "skills", "custom.md"));
++fs.writeFileSync(process.env.CAPTURE_PATH, JSON.stringify({ home, configYaml, hasSkillsSymlink }));
++console.log("done\\nsession_id: 20261113_120000_aaaaaa");
++`,
++      { mode: 0o700 },
++    );
++  });
++
++  afterEach(async () => {
++    await fs.rm(rootDir, { recursive: true, force: true });
++  });
++
++  it("uses an isolated temporary HERMES_HOME overlay for user homes and restores after execution", async () => {
++    const originalYaml = [
++      "model:",
++      "  default: eluvix/auto",
++      "  provider: custom",
++      "  base_url: http://127.0.0.1:3588/v1",
++      "  api_key: elx_abcdefghijklmnopqrstuvwxyz",
++      "",
++    ].join("\n");
++    await fs.writeFile(path.join(hermesHome, "config.yaml"), originalYaml, "utf8");
++
++    const result = await execute({
++      runId: "run-hermes-1",
++      agent: {
++        id: "agent-hermes-1",
++        companyId: "comp-1",
++        name: "Hermes Bot",
++        adapterType: "hermes_local",
++        adapterConfig: {},
++        budgetMonthlyCents: 1000,
++        spentMonthlyCents: 200,
++      } as any,
++      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
++      config: {
++        hermesCommand: command,
++        model: "eluvix/auto",
++        provider: "custom",
++        env: {
++          HERMES_HOME: hermesHome,
++          CAPTURE_PATH: capturePath,
++          PAPERCLIP_ELUVIX_HMAC_SECRET: "hermes-secret",
++        },
++      },
++      context: {
++        taskId: "issue-hermes-1",
++        paperclipRoutingContext: {
++          priority: "high",
++          sensitivity: "internal",
++          hop: 1,
++        },
++      },
++      onLog: async () => {},
++    });
++
++    const captured = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
++      home: string;
++      configYaml: string;
++      hasSkillsSymlink: boolean;
++    };
++    expect(result.biller).toBe("eluvix");
++    expect(captured.home).not.toBe(hermesHome);
++    expect(captured.hasSkillsSymlink).toBe(true);
++    expect(captured.configYaml).toContain('"x-paperclip-run-id":"run-hermes-1"');
++    expect(captured.configYaml).toContain('"x-paperclip-budget-remaining-pct":"80"');
++    expect(captured.configYaml).toContain('"x-paperclip-context-sig":"v1.');
++    // Original user config.yaml remains untouched, and temp overlay is deleted.
++    expect(await fs.readFile(path.join(hermesHome, "config.yaml"), "utf8")).toBe(originalYaml);
++    await expect(fs.access(captured.home)).rejects.toThrow();
++  });
++
++  it("leaves non-Eluvix Hermes runs cleanly untouched without overlay", async () => {
++    const result = await execute({
++      runId: "run-hermes-2",
++      agent: {
++        id: "agent-hermes-2",
++        companyId: "comp-1",
++        name: "Hermes OpenRouter",
++        adapterType: "hermes_local",
++        adapterConfig: {},
++      },
++      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
++      config: {
++        hermesCommand: command,
++        model: "anthropic/claude-sonnet-4",
++        provider: "openrouter",
++        env: {
++          HERMES_HOME: hermesHome,
++          CAPTURE_PATH: capturePath,
++        },
++      },
++      context: { taskId: "issue-hermes-2" },
++      onLog: async () => {},
++    });
++
++    const captured = JSON.parse(await fs.readFile(capturePath, "utf8")) as { home: string; configYaml: string | null };
++    expect(captured.home).toBe(hermesHome);
++    expect(captured.configYaml).toBeNull();
++    expect(result.biller).toBeUndefined();
++  });
++});
+diff --git i/packages/adapters/hermes/src/server/execute.ts w/packages/adapters/hermes/src/server/execute.ts
+index b018acab..094c0526 100644
+--- i/packages/adapters/hermes/src/server/execute.ts
++++ w/packages/adapters/hermes/src/server/execute.ts
+@@ -18,24 +18,28 @@
+  *   --source           session source tag for filtering
+  */
+ 
+-import fs from "node:fs/promises";
++import * as fs from "node:fs/promises";
++import os from "node:os";
+ import path from "node:path";
+ 
+-import type {
+-  AdapterExecutionContext,
+-  AdapterExecutionResult,
+-  UsageSummary,
++import {
++  isEluvixTarget,
++  type AdapterExecutionContext,
++  type AdapterExecutionResult,
++  type UsageSummary,
+ } from "@paperclipai/adapter-utils";
+ 
+ import {
+   runChildProcess,
+   buildPaperclipEnv,
++  buildPaperclipRoutingHeaders,
+   buildRuntimeToolsEnv,
+   renderTemplate,
+   ensureAbsoluteDirectory,
+   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+   joinPromptSections,
+   selectPaperclipPromptSections,
++  shouldInjectPaperclipRoutingHeaders,
+   stringifyPaperclipWakePayload,
+   isPaperclipRecoveryWakePayload,
+ } from "@paperclipai/adapter-utils/server-utils";
+@@ -338,6 +342,137 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+   return result;
+ }
+ 
++function unquoteYamlScalar(raw: string): string {
++  const withoutComment = raw.replace(/\s+#.*$/, "").trim();
++  if (
++    (withoutComment.startsWith('"') && withoutComment.endsWith('"')) ||
++    (withoutComment.startsWith("'") && withoutComment.endsWith("'"))
++  ) {
++    return withoutComment.slice(1, -1);
++  }
++  return withoutComment;
++}
++
++function extractHermesModelYamlField(yamlContent: string, key: "base_url" | "api_key"): string | undefined {
++  const lines = yamlContent.split(/\r?\n/);
++  let inModel = false;
++  let modelIndent = 0;
++  for (const line of lines) {
++    const trimmed = line.trim();
++    if (!trimmed || trimmed.startsWith("#")) continue;
++    const indent = line.length - line.trimStart().length;
++    if (!inModel) {
++      if (indent === 0 && /^model\s*:/.test(trimmed)) {
++        inModel = true;
++        modelIndent = indent;
++      }
++      continue;
++    }
++    if (indent <= modelIndent) break;
++    const match = trimmed.match(new RegExp(`^${key}\\s*:\\s*(.+)$`));
++    if (match?.[1]) {
++      const value = unquoteYamlScalar(match[1]);
++      if (value) return value;
++    }
++  }
++  return undefined;
++}
++
++function parseYamlHeaderBlockLines(lines: string[], startIndex: number, baseIndent: number): {
++  existingHeaders: Record<string, string>;
++  endIndex: number;
++} {
++  const existingHeaders: Record<string, string> = {};
++  let i = startIndex;
++  while (i < lines.length) {
++    const rawLine = lines[i]!;
++    const trimmed = rawLine.trim();
++    if (!trimmed || trimmed.startsWith("#")) {
++      i += 1;
++      continue;
++    }
++    const indent = rawLine.length - rawLine.trimStart().length;
++    if (indent <= baseIndent) break;
++    const colon = trimmed.indexOf(":");
++    if (colon > 0) {
++      const k = unquoteYamlScalar(trimmed.slice(0, colon));
++      const v = unquoteYamlScalar(trimmed.slice(colon + 1));
++      if (k && v) existingHeaders[k] = v;
++    }
++    i += 1;
++  }
++  return { existingHeaders, endIndex: i };
++}
++
++function upsertHermesDefaultHeadersYaml(
++  existingYaml: string | null,
++  headers: Record<string, string>,
++): string {
++  if (!existingYaml || existingYaml.trim().length === 0) {
++    return `model:\n  default_headers: ${JSON.stringify(headers)}\n`;
++  }
++  const lines = existingYaml.split(/\r?\n/);
++  const modelLineIdx = lines.findIndex((line) => /^model\s*:\s*(?:#.*)?$/.test(line.trimEnd()));
++  if (modelLineIdx === -1) {
++    const suffix = existingYaml.endsWith("\n") ? "" : "\n";
++    return `${existingYaml}${suffix}model:\n  default_headers: ${JSON.stringify(headers)}\n`;
++  }
++
++  let blockEndIdx = modelLineIdx + 1;
++  while (blockEndIdx < lines.length) {
++    const rawLine = lines[blockEndIdx]!;
++    const trimmed = rawLine.trim();
++    if (!trimmed || trimmed.startsWith("#")) {
++      blockEndIdx += 1;
++      continue;
++    }
++    const indent = rawLine.length - rawLine.trimStart().length;
++    if (indent === 0) break;
++    const headerMatch = rawLine.match(/^(\s+)default_headers\s*:(.*)$/);
++    if (headerMatch) {
++      const indentStr = headerMatch[1]!;
++      const remainder = headerMatch[2]!.trim();
++      if (remainder.startsWith("{") && remainder.endsWith("}")) {
++        let existing: Record<string, string> = {};
++        try {
++          const parsed = JSON.parse(remainder);
++          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
++            existing = Object.fromEntries(
++              Object.entries(parsed as Record<string, unknown>).filter(
++                (entry): entry is [string, string] => typeof entry[1] === "string",
++              ),
++            );
++          }
++        } catch {
++          existing = {};
++        }
++        const merged = { ...existing, ...headers };
++        lines[blockEndIdx] = `${indentStr}default_headers: ${JSON.stringify(merged)}`;
++        const out = lines.join("\n");
++        return out.endsWith("\n") ? out : `${out}\n`;
++      }
++      const { existingHeaders, endIndex } = parseYamlHeaderBlockLines(
++        lines,
++        blockEndIdx + 1,
++        indentStr.length,
++      );
++      const merged = { ...existingHeaders, ...headers };
++      lines.splice(
++        blockEndIdx,
++        endIndex - blockEndIdx,
++        `${indentStr}default_headers: ${JSON.stringify(merged)}`,
++      );
++      const out = lines.join("\n");
++      return out.endsWith("\n") ? out : `${out}\n`;
++    }
++    blockEndIdx += 1;
++  }
++
++  lines.splice(modelLineIdx + 1, 0, `  default_headers: ${JSON.stringify(headers)}`);
++  const out = lines.join("\n");
++  return out.endsWith("\n") ? out : `${out}\n`;
++}
++
+ // ---------------------------------------------------------------------------
+ // Main execute
+ // ---------------------------------------------------------------------------
+@@ -533,6 +668,60 @@ export async function execute(
+   const envCommentId = cfgString(ctxContext.commentId) || cfgString(ctxContext.wakeCommentId) || cfgString(ctx.config?.commentId);
+   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
+ 
++  const hermesHome = cfgEnvString(env.HERMES_HOME) || path.join(os.homedir(), ".hermes");
++  const existingConfigYaml = await fs.readFile(path.join(hermesHome, "config.yaml"), "utf8").catch(() => null);
++  const detectedBaseUrl =
++    cfgEnvString(env.OPENAI_BASE_URL) ??
++    cfgEnvString(env.OPENAI_API_BASE) ??
++    detectedConfig?.baseUrl ??
++    (existingConfigYaml ? extractHermesModelYamlField(existingConfigYaml, "base_url") : undefined);
++  const yamlApiKey = existingConfigYaml
++    ? extractHermesModelYamlField(existingConfigYaml, "api_key")
++    : undefined;
++  const billingEnv = yamlApiKey && !env.OPENAI_API_KEY
++    ? { ...env, OPENAI_API_KEY: yamlApiKey }
++    : env;
++  const targetIsEluvix = isEluvixTarget({
++    baseUrl: detectedBaseUrl,
++    env: billingEnv,
++    routing: config.managedAiRouting,
++  });
++
++  let overlayHermesHomeDir: string | null = null;
++  if (shouldInjectPaperclipRoutingHeaders({ baseUrl: detectedBaseUrl, env: billingEnv, config })) {
++    const paperclipHeaders = buildPaperclipRoutingHeaders({
++      runId: ctx.runId,
++      agent: ctx.agent,
++      context: ctx.context,
++      config,
++      env: billingEnv,
++    });
++    const updatedYaml = upsertHermesDefaultHeadersYaml(existingConfigYaml, paperclipHeaders);
++    if (Boolean(config.managedAiConnection)) {
++      await fs.mkdir(hermesHome, { recursive: true });
++      await fs.writeFile(path.join(hermesHome, "config.yaml"), updatedYaml, "utf8");
++    } else {
++      overlayHermesHomeDir =
++        typeof fs.mkdtemp === "function"
++          ? await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-home-"))
++          : path.join(os.tmpdir(), `paperclip-hermes-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
++      await fs.mkdir(overlayHermesHomeDir, { recursive: true });
++      const entries = typeof fs.readdir === "function"
++        ? await fs.readdir(hermesHome, { withFileTypes: true }).catch(() => [])
++        : [];
++      for (const entry of entries) {
++        if (entry.name === "config.yaml" || entry.name === ".DS_Store") continue;
++        if (typeof fs.symlink === "function") {
++          await fs
++            .symlink(path.join(hermesHome, entry.name), path.join(overlayHermesHomeDir, entry.name))
++            .catch(() => {});
++        }
++      }
++      await fs.writeFile(path.join(overlayHermesHomeDir, "config.yaml"), updatedYaml, "utf8");
++      env.HERMES_HOME = overlayHermesHomeDir;
++    }
++  }
++
+   // ── Resolve working directory ──────────────────────────────────────────
+   const workspace = ctx.context?.paperclipWorkspace;
+   const workspaceCwd = workspace && typeof workspace === "object"
+@@ -582,14 +771,21 @@ export async function execute(
+     return ctx.onLog(stream, chunk);
+   };
+ 
+-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+-    cwd,
+-    env,
+-    timeoutSec,
+-    graceSec,
+-    onLog: wrappedOnLog,
+-    onSpawn: ctx.onSpawn,
+-  });
++  let result: Awaited<ReturnType<typeof runChildProcess>>;
++  try {
++    result = await runChildProcess(ctx.runId, hermesCmd, args, {
++      cwd,
++      env,
++      timeoutSec,
++      graceSec,
++      onLog: wrappedOnLog,
++      onSpawn: ctx.onSpawn,
++    });
++  } finally {
++    if (overlayHermesHomeDir) {
++      await fs.rm(overlayHermesHomeDir, { recursive: true, force: true }).catch(() => {});
++    }
++  }
+ 
+   // ── Parse output ───────────────────────────────────────────────────────
+   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+@@ -608,6 +804,7 @@ export async function execute(
+     signal: result.signal,
+     timedOut: result.timedOut,
+     provider: resolvedProvider,
++    ...(targetIsEluvix ? { biller: "eluvix" } : {}),
+     model,
+   };
+ 
+diff --git i/packages/adapters/opencode-local/src/server/eluvix-routing.test.ts w/packages/adapters/opencode-local/src/server/eluvix-routing.test.ts
+new file mode 100644
+index 00000000..e50684cc
+--- /dev/null
++++ w/packages/adapters/opencode-local/src/server/eluvix-routing.test.ts
+@@ -0,0 +1,62 @@
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { buildPaperclipRoutingHeaders } from "@paperclipai/adapter-utils/server-utils";
++import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
++
++const cleanupPaths = new Set<string>();
++
++afterEach(async () => {
++  await Promise.all(
++    [...cleanupPaths].map(async (target) => {
++      await fs.rm(target, { recursive: true, force: true });
++      cleanupPaths.delete(target);
++    }),
++  );
++});
++
++describe("opencode-local Eluvix execute-time headers (F2/F3)", () => {
++  it("injects signed x-paperclip-* headers only onto Eluvix providers in opencode.json", async () => {
++    const configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-oc-eluvix-"));
++    cleanupPaths.add(configHome);
++
++    const headers = buildPaperclipRoutingHeaders({
++      runId: "run-oc-1",
++      agent: { id: "agent-oc-1", companyId: "comp-1", budgetMonthlyCents: 5000, spentMonthlyCents: 1000 },
++      context: { taskId: "issue-oc-1", paperclipRoutingContext: { priority: "medium", hop: 1 } },
++      hmacSecret: "oc-hmac-secret",
++      timestamp: "1763000300000",
++    });
++
++    const prepared = await prepareOpenCodeRuntimeConfig({
++      env: {
++        XDG_CONFIG_HOME: configHome,
++        OPENAI_API_KEY: "elx_abcdefghijklmnopqrstuvwxyz",
++        PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
++          eluvix: { options: { baseURL: "http://127.0.0.1:3588/v1", apiKey: "elx_abcdefghijklmnopqrstuvwxyz" } },
++          direct: { options: { baseURL: "https://api.openai.com/v1" } },
++        }),
++      },
++      extraProviderHeaders: headers,
++      config: {},
++    });
++    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
++
++    const runtimeConfig = JSON.parse(
++      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
++    ) as {
++      provider?: {
++        eluvix?: { options?: { headers?: Record<string, string> } };
++        direct?: { options?: { headers?: Record<string, string> } };
++      };
++    };
++
++    expect(runtimeConfig.provider?.eluvix?.options?.headers?.["x-paperclip-run-id"]).toBe("run-oc-1");
++    expect(runtimeConfig.provider?.eluvix?.options?.headers?.["x-paperclip-budget-remaining-pct"]).toBe("80");
++    expect(runtimeConfig.provider?.eluvix?.options?.headers?.["x-paperclip-context-sig"]).toMatch(/^v1\.1763000300000\./);
++    expect(runtimeConfig.provider?.direct?.options?.headers?.["x-paperclip-context-sig"]).toBeUndefined();
++
++    await prepared.cleanup();
++  });
++});
+diff --git i/packages/adapters/opencode-local/src/server/execute.ts w/packages/adapters/opencode-local/src/server/execute.ts
+index 17c1799c..b335cf1b 100644
+--- i/packages/adapters/opencode-local/src/server/execute.ts
++++ w/packages/adapters/opencode-local/src/server/execute.ts
+@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
+ import os from "node:os";
+ import path from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
++import { inferOpenAiCompatibleBiller, isEluvixTarget, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+ import {
+   adapterExecutionTargetIsRemote,
+   adapterExecutionTargetRemoteCwd,
+@@ -33,6 +33,7 @@ import {
+   asStringArray,
+   parseObject,
+   buildPaperclipEnv,
++  buildPaperclipRoutingHeaders,
+   buildRuntimeToolsEnv,
+   joinPromptSections,
+   buildInvocationEnvForLogs,
+@@ -84,7 +85,20 @@ function parseModelProvider(model: string | null): string | null {
+   return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
+ }
+ 
+-function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
++function resolveOpenCodeBiller(
++  env: Record<string, string>,
++  provider: string | null,
++  config?: Record<string, unknown>,
++): string {
++  if (
++    isEluvixTarget({
++      baseUrl: env.PAPERCLIP_AI_PROVIDER_URL ?? env.OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL,
++      env,
++      routing: config?.managedAiRouting,
++    })
++  ) {
++    return "eluvix";
++  }
+   return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
+ }
+ 
+@@ -330,9 +344,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+   if (authToken) {
+     env.PAPERCLIP_API_KEY = authToken;
+   }
++  const extraProviderHeaders = buildPaperclipRoutingHeaders({
++    runId,
++    agent,
++    context,
++    config,
++    env: { ...process.env, ...env },
++  });
+   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+     env, config,
+     sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
++    extraProviderHeaders,
+   });
+   const localRuntimeConfigHome =
+     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
+@@ -723,7 +745,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+           usageBasis: "per_run",
+           provider: parseModelProvider(model || null),
+-          biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(model || null)),
++          biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(model || null), config),
+           model,
+           billingType: apiKeyBillingType(parseModelProvider(model || null), accountingEnv),
+           costUsd: attempt.parsed.costUsd,
+@@ -782,7 +804,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
+         sessionParams: resolvedSessionParams,
+         sessionDisplayId: resolvedSessionId,
+         provider: parseModelProvider(modelId),
+-        biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(modelId)),
++        biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(modelId), config),
+         model: modelId,
+         billingType: apiKeyBillingType(parseModelProvider(modelId), accountingEnv),
+         costUsd: attempt.parsed.costUsd,
+diff --git i/packages/adapters/opencode-local/src/server/runtime-config.ts w/packages/adapters/opencode-local/src/server/runtime-config.ts
+index 9dc6ec42..3053ef79 100644
+--- i/packages/adapters/opencode-local/src/server/runtime-config.ts
++++ w/packages/adapters/opencode-local/src/server/runtime-config.ts
+@@ -2,7 +2,7 @@ import { isOpenRouterUrl, openRouterAttributionHeaders } from "@paperclipai/adap
+ import fs from "node:fs/promises";
+ import os from "node:os";
+ import path from "node:path";
+-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
++import { asBoolean, shouldInjectPaperclipRoutingHeaders } from "@paperclipai/adapter-utils/server-utils";
+ import { installSandboxToolMemoryPreference } from "./sandbox-tool-memory.js";
+ 
+ type PreparedOpenCodeRuntimeConfig = {
+@@ -109,6 +109,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
+   config: Record<string, unknown>;
+   targetIsRemote?: boolean;
+   sandboxToolOomPreference?: boolean;
++  extraProviderHeaders?: Record<string, string>;
+ }): Promise<PreparedOpenCodeRuntimeConfig> {
+   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
+ 
+@@ -212,8 +213,13 @@ export async function prepareOpenCodeRuntimeConfig(input: {
+       // OpenCode must still report invalid operator configuration.
+     }
+   }
+-  nextProvider = attributeOpenCodeProviders(mergeConfigObjects(nextProvider,
+-    isPlainObject(inlineConfig?.provider) ? inlineConfig.provider : {}));
++  nextProvider = injectEluvixOpenCodeHeaders(
++    mergeConfigObjects(nextProvider, isPlainObject(inlineConfig?.provider) ? inlineConfig.provider : {}),
++    input.extraProviderHeaders,
++    input.env,
++    input.config,
++  );
++  nextProvider = attributeOpenCodeProviders(nextProvider);
+   if (Object.keys(nextProvider).length > 0) {
+     nextConfig.provider = nextProvider;
+   }
+@@ -273,6 +279,47 @@ export function prepareManagedOpenCodeRemoteHomes(input: {
+   });
+ }
+ 
++/** Inject execute-time Paperclip/Eluvix routing headers into targeted providers. */
++function injectEluvixOpenCodeHeaders(
++  providers: Record<string, unknown>,
++  extraHeaders: Record<string, string> | undefined,
++  env: Record<string, string>,
++  config: Record<string, unknown>,
++): Record<string, unknown> {
++  if (!extraHeaders || Object.keys(extraHeaders).length === 0) return providers;
++  const mergedEnv = { ...process.env, ...env };
++  const result: Record<string, unknown> = { ...providers };
++  for (const [name, value] of Object.entries(result)) {
++    if (!isPlainObject(value)) continue;
++    const options = isPlainObject(value.options) ? value.options : {};
++    const baseUrl =
++      typeof options.baseURL === "string"
++        ? options.baseURL
++        : name === "paperclip" || name === "eluvix"
++          ? env.PAPERCLIP_AI_PROVIDER_URL ?? env.OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL
++          : undefined;
++    const providerApiKey = typeof options.apiKey === "string" ? options.apiKey.trim() : undefined;
++    const providerEnv = providerApiKey?.startsWith("elx_")
++      ? { ...mergedEnv, ELUVIX_API_KEY: providerApiKey }
++      : mergedEnv;
++    if (!shouldInjectPaperclipRoutingHeaders({ baseUrl, env: providerEnv, config })) {
++      continue;
++    }
++    const existingHeaders = isPlainObject(options.headers) ? (options.headers as Record<string, string>) : {};
++    result[name] = {
++      ...value,
++      options: {
++        ...options,
++        headers: {
++          ...existingHeaders,
++          ...extraHeaders,
++        },
++      },
++    };
++  }
++  return result;
++}
++
+ /** Native provider defaults and per-model headers can both carry harness attribution. */
+ function attributeOpenCodeProviders(providers: Record<string, unknown>): Record<string, unknown> {
+   const result: Record<string, unknown> = { openrouter: {}, ...providers };
+diff --git i/packages/shared/src/ai-provider-routing.ts w/packages/shared/src/ai-provider-routing.ts
+index 519c93bd..22378469 100644
+--- i/packages/shared/src/ai-provider-routing.ts
++++ w/packages/shared/src/ai-provider-routing.ts
+@@ -9,6 +9,9 @@ export const aiProviderRoutingSchema = z
+     auth: z
+       .enum(["bearer", "api_key", "none"])
+       .default("bearer"),
++    costSource: z
++      .enum(["provider_reported", "eluvix", "estimate"])
++      .optional(),
+     region: z
+       .string()
+       .regex(/^[a-z]{2}(?:-[a-z]+)+-\d$/)
+diff --git i/server/src/services/ai-connection-runtime.ts w/server/src/services/ai-connection-runtime.ts
+index 009651db..ade2d0e0 100644
+--- i/server/src/services/ai-connection-runtime.ts
++++ w/server/src/services/ai-connection-runtime.ts
+@@ -404,21 +404,7 @@ export async function prepareManagedAiRuntime(
+       }), { mode: 0o600 });
+       if (antigravitySubscription) await writeFile(authFile, originalCredential, { mode: 0o600 });
+     }
+-    const paperclipHeaders: Record<string, string> = {
+-      "x-paperclip-company-id": input.companyId,
+-      "x-paperclip-agent-id": input.agentId,
+-      "x-paperclip-hop": "0",
+-    };
+-    if (typeof configuredEnv.PAPERCLIP_RUN_ID === "string" && configuredEnv.PAPERCLIP_RUN_ID) {
+-      paperclipHeaders["x-paperclip-run-id"] = configuredEnv.PAPERCLIP_RUN_ID;
+-    }
+-    if (typeof configuredEnv.PAPERCLIP_TASK_ID === "string" && configuredEnv.PAPERCLIP_TASK_ID) {
+-      paperclipHeaders["x-paperclip-issue-id"] = configuredEnv.PAPERCLIP_TASK_ID;
+-    }
+-    if (typeof configuredEnv.PAPERCLIP_TASK_PRIORITY === "string" && configuredEnv.PAPERCLIP_TASK_PRIORITY) {
+-      paperclipHeaders["x-paperclip-issue-priority"] = configuredEnv.PAPERCLIP_TASK_PRIORITY;
+-    }
+-    const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "", paperclipHeaders) : undefined;
++    const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
+     if (projected) {
+       const customHeaders = env.ANTHROPIC_CUSTOM_HEADERS ?? process.env.ANTHROPIC_CUSTOM_HEADERS;
+       Object.assign(env, projected.env);
+diff --git i/server/src/services/ai-provider-routing.ts w/server/src/services/ai-provider-routing.ts
+index b3b2f5f6..0052c6e0 100644
+--- i/server/src/services/ai-provider-routing.ts
++++ w/server/src/services/ai-provider-routing.ts
+@@ -11,7 +11,6 @@ export function managedProviderRouting(
+   harness: string,
+   credential: string,
+   model: string,
+-  paperclipHeaders?: Record<string, string>,
+ ) {
+   const env: Record<string, string> = {};
+   const config: Record<string, unknown> = {};
+@@ -19,7 +18,6 @@ export function managedProviderRouting(
+   let hermesConfig = "";
+   const baseUrl = aiRoutingBaseUrl(route, harness);
+   const openrouter = isOpenRouterUrl(baseUrl);
+-  const extraHeaders = paperclipHeaders && Object.keys(paperclipHeaders).length > 0 ? paperclipHeaders : undefined;
+   if (route.kind === "bedrock") {
+     env.CLAUDE_CODE_USE_BEDROCK = "1";
+     env.AWS_REGION = route.region!;
+@@ -57,10 +55,6 @@ export function managedProviderRouting(
+     const id = model.startsWith(`${provider}/`)
+       ? model.slice(provider.length + 1)
+       : model;
+-    const mergedOpenCodeHeaders = {
+-      ...(extraHeaders ?? {}),
+-      ...(openrouter ? OPENROUTER_ATTRIBUTION_HEADERS : {}),
+-    };
+     env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+       provider: {
+         [provider]: {
+@@ -70,7 +64,7 @@ export function managedProviderRouting(
+           options: {
+             baseURL: baseUrl,
+             apiKey: credential,
+-            ...(Object.keys(mergedOpenCodeHeaders).length > 0 ? { headers: mergedOpenCodeHeaders } : {}),
++            ...(openrouter ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
+           },
+           models: id ? { [id]: { name: id } } : {},
+         },
+diff --git i/server/src/services/heartbeat/runtime-execution.ts w/server/src/services/heartbeat/runtime-execution.ts
+index 93a7dfdd..d29eab35 100644
+--- i/server/src/services/heartbeat/runtime-execution.ts
++++ w/server/src/services/heartbeat/runtime-execution.ts
+@@ -53,7 +53,7 @@ import { isConversation } from "../agent-conversations.js";
+ import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
+ import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
+ import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
+-import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
++import { isEluvixTarget, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
+ import { and, eq, isNull, sql } from "drizzle-orm";
+ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
+ import { conflict } from "../../errors.js";
+@@ -708,7 +708,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
+               // configured provider values and the server-selected
+               // workspace boundary authoritative.
+               managedGitHub: !useHostGitHub && githubSelection.configured,
+-              billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
++              billingIdentity: managedAiRuntime ? {
++                provider: managedAiRuntime.attribution.provider,
++                biller: isEluvixTarget({ routing: managedAiRuntime.config.managedAiRouting })
++                  ? "eluvix"
++                  : managedAiRuntime.attribution.provider === "openai"
++                    ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider
++                    : managedAiRuntime.attribution.provider,
++                billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api",
++              } : undefined,
+               managedAiCredentialIdentity: managedAiRuntime?.identity,
+               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
+               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
+@@ -813,8 +821,44 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
+       // adapters need it in their prompt, but the authoritative answers
+       // remain on the interaction instead of being duplicated in the
+       // heartbeat run snapshot.
++      const budgetMonthlyCents =
++        typeof (agent as { budgetMonthlyCents?: unknown }).budgetMonthlyCents === "number"
++          ? (agent as { budgetMonthlyCents: number }).budgetMonthlyCents
++          : 0;
++      const spentMonthlyCents =
++        typeof (agent as { spentMonthlyCents?: unknown }).spentMonthlyCents === "number"
++          ? Math.max(0, (agent as { spentMonthlyCents: number }).spentMonthlyCents)
++          : 0;
++      const budgetRemainingPct = budgetMonthlyCents > 0
++        ? Math.max(0, Math.min(100, Math.round(((budgetMonthlyCents - spentMonthlyCents) / budgetMonthlyCents) * 100)))
++        : undefined;
++      const rawSensitivity =
++        typeof context.paperclipSensitivity === "string" ? context.paperclipSensitivity
++          : typeof context.sensitivity === "string" ? context.sensitivity
++          : typeof (issueContext as unknown as { sensitivity?: unknown } | null)?.sensitivity === "string"
++            ? (issueContext as unknown as { sensitivity: string }).sensitivity
++            : undefined;
++      const livePriority =
++        typeof (issueRef as unknown as { priority?: unknown } | null)?.priority === "string"
++          ? (issueRef as unknown as { priority: string }).priority
++          : typeof parseObject(context.paperclipIssue).priority === "string"
++            ? (parseObject(context.paperclipIssue).priority as string)
++            : typeof context.priority === "string"
++              ? context.priority
++              : undefined;
+       const adapterContext: Record<string, unknown> = {
+         ...context,
++        paperclipRoutingContext: {
++          runId: run.id,
++          companyId: agent.companyId,
++          agentId: agent.id,
++          ...(issueId ? { issueId } : {}),
++          ...(livePriority ? { priority: livePriority } : {}),
++          ...(budgetRemainingPct !== undefined ? { budgetRemainingPct } : {}),
++          ...(rawSensitivity ? { sensitivity: rawSensitivity } : {}),
++          hop: typeof context.paperclipHop === "number" ? context.paperclipHop
++            : typeof context.hop === "number" ? context.hop : 0,
++        },
+         ...(legacyQuestionResponse
+           ? {
+               [PAPERCLIP_WAKE_PAYLOAD_KEY]: {
+diff --git i/server/src/services/native-runtime/native-session-executor.ts w/server/src/services/native-runtime/native-session-executor.ts
+index 853df3f5..61bdfe90 100644
+--- i/server/src/services/native-runtime/native-session-executor.ts
++++ w/server/src/services/native-runtime/native-session-executor.ts
+@@ -98,7 +98,7 @@ import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
+ import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+ import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
+ 
+-import { inferOpenAiCompatibleBiller, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
++import { inferOpenAiCompatibleBiller, isReportedCostSourceEnabled, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
+ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+ import { redactNativeFailureError } from "./native-failure-redaction.js";
+ import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
+@@ -11393,7 +11393,15 @@ async function executePaperclipNativeSessionAttempt(
+   };
+   // OpenCode and ACPX report their current turn; Codex reports a cumulative run delta.
+   // Rebuild per-turn state from the durable event log when a controller resumes.
+-  const turnAccounting = ["opencode", "acpx"].includes(input.execution.provider.kind) ? createNativeTurnAccounting(input.execution.provider) : null;
++  const resolvedNativeBilling = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
++  const acceptReportedCostField = isReportedCostSourceEnabled({
++    biller: resolvedNativeBilling.biller,
++    env: input.runnerEnvironment,
++    routing: input.execution.provider,
++  });
++  const turnAccounting = ["opencode", "acpx"].includes(input.execution.provider.kind)
++    ? createNativeTurnAccounting(input.execution.provider, { acceptReportedCostField })
++    : null;
+   if (turnAccounting || cursorCloudAccounting) {
+     const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+       eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
+@@ -11417,7 +11425,7 @@ async function executePaperclipNativeSessionAttempt(
+   const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean) => {
+     if (producerOwnsUsage) return;
+     const accountingUsage = input.execution.provider.kind === "cursor_cloud" ? undefined : normalizeNativeUsage(usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
+-    const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider) : undefined;
++    const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider, { acceptReportedCostField }) : undefined;
+     complete = complete && (cursorCloudAccounting !== null || accountingUsage !== undefined);
+     const costStatus = cursorCloudAccounting !== null ? "unpriced" as const : complete && usage?.accountingCostIncomplete !== true
+       ? input.execution.provider.kind === "aws_agentcore" ? "estimated" as const : undefined
+@@ -13745,7 +13753,13 @@ async function executePaperclipNativeSessionAttempt(
+     model: input.execution.provider.model,
+     usage: input.execution.provider.kind === "cursor_cloud" ? undefined : normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" }),
+     costUsd: input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8" && normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" })
+-      ? nativeUsageCostUsd(native.usage, input.execution.provider) ?? null : null,
++      ? nativeUsageCostUsd(native.usage, input.execution.provider, {
++          acceptReportedCostField: isReportedCostSourceEnabled({
++            biller: resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity).biller,
++            env: input.runnerEnvironment,
++            routing: input.execution.provider,
++          }),
++        }) ?? null : null,
+     costUsdExact: input.execution.provider.kind !== "cursor_cloud" && typeof native.usage?.accountingCostUsdExact === "string" ? native.usage.accountingCostUsdExact : undefined,
+     costStatus: input.execution.provider.kind !== "cursor_cloud" && nativeAccountingComplete && native.usage?.accountingCostIncomplete !== true
+       ? input.execution.provider.kind === "aws_agentcore" ? "estimated" : undefined
+diff --git i/server/src/services/native-runtime/native-usage-accounting.ts w/server/src/services/native-runtime/native-usage-accounting.ts
+index 5b7fcb31..80be33f0 100644
+--- i/server/src/services/native-runtime/native-usage-accounting.ts
++++ w/server/src/services/native-runtime/native-usage-accounting.ts
+@@ -63,7 +63,10 @@ export const NATIVE_LOST_TURN_USAGE_EVIDENCE = "a provider turn was lost on rest
+ export const NATIVE_TURN_LOST_ON_RESTORE = "provider_turn_lost_on_restore";
+ const LOST_ON_RESTORE = NATIVE_TURN_LOST_ON_RESTORE;
+ 
+-export function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
++export function createNativeTurnAccounting(
++  provider: NativeExecutionInput["provider"],
++  options?: { acceptReportedCostField?: boolean },
++) {
+   const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean; lost?: boolean;
+     /** Open when the provider session was restored after process loss. */
+     restored?: boolean }>();
+@@ -85,7 +88,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
+       outputTokens += normalized?.outputTokens ?? 0;
+       cacheReadTokens += normalized?.cachedInputTokens ?? 0;
+       cacheWriteTokens += normalized?.cacheWriteTokens ?? 0;
+-      const price = nativeUsageCostUsd(turn.usage, provider);
++      const price = nativeUsageCostUsd(turn.usage, provider, options);
+       if (price === undefined) costIncomplete = true;
+       else { cost += usdToUnits(price); costKnown = true; }
+     }
+@@ -159,6 +162,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
+ export function nativeUsageCostUsd(
+   usage: Record<string, unknown> | null,
+   provider?: NativeExecutionInput["provider"],
++  options?: { acceptReportedCostField?: boolean },
+ ) {
+   if (provider?.kind === "cursor_cloud") return undefined;
+   // The ACP normalization contract fills absent per-turn cost with zero and
+@@ -168,10 +172,13 @@ export function nativeUsageCostUsd(
+   if (!usage) return undefined;
+   const measurement = nativeUsageMeasurement(usage);
+   const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
++  const acceptReportedCostField = options?.acceptReportedCostField === true;
+   const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"])
+     ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"]))
+-    ?? numericUsageField(measurement, ["cost"])
+-    ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cost"]));
++    ?? (acceptReportedCostField
++      ? (numericUsageField(measurement, ["cost"])
++        ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cost"])))
++      : undefined);
+   // PRP currently defaults an absent providerCostUsd to zero. That zero is
+   // not proof of a free request when the runtime observed token consumption.
+   if (direct !== undefined && direct > 0) return direct;
+diff --git i/server/src/services/native-runtime/native-usage-delivery.ts w/server/src/services/native-runtime/native-usage-delivery.ts
+index 44ceb7aa..a8bb8e61 100644
+--- i/server/src/services/native-runtime/native-usage-delivery.ts
++++ w/server/src/services/native-runtime/native-usage-delivery.ts
+@@ -9,6 +9,7 @@ import { liveRunUsageCostCents } from "../budget-live-usage.js";
+ import { receiptFingerprint } from "../receipt-fingerprint.js";
+ import { persistUsageReceipt, type UsageReceiptEnvelope } from "../usage-receipts.js";
+ import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, NATIVE_TURN_LOST_ON_RESTORE, nativeUsageCostUsd, normalizeNativeUsage } from "./native-usage-accounting.js";
++import { isReportedCostSourceEnabled } from "@paperclipai/adapter-utils";
+ 
+ const terminal = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
+ const uuid = (identity: string) => {
+@@ -101,8 +102,12 @@ async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
+   // With no finished run in this session, the delivering run is the only owner
+   // left. Its own delta already excludes this usage, so it is never counted twice.
+   const owner = exact ?? runs[0] ?? { id: input.runId };
++  const acceptReportedCostField = isReportedCostSourceEnabled({
++    biller: input.billing.biller,
++    routing: input.provider,
++  });
+   const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing, model: input.provider.model ?? "unknown", usage, usageBasis: "per_run",
+-    complete: true, costUsd: nativeUsageCostUsd(measured, input.provider) ?? null }));
++    complete: true, costUsd: nativeUsageCostUsd(measured, input.provider, { acceptReportedCostField }) ?? null }));
+   await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: uuid(`${owner.id}:${input.runnerInstanceId}:${event.sourceEventId}`),
+     companyId: input.companyId, runId: owner.id, adapterType: "paperclip_runner", sourceId: uuid(`late:${owner.id}:${input.runId}:${input.runnerInstanceId}`),
+     sequence: event.sourceSeq, receivedAt: event.emittedAt, receipt,
+@@ -113,8 +118,14 @@ async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
+ 
+ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,
+   saved: Awaited<ReturnType<typeof loadNativeUsageReceipts>>, verifySaved = false, terminalAcknowledged = false) {
++  const acceptReportedCostField = isReportedCostSourceEnabled({
++    biller: input.billing.biller,
++    routing: input.provider,
++  });
+   const accepted = new Map<string, UsageReceiptEnvelope>();
+-  const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind) ? createNativeTurnAccounting(input.provider) : null;
++  const turnAccounting = ["opencode", "acpx"].includes(input.provider.kind)
++    ? createNativeTurnAccounting(input.provider, { acceptReportedCostField })
++    : null;
+   let observedUsage: Record<string, unknown> | null = null;
+   let observedTurn: string | undefined;
+   let activeProviderTurn: string | undefined;
+@@ -192,7 +203,7 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
+       const usage = normalizeNativeUsage(snapshot.usage, { inputIncludesCacheReads: input.provider.kind === "codex" });
+       envelope.receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing,
+         model: input.provider.model ?? "unknown", usage, usageBasis: "per_run", complete: snapshot.complete && usage !== undefined,
+-        costUsd: usage ? nativeUsageCostUsd(snapshot.usage, input.provider) ?? null : null,
++        costUsd: usage ? nativeUsageCostUsd(snapshot.usage, input.provider, { acceptReportedCostField }) ?? null : null,
+         costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
+         costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"
+           : input.provider.kind === "aws_agentcore" ? "estimated" : undefined,

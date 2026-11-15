@@ -66,14 +66,28 @@ curl -sS http://127.0.0.1:3588/api/v1/paperclip/whoami \
    - `off`: tools only (`eluvix:capabilities`, `eluvix:classify_task`, `eluvix:recommend_assignee`, `eluvix:explain_route`, `eluvix:budget`)
    - `advisory` *(default)*: posts a deduplicated Switchyard recommendation comment on unassigned issues
    - `shadow`: logs recommendations without posting comments or mutating issues
-   - `auto`: assigns unlocked, unassigned issues in allowlisted `companies` when `confidence >= minConfidence` and hourly/tree-depth guards pass
+   - `auto` *(autonomous)*: assigns unlocked, unassigned issues in allowlisted `companies` when `confidence >= minConfidence` and hourly/tree-depth guards pass
+   - `auto-with-approval`: queues Switchyard assignment proposals into `ctx.state` (`eluvix:approve_assignment`, `eluvix:dismiss_assignment`, and Paperclip `approval.decided` hooks) so board operators or lead agents confirm before mutating `assigneeAgentId`
+3. `@eluvix/paperclip-plugin` registers interactive React UI slots (`taskDetailView`, `page` `/switchyard`, `dashboardWidget`, `sidebar`, `detailTab`), tracks live agent `openIssueCount`, and evaluates delayed 48-hour reward stability (`done` without reopen/reassignment).
 
 ---
 
-## 5. Paperclip Fork Patches (F1 & F2)
+## 5. Security Hardening & E2E Script (`scripts/paperclip-e2e.mjs`)
 
-If running the Paperclip fork with managed AI connections:
+- **HMAC Context Verification (`X-Paperclip-Context-Ts`, `X-Paperclip-Context-Sig`)**: Signs canonical sorted `x-paperclip-*` context headers (`v1.<ts>.<hmac_hex>`) with a 300s skew window when `requireSignedContext: true`.
+- **Per-Key Company & Cost/Tier Ceilings**: API keys in `keys.json` can bind `paperclip: { companyIds, maxTier, maxCostPer1kUsd, hmacSecret, allowUnsignedContext }`, enforcing `403` across HTTP routes and company-scoped SQLite queries.
+- **Offline E2E Harness**: Run the self-contained loopback gateway + adapter + plugin + SQLite verification suite anytime without external infrastructure:
+  ```bash
+  node scripts/paperclip-e2e.mjs
+  ```
 
-- Apply [`fork-patches-f1-f2.patch`](./fork-patches-f1-f2.patch) on top of Paperclip `master`:
+---
+
+## 6. Paperclip Fork Patches (F1, F2 & F3)
+
+If running the Paperclip fork with managed AI connections and live external adapter/plugin resolution:
+
+- Apply [`fork-patches-f1-f3.patch`](./fork-patches-f1-f3.patch) (superseding [`fork-patches-f1-f2.patch`](./fork-patches-f1-f2.patch)) on top of Paperclip `master`:
   - **F1**: Recognizes loopback `:3588` Eluvix endpoints as `biller: "eluvix"` and ingests numeric `usage.cost` as reported USD cost.
   - **F2**: Forwards `x-paperclip-run-id`, `x-paperclip-issue-id`, `x-paperclip-agent-id`, `x-paperclip-company-id`, `x-paperclip-issue-priority`, and `x-paperclip-hop` through `managedProviderRouting` into OpenCode provider headers.
+  - **F3**: Resolves `@eluvix/paperclip-adapter` (`eluvix_local`) and `@eluvix/paperclip-plugin` (`eluvix.switchyard`) seamlessly in local workspace/daemon environments with full UI slot & approval wiring.

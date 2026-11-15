@@ -56,6 +56,27 @@ interface ObservabilityData {
   upstreamDistribution: Record<string, number>;
   upstreams: UpstreamHealth[];
   logs: RequestLog[];
+  paperclip?: {
+    totalRequests: number;
+    distinctRuns: number;
+    totalCostUsd: number;
+    avgDurationMs: number;
+    assignmentTotal: number;
+    assignmentWins: number;
+    assignmentSuccessRatePct: number;
+    recentRuns: Array<{
+      runId: string;
+      issueId: string | null;
+      agentId: string | null;
+      companyId: string | null;
+      priority: string | null;
+      model: string | null;
+      requests: number;
+      costUsd: number;
+      avgDurationMs: number;
+      lastAt: string | null;
+    }>;
+  };
 }
 
 export default function ObservabilityPage() {
@@ -648,6 +669,85 @@ export default function ObservabilityPage() {
               </div>
             )}
           </div>
+        </section>
+
+        {/* 3.5 Paperclip Autonomous Workforce Telemetry */}
+        <section className="mt-8 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 pb-4 border-b border-slate-800">
+            <div>
+              <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">
+                Paperclip Control Plane
+              </span>
+              <h2 className="text-lg font-bold text-white mt-0.5">
+                Paperclip Heartbeat Runs &amp; Delegation Outcomes
+              </h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-md text-slate-300">
+                Runs: <strong className="text-white">{data?.paperclip?.distinctRuns ?? 0}</strong>
+              </span>
+              <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-md text-slate-300">
+                Requests: <strong className="text-white">{data?.paperclip?.totalRequests ?? 0}</strong>
+              </span>
+              <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-md text-slate-300">
+                Cost:{' '}
+                <strong className="text-emerald-400">
+                  ${(data?.paperclip?.totalCostUsd ?? 0).toFixed(4)}
+                </strong>
+              </span>
+              <span className="bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-md text-slate-300">
+                Assignment Win Rate:{' '}
+                <strong className="text-sky-400">
+                  {data?.paperclip?.assignmentSuccessRatePct ?? 100}%
+                </strong>{' '}
+                ({data?.paperclip?.assignmentWins ?? 0}/{data?.paperclip?.assignmentTotal ?? 0})
+              </span>
+            </div>
+          </div>
+
+          {!data?.paperclip || data.paperclip.recentRuns.length === 0 ? (
+            <div className="text-xs text-slate-500 py-5 text-center">
+              No Paperclip heartbeat telemetry recorded yet. Runs attributed with{' '}
+              <code>X-Paperclip-Run-Id</code> will appear here automatically.
+            </div>
+          ) : (
+            <div className="mt-4 overflow-x-auto border border-slate-800 rounded-lg bg-slate-950">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-900 text-slate-400 font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="p-2.5">Run ID</th>
+                    <th className="p-2.5">Issue</th>
+                    <th className="p-2.5">Agent</th>
+                    <th className="p-2.5">Priority</th>
+                    <th className="p-2.5">Model</th>
+                    <th className="p-2.5 text-right">Reqs</th>
+                    <th className="p-2.5 text-right">Avg Latency</th>
+                    <th className="p-2.5 text-right">Cost</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {data.paperclip.recentRuns.map((run) => (
+                    <tr key={run.runId} className="hover:bg-slate-900/60">
+                      <td className="p-2.5 font-mono text-amber-300">{run.runId}</td>
+                      <td className="p-2.5 font-mono text-slate-300">{run.issueId || '—'}</td>
+                      <td className="p-2.5 font-mono text-slate-300">{run.agentId || '—'}</td>
+                      <td className="p-2.5">
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200 text-[10px]">
+                          {run.priority || 'default'}
+                        </span>
+                      </td>
+                      <td className="p-2.5 font-mono text-sky-300">{run.model || '—'}</td>
+                      <td className="p-2.5 text-right text-slate-300">{run.requests}</td>
+                      <td className="p-2.5 text-right text-slate-300">{run.avgDurationMs} ms</td>
+                      <td className="p-2.5 text-right font-mono text-emerald-400">
+                        ${run.costUsd.toFixed(5)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
 
         {/* 4. Live Request Activity Feed */}

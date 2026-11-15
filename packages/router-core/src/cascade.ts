@@ -259,6 +259,7 @@ export function synthesizeOpenAiSseFromText(params: {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    cost?: number;
   };
 }): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();

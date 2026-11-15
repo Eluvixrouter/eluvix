@@ -4,6 +4,11 @@
   "description": "Paperclip plugin (eluvix.switchyard) exposing Eluvix Switchyard capabilities, ranked assignee recommendation, opt-in auto-assignment, and outcome feedback.",
   "license": "MIT",
   "type": "module",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/index.js",
+    "ui": "./dist/ui/"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -19,7 +24,8 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node ./scripts/build-ui.mjs",
+    "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "vitest run"
   },
@@ -36,6 +42,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "18.3.31",
+    "esbuild": "0.21.5",
+    "react": "18.3.1",
     "typescript": "^5.0.0",
     "vitest": "^2.1.9"
   }

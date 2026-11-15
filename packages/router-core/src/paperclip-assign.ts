@@ -5,6 +5,7 @@
  * IMPORTANT: Do NOT import any `node:*` modules here.
  */
 
+import { sampleBetaPosterior } from './cascade.js';
 import { scanAndMaskPii } from './guard.js';
 import { classifyRequestModality } from './modality.js';
 import type {
@@ -21,6 +22,7 @@ export interface PaperclipTaskInput {
   priority?: PaperclipIssuePriority;
   labels?: string[];
   sensitivity?: PaperclipSensitivity;
+  parentAssigneeAgentId?: string | null;
 }
 
 export interface PaperclipTaskClassification {
@@ -51,6 +53,10 @@ export interface PaperclipCandidateAgent {
   supportedModalities?: string[];
   maxTier?: PaperclipStepTier;
   isEluvixAuto?: boolean;
+  semanticFit?: number;
+  burnRateCentsPerDay?: number;
+  reportsTo?: string | null;
+  parentAssigneeAgentId?: string | null;
 }
 
 export interface PaperclipFleetUpstreamSummary {
@@ -86,6 +92,24 @@ export const DEFAULT_ASSIGNMENT_WEIGHTS: PaperclipAssignmentWeights = {
 export interface PaperclipOutcomePrior {
   wins: number;
   total: number;
+  alpha?: number;
+  beta?: number;
+  avgCostUsd?: number;
+}
+
+export interface PaperclipBudgetForecast {
+  burnRateUsdPerDay: number;
+  remainingBudgetUsd: number | null;
+  projectedDaysRemaining: number | null;
+  exhaustsWithinDays: number | null;
+}
+
+export interface PaperclipRecommendOptions {
+  semanticFitByAgent?: Record<string, number>;
+  burnRatesCentsPerDay?: Record<string, number>;
+  thompsonSample?: boolean;
+  thompsonSeed?: number;
+  nowMs?: number;
 }
 
 export interface PaperclipExcludedCandidate {
@@ -118,6 +142,12 @@ export interface PaperclipAssigneeRecommendation {
     history: number;
   };
   rationale: string;
+  budgetForecast?: PaperclipBudgetForecast;
+  posterior?: {
+    alpha: number;
+    beta: number;
+    mean: number;
+  };
 }
 
 export interface PaperclipRecommendResult {
@@ -340,10 +370,81 @@ function estimateCandidateCostAndLatency(
   return { costUsd: Number((0.003 * tokensK).toFixed(6)), latencyMs: 1100 };
 }
 
+/**
+ * Normalized cosine similarity clamped to [0, 1].
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) {
+    return 0;
+  }
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = Number(a[i]) || 0;
+    const y = Number(b[i]) || 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  if (normA <= 0 || normB <= 0) return 0;
+  const raw = dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  return Math.max(0, Math.min(1, raw));
+}
+
+export function createSeededRng(seed: number): () => number {
+  let state = (seed >>> 0) || 1;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function computeBudgetForecastForCandidate(
+  candidate: PaperclipCandidateAgent,
+  options?: PaperclipRecommendOptions
+): PaperclipBudgetForecast | undefined {
+  const budgetCents = candidate.budgetMonthlyCents;
+  const spentCents = candidate.spentMonthlyCents ?? 0;
+  const now = new Date(options?.nowMs ?? Date.now());
+  const dayOfMonth = Math.max(1, now.getUTCDate());
+  const explicitBurn =
+    candidate.burnRateCentsPerDay ?? options?.burnRatesCentsPerDay?.[candidate.id];
+  const burnRateCents =
+    typeof explicitBurn === 'number' && Number.isFinite(explicitBurn) && explicitBurn >= 0
+      ? explicitBurn
+      : spentCents > 0 && dayOfMonth >= 2
+        ? spentCents / dayOfMonth
+        : 0;
+
+  const hasBudget = typeof budgetCents === 'number' && budgetCents > 0;
+  if (!hasBudget && burnRateCents <= 0) {
+    return undefined;
+  }
+
+  const remainingCents = hasBudget ? Math.max(0, budgetCents! - spentCents) : null;
+  const burnRateUsdPerDay = Number((burnRateCents / 100).toFixed(4));
+  const projectedDaysRemaining =
+    remainingCents !== null && burnRateCents > 0
+      ? Number((remainingCents / burnRateCents).toFixed(1))
+      : null;
+
+  return {
+    burnRateUsdPerDay,
+    remainingBudgetUsd: remainingCents !== null ? Number((remainingCents / 100).toFixed(4)) : null,
+    projectedDaysRemaining,
+    exhaustsWithinDays: projectedDaysRemaining,
+  };
+}
+
 function computeFitScore(
   taskTokens: string[],
   classification: PaperclipTaskClassification,
-  candidate: PaperclipCandidateAgent
+  candidate: PaperclipCandidateAgent,
+  task: PaperclipTaskInput,
+  options?: PaperclipRecommendOptions
 ): number {
   const profileText = [
     candidate.name,
@@ -383,7 +484,25 @@ function computeFitScore(
     roleBonus = 0.2;
   }
 
-  return Math.max(0, Math.min(1, 0.5 * lexicalFit + 0.35 * tierFit + roleBonus));
+  // Optional semantic embedding cosine fit (blended with lexical & tier fit)
+  const rawSemantic = candidate.semanticFit ?? options?.semanticFitByAgent?.[candidate.id];
+  const baseFit =
+    typeof rawSemantic === 'number' && Number.isFinite(rawSemantic)
+      ? 0.35 * lexicalFit + 0.30 * Math.max(0, Math.min(1, rawSemantic)) + 0.25 * tierFit + roleBonus
+      : 0.5 * lexicalFit + 0.35 * tierFit + roleBonus;
+
+  // Org-chart hierarchy affinity: sub-issues favor parent assignee or direct reports
+  const parentAssigneeId = task.parentAssigneeAgentId ?? candidate.parentAssigneeAgentId;
+  let hierarchyBonus = 0;
+  if (parentAssigneeId) {
+    if (candidate.id === parentAssigneeId) {
+      hierarchyBonus = 0.12;
+    } else if (candidate.reportsTo && candidate.reportsTo === parentAssigneeId) {
+      hierarchyBonus = 0.1;
+    }
+  }
+
+  return Math.max(0, Math.min(1, baseFit + hierarchyBonus));
 }
 
 export function recommendPaperclipAssignees(
@@ -391,10 +510,13 @@ export function recommendPaperclipAssignees(
   candidates: PaperclipCandidateAgent[],
   fleet: PaperclipFleetUpstreamSummary[] = [],
   weightsInput?: Partial<PaperclipAssignmentWeights>,
-  outcomeHistory?: Record<string, PaperclipOutcomePrior>
+  outcomeHistory?: Record<string, PaperclipOutcomePrior>,
+  options?: PaperclipRecommendOptions
 ): PaperclipRecommendResult {
   const classification = classifyPaperclipTask(task);
   const taskTokens = tokenize(`${task.title} ${task.description || ''} ${(task.labels || []).join(' ')}`);
+  const rng =
+    options?.thompsonSeed !== undefined ? createSeededRng(options.thompsonSeed) : Math.random;
 
   // Shift weights based on issue priority
   const weights: PaperclipAssignmentWeights = {
@@ -420,6 +542,8 @@ export function recommendPaperclipAssignees(
     load: number;
     budget: number;
     history: number;
+    budgetForecast?: PaperclipBudgetForecast;
+    posterior: { alpha: number; beta: number; mean: number };
   }> = [];
 
   for (const c of candidates) {
@@ -475,7 +599,7 @@ export function recommendPaperclipAssignees(
       continue;
     }
 
-    const fit = computeFitScore(taskTokens, classification, c);
+    const fit = computeFitScore(taskTokens, classification, c, task, options);
     const { costUsd, latencyMs } = estimateCandidateCostAndLatency(c, classification, fleet);
     const load = Math.min(1, (c.openIssueCount ?? 0) / 5);
     let budget = 1;
@@ -483,8 +607,30 @@ export function recommendPaperclipAssignees(
       const remaining = Math.max(0, c.budgetMonthlyCents - (c.spentMonthlyCents ?? 0));
       budget = Math.min(1, remaining / c.budgetMonthlyCents);
     }
+    const budgetForecast = computeBudgetForecastForCandidate(c, options);
+    if (budgetForecast?.projectedDaysRemaining != null) {
+      if (budgetForecast.projectedDaysRemaining < 1.5) {
+        budget *= 0.35;
+      } else if (budgetForecast.projectedDaysRemaining < 4) {
+        budget *= 0.6;
+      } else if (budgetForecast.projectedDaysRemaining < 7) {
+        budget *= 0.8;
+      }
+    }
+
     const prior = outcomeHistory?.[c.id];
-    const history = prior ? (prior.wins + 1) / (prior.total + 2) : 0.5;
+    const alpha =
+      typeof prior?.alpha === 'number' && Number.isFinite(prior.alpha)
+        ? Math.max(0.1, prior.alpha)
+        : (prior?.wins ?? 0) + 1;
+    const beta =
+      typeof prior?.beta === 'number' && Number.isFinite(prior.beta)
+        ? Math.max(0.1, prior.beta)
+        : Math.max(0, (prior?.total ?? 0) - (prior?.wins ?? 0)) + 1;
+    const posteriorMean = alpha / (alpha + beta);
+    const history = options?.thompsonSample
+      ? 0.65 * sampleBetaPosterior(alpha, beta, rng) + 0.35 * posteriorMean
+      : posteriorMean;
 
     eligible.push({
       candidate: c,
@@ -494,6 +640,12 @@ export function recommendPaperclipAssignees(
       load,
       budget,
       history,
+      budgetForecast,
+      posterior: {
+        alpha: Number(alpha.toFixed(2)),
+        beta: Number(beta.toFixed(2)),
+        mean: Number(posteriorMean.toFixed(3)),
+      },
     });
   }
 
@@ -541,6 +693,9 @@ export function recommendPaperclipAssignees(
     if (classification.sensitivity === 'confidential') {
       rationaleParts.push('egress=local-only');
     }
+    if (entry.budgetForecast?.projectedDaysRemaining != null && entry.budgetForecast.projectedDaysRemaining < 7) {
+      rationaleParts.push(`runway=${entry.budgetForecast.projectedDaysRemaining}d`);
+    }
     return {
       agentId: entry.candidate.id,
       name: entry.candidate.name,
@@ -560,6 +715,8 @@ export function recommendPaperclipAssignees(
         history: Number(entry.history.toFixed(3)),
       },
       rationale: rationaleParts.join(', '),
+      ...(entry.budgetForecast ? { budgetForecast: entry.budgetForecast } : {}),
+      posterior: entry.posterior,
     };
   });
 

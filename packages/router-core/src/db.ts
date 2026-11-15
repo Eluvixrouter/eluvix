@@ -349,15 +349,43 @@ function initSchema(db: SqliteDb) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
       user_id TEXT NOT NULL DEFAULT 'default',
+      company_id TEXT,
       issue_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       task_class TEXT NOT NULL,
       success INTEGER NOT NULL DEFAULT 1,
+      reopened INTEGER NOT NULL DEFAULT 0,
+      outcome_status TEXT,
       cost_usd REAL DEFAULT 0,
       duration_ms INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pc_outcomes_agent_class
       ON paperclip_assignment_outcomes(task_class, agent_id);
+    CREATE TABLE IF NOT EXISTS paperclip_issue_classifications (
+      issue_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      company_id TEXT,
+      task_class TEXT NOT NULL,
+      title TEXT,
+      priority TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  const pcCols = db.prepare('PRAGMA table_info(paperclip_assignment_outcomes)').all() as Array<{ name: string }>;
+  if (!pcCols.some(c => c.name === 'company_id')) {
+    db.exec('ALTER TABLE paperclip_assignment_outcomes ADD COLUMN company_id TEXT');
+  }
+  if (!pcCols.some(c => c.name === 'reopened')) {
+    db.exec('ALTER TABLE paperclip_assignment_outcomes ADD COLUMN reopened INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!pcCols.some(c => c.name === 'outcome_status')) {
+    db.exec('ALTER TABLE paperclip_assignment_outcomes ADD COLUMN outcome_status TEXT');
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_pc_outcomes_issue_agent
+      ON paperclip_assignment_outcomes(user_id, issue_id, agent_id);
+    CREATE INDEX IF NOT EXISTS idx_pc_outcomes_company
+      ON paperclip_assignment_outcomes(company_id, task_class, agent_id);
   `);
 }
 

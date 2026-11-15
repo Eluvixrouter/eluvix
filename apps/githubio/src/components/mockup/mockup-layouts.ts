@@ -876,5 +876,59 @@ export const EXAMPLE_LAYOUTS: Layout[] = [
       { id: 'e4', source: 'lemonade-1', target: 'comfyui-1', animated: true, style: { stroke: '#10b981' } },
       { id: 'e5', source: 'comfyui-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
     ]
+  },
+
+  // 15. Paperclip Agent Org Integration Mesh
+  {
+    id: 'paperclip-agent-org-switchyard',
+    name: 'Paperclip Agent Org + Switchyard Bridge',
+    description:
+      'Three-tier Paperclip orchestration topology with HMAC-signed context headers, per-key company/cost ceilings, priority-biased Switchyard routing, Ollama local execution, and SQLite/OTLP correlation.',
+    category: 'agent',
+    tags: ['paperclip', 'hmac', 'switchyard', 'eluvix_local', 'agents'],
+    isExample: true,
+    version: 1,
+    createdAt: '2026-11-13T00:00:00.000Z',
+    updatedAt: '2026-11-13T00:00:00.000Z',
+    viewport: { x: 0, y: 0, zoom: 0.85 },
+    nodes: [
+      { id: 'input-1', type: 'inputNode', position: { x: 40, y: 200 }, data: { label: 'Paperclip Heartbeat /v1' } },
+      {
+        id: 'paperclip-bridge-1',
+        type: 'paperclipBridgeNode',
+        position: { x: 300, y: 180 },
+        data: {
+          label: 'Paperclip Bridge',
+          enabled: true,
+          paperclipBaseUrl: 'http://127.0.0.1:3100',
+          trustHeadersFrom: 'scoped-key',
+          requireSignedContext: true
+        }
+      },
+      {
+        id: 'switchyard-1',
+        type: 'switchyardNode',
+        position: { x: 640, y: 180 },
+        data: { strategy: 'cost-complexity', failover: 'enabled' }
+      },
+      {
+        id: 'ollama-1',
+        type: 'ollamaNode',
+        position: { x: 980, y: 100 },
+        data: { label: 'Local Qwen Coder', endpoint: 'http://127.0.0.1:11434', priority: 28, selectedModel: 'qwen2.5-coder:7b' }
+      },
+      {
+        id: 'observability-1',
+        type: 'observabilityNode',
+        position: { x: 1320, y: 180 },
+        data: { projectName: 'eluvix-paperclip-org' }
+      }
+    ],
+    edges: [
+      { id: 'e1', source: 'input-1', target: 'paperclip-bridge-1', animated: true, style: { stroke: '#8b5cf6' } },
+      { id: 'e2', source: 'paperclip-bridge-1', target: 'switchyard-1', animated: true, style: { stroke: '#3b82f6' } },
+      { id: 'e3', source: 'switchyard-1', target: 'ollama-1', animated: true, style: { stroke: '#10b981' } },
+      { id: 'e4', source: 'ollama-1', target: 'observability-1', animated: true, style: { stroke: '#6366f1' } }
+    ]
   }
 ];

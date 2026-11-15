@@ -50,6 +50,16 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
   const [lowPreferLocal, setLowPreferLocal] = useState<boolean>(
     initial.priorityPolicy?.low?.preferLocal ?? true
   );
+  const [hmacSecret, setHmacSecret] = useState<string>(initial.hmacSecret || '');
+  const [requireSignedContext, setRequireSignedContext] = useState<boolean>(
+    Boolean(initial.requireSignedContext)
+  );
+  const [probeState, setProbeState] = useState<{
+    checking: boolean;
+    ok?: boolean;
+    latencyMs?: number;
+    error?: string;
+  }>({ checking: false });
 
   const commit = (patch: Partial<PaperclipIntegrationConfig>) => {
     const nextPriorityPolicy = {
@@ -62,6 +72,8 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
       enabled,
       paperclipBaseUrl,
       trustHeadersFrom,
+      ...(hmacSecret.trim() ? { hmacSecret: hmacSecret.trim() } : { hmacSecret: undefined }),
+      ...(requireSignedContext ? { requireSignedContext: true } : { requireSignedContext: false }),
       budgetPressure: {
         thresholdPct: budgetThresholdPct,
         action: budgetAction,
@@ -70,6 +82,30 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
       priorityPolicy: nextPriorityPolicy,
       ...patch,
     });
+  };
+
+  const runHealthProbe = async () => {
+    setProbeState({ checking: true });
+    try {
+      const res = await fetch('/api/v1/paperclip/health', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paperclipBaseUrl }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setProbeState({ checking: false, ok: true, latencyMs: json.latencyMs });
+      } else {
+        setProbeState({
+          checking: false,
+          ok: false,
+          latencyMs: json.latencyMs,
+          error: json.error || `HTTP ${json.status || res.status}`,
+        });
+      }
+    } catch (err: any) {
+      setProbeState({ checking: false, ok: false, error: err?.message || 'Probe failed' });
+    }
   };
 
   return (
@@ -103,7 +139,32 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
 
       <div className="space-y-2">
         <div>
-          <label className="block text-[10px] text-zinc-400">Paperclip URL</label>
+          <div className="flex items-center justify-between">
+            <label className="block text-[10px] text-zinc-400">Paperclip URL</label>
+            <div className="flex items-center gap-1.5">
+              {probeState.ok === true && (
+                <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-medium text-emerald-300">
+                  Live {probeState.latencyMs != null ? `${probeState.latencyMs}ms` : ''}
+                </span>
+              )}
+              {probeState.ok === false && (
+                <span
+                  className="max-w-[110px] truncate rounded bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-medium text-rose-300"
+                  title={probeState.error}
+                >
+                  {probeState.error || 'Offline'}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={runHealthProbe}
+                disabled={probeState.checking}
+                className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-[9px] text-zinc-200 hover:border-amber-400/60"
+              >
+                {probeState.checking ? 'Probing…' : 'Probe'}
+              </button>
+            </div>
+          </div>
           <input
             type="text"
             value={paperclipBaseUrl}
@@ -228,6 +289,34 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
             />
             Low Prefer Local
           </label>
+        </div>
+
+        <div className="border-t border-zinc-800 pt-2">
+          <div className="flex items-center justify-between gap-2">
+            <label className="block text-[10px] text-zinc-400">HMAC Secret (Optional)</label>
+            <label className="flex cursor-pointer items-center gap-1 text-[10px] text-zinc-300">
+              <input
+                type="checkbox"
+                checked={requireSignedContext}
+                onChange={(e) => {
+                  setRequireSignedContext(e.target.checked);
+                  commit({ requireSignedContext: e.target.checked });
+                }}
+              />
+              Require Signed
+            </label>
+          </div>
+          <input
+            type="password"
+            placeholder="ELUVIX_PAPERCLIP_HMAC_SECRET"
+            value={hmacSecret}
+            onChange={(e) => {
+              const val = e.target.value;
+              setHmacSecret(val);
+              commit({ hmacSecret: val.trim() ? val.trim() : undefined });
+            }}
+            className="mt-0.5 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px]"
+          />
         </div>
       </div>
 

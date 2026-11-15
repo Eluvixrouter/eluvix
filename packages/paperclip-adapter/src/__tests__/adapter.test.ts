@@ -234,6 +234,96 @@ describe('@eluvix/paperclip-adapter', () => {
       '2026-11-12T00:00:00Z'
     );
     expect(events.length).toBe(1);
+
+    const escEvents = uiParser.parseStdoutLine(
+      JSON.stringify({
+        type: 'escalation',
+        from: 'eluvix/fast-local',
+        to: 'eluvix/code-specialist',
+        status: 503,
+        reason: 'busy',
+      }),
+      '2026-11-12T00:00:00Z'
+    ) as Array<{ kind: string; text: string }>;
+    expect(escEvents[0].kind).toBe('system');
+    expect(escEvents[0].text).toContain('eluvix/fast-local');
+    expect(escEvents[0].text).toContain('eluvix/code-specialist');
+  });
+
+  it('E4: escalates virtual tier mid-run on 503 failure within a heartbeat without mutating base config', async () => {
+    const seenModels: string[] = [];
+    const seenEscalationHeaders: Array<string | undefined> = [];
+    let attemptCount = 0;
+
+    const mockFetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/health')) {
+        return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+      }
+      if (url.endsWith('/session')) {
+        return new Response(JSON.stringify({ id: `ses-${attemptCount}` }), { status: 200 });
+      }
+      if (url.includes('/message')) {
+        attemptCount += 1;
+        if (attemptCount === 1) {
+          return new Response('Upstream saturated', { status: 503 });
+        }
+        return new Response(
+          JSON.stringify({ parts: [{ type: 'text', text: 'Recovered on higher tier.' }] }),
+          { status: 200 }
+        );
+      }
+      if (url.includes('/api/v1/paperclip/usage/run-esc-1')) {
+        return new Response(
+          JSON.stringify({
+            inputTokens: 30,
+            outputTokens: 15,
+            cachedInputTokens: 0,
+            cacheWriteTokens: 0,
+            costUsd: 0.002,
+            dominantModel: 'qwen2.5-coder:32b',
+            byModel: [{ model: 'qwen2.5-coder:32b', upstreamId: 'local-vllm', inputTokens: 30, outputTokens: 15, cachedInputTokens: 0, cacheWriteTokens: 0, costUsd: 0.002, requests: 1 }],
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+
+    const stdoutLines: string[] = [];
+    const res = await executeEluvixLocal(
+      {
+        runId: 'run-esc-1',
+        agent: { id: 'ag-1', companyId: 'comp-1', name: 'Coder', adapterType: 'eluvix_local' },
+        config: {
+          eluvixBaseUrl: 'http://127.0.0.1:3588',
+          eluvixApiKey: 'elx_test',
+          model: 'eluvix/fast-local',
+        },
+        context: { prompt: 'Fix build' },
+        onLog: async (stream, chunk) => {
+          if (stream === 'stdout') stdoutLines.push(chunk);
+        },
+      },
+      {
+        fetch: mockFetch as any,
+        spawnServer: async (opts) => {
+          const cfg = JSON.parse(String(opts.env.OPENCODE_CONFIG_CONTENT || '{}'));
+          seenModels.push(String(cfg.model));
+          seenEscalationHeaders.push(cfg.provider?.eluvix?.options?.headers?.['x-eluvix-escalated-from']);
+          return {
+            baseUrl: 'http://127.0.0.1:49998',
+            port: 49998,
+            stop: async () => undefined,
+          };
+        },
+      }
+    );
+
+    expect(res.exitCode).toBe(0);
+    expect(seenModels).toEqual(['eluvix/fast-local', 'eluvix/code-specialist']);
+    expect(seenEscalationHeaders).toEqual([undefined, 'eluvix/fast-local']);
+    expect(stdoutLines.some((l) => l.includes('"type":"escalation"'))).toBe(true);
+    expect(stdoutLines.some((l) => l.includes('Recovered on higher tier.'))).toBe(true);
   });
 
   it('never executes git push anywhere in adapter source', () => {

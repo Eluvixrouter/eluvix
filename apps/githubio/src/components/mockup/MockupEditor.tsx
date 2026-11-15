@@ -106,7 +106,16 @@ export function MockupEditor() {
       id: newId,
       type,
       position: { x: Math.round(-pan.x / zoom + 350), y: Math.round(-pan.y / zoom + 200) },
-      data: { label, endpoint: 'http://localhost:3588', priority: 20 },
+      data:
+        type === 'paperclipBridgeNode'
+          ? {
+              label,
+              enabled: true,
+              paperclipBaseUrl: 'http://127.0.0.1:3100',
+              trustHeadersFrom: 'scoped-key',
+              requireSignedContext: true,
+            }
+          : { label, endpoint: 'http://localhost:3588', priority: 20 },
     };
     setNodes((prev) => [...prev, newNode]);
     setSelectedNodeId(newId);
@@ -498,6 +507,20 @@ export function MockupEditor() {
                   </div>
                 </div>
                 <span className="text-[10px] text-slate-400 group-hover:text-white font-mono font-bold">+ Add</span>
+              </div>
+
+              <div
+                onClick={() => handleAddNode('paperclipBridgeNode', 'Paperclip Bridge')}
+                className="p-2 border border-violet-500/60 bg-violet-950/20 hover:bg-violet-900/30 rounded-lg cursor-pointer transition flex items-center justify-between group"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">📎</span>
+                  <div>
+                    <div className="font-semibold text-xs text-violet-300">Paperclip Bridge</div>
+                    <div className="text-[9px] text-slate-400 font-mono">Agent Org &amp; HMAC Policy</div>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 group-hover:text-violet-300 font-mono font-bold">+ Add</span>
               </div>
             </div>
           </div>
@@ -924,6 +947,27 @@ export function MockupEditor() {
                     </div>
                   )}
 
+                  {node.type === 'paperclipBridgeNode' && (
+                    <div className="bg-gray-900 border-2 border-violet-500/80 rounded-lg p-3 w-72 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-gray-800">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-lg">📎</span>
+                          <div>
+                            <div className="font-bold text-violet-300 text-xs">Paperclip Bridge</div>
+                            <div className="text-[9px] text-gray-400 font-mono">Agent Org Switchyard</div>
+                          </div>
+                        </div>
+                        <span className="text-[9px] bg-violet-500/20 text-violet-300 px-1.5 py-0.2 rounded font-mono font-bold">
+                          {node.data?.requireSignedContext ? 'HMAC' : 'BRIDGE'}
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-400 space-y-0.5">
+                        <div>Server: <strong className="text-white">{node.data?.paperclipBaseUrl || 'http://127.0.0.1:3100'}</strong></div>
+                        <div>Trust: <strong className="text-emerald-400">{node.data?.trustHeadersFrom || 'scoped-key'}</strong></div>
+                      </div>
+                    </div>
+                  )}
+
                   {node.type === 'inputNode' && (
                     <div className="bg-gray-900 border-2 border-slate-700 rounded-lg p-3 w-48 shadow-xl">
                       <div className="flex items-center gap-1.5 font-bold text-xs text-white">
@@ -937,7 +981,7 @@ export function MockupEditor() {
                   )}
 
                   {/* Fallback for other node types */}
-                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'speculativeCascadeNode', 'lemonadeNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'audioVoiceNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'inputNode'].includes(node.type) && (
+                  {!['privacyGuardNode', 'semanticGuardNode', 'switchyardNode', 'speculativeCascadeNode', 'lemonadeNode', 'ollamaNode', 'ramalamaNode', 'comfyuiNode', 'audioVoiceNode', 'vllmNode', 'antigravityNode', 'claudeCodeNode', 'observabilityNode', 'paperclipBridgeNode', 'inputNode'].includes(node.type) && (
                     <div className="bg-gray-900 border-2 border-slate-700 rounded-lg p-3 w-64 shadow-xl">
                       <div className="font-bold text-xs text-white">{node.data?.label || node.type}</div>
                       <div className="text-[10px] font-mono text-slate-400">{node.type}</div>
@@ -960,7 +1004,7 @@ export function MockupEditor() {
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <span>📁 Layout &amp; Topology Template Browser</span>
                   <span className="text-xs font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 font-bold">
-                    12 Templates Available
+                    {EXAMPLE_LAYOUTS.length} Templates Available
                   </span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">

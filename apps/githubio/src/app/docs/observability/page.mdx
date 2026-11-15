@@ -40,7 +40,10 @@ The web dashboard provides real-time operational intelligence with sub-second re
 | **Local Cost Savings** | Running calculation of financial savings achieved by routing queries to local $0 hardware instead of commercial frontier APIs. |
 | **24h Cloud Spend Meter** | Live rolling 24-hour cloud expenditure bar against Switchyard `maxDailySpendUsd`, highlighting active `prefer-local`, `strict-local`, or `reject` budget guardrails. |
 | **VRAM Arbiter & Bandit Posteriors** | Real-time Cooperative GPU VRAM Arbiter lease/eviction telemetry (`vramArbiter`) and Online Contextual Thompson Bandit arm `(alpha, beta)` posteriors (`banditArms`). |
+| **Paperclip Heartbeat Runs & Delegation Outcomes** | Displays recent correlated Paperclip runs (`pc_run_id`, `pc_issue_id`, `pc_agent_id`, `pc_company_id`, `pc_priority`), USD totals, and SQLite outcome win rates from `paperclip_assignment_outcomes`. |
 | **Upstream Health Matrix** | Real-time ping status for RamaLama, ComfyUI, Speaches/Kokoro Audio, Lemonade, Ollama, vLLM, Antigravity AGY, and Claude Code. |
+
+When an OTLP collector is active (`exporter: "otlp"`), Eluvix also annotates `eluvix.router.select` and `eluvix.chat` spans with `paperclip.run_id`, `paperclip.issue_id`, `paperclip.agent_id`, `paperclip.company_id`, `paperclip.priority`, and `paperclip.routing_bias`.
 
 ---
 

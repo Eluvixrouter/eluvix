@@ -31,6 +31,7 @@ export default defineConfig({
       '@eluvix/router-core/engine-signals': path.resolve(__dirname, '../../packages/router-core/src/engine-signals.ts'),
       '@eluvix/router-core/paperclip-context': path.resolve(__dirname, '../../packages/router-core/src/paperclip-context.ts'),
       '@eluvix/router-core/paperclip-assign': path.resolve(__dirname, '../../packages/router-core/src/paperclip-assign.ts'),
+      '@eluvix/router-core/paperclip-auth': path.resolve(__dirname, '../../packages/router-core/src/paperclip-auth.ts'),
       '@eluvix/router-core': path.resolve(__dirname, '../../packages/router-core/src/index.ts'),
     },
   },

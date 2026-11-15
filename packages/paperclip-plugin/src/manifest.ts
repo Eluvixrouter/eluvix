@@ -26,6 +26,8 @@ export const manifest = {
     'skills.managed',
     'agent.tools.register',
     'instance.settings.register',
+    'ui.page.register',
+    'ui.sidebar.register',
     'ui.dashboardWidget.register',
     'ui.detailTab.register',
     'ui.commentAnnotation.register',
@@ -98,10 +100,42 @@ export const manifest = {
   ],
   ui: {
     slots: [
-      { id: 'switchyard-fleet', slot: 'dashboardWidget', title: 'Switchyard Fleet' },
-      { id: 'eluvix-routing-tab', slot: 'issueDetailTab', title: 'Eluvix Routing' },
-      { id: 'eluvix-agent-tab', slot: 'agentDetailTab', title: 'Eluvix' },
-      { id: 'eluvix-settings', slot: 'instanceSettings', title: 'Eluvix Switchyard' },
+      {
+        type: 'taskDetailView',
+        id: 'eluvix-issue-recommendation',
+        displayName: 'Eluvix Switchyard Routing',
+        exportName: 'IssueRecommendationCard',
+        entityTypes: ['issue'],
+      },
+      {
+        type: 'page',
+        id: 'eluvix-switchyard-page',
+        displayName: 'Switchyard Fleet',
+        exportName: 'SwitchyardDashboardPage',
+        routePath: 'switchyard',
+      },
+      {
+        type: 'dashboardWidget',
+        id: 'switchyard-fleet',
+        displayName: 'Switchyard Fleet',
+        exportName: 'SwitchyardDashboardWidget',
+      },
+      {
+        type: 'sidebar',
+        id: 'eluvix-switchyard-sidebar',
+        displayName: 'Switchyard',
+        exportName: 'SwitchyardSidebarLink',
+        routePath: 'switchyard',
+      },
+      {
+        type: 'detailTab',
+        id: 'eluvix-agent-tab',
+        displayName: 'Eluvix Performance',
+        exportName: 'AgentPerformancePanel',
+        entityTypes: ['agent'],
+      },
     ],
   },
 } as const;
+
+export default manifest;

@@ -29,6 +29,7 @@ export interface ConfigDiff {
   quantizationPolicyChanged?: boolean;
   fabricPolicyChanged?: boolean;
   crsPolicyChanged?: boolean;
+  paperclipChanged?: boolean;
   attentionPolicyChanged?: boolean;
   vectorcraftChanged?: boolean;
   artcraftChanged?: boolean;
@@ -196,6 +197,11 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
   const privacyGuardChanged = fieldDiffers((current as any)?.privacyGuard, (next as any).privacyGuard) || undefined;
   const switchyardChanged = fieldDiffers((current as any)?.switchyard, (next as any).switchyard) || undefined;
   const modelGatewayChanged = fieldDiffers((current as any)?.modelGateway, (next as any).modelGateway) || undefined;
+  const paperclipChanged =
+    fieldDiffers(
+      (current as any)?.integrations?.paperclip,
+      (next as any)?.integrations?.paperclip
+    ) || undefined;
 
   return {
     added,
@@ -222,6 +228,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
     privacyGuardChanged,
     switchyardChanged,
     modelGatewayChanged,
+    paperclipChanged,
     isEmpty:
       added.length === 0 &&
       removed.length === 0 &&
@@ -246,6 +253,7 @@ export function diffRouterConfigs(current: RouterConfig | null, next: RouterConf
       !promptGuardChanged &&
       !privacyGuardChanged &&
       !switchyardChanged &&
-      !modelGatewayChanged
+      !modelGatewayChanged &&
+      !paperclipChanged
   };
 }

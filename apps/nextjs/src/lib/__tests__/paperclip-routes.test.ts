@@ -3,18 +3,30 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { clearApiKeysCache, createNamedApiKey, logRequest } from '@eluvix/router-core';
+import {
+  clearApiKeysCache,
+  createNamedApiKey,
+  logRequest,
+  signPaperclipContextHeaders,
+} from '@eluvix/router-core';
+import { diffRouterConfigs } from '../config-diff';
 import { saveConfig } from '../router';
 import { compileGraph } from '../orchestration/compiler';
 import { decompileConfigToGraph } from '../orchestration/decompiler';
 import { analyzeGraphDiagnostics } from '../orchestration/diagnostics';
+import { GET as getObservability } from '../../app/api/v1/observability/route';
 import { GET as getModels } from '../../app/api/v1/models/route';
 import { GET as getWhoami } from '../../app/api/v1/paperclip/whoami/route';
 import { GET as getCapabilities } from '../../app/api/v1/paperclip/capabilities/route';
+import {
+  GET as getPaperclipHealth,
+  POST as postPaperclipHealth,
+} from '../../app/api/v1/paperclip/health/route';
 import { POST as postClassify } from '../../app/api/v1/paperclip/classify/route';
 import { POST as postRecommend } from '../../app/api/v1/paperclip/recommend-assignee/route';
 import { POST as postFeedback } from '../../app/api/v1/paperclip/feedback/route';
 import { GET as getUsage } from '../../app/api/v1/paperclip/usage/[runId]/route';
+import { POST as postRouteExplain } from '../../app/api/v1/route-explain/route';
 
 describe('Paperclip Next.js Routes & Editor Bridge', () => {
   let tmpConfigDir: string;
@@ -204,5 +216,189 @@ describe('Paperclip Next.js Routes & Editor Bridge', () => {
     const diags = analyzeGraphDiagnostics(graph.nodes, graph.edges);
     const errors = diags.diagnostics.filter((d) => d.severity === 'error');
     expect(errors.length).toBe(0);
+
+    // Config diff tracks integrations.paperclip & compiler preserves HMAC settings conditionally
+    const baseCompiled = JSON.parse(compiled.eluvixJson);
+    const identicalDiff = diffRouterConfigs(baseCompiled, baseCompiled);
+    expect(identicalDiff.paperclipChanged).toBeUndefined();
+    expect(identicalDiff.isEmpty).toBe(true);
+
+    const updatedNodes = graph.nodes.map((n) =>
+      n.type === 'paperclipBridgeNode'
+        ? {
+            ...n,
+            data: {
+              ...(n.data as Record<string, any>),
+              hmacSecret: 'rot-secret-123',
+              requireSignedContext: true,
+            },
+          }
+        : n
+    );
+    const recompiled = JSON.parse(compileGraph(updatedNodes, graph.edges).eluvixJson);
+    expect(recompiled.integrations?.paperclip?.hmacSecret).toBe('rot-secret-123');
+    expect(recompiled.integrations?.paperclip?.requireSignedContext).toBe(true);
+    const modifiedDiff = diffRouterConfigs(baseCompiled, recompiled);
+    expect(modifiedDiff.paperclipChanged).toBe(true);
+    expect(modifiedDiff.isEmpty).toBe(false);
+  });
+
+  it('S1/S2/M5/E6: enforces Paperclip company scoping, HMAC route-explain verification, SSRF health guard, and observability summary', async () => {
+    const scoped = await createNamedApiKey({
+      name: 'comp-a-only',
+      userId: 'pc-user',
+      scopes: ['paperclip', 'chat'],
+      paperclip: {
+        companyIds: ['comp-a'],
+        maxTier: 'code-specialist',
+        maxCostPer1kUsd: 0.002,
+      },
+    });
+    const scopedToken = scoped.key!;
+
+    // 1. S2 company_scope_forbidden 403 across recommend-assignee & feedback
+    const forbiddenRec = await postRecommend(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/recommend-assignee', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${scopedToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          companyId: 'comp-b',
+          task: { title: 'Cross company task' },
+          candidates: [{ id: 'a1', name: 'Agent 1' }],
+        }),
+      })
+    );
+    expect(forbiddenRec.status).toBe(403);
+    const forbiddenJson = await forbiddenRec.json();
+    expect(forbiddenJson.error.code).toBe('company_scope_forbidden');
+
+    const forbiddenFb = await postFeedback(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/feedback', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${scopedToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ companyId: 'comp-b', issueId: 'iss-1', agentId: 'a1' }),
+      })
+    );
+    expect(forbiddenFb.status).toBe(403);
+
+    // 2. S1 + S2 route-explain honors HMAC signature + enforces key ceiling
+    saveConfig({
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434/v1',
+          models: ['llama3.2:latest'],
+          costPer1kTokens: 0,
+          tier: 'fast',
+          priority: 1,
+        },
+        {
+          id: 'cloud-openai',
+          name: 'Cloud OpenAI',
+          type: 'openai-compatible',
+          endpoint: 'https://api.openai.com/v1',
+          apiKey: 'sk-test-cloud',
+          models: ['gpt-4o'],
+          costPer1kTokens: 0.01,
+          tier: 'reasoning',
+          priority: 2,
+        },
+      ],
+      integrations: {
+        paperclip: {
+          enabled: true,
+          paperclipBaseUrl: 'http://127.0.0.1:3100',
+          trustHeadersFrom: 'scoped-key',
+          hmacSecret: 'route-explain-secret',
+          requireSignedContext: true,
+        },
+      },
+    });
+    const signedHdrs = signPaperclipContextHeaders(
+      {
+        'x-paperclip-company-id': 'comp-a',
+        'x-paperclip-issue-priority': 'critical',
+      },
+      'route-explain-secret'
+    );
+    const explainRes = await postRouteExplain(
+      new NextRequest('http://127.0.0.1:3588/api/v1/route-explain', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${scopedToken}`,
+          'content-type': 'application/json',
+          ...signedHdrs,
+        },
+        body: JSON.stringify({
+          model: 'eluvix/frontier-verified',
+          messages: [{ role: 'user', content: 'Analyze outage' }],
+        }),
+      })
+    );
+    expect(explainRes.status).toBe(200);
+    const explainJson = await explainRes.json();
+    expect(explainJson.chosenUpstreamId).toBe('local-ollama');
+
+    // 3. M5 Paperclip health probe: unauth 401, SSRF cloud IMDS 403, valid loopback 200
+    const healthUnauth = await getPaperclipHealth(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/health')
+    );
+    expect(healthUnauth.status).toBe(401);
+
+    const healthSsrf = await postPaperclipHealth(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/health', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${scopedToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ paperclipBaseUrl: 'http://169.254.169.254/latest/meta-data' }),
+      })
+    );
+    expect(healthSsrf.status).toBe(403);
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: 'ok', version: '0.3.1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const healthOk = await postPaperclipHealth(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/health', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${scopedToken}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ paperclipBaseUrl: 'http://127.0.0.1:3100' }),
+      })
+    );
+    expect(healthOk.status).toBe(200);
+    const healthJson = await healthOk.json();
+    expect(healthJson.ok).toBe(true);
+
+    // 4. E6 Observability summary includes Paperclip runs
+    logRequest({
+      timestamp: new Date().toISOString(),
+      model: 'llama3.2:latest',
+      upstream_id: 'local-ollama',
+      status: 200,
+      duration_ms: 45,
+      prompt_tokens: 10,
+      completion_tokens: 10,
+      cost_usd: 0,
+      user_id: 'pc-user',
+      correlation_id: 'run-obs-1',
+      pc_issue_id: 'iss-obs-1',
+      pc_agent_id: 'ag-obs-1',
+      pc_company_id: 'comp-a',
+      pc_priority: 'high',
+    });
+    const obsRes = await getObservability(
+      new NextRequest('http://127.0.0.1:3588/api/v1/observability', {
+        headers: { Authorization: `Bearer ${scopedToken}` },
+      })
+    );
+    expect(obsRes.status).toBe(200);
+    const obsJson = await obsRes.json();
+    expect(obsJson.data.paperclip.totalRequests).toBeGreaterThanOrEqual(1);
+    expect(obsJson.data.paperclip.recentRuns.some((r: any) => r.runId === 'run-obs-1')).toBe(true);
   });
 });
