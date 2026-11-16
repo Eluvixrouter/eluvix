@@ -1,6 +1,7 @@
 import http, { IncomingMessage, ServerResponse } from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import dns from 'node:dns/promises';
 import {
   Eluvix,
   RouterConfig,
@@ -20,6 +21,7 @@ import {
   extractDesktopToken,
   DESKTOP_TOKEN_HEADER,
   validateUpstreamHttpEndpoint,
+  isBlockedSsrfHost,
   anthropicToOpenAiChatRequest,
   openAiToAnthropicMessageResponse,
   transformOpenAiSseToAnthropicSse,
@@ -29,8 +31,17 @@ import {
   getStoredResponse,
   saveStoredResponse,
   PAPERCLIP_VIRTUAL_MODELS,
-  parseVerifiedPaperclipRequest,
+  parseVerifiedPaperclipRequestAsync,
+  sanitizePaperclipIntegrationForDisplay,
+  sanitizePaperclipKeyPolicyForDisplay,
   mergeEffectiveHops,
+  listNamedApiKeys,
+  createNamedApiKey,
+  revokeNamedApiKey,
+  pruneExpiredTelemetry,
+  getTelemetryDailyRollups,
+  type ApiKeyScope,
+  type PaperclipKeyPolicy,
   classifyPaperclipTask,
   evaluatePaperclipCandidateAssignments,
   recommendPaperclipAssignees,
@@ -655,9 +666,10 @@ export class DesktopRouterServer extends EventEmitter {
         const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
         const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
         const pcCfg = this.router.getConfig()?.integrations?.paperclip;
-        const paperclip = parseVerifiedPaperclipRequest(req.headers, {
+        const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          bodyPaperclip: (chatReq as any).paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
 
@@ -830,7 +842,7 @@ export class DesktopRouterServer extends EventEmitter {
             : parseInt(explainHopsHdr || '0', 10) || 0
         );
         const explainPcCfg = activeRouter.getConfig()?.integrations?.paperclip;
-        const explainPaperclip = parseVerifiedPaperclipRequest(req.headers, {
+        const explainPaperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: explainPcCfg,
           isAdminOrSessionCaller: true,
           bodyPaperclip: body.paperclip,
@@ -893,6 +905,13 @@ export class DesktopRouterServer extends EventEmitter {
         const rawHops = req.headers['x-eluvix-hops'];
         const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
         const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+        const pcCfg = this.router.getConfig()?.integrations?.paperclip;
+        const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
+          config: pcCfg,
+          isAdminOrSessionCaller: true,
+          bodyPaperclip: body.paperclip,
+        });
+        const effectiveHops = mergeEffectiveHops(hops, paperclip);
 
         const abortController = new AbortController();
         req.on('close', () => {
@@ -904,7 +923,8 @@ export class DesktopRouterServer extends EventEmitter {
         const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
           signal: abortController.signal,
           scope: { userId: 'default', origin: 'client' },
-          hops
+          hops: effectiveHops,
+          paperclip,
         });
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || 'unknown';
@@ -1008,6 +1028,13 @@ export class DesktopRouterServer extends EventEmitter {
         const rawHops = req.headers['x-eluvix-hops'];
         const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
         const hops = Math.max(0, parseInt(hopsHeader || '0', 10) || 0);
+        const pcCfg = this.router.getConfig()?.integrations?.paperclip;
+        const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
+          config: pcCfg,
+          isAdminOrSessionCaller: true,
+          bodyPaperclip: body.paperclip,
+        });
+        const effectiveHops = mergeEffectiveHops(hops, paperclip);
 
         const abortController = new AbortController();
         req.on('close', () => {
@@ -1019,7 +1046,8 @@ export class DesktopRouterServer extends EventEmitter {
         const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
           signal: abortController.signal,
           scope: { userId: 'default', origin: 'client' },
-          hops
+          hops: effectiveHops,
+          paperclip,
         });
 
         const forwardedHeaders: Record<string, string> = {};
@@ -1753,6 +1781,93 @@ export class DesktopRouterServer extends EventEmitter {
         }
       }
 
+      // Scoped API Key & Policy Manager (`/v1/keys` & `/api/v1/keys`)
+      if (pathname === '/v1/keys' || pathname === '/api/v1/keys') {
+        if (req.method === 'GET') {
+          const keys = listNamedApiKeys('eluvix').map(({ keyHash: _omit, ...k }) => ({
+            ...k,
+            ...(k.paperclip ? { paperclip: sanitizePaperclipKeyPolicyForDisplay(k.paperclip) } : {}),
+          }));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data: keys }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const rawPc = body?.paperclip && typeof body.paperclip === 'object' ? body.paperclip : undefined;
+          const paperclip: PaperclipKeyPolicy | undefined = rawPc
+            ? {
+                ...(Array.isArray(rawPc.companyIds)
+                  ? { companyIds: rawPc.companyIds.map(String).map((s: string) => s.trim()).filter(Boolean) }
+                  : {}),
+                ...(Array.isArray(rawPc.agentIds)
+                  ? { agentIds: rawPc.agentIds.map(String).map((s: string) => s.trim()).filter(Boolean) }
+                  : {}),
+                ...(typeof rawPc.maxTier === 'string' && rawPc.maxTier ? { maxTier: rawPc.maxTier } : {}),
+                ...(typeof rawPc.maxCostPer1kUsd === 'number' && Number.isFinite(rawPc.maxCostPer1kUsd)
+                  ? { maxCostPer1kUsd: rawPc.maxCostPer1kUsd }
+                  : {}),
+                ...(typeof rawPc.allowUnsignedContext === 'boolean'
+                  ? { allowUnsignedContext: rawPc.allowUnsignedContext }
+                  : {}),
+                ...(typeof rawPc.hmacSecret === 'string' && rawPc.hmacSecret.trim()
+                  ? { hmacSecret: rawPc.hmacSecret.trim() }
+                  : {}),
+              }
+            : undefined;
+          const created = createNamedApiKey(
+            {
+              label: typeof body?.label === 'string' ? body.label : 'Scoped API Key',
+              origin: body?.origin === 'harness' || body?.origin === 'playground' ? body.origin : 'client',
+              userId: typeof body?.userId === 'string' && body.userId.trim() ? body.userId.trim() : 'default',
+              role: body?.role,
+              scopes: Array.isArray(body?.scopes) ? (body.scopes as ApiKeyScope[]) : ['chat'],
+              expiresAt: typeof body?.expiresAt === 'string' && body.expiresAt.trim() ? body.expiresAt.trim() : undefined,
+              maxDailySpendUsd:
+                typeof body?.maxDailySpendUsd === 'number' && Number.isFinite(body.maxDailySpendUsd)
+                  ? body.maxDailySpendUsd
+                  : undefined,
+              rpm: typeof body?.rpm === 'number' && Number.isFinite(body.rpm) ? body.rpm : undefined,
+              paperclip,
+              actorId: 'default',
+            },
+            'eluvix'
+          );
+          const { keyHash: _omit, ...safeCreated } = created;
+          res.writeHead(201, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ...safeCreated,
+              ...(safeCreated.paperclip
+                ? { paperclip: sanitizePaperclipKeyPolicyForDisplay(safeCreated.paperclip) }
+                : {}),
+            })
+          );
+          return;
+        }
+        if (req.method === 'DELETE') {
+          let id = url.searchParams.get('id')?.trim() || '';
+          if (!id) {
+            try {
+              const body = JSON.parse((await this.readBody(req)) || '{}');
+              if (typeof body?.id === 'string') id = body.id.trim();
+            } catch {}
+          }
+          if (!id) {
+            this.rejectJson(res, 400, 'API key id is required.', 'invalid_request');
+            return;
+          }
+          const deleted = revokeNamedApiKey(id, 'eluvix', 'default');
+          if (!deleted) {
+            this.rejectJson(res, 404, `API key '${id}' not found.`, 'not_found');
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ id, deleted: true }));
+          return;
+        }
+      }
+
       // Paperclip Integration Routes (`/v1/paperclip/*` & `/api/v1/paperclip/*`)
       if (pathname === '/v1/paperclip/whoami' || pathname === '/api/v1/paperclip/whoami') {
         const cfg = this.router.getConfig();
@@ -1785,15 +1900,124 @@ export class DesktopRouterServer extends EventEmitter {
             estimatedLatencyMs: u.latencyMs ?? (local ? 750 : 1400),
           };
         });
+        const paperclipPolicy = sanitizePaperclipIntegrationForDisplay(
+          cfg.integrations?.paperclip
+        ) ?? {
+          enabled: false,
+          hmacSigningConfigured: Boolean(
+            process.env.PAPERCLIP_ELUVIX_HMAC_SECRET || process.env.ELUVIX_PAPERCLIP_HMAC_SECRET
+          ),
+        };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           object: 'eluvix.switchyard.capabilities',
           egressPolicy: cfg.egressPolicy ?? 'allow-egress',
           strategy: cfg.switchyard?.strategy ?? cfg.strategy ?? 'cost-complexity',
           virtualModels: PAPERCLIP_VIRTUAL_MODELS,
-          paperclipPolicy: cfg.integrations?.paperclip ?? { enabled: false },
+          paperclipPolicy,
           upstreams,
         }));
+        return;
+      }
+
+      if (pathname === '/v1/paperclip/health' || pathname === '/api/v1/paperclip/health') {
+        const cfg = this.router.getConfig();
+        let requestedBaseUrl: string | undefined;
+        if (req.method === 'POST') {
+          try {
+            const body = JSON.parse((await this.readBody(req)) || '{}');
+            if (typeof body?.paperclipBaseUrl === 'string' && body.paperclipBaseUrl.trim()) {
+              requestedBaseUrl = body.paperclipBaseUrl.trim();
+            }
+          } catch {}
+        }
+        const targetBaseUrl =
+          requestedBaseUrl ||
+          cfg.integrations?.paperclip?.paperclipBaseUrl ||
+          'http://127.0.0.1:3100';
+        const urlCheck = validateUpstreamHttpEndpoint(targetBaseUrl, { allowLoopbackAndLan: true });
+        if (!urlCheck.ok) {
+          const isSyntax =
+            urlCheck.reason?.includes('Invalid') || urlCheck.reason?.includes('Unsupported URL protocol');
+          res.writeHead(isSyntax ? 400 : 403, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              baseUrl: targetBaseUrl,
+              error: urlCheck.reason || 'Blocked unsafe Paperclip URL',
+            })
+          );
+          return;
+        }
+        const parsed = new URL(targetBaseUrl);
+        if (net.isIP(parsed.hostname) === 0) {
+          try {
+            const records = await dns.lookup(parsed.hostname, { all: true });
+            for (const rec of records) {
+              if (isBlockedSsrfHost(rec.address, { allowLoopbackAndLan: true })) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    ok: false,
+                    baseUrl: targetBaseUrl,
+                    error: `Resolved IP "${rec.address}" is blocked by SSRF policy`,
+                  })
+                );
+                return;
+              }
+            }
+          } catch {
+            // Allow fetch below to report clean connectivity error
+          }
+        }
+        const normalizedBaseUrl = targetBaseUrl.replace(/\/$/, '');
+        const startedAt = Date.now();
+        try {
+          const healthRes = await fetch(`${normalizedBaseUrl}/api/health`, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            redirect: 'manual',
+            signal: AbortSignal.timeout(4000),
+          });
+          const latencyMs = Date.now() - startedAt;
+          if (healthRes.status >= 300 && healthRes.status < 400) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                status: healthRes.status,
+                latencyMs,
+                baseUrl: normalizedBaseUrl,
+                error: 'Redirect responses from Paperclip health endpoint are blocked',
+              })
+            );
+            return;
+          }
+          let details: any = null;
+          try {
+            details = await healthRes.json();
+          } catch {}
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: healthRes.ok,
+              status: healthRes.status,
+              latencyMs,
+              baseUrl: normalizedBaseUrl,
+              details,
+            })
+          );
+        } catch (err: any) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              latencyMs: Date.now() - startedAt,
+              baseUrl: normalizedBaseUrl,
+              error: err?.message || 'Paperclip health check failed',
+            })
+          );
+        }
         return;
       }
 
@@ -1917,6 +2141,31 @@ export class DesktopRouterServer extends EventEmitter {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
         return;
+      }
+
+      if (pathname === '/v1/observability' || pathname === '/api/v1/observability') {
+        if (req.method === 'GET') {
+          const daysParam = parseInt(url.searchParams.get('days') || '90', 10);
+          const safeDays = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(3650, daysParam) : 90;
+          const companyId = url.searchParams.get('companyId') || undefined;
+          const dailyRollups = getTelemetryDailyRollups(safeDays, 'default', companyId);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, data: { dailyRollups } }));
+          return;
+        }
+        if (req.method === 'DELETE') {
+          const olderThanParam = url.searchParams.get('olderThanDays');
+          const olderThanDays = olderThanParam ? Math.max(1, parseInt(olderThanParam, 10) || 30) : 30;
+          const pruned = pruneExpiredTelemetry(olderThanDays, 'default');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              success: true,
+              pruned: { olderThanDays, ...pruned },
+            })
+          );
+          return;
+        }
       }
 
       // Not found

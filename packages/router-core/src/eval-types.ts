@@ -19,6 +19,12 @@ export interface EvalCaseAssertions {
   expectPiiRedacted?: boolean;
   /** Assert that PromptGuard or EgressPolicy blocks the request (e.g. 400/403/503). */
   expectBlockedByGuard?: boolean;
+  /** Assert Paperclip routing bias tags contain each expected substring. */
+  expectedPaperclipBiasContains?: string[];
+  /** Assert selected upstream is sovereign/local (`isLocalUpstream(upstream) === true`). */
+  forbidCloudUpstream?: boolean;
+  /** Assert intra-heartbeat trajectory step tier selected for this request. */
+  expectedStepTier?: 'fast-local' | 'code-specialist' | 'heavy-reasoning' | 'frontier-verified';
   /** Maximum end-to-end latency in milliseconds. */
   maxLatencyMs?: number;
   /** Live mode: regular expression pattern that the completion text must match. */
@@ -36,12 +42,33 @@ export interface EvalCaseAssertions {
   };
 }
 
+export interface EvalCasePaperclipContext {
+  priority?: 'critical' | 'high' | 'medium' | 'low';
+  budgetRemainingPct?: number;
+  sensitivity?: 'public' | 'internal' | 'confidential';
+  companyId?: string;
+  issueId?: string;
+  hop?: number;
+  keyPolicy?: {
+    maxTier?: 'fast-local' | 'code-specialist' | 'heavy-reasoning' | 'frontier-verified';
+    maxCostPer1kUsd?: number;
+    companyIds?: string[];
+  };
+}
+
 export interface EvalCase {
   id: string;
   name: string;
   prompt: string;
   system?: string;
+  messages?: Array<{
+    role: 'system' | 'user' | 'assistant' | 'tool';
+    content: any;
+    tool_calls?: any[];
+    tool_call_id?: string;
+  }>;
   model?: string;
+  paperclip?: EvalCasePaperclipContext;
   assertions: EvalCaseAssertions;
 }
 
@@ -151,6 +178,60 @@ export const STARTER_GOLDEN_EVAL_SUITES: EvalSuite[] = [
         model: 'claude-opus-4-6',
         assertions: {
           expectedTier: 'frontier',
+        },
+      },
+    ],
+  },
+  {
+    id: 'paperclip-org-governance',
+    name: 'Paperclip Org Governance & Step Tiering',
+    description:
+      'Verifies confidential sensitivity local-lock, <=5% budget exhaustion degradation, API key cost ceiling clamping, and x-eluvix-hops recursion firewall.',
+    mode: 'dry-run',
+    cases: [
+      {
+        id: 'pc-confidential-local-lock',
+        name: 'Confidential Paperclip task forces sovereign local-only routing',
+        prompt: 'Analyze internal payroll compensation spreadsheets for Q4.',
+        model: 'eluvix/auto',
+        paperclip: { sensitivity: 'confidential', priority: 'high' },
+        assertions: {
+          forbidCloudUpstream: true,
+          expectedPaperclipBiasContains: ['local-only'],
+        },
+      },
+      {
+        id: 'pc-budget-exhaustion-clamp',
+        name: 'Budget <=5% forces local-only degradation even when requesting frontier-verified',
+        prompt: 'Design distributed consensus state machine replication.',
+        model: 'eluvix/frontier-verified',
+        paperclip: { budgetRemainingPct: 3, priority: 'medium' },
+        assertions: {
+          forbidCloudUpstream: true,
+          expectedPaperclipBiasContains: ['cost-ceiling'],
+        },
+      },
+      {
+        id: 'pc-key-ceiling-clamp',
+        name: 'Zero-cost key ceiling blocks cloud upstreams despite critical priority',
+        prompt: 'Generate production migration script.',
+        model: 'eluvix/frontier-verified',
+        paperclip: {
+          priority: 'critical',
+          keyPolicy: { maxCostPer1kUsd: 0 },
+        },
+        assertions: {
+          forbidCloudUpstream: true,
+        },
+      },
+      {
+        id: 'pc-hop-recursion-firewall',
+        name: 'Recursive agent request with x-paperclip-hop >= 2 is blocked by Loop Guard',
+        prompt: 'Nested agent sub-call',
+        model: 'eluvix/auto',
+        paperclip: { hop: 2 },
+        assertions: {
+          expectBlockedByGuard: true,
         },
       },
     ],

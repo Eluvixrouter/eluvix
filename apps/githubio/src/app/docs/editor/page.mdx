@@ -8,10 +8,10 @@ The **Eluvix Visual Node Routing Editor** (accessible at `/editor`) is an intera
 
 The **Eluvix Visual Node Routing Editor** combines tactile graph wiring with keyboard-first studio tooling:
 - **Spotlight Command Palette (`Cmd/Ctrl + K`)**: Fuzzy-search and spawn any of the 30+ node types at viewport center, switch starter presets, run auto-layout, open the **Golden Eval Gate**, trigger compilation, or auto-heal graph diagnostics.
-- **Golden Eval Gate (`🧪 Evals` & Verify Before Apply)**: Run `$0.00` deterministic `dry-run` routing, PII redaction, and prompt-injection regression suites against unsaved canvas edits directly inside the **Eluvix Visual Node Routing Editor** (`EvalGateDrawer`) before hot-reloading production config.
+- **Golden Eval Gate (`🧪 Evals` & Verify Before Apply)**: Run `$0.00` deterministic `dry-run` routing, PII redaction, prompt-injection, and `paperclip-org-governance` regression suites against unsaved canvas edits directly inside the **Eluvix Visual Node Routing Editor** (`EvalGateDrawer`) before hot-reloading production config.
 - **50-State Undo / Redo (`Cmd/Ctrl + Z` / `Cmd/Ctrl + Shift + Z`)**: Full snapshot history stack across node insertions, parameter edits, edge wiring, deletions, and layout transforms.
 - **Deterministic Sugiyama Topological Auto-Layout**: One-click 5-stage left-to-right hierarchical graph layout (`Entry / Guards` &rarr; `Cache / Memory / RAG` &rarr; `Routers / Judges` &rarr; `Gateways / Harnesses` &rarr; `Local & Cloud Upstreams / Observability`) with barycentric edge-crossing minimization.
-- **Interactive Live Canvas Route Simulator**: Dry-run prompts with modality, token count, and confidential flags directly on the canvas via `POST /api/v1/route-explain`—animating the winning path in emerald green and dimming bypassed edges in amber with hoverable rejection reasons.
+- **Interactive Live Canvas Route Simulator**: Dry-run prompts with modality, token count, confidential flags, and Paperclip org overrides (`companyId`, `priority`, `budgetRemainingPct`, `sensitivity`) directly on the canvas via `POST /api/v1/route-explain`—animating the winning path in emerald green and dimming bypassed edges in amber with hoverable rejection reasons and applied `X-Eluvix-Step-Tier` / bias badges.
 - **One-Click Diagnostic Auto-Fix**: Actionable **"Fix Now"** buttons per lint warning and **"Fix All Issues"** batch healing for disconnected nodes, ungrounded Knowledge Bases, single-point-of-failure upstreams, unguarded cloud PII paths, and circular routing loops.
 - **Ergonomic Node Handles & Dynamic Ports**: Enlarged color-coded grab handles, semantic intent ports (`#intent-code`, `#intent-reasoning`, `#tier-local`, `#tier-cloud`), and direct in-card controls.
 
@@ -88,7 +88,7 @@ The Routing Editor organizes nodes into functional categories:
   - Output PII sanitization: Scrubs sensitive data from tool returns before feeding to LLMs.
   - OpenBao Secret Mapping: Directly maps encrypted API keys into tool runtime environments.
 - **Paperclip Bridge (`paperclipBridgeNode`)**:
-  - Connects Switchyard to a Paperclip agent org server with priority policies (`critical`, `high`, `medium`, `low`), budget-pressure cascade thresholds, `confidential`/`internal` sensitivity floors, HMAC context signing (`hmacSecret`, `requireSignedContext`), and an interactive **Probe** health check (`POST /api/v1/paperclip/health`).
+  - Connects Switchyard to a Paperclip agent org server with priority policies (`critical`, `high`, `medium`, `low`), budget-pressure cascade thresholds, `confidential`/`internal` sensitivity floors, `SecretRef`-aware HMAC context signing (`env:`, `file:`, `bao:`, `vault:`, `keychain:` status badges & `requireSignedContext`), and an interactive **Probe** health check (`POST /api/v1/paperclip/health`).
 
 ### 4. Tools & Observability
 - **MCP Tool (`mcpToolNode`)**:

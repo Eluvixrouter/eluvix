@@ -111,6 +111,12 @@ type DashboardOverviewData = {
     isEluvixAuto?: boolean;
   }>;
   pendingApprovals: PendingApproval[];
+  safetyFuse?: {
+    tripped: boolean;
+    trippedAt?: string;
+    failureRate?: number;
+    outcomes?: unknown[];
+  } | null;
   autoAssignMode: string;
 };
 
@@ -419,6 +425,7 @@ export function SwitchyardDashboardPage({ context }: PluginPageProps) {
   const approveAction = usePluginAction('eluvix:approve_assignment');
   const dismissAction = usePluginAction('eluvix:dismiss_assignment');
   const explainAction = usePluginAction('eluvix:explain_route');
+  const resetFuseAction = usePluginAction('eluvix:reset_safety_fuse');
 
   const [prompt, setPrompt] = useState('Refactor authentication middleware with zero PII egress');
   const [priority, setPriority] = useState<'critical' | 'high' | 'medium' | 'low'>('high');
@@ -465,6 +472,43 @@ export function SwitchyardDashboardPage({ context }: PluginPageProps) {
 
       {data && (
         <>
+          {data.safetyFuse?.tripped && (
+            <div
+              style={{
+                ...cardStyle,
+                borderColor: '#f59e0b',
+                backgroundColor: 'rgba(120, 53, 15, 0.2)',
+              }}
+            >
+              <div style={betweenStyle}>
+                <div>
+                  <strong style={{ color: '#fcd34d' }}>
+                    Safety Fuse Tripped — Auto-Assign downgraded to Approval Required
+                  </strong>
+                  <div style={mutedStyle}>
+                    Recent outcome failure rate{' '}
+                    {typeof data.safetyFuse.failureRate === 'number'
+                      ? `${Math.round(data.safetyFuse.failureRate * 100)}%`
+                      : 'exceeded threshold'}
+                    {data.safetyFuse.trippedAt ? ` · tripped at ${data.safetyFuse.trippedAt}` : ''}
+                    . Mode &quot;auto&quot; is temporarily held at &quot;auto-with-approval&quot;.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  style={primaryButtonStyle}
+                  onClick={async () => {
+                    await resetFuseAction({ companyId });
+                    toast({ title: 'Safety fuse reset', tone: 'success' });
+                    refresh();
+                  }}
+                >
+                  Reset Safety Fuse
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={cardStyle}>
             <div style={betweenStyle}>
               <strong>Pending Approval Queue ({data.pendingApprovals.length})</strong>

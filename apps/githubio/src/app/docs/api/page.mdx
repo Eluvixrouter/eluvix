@@ -215,22 +215,16 @@ Actively probes local network interfaces (Ollama on `11434`, vLLM on `8000`, Lem
 ### `GET /api/v1/analytics`
 Returns aggregate summary statistics: total request volume, average latency per upstream, error rates, and local $0 cost savings.
 
-### `GET /api/v1/observability`
-Returns detailed real-time telemetry:
-- Live request feeds with latency breakdowns and status codes.
-- High-latency requests exceeding SLA thresholds.
-- Upstream node health check results.
-
-### `POST /api/v1/observability`
-Executes operational maintenance tasks:
-- `{"action": "ping"}`: Sends a lightweight synthetic completion to verify end-to-end pipeline health.
-- `{"action": "purge"}`: Clears historical entries from `request_logs`.
+### `GET / POST / DELETE /api/v1/observability`
+- **`GET`**: Returns detailed real-time telemetry including live request feeds, SLA breaches, upstream node health check results, active `Paperclip` runs, and long-horizon `dailyRollups` aggregated in SQLite `telemetry_daily_rollups`.
+- **`POST`**: Executes operational maintenance tasks (`{"action": "ping"}` synthetic completion or `{"action": "purge"}` full raw-log reset).
+- **`DELETE ?olderThanDays=<days>`** *(Admin required)*: Prunes expired rows from `request_logs` and `paperclip_assignment_outcomes` older than `<days>` while keeping `telemetry_daily_rollups` and the SHA-256 `audit_events` hash chain intact.
 
 ### `GET /api/v1/metrics`
 Returns Prometheus `0.0.4` text exposition metrics (`text/plain; version=0.0.4; charset=utf-8`), including request counters, token counters, TTFT/ITL gauges, rolling 24-hour cloud spend (`eluvix_rolling_24h_spend_usd`), daily spend cap (`eluvix_daily_spend_cap_usd`), and circuit breaker states. Supports `Authorization: Bearer elx_...` Named API Keys.
 
 ### `POST /api/v1/route-explain`
-Executes a non-destructive Switchyard dry-run trace and returns modality classification, complexity tier, budget guardrail evaluation, candidate scores, and the winning upstream without invoking any model.
+Executes a non-destructive Switchyard dry-run trace and returns modality classification, complexity tier, intra-heartbeat trajectory step tier (`agentStepTier`), Paperclip org routing bias & per-key ceiling enforcement, budget guardrail evaluation, candidate scores, and the winning upstream without invoking any model. Supports Paperclip context headers (`X-Paperclip-*` with HMAC verification) and optional body `paperclip` simulator fields.
 
 ---
 
@@ -272,7 +266,7 @@ Records human preference votes from Playground 2.0 A/B Arena (`{ prompt, chosen,
 Native Model Context Protocol (`2025-06-18`) Streamable-HTTP JSON-RPC 2.0 endpoint (mirrored over stdio via `npx eluvix-mcp`). Exposes 7 sovereign tools (`eluvix_route_explain`, `eluvix_list_models`, `eluvix_smart_complete`, `eluvix_memory_query`, `eluvix_memory_store`, `eluvix_privacy_scrub`, `eluvix_generate_image`) and `eluvix://` resources while enforcing `x-eluvix-hops` loop protection (`>= 2` rejected).
 
 ### `POST /api/v1/evals/run`
-Executes Golden Routing & Security Regression Eval Suites (`mode: "dry-run"` for `\$0.00` deterministic routing/DLP/injection assertions, or `mode: "live"` for full upstream regex/judge verification; `readonly` keys are restricted to `dry-run` and `configOverride` upstreams are validated via `ssrf-guard`). Also runnable in CI/CD via `npx eluvix-eval run evals.json`.
+Executes Golden Routing & Security Regression Eval Suites (including the built-in `paperclip-org-governance` suite; `mode: "dry-run"` for `\$0.00` deterministic routing/DLP/injection/Paperclip bias & `expectedStepTier` assertions, or `mode: "live"` for full upstream regex/judge verification; `readonly` keys are restricted to `dry-run` and `configOverride` upstreams are validated via `ssrf-guard`). Also runnable in CI/CD via `npx eluvix-eval run evals.json`.
 
 ---
 
@@ -466,26 +460,32 @@ Cohere / Jina / vLLM compatible cross-encoder and sovereign BM25/overlap reranki
 ### `GET /api/v1/prompts`, `POST /api/v1/prompts`
 Versioned Prompt Registry storing immutable system templates (`v1, v2, v3...`), aliases (`@staging`, `@production`), and `minEvalScore` promotion gates. Reference prompts in chat requests via `X-Eluvix-Prompt: <id>@production` or `metadata.promptRef`.
 
+### `GET / POST / DELETE /api/v1/keys` *(Admin RBAC)*
+Scoped API Key & Paperclip Policy Manager backed by `~/.config/eluvix/keys.json`:
+- **`GET`**: Lists all named API keys with key hashes omitted, tokens truncated to `elx_...`, and literal `paperclip.hmacSecret` values masked (while keeping `SecretRef` pointers such as `env:`, `file:`, `bao:`, `vault:`, or `keychain:` legible).
+- **`POST`**: Mints a new `elx_...` key (`{ label, role, origin, scopes, rpm, maxDailySpendUsd, paperclip: { companyIds, maxTier, maxCostPer1kUsd, hmacSecret, allowUnsignedContext } }`) and returns the plaintext token once alongside `audit_events` logging.
+- **`DELETE ?id=<id>`**: Revokes a named API key by ID and appends a tamper-evident entry to `audit_events`.
+
 ### `GET /api/v1/webhooks`, `POST /api/v1/webhooks`, `DELETE /api/v1/webhooks`
-Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `ntfy`, `json`) signed with `X-Eluvix-Signature: sha256=<hmac_hex>`.
+Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `ntfy`, `json`) signed with `X-Eluvix-Signature: sha256=<hmac_hex>`. Supports Paperclip governance events `paperclip.budget_forecast`, `paperclip.tier_escalated`, `paperclip.hmac_rejected`, and `paperclip.safety_fuse`.
 
 ---
 
 ## 15. Paperclip Integration & Correlation API (v1.3)
 
-All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope (or an authenticated dashboard session for `/api/v1/paperclip/health`), enforce per-key `companyIds` isolation (`403` on cross-company access), and apply per-key `maxTier` / `maxCostPer1kUsd` ceilings.
+All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope (or an authenticated dashboard session for `/api/v1/paperclip/health`). Multi-endpoint parity across `/api/v1/chat/completions`, `/api/v1/messages`, `/api/v1/responses`, `/api/v1/route-explain`, and `DesktopRouterServer` enforces per-key `companyIds` isolation (`403` on cross-company access), `maxTier` / `maxCostPer1kUsd` ceilings, `x-eluvix-hops` loop checks, company/issue episodic memory partitioning (`` `${userId}::pc:${companyId}` ``), and `SecretRef` (`env:`, `file:`, `bao:`, `vault:`, `keychain:`) HMAC secret resolution.
 
 ### `GET /api/v1/paperclip/whoami`
-Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, per-key `paperclip` policy (`companyIds`, `maxTier`, `maxCostPer1kUsd`), `egressPolicy`, and `rolling24hSpendUsd`.
+Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, per-key `paperclip` policy (`companyIds`, `maxTier`, `maxCostPer1kUsd`, masked `hmacSecret`), `egressPolicy`, and `rolling24hSpendUsd`.
 
 ### `GET /api/v1/paperclip/capabilities`
-Returns Switchyard `strategy`, `virtualModels` (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`), `paperclipPolicy`, and sanitized upstream fleet telemetry.
+Returns Switchyard `strategy`, `virtualModels` (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`), sanitized `paperclipPolicy` (masking literal `hmacSecret` while preserving `SecretRef` pointers and `hmacSigningConfigured`), and upstream fleet telemetry.
 
 ### `POST /api/v1/paperclip/classify`
 Classifies a Paperclip issue (`{ title, description, priority, labels, sensitivity }`) into `complexity`, `modalities`, `piiDetected`, `sensitivity`, `suggestedTier`, and `taskClass`.
 
 ### `POST /api/v1/paperclip/recommend-assignee`
-Scores and ranks candidate Paperclip employees (`{ task, candidates, parentAssigneeAgentId, weights, topN, explore, useEmbeddings }`) using `/v1/embeddings` semantic fit (with automatic keyword fallback), decayed cost-weighted Beta posteriors, 7-day budget exhaustion forecasts, live `openIssueCount` load, and `reportsTo`/parent affinity.
+Scores and ranks candidate Paperclip employees (`{ task, candidates, parentAssigneeAgentId, weights, topN, explore, useEmbeddings }`) using `/v1/embeddings` semantic fit cached in SQLite `paperclip_embedding_cache` (SHA-256 keyed with automatic keyword fallback), decayed cost-weighted Beta posteriors, 7-day budget exhaustion forecasts (triggering `paperclip.budget_forecast` webhooks when runway `< 3` days), live `openIssueCount` load, and `reportsTo`/parent affinity.
 
 ### `POST /api/v1/paperclip/feedback`
 Records completed/reassigned assignment outcomes (`{ issueId, agentId, companyId, taskClass, success, costUsd, durationMs }`) into `paperclip_assignment_outcomes`.
@@ -494,14 +494,15 @@ Records completed/reassigned assignment outcomes (`{ issueId, agentId, companyId
 Returns company-scoped aggregated `inputTokens`, `outputTokens`, `cachedInputTokens`, `costUsd`, `dominantModel`, and `byModel` breakdown for `correlation_id = runId`.
 
 ### `GET / POST /api/v1/paperclip/health`
-SSRF-guarded live health probe validating `paperclipBaseUrl` against cloud IMDS rules and probing `<paperclipBaseUrl>/api/health` for `PaperclipBridgeNode`.
+SSRF-guarded live health probe validating `paperclipBaseUrl` against cloud IMDS rules and probing `<paperclipBaseUrl>/api/health` for `PaperclipBridgeNode` (mirrored on `/v1/paperclip/health` in `DesktopRouterServer`).
 
 ### Paperclip Security & Telemetry Headers
 - `X-Paperclip-Context-Ts`: Epoch millisecond timestamp paired with `X-Paperclip-Context-Sig` (`300s` replay window).
-- `X-Paperclip-Context-Sig`: HMAC-SHA256 signature (`v1.<ts>.<hex>`) authenticating canonical `x-paperclip-*` context headers.
+- `X-Paperclip-Context-Sig`: HMAC-SHA256 signature (`v1.<ts>.<hex>`) authenticating canonical `x-paperclip-*` context headers (resolved via `SecretRef` with fail-closed behavior if unresolved).
 - `X-Eluvix-Correlation-Id`: Correlated Paperclip run ID (`x-paperclip-run-id`).
 - `X-Eluvix-Paperclip-Priority`: Resolved issue priority (`critical`, `high`, `medium`, `low`).
-- `X-Eluvix-Paperclip-Bias`: Applied Switchyard routing bias tags (`tier-floor`, `tier-ceiling`, `prefer-local`, `local-only`, `budget-cascade`, `key-tier-ceiling`, `key-cost-ceiling`).
+- `X-Eluvix-Paperclip-Bias`: Applied Switchyard routing bias tags (`tier-floor`, `tier-ceiling`, `prefer-local`, `local-only`, `budget-cascade`, `key-tier-ceiling`, `key-cost-ceiling`, `step:*`).
+- `X-Eluvix-Step-Tier`: Resolved intra-heartbeat trajectory step tier (`fast-local`, `code-specialist`, `heavy-reasoning`, `frontier-verified`) for agent tool-call loops.
 
 ---
 

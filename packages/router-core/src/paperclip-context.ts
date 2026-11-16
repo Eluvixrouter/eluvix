@@ -502,3 +502,125 @@ export function resolvePaperclipRoutingBias(
     biasTags: Array.from(new Set(biasTags)),
   };
 }
+
+export interface AgentTrajectoryStepClassification {
+  isAgentLoop: boolean;
+  stepTier?: PaperclipStepTier;
+  reason?: string;
+  toolTurnCount: number;
+  lastRole?: string;
+}
+
+const TRAJECTORY_ERROR_RE =
+  /\b(Traceback|SyntaxError|TypeError|ReferenceError|RangeError|AssertionError|Segmentation fault|segfault|panic:|fatal error|error\[E\d+\]|UnhandledPromiseRejection|ERR_[A-Z0-9_]+|FAIL\s+\S+|exit code [1-9]\d*|non-zero exit)\b/i;
+
+const TRAJECTORY_READ_TOOL_RE =
+  /\b(read_file|view_file|list_dir|find_by_name|grep|rg|search|glob|ls|cat|head|tail|stat|pwd|git_status|git_diff|git_log|inspect_repo)\b/i;
+
+const TRAJECTORY_WRITE_TOOL_RE =
+  /\b(write_file|edit_file|replace_file|apply_patch|patch|bash|sh|exec|run_command|terminal|npm|vitest|pytest|cargo|tsc|build|test)\b/i;
+
+function extractTrajectoryMessageText(msg: Record<string, any>): string {
+  const c = msg?.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c
+      .map((part) => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
+      .join('\n');
+  }
+  return '';
+}
+
+function extractTrajectoryToolNames(msg: Record<string, any>): string[] {
+  const names: string[] = [];
+  if (typeof msg?.name === 'string' && msg.name.trim()) names.push(msg.name.trim());
+  if (Array.isArray(msg?.tool_calls)) {
+    for (const tc of msg.tool_calls) {
+      const fn = tc?.function?.name || tc?.name;
+      if (typeof fn === 'string' && fn.trim()) names.push(fn.trim());
+    }
+  }
+  return names;
+}
+
+/**
+ * Classifies an ongoing multi-turn agent tool-loop trajectory into a virtual
+ * Switchyard tier (`fast-general`, `code-specialist`, `heavy-reasoning`).
+ * Only activates when `messages.length >= 3` and tool-use signals are present
+ * so single-turn human chat requests remain unaffected.
+ */
+export function classifyAgentTrajectoryStep(
+  messages: Array<Record<string, any>> | undefined | null
+): AgentTrajectoryStepClassification {
+  if (!Array.isArray(messages) || messages.length < 3) {
+    return { isAgentLoop: false, toolTurnCount: 0 };
+  }
+
+  let toolTurnCount = 0;
+  let hasToolSignal = false;
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'tool') {
+      toolTurnCount += 1;
+      hasToolSignal = true;
+    } else if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      hasToolSignal = true;
+    }
+  }
+
+  if (!hasToolSignal) {
+    return { isAgentLoop: false, toolTurnCount: 0 };
+  }
+
+  const lastMsg = messages[messages.length - 1] || {};
+  const lastRole = typeof lastMsg.role === 'string' ? lastMsg.role : undefined;
+
+  const tail = messages.slice(-4);
+  let tailErrorDetected = false;
+  let maxToolOutputLen = 0;
+  const recentToolNames: string[] = [];
+
+  for (const m of tail) {
+    if (!m || typeof m !== 'object') continue;
+    recentToolNames.push(...extractTrajectoryToolNames(m));
+    if (m.role === 'tool') {
+      const txt = extractTrajectoryMessageText(m);
+      maxToolOutputLen = Math.max(maxToolOutputLen, txt.length);
+      if (TRAJECTORY_ERROR_RE.test(txt)) {
+        tailErrorDetected = true;
+      }
+    }
+  }
+
+  if (tailErrorDetected) {
+    return {
+      isAgentLoop: true,
+      stepTier: 'heavy-reasoning',
+      reason: 'error-recovery',
+      toolTurnCount,
+      lastRole,
+    };
+  }
+
+  const allRecentToolsReadOnly =
+    recentToolNames.length > 0 && recentToolNames.every((n) => TRAJECTORY_READ_TOOL_RE.test(n));
+  const hasWriteOrExecTool = recentToolNames.some((n) => TRAJECTORY_WRITE_TOOL_RE.test(n));
+
+  if ((allRecentToolsReadOnly || (!hasWriteOrExecTool && toolTurnCount >= 1)) && maxToolOutputLen <= 1200) {
+    return {
+      isAgentLoop: true,
+      stepTier: 'fast-local',
+      reason: 'lightweight-inspection-followup',
+      toolTurnCount,
+      lastRole,
+    };
+  }
+
+  return {
+    isAgentLoop: true,
+    stepTier: 'code-specialist',
+    reason: hasWriteOrExecTool ? 'code-patch-or-exec' : 'agent-synthesis',
+    toolTurnCount,
+    lastRole,
+  };
+}

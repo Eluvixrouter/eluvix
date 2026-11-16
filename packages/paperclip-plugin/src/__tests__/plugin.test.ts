@@ -275,4 +275,81 @@ describe('@eluvix/paperclip-plugin', () => {
     );
     expect(depth).toBe(2);
   });
+
+  it('trips Auto-Assign Safety Fuse on high failure rate, downgrades auto -> auto-with-approval, and resets cleanly', async () => {
+    const ctx = makeHostCtx({
+      config: {
+        eluvixBaseUrl: 'http://127.0.0.1:3588',
+        autoAssign: {
+          ...DEFAULT_AUTO_ASSIGN_CONFIG,
+          mode: 'auto',
+          companies: ['cmp-1'],
+          minConfidence: 0.72,
+          safetyFuse: {
+            enabled: true,
+            windowSize: 6,
+            maxFailureRate: 0.4,
+            minSamples: 5,
+          },
+        },
+      },
+    });
+    const handlers = createEluvixPluginHandlers(ctx as any);
+
+    // Feed 5 failed issue runs via plugin onEvent to exceed 40% failure rate
+    for (let i = 1; i <= 5; i++) {
+      const issueId = `iss-fail-${i}`;
+      await ctx.state.set(`issue-outcome:${issueId}`, {
+        agentId: 'agt-coder',
+        status: 'in_progress',
+        companyId: 'cmp-1',
+        title: `Task ${i}`,
+      });
+      await handlers.onEvent({
+        type: 'agent.run.finished',
+        payload: {
+          issueId,
+          agentId: 'agt-coder',
+          companyId: 'cmp-1',
+          status: 'failed',
+          costUsd: 0.01,
+          durationMs: 100,
+        },
+      });
+    }
+
+    const overviewBeforeReset = await handlers.data['eluvix:dashboard_overview']({ companyId: 'cmp-1' });
+    expect(overviewBeforeReset.safetyFuse?.tripped).toBe(true);
+
+    // New unassigned issue in mode='auto' must downgrade to 'pending_approval' (no direct assignee update)
+    const issue = {
+      id: 'iss-new-after-trip',
+      companyId: 'cmp-1',
+      title: 'Fix SQLite migration',
+      status: 'todo',
+      priority: 'high' as const,
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      parentId: null,
+    };
+    const trippedDecision = await handleUnassignedIssueEvent(issue, ctx as any, 'elx_test');
+    expect(trippedDecision.action).toBe('pending_approval');
+    expect(trippedDecision.reason).toBe('safety_fuse_tripped');
+    expect(ctx.updates.length).toBe(0);
+    expect(ctx.comments.some((c) => c.body.includes('Safety Fuse Tripped'))).toBe(true);
+
+    // Reset safety fuse via plugin action & confirm 'auto' resumes normal assignment
+    const resetRes = await handlers.actions['eluvix:reset_safety_fuse']({ companyId: 'cmp-1' });
+    expect(resetRes.ok).toBe(true);
+    expect(resetRes.state.tripped).toBe(false);
+
+    const resumedDecision = await handleUnassignedIssueEvent(
+      { ...issue, id: 'iss-after-reset' },
+      ctx as any,
+      'elx_test'
+    );
+    expect(resumedDecision.action).toBe('auto_assigned');
+    expect(ctx.updates.length).toBe(1);
+    expect(ctx.updates[0].patch.assigneeAgentId).toBe('agt-coder');
+  });
 });

@@ -1,3 +1,6 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', 'eluvix.local']);
 
 export function validateLoopbackEluvixUrl(rawUrl: string): { ok: true; url: string } | { ok: false; reason: string } {
@@ -33,10 +36,97 @@ export function resolveEluvixApiKey(config: Record<string, unknown>, env?: Recor
   return fromEnv;
 }
 
+/**
+ * Resolves the optional Paperclip HMAC signing secret from adapter config or env,
+ * supporting `env:VAR` and `file:/path` references. Returns `undefined` if an
+ * explicit reference cannot be resolved (never returns a raw `env:`/`file:` string).
+ */
+export function resolveEluvixHmacSecret(
+  config: Record<string, unknown>,
+  env?: Record<string, string | undefined>
+): string | undefined {
+  const candidates = [
+    typeof config.eluvixHmacSecret === 'string' ? config.eluvixHmacSecret : undefined,
+    env?.PAPERCLIP_ELUVIX_HMAC_SECRET,
+    env?.ELUVIX_PAPERCLIP_HMAC_SECRET,
+    process.env.PAPERCLIP_ELUVIX_HMAC_SECRET,
+    process.env.ELUVIX_PAPERCLIP_HMAC_SECRET,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (/^env:/i.test(trimmed)) {
+      const varName = trimmed.slice(4).trim();
+      const val = (env?.[varName] || process.env[varName] || '').trim();
+      if (val) return val;
+      continue;
+    }
+    if (/^file:/i.test(trimmed)) {
+      let filePath = trimmed.slice(5).trim();
+      if (filePath.startsWith('//')) {
+        filePath = filePath.replace(/^\/\/(localhost)?/, '');
+      }
+      if (filePath) {
+        try {
+          const val = fs.readFileSync(filePath, 'utf8').trim();
+          if (val) return val;
+        } catch {
+          // Ignore unreadable secret file
+        }
+      }
+      continue;
+    }
+    return trimmed;
+  }
+  return undefined;
+}
+
+/**
+ * Signs outbound `x-paperclip-*` context headers with HMAC-SHA256 matching
+ * `@eluvix/router-core`'s `canonicalPaperclipSignaturePayload` (`v1.<ts_ms>.<mac>`).
+ */
+export function signOutboundPaperclipHeaders(
+  headers: Record<string, string>,
+  hmacSecret: string,
+  opts?: { nowMs?: number }
+): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (typeof v === 'string') {
+      normalized[k.toLowerCase()] = v;
+    }
+  }
+  const ts = String(opts?.nowMs ?? Date.now());
+  const payload = [
+    'v1',
+    ts,
+    normalized['x-paperclip-run-id'] ?? '',
+    normalized['x-paperclip-issue-id'] ?? '',
+    normalized['x-paperclip-agent-id'] ?? '',
+    normalized['x-paperclip-company-id'] ?? '',
+    normalized['x-paperclip-issue-priority'] ?? '',
+    normalized['x-paperclip-budget-remaining-pct'] ?? '',
+    normalized['x-paperclip-sensitivity'] ?? '',
+    normalized['x-paperclip-hop'] ?? '0',
+  ].join('|');
+  const mac = crypto.createHmac('sha256', hmacSecret).update(payload).digest('hex');
+  return {
+    ...headers,
+    'x-paperclip-context-ts': ts,
+    'x-paperclip-context-sig': `v1.${ts}.${mac}`,
+  };
+}
+
 export function redactSecrets(text: string): string {
   return text
     .replace(/\belx_[A-Za-z]{20,80}\b/g, '[REDACTED_ELX_KEY]')
-    .replace(/\bBearer\s+[A-Za-z0-9._-]{16,}/gi, 'Bearer [REDACTED_TOKEN]');
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{16,}/gi, 'Bearer [REDACTED_TOKEN]')
+    .replace(/\bv1\.(\d{10,16})\.[0-9a-fA-F]{32,}\b/g, 'v1.$1.[REDACTED_SIG]')
+    .replace(
+      /\b((?:PAPERCLIP_)?ELUVIX_HMAC_SECRET)\s*=\s*\S+/g,
+      '$1=[REDACTED_SECRET]'
+    );
 }
 
 export async function derivePaperclipContextHeaders(opts: {
@@ -47,6 +137,8 @@ export async function derivePaperclipContextHeaders(opts: {
   paperclipApiUrl?: string;
   paperclipAuthToken?: string;
   fetchImpl?: typeof globalThis.fetch;
+  hmacSecret?: string;
+  nowMs?: number;
 }): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'x-paperclip-run-id': opts.runId,
@@ -57,9 +149,12 @@ export async function derivePaperclipContextHeaders(opts: {
     headers['x-paperclip-issue-id'] = opts.taskId;
   }
 
+  const finalize = (h: Record<string, string>): Record<string, string> =>
+    opts.hmacSecret ? signOutboundPaperclipHeaders(h, opts.hmacSecret, { nowMs: opts.nowMs }) : h;
+
   const fetchFn = opts.fetchImpl || globalThis.fetch;
   if (!opts.paperclipApiUrl || !opts.paperclipAuthToken || !fetchFn) {
-    return headers;
+    return finalize(headers);
   }
 
   const base = opts.paperclipApiUrl.replace(/\/$/, '');
@@ -107,5 +202,5 @@ export async function derivePaperclipContextHeaders(opts: {
     // Best-effort metadata lookup
   }
 
-  return headers;
+  return finalize(headers);
 }

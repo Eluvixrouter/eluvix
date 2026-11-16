@@ -5,6 +5,8 @@ import {
   getCachedAntigravityModels,
   getRollingSpendUsd,
   getPaperclipObservabilitySummary,
+  getTelemetryDailyRollups,
+  pruneExpiredTelemetry,
   getVramArbiterStats,
   listBanditArms,
 } from '@eluvix/router-core';
@@ -271,6 +273,10 @@ export async function GET(req: Request) {
           totalUpstreamsCount: upstreamsHealth.length,
         },
         paperclip: paperclipSummary,
+        dailyRollups: getTelemetryDailyRollups(
+          90,
+          isAdmin ? undefined : caller.ok ? caller.userId : 'anonymous'
+        ),
         modelDistribution,
         upstreamDistribution,
         upstreams: upstreamsHealth,
@@ -294,6 +300,24 @@ export async function DELETE(req: Request) {
     }
     if (caller.role !== 'admin') {
       return NextResponse.json({ success: false, error: 'Forbidden: only admins can purge request logs' }, { status: 403 });
+    }
+    const { searchParams } = new URL(req.url);
+    const rawDays = searchParams.get('olderThanDays');
+    if (rawDays !== null) {
+      const days = Number(rawDays);
+      if (!Number.isFinite(days) || days < 1) {
+        return NextResponse.json(
+          { success: false, error: 'Invalid olderThanDays query parameter (must be >= 1)' },
+          { status: 400 }
+        );
+      }
+      const pruned = pruneExpiredTelemetry(days);
+      return NextResponse.json({
+        success: true,
+        olderThanDays: Math.floor(days),
+        ...pruned,
+        message: `Pruned ${pruned.deletedRequestLogs} request log(s) and ${pruned.deletedOutcomeLogs} assignment outcome(s) older than ${Math.floor(days)} day(s). Audit events and daily rollups were preserved.`,
+      });
     }
     const db = getDb();
     db.exec('DELETE FROM request_logs;');

@@ -6,6 +6,8 @@ import {
   derivePaperclipContextHeaders,
   redactSecrets,
   resolveEluvixApiKey,
+  resolveEluvixHmacSecret,
+  signOutboundPaperclipHeaders,
   validateLoopbackEluvixUrl,
 } from './headers.js';
 import { mapEluvixErrorToPaperclipFamily } from './errors.js';
@@ -176,13 +178,17 @@ export async function executeEluvixLocal(
   let exitCode = 0;
   let errorMessage: string | null = null;
   const maxAttempts = escalateOnFailure ? 3 : 1;
+  const hmacSecret = resolveEluvixHmacSecret(ctx.config, envMap);
 
   try {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const attemptHeaders: Record<string, string> = {
+      const rawAttemptHeaders: Record<string, string> = {
         ...pcHeaders,
         ...(escalatedFrom ? { 'x-eluvix-escalated-from': escalatedFrom } : {}),
       };
+      const attemptHeaders = hmacSecret
+        ? signOutboundPaperclipHeaders(rawAttemptHeaders, hmacSecret)
+        : rawAttemptHeaders;
       const opencodeConfigContent = buildOpenCodeConfigContent({
         eluvixBaseUrl,
         eluvixApiKey,

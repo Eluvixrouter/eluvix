@@ -1,7 +1,9 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { verifyPaperclipContextSignature } from '../../../router-core/dist/paperclip-auth.js';
 import {
   createServerAdapter,
   derivePaperclipContextHeaders,
@@ -12,7 +14,9 @@ import {
   mapEluvixErrorToPaperclipFamily,
   redactSecrets,
   resolveEluvixApiKey,
+  resolveEluvixHmacSecret,
   sessionCodec,
+  signOutboundPaperclipHeaders,
   STATIC_ELUVIX_MODELS,
   testEluvixEnvironment,
   validateLoopbackEluvixUrl,
@@ -334,5 +338,38 @@ describe('@eluvix/paperclip-adapter', () => {
       expect(content).not.toMatch(/\bgit\s+push\b/i);
     }
     expect(createServerAdapter().type).toBe('eluvix_local');
+  });
+
+  it('resolves SecretRef HMAC secrets (env:/file:), signs outbound headers verifiably, and redacts v1 signatures', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-adapter-sec-'));
+    try {
+      const secretFile = path.join(tmpDir, 'hmac.secret');
+      fs.writeFileSync(secretFile, 'file-hmac-secret-64chars-ok\n', { mode: 0o600 });
+
+      expect(resolveEluvixHmacSecret({ eluvixHmacSecret: 'env:TEST_ADAPTER_HMAC' }, { TEST_ADAPTER_HMAC: 'env-hmac-secret' })).toBe('env-hmac-secret');
+      expect(resolveEluvixHmacSecret({ eluvixHmacSecret: 'env:MISSING_ADAPTER_HMAC' }, {})).toBeUndefined();
+      expect(resolveEluvixHmacSecret({ eluvixHmacSecret: `file:${secretFile}` }, {})).toBe('file-hmac-secret-64chars-ok');
+
+      const signed = signOutboundPaperclipHeaders(
+        {
+          'x-paperclip-run-id': 'run-sign-1',
+          'x-paperclip-issue-id': 'iss-sign-1',
+          'x-paperclip-agent-id': 'ag-sign-1',
+          'x-paperclip-company-id': 'comp-a',
+        },
+        'env-hmac-secret'
+      );
+      expect(signed['x-paperclip-context-sig']).toMatch(/^v1\.\d+\.[0-9a-f]{64}$/);
+      const verified = verifyPaperclipContextSignature(signed, { secret: 'env-hmac-secret' });
+      expect(verified.status).toBe('valid');
+
+      const scrubbed = redactSecrets(
+        `x-paperclip-context-sig=${signed['x-paperclip-context-sig']} ELUVIX_HMAC_SECRET=supersecret123`
+      );
+      expect(scrubbed).not.toContain(signed['x-paperclip-context-sig']);
+      expect(scrubbed).not.toContain('supersecret123');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

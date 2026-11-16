@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
 import {
+  isSecretReference,
+  maskSecretOrReferenceForDisplay,
+  resolveUpstreamSecret,
+  resolveUpstreamSecretSync,
+} from './secrets.js';
+import {
   parsePaperclipContextFromHeadersAndBody,
   parsePaperclipHeaders,
   type PaperclipIntegrationConfig,
@@ -96,9 +102,61 @@ export function resolveEffectivePaperclipHmacSecret(
     process.env.ELUVIX_PAPERCLIP_HMAC_SECRET,
   ];
   for (const c of candidates) {
-    if (typeof c === 'string' && c.trim().length > 0) {
-      return c.trim();
+    if (typeof c !== 'string' || c.trim().length === 0) continue;
+    const trimmed = c.trim();
+    if (isSecretReference(trimmed)) {
+      try {
+        const resolved = resolveUpstreamSecretSync(trimmed);
+        if (
+          typeof resolved === 'string' &&
+          resolved.trim().length > 0 &&
+          !isSecretReference(resolved.trim())
+        ) {
+          return resolved.trim();
+        }
+      } catch {
+        // Ignore unresolvable or async-only SecretRef candidate
+      }
+      continue;
     }
+    return trimmed;
+  }
+  return undefined;
+}
+
+/**
+ * Async variant of `resolveEffectivePaperclipHmacSecret` supporting all
+ * `SecretRef` backends (`env:`, `file:`, `bao:`, `vault:`, `keychain:`).
+ */
+export async function resolveEffectivePaperclipHmacSecretAsync(
+  config?: PaperclipIntegrationConfig,
+  keyPolicy?: PaperclipKeyPolicy
+): Promise<string | undefined> {
+  const candidates = [
+    keyPolicy?.hmacSecret,
+    config?.hmacSecret,
+    process.env.PAPERCLIP_ELUVIX_HMAC_SECRET,
+    process.env.ELUVIX_PAPERCLIP_HMAC_SECRET,
+  ];
+  for (const c of candidates) {
+    if (typeof c !== 'string' || c.trim().length === 0) continue;
+    const trimmed = c.trim();
+    if (isSecretReference(trimmed)) {
+      try {
+        const resolved = await resolveUpstreamSecret(trimmed);
+        if (
+          typeof resolved === 'string' &&
+          resolved.trim().length > 0 &&
+          !isSecretReference(resolved.trim())
+        ) {
+          return resolved.trim();
+        }
+      } catch {
+        // Ignore unresolvable SecretRef candidate rather than treating the ref itself as a literal secret
+      }
+      continue;
+    }
+    return trimmed;
   }
   return undefined;
 }
@@ -210,6 +268,7 @@ export function parseVerifiedPaperclipRequest(
     bodyPaperclip?: unknown;
     nowMs?: number;
     maxSkewMs?: number;
+    resolvedHmacSecret?: string;
   } = {}
 ): PaperclipRequestContext {
   const { config, keyPolicy } = opts;
@@ -219,7 +278,10 @@ export function parseVerifiedPaperclipRequest(
       (config?.trustHeadersFrom === 'loopback' && (opts.isLoopbackCaller ?? true))
   );
 
-  const secret = resolveEffectivePaperclipHmacSecret(config, keyPolicy);
+  const secret =
+    opts.resolvedHmacSecret !== undefined
+      ? opts.resolvedHmacSecret
+      : resolveEffectivePaperclipHmacSecret(config, keyPolicy);
   const verification = verifyPaperclipContextSignature(headers, {
     secret,
     nowMs: opts.nowMs,
@@ -233,7 +295,8 @@ export function parseVerifiedPaperclipRequest(
   const requireSigned =
     keyPolicy?.allowUnsignedContext === true
       ? false
-      : Boolean(secret) || config?.requireSignedContext === true;
+      : Boolean(secret || keyPolicy?.hmacSecret || config?.hmacSecret) ||
+        config?.requireSignedContext === true;
 
   let trusted = baseTrusted;
   const extraDropped: string[] = [];
@@ -267,5 +330,77 @@ export function parseVerifiedPaperclipRequest(
     signatureStatus: verification.status,
     ...(keyPolicy ? { keyPolicy } : {}),
     droppedHeaders: Array.from(new Set([...parsed.droppedHeaders, ...extraDropped])),
+  };
+}
+
+/**
+ * Async variant of `parseVerifiedPaperclipRequest` that resolves `bao:`,
+ * `vault:`, `keychain:`, `file:`, and `env:` HMAC SecretRefs before verification.
+ */
+export async function parseVerifiedPaperclipRequestAsync(
+  headers: HeaderInput,
+  opts: {
+    config?: PaperclipIntegrationConfig;
+    keyPolicy?: PaperclipKeyPolicy;
+    hasPaperclipScope?: boolean;
+    isAdminOrSessionCaller?: boolean;
+    isLoopbackCaller?: boolean;
+    bodyPaperclip?: unknown;
+    nowMs?: number;
+    maxSkewMs?: number;
+  } = {}
+): Promise<PaperclipRequestContext> {
+  const resolvedHmacSecret = await resolveEffectivePaperclipHmacSecretAsync(
+    opts.config,
+    opts.keyPolicy
+  );
+  return parseVerifiedPaperclipRequest(headers, {
+    ...opts,
+    resolvedHmacSecret,
+  });
+}
+
+/**
+ * Masks literal Paperclip HMAC secrets for API responses while preserving
+ * non-secret `SecretRef` pointers (e.g. `env:PAPERCLIP_ELUVIX_HMAC_SECRET`).
+ */
+export function sanitizePaperclipIntegrationForDisplay(
+  config?: PaperclipIntegrationConfig
+):
+  | (PaperclipIntegrationConfig & {
+      hmacSigningConfigured: boolean;
+    })
+  | undefined {
+  if (!config) return undefined;
+  const trimmed = typeof config.hmacSecret === 'string' ? config.hmacSecret.trim() : '';
+  if (!trimmed) {
+    return {
+      ...config,
+      hmacSigningConfigured: Boolean(
+        process.env.PAPERCLIP_ELUVIX_HMAC_SECRET || process.env.ELUVIX_PAPERCLIP_HMAC_SECRET
+      ),
+    };
+  }
+  return {
+    ...config,
+    hmacSecret: maskSecretOrReferenceForDisplay(trimmed),
+    hmacSigningConfigured: true,
+  };
+}
+
+/**
+ * Masks `hmacSecret` inside a scoped key's `paperclip` policy before returning
+ * it over admin HTTP APIs.
+ */
+export function sanitizePaperclipKeyPolicyForDisplay(
+  policy?: PaperclipKeyPolicy
+): PaperclipKeyPolicy | undefined {
+  if (!policy) return undefined;
+  if (!policy.hmacSecret || !policy.hmacSecret.trim()) {
+    return policy;
+  }
+  return {
+    ...policy,
+    hmacSecret: maskSecretOrReferenceForDisplay(policy.hmacSecret.trim()),
   };
 }

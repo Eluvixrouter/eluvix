@@ -1,4 +1,4 @@
-import { Eluvix, RouterConfig, getAppPaths } from '@eluvix/router-core';
+import { Eluvix, RouterConfig, getAppPaths, isSecretReference } from '@eluvix/router-core';
 import { DEFAULT_CONFIG } from './default-config';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -340,6 +340,21 @@ export function redactConfigForApi(config: RouterConfig): any {
     const { apiKey, ...rest } = clone.memory;
     clone.memory = { ...rest, apiKeyConfigured: typeof apiKey === 'string' && apiKey.length > 0 };
   }
+  if (
+    clone.integrations?.paperclip &&
+    typeof clone.integrations.paperclip === 'object' &&
+    'hmacSecret' in clone.integrations.paperclip
+  ) {
+    const { hmacSecret, ...rest } = clone.integrations.paperclip;
+    const configured = typeof hmacSecret === 'string' && hmacSecret.trim().length > 0;
+    const isRef = configured && isSecretReference(hmacSecret.trim());
+    clone.integrations.paperclip = {
+      ...rest,
+      ...(isRef ? { hmacSecret: hmacSecret.trim() } : {}),
+      hmacSecretConfigured: configured,
+      hmacSigningConfigured: configured,
+    };
+  }
   return clone;
 }
 
@@ -380,6 +395,17 @@ function preserveStoredApiKeys(newConfig: RouterConfig): void {
       }
     }
   }
+  const incomingPc = (newConfig as any).integrations?.paperclip;
+  const storedPc = (activeConfig as any).integrations?.paperclip;
+  if (incomingPc && typeof incomingPc === 'object') {
+    if (typeof incomingPc.hmacSecret !== 'string' || incomingPc.hmacSecret.trim().length === 0) {
+      if (storedPc && typeof storedPc.hmacSecret === 'string' && storedPc.hmacSecret.trim()) {
+        incomingPc.hmacSecret = storedPc.hmacSecret;
+      } else if ('hmacSecret' in incomingPc) {
+        delete incomingPc.hmacSecret;
+      }
+    }
+  }
 }
 
 export function saveConfig(newConfig: RouterConfig): RouterConfig {
@@ -394,6 +420,9 @@ export function saveConfig(newConfig: RouterConfig): RouterConfig {
   }
   if ((newConfig as any).memory?.apiKey === '[REDACTED]') {
     delete (newConfig as any).memory.apiKey;
+  }
+  if ((newConfig as any).integrations?.paperclip?.hmacSecret === '[REDACTED]') {
+    delete (newConfig as any).integrations.paperclip.hmacSecret;
   }
   preserveStoredApiKeys(newConfig);
   validateConfig(newConfig);

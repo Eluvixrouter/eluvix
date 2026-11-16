@@ -6,7 +6,8 @@ import { DOC_SECTIONS, DOC_CATEGORIES } from './docs-data';
 // Read from apps/nextjs/package.json so the badge tracks the built release
 // instead of rotting at a hardcoded version (hunt-2 L24: it read v1.0.4
 // while the app was 1.0.21).
-import { version as appVersion } from '../../../package.json';
+import pkg from '../../../package.json';
+const appVersion = pkg.version;
 
 export default function DocsPage() {
   const [activeSectionId, setActiveSectionId] = useState<string>('getting-started');

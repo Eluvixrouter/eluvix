@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import {
-  resolveBearerToken,
   responsesInputToChatRequest,
   openAiChatToResponsesObject,
   transformOpenAiSseToResponsesSse,
@@ -10,7 +9,11 @@ import {
   type RequestScope,
 } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionUserId, extractApiTokenFromHeaders } from '@/lib/caller-identity';
+import { resolveSessionUserId } from '@/lib/caller-identity';
+import {
+  resolveNamedChatApiKey,
+  resolvePaperclipInferenceContext,
+} from '@/lib/paperclip-route-helpers';
 import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
@@ -25,26 +28,20 @@ export const dynamic = 'force-dynamic';
  * `response.completed` SSE streams.
  */
 export async function POST(req: Request) {
-  let keyUserId: string | undefined;
-  let keyOrigin: RequestScope['origin'] | undefined;
-  const rawToken = extractApiTokenFromHeaders(req);
-  if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken);
-    if (!resolved.valid) {
-      return NextResponse.json(
-        {
-          error: {
-            message: 'Incorrect API key provided.',
-            type: 'invalid_request_error',
-            code: 'invalid_api_key',
-          },
+  const keyAuth = resolveNamedChatApiKey(req);
+  if (!keyAuth.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          message: keyAuth.message,
+          type: keyAuth.code === 'forbidden_readonly_user' ? 'insufficient_role' : 'invalid_request_error',
+          code: keyAuth.code,
         },
-        { status: 401 }
-      );
-    }
-    keyUserId = resolved.userId;
-    keyOrigin = resolved.origin;
+      },
+      { status: keyAuth.status }
+    );
   }
+  const { rawToken, userId: keyUserId, origin: keyOrigin, hasPaperclipScope: keyHasPaperclipScope, paperclipPolicy: keyPaperclipPolicy } = keyAuth;
 
   let body: Record<string, any>;
   try {
@@ -96,6 +93,27 @@ export async function POST(req: Request) {
       origin,
     };
     const hops = Math.max(0, parseInt(req.headers.get('x-eluvix-hops') || '0', 10) || 0);
+    const pcCtx = await resolvePaperclipInferenceContext({
+      headers: req.headers,
+      rawToken,
+      hops,
+      config: router.getConfig()?.integrations?.paperclip,
+      keyPaperclipPolicy,
+      hasPaperclipScope: keyHasPaperclipScope,
+      bodyPaperclip: body.paperclip,
+    });
+    if (!pcCtx.ok) {
+      return NextResponse.json(
+        {
+          error: {
+            message: pcCtx.message,
+            type: 'invalid_request_error',
+            code: pcCtx.code,
+          },
+        },
+        { status: pcCtx.status }
+      );
+    }
 
     let priorMessages: Array<Record<string, any>> = [];
     const previousResponseId =
@@ -128,7 +146,8 @@ export async function POST(req: Request) {
     const response = await router.routeChatCompletion(chatReq, {
       signal: req.signal,
       scope,
-      hops,
+      hops: pcCtx.effectiveHops,
+      paperclip: pcCtx.paperclip,
     });
 
     const traceHeaders: Record<string, string> = {};

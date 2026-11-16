@@ -386,6 +386,31 @@ function initSchema(db: SqliteDb) {
       ON paperclip_assignment_outcomes(user_id, issue_id, agent_id);
     CREATE INDEX IF NOT EXISTS idx_pc_outcomes_company
       ON paperclip_assignment_outcomes(company_id, task_class, agent_id);
+
+    CREATE TABLE IF NOT EXISTS paperclip_embedding_cache (
+      cache_key TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      vector_json TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_pc_embed_cache_updated
+      ON paperclip_embedding_cache(updated_at);
+
+    CREATE TABLE IF NOT EXISTS telemetry_daily_rollups (
+      day_utc TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'default',
+      pc_company_id TEXT NOT NULL DEFAULT '',
+      upstream_id TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      PRIMARY KEY (day_utc, user_id, pc_company_id, upstream_id, model)
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_rollups_day_user
+      ON telemetry_daily_rollups(day_utc DESC, user_id);
   `);
 }
 
@@ -487,8 +512,173 @@ export function logRequest(log: RequestLog) {
       log.pc_company_id ?? null,
       log.pc_priority ?? null
     );
+
+    try {
+      const dayUtc = new Date().toISOString().slice(0, 10);
+      const isErr = (log.status || 200) >= 400 ? 1 : 0;
+      const pTok = log.prompt_tokens || 0;
+      const cTok = log.completion_tokens || 0;
+      const costUsd = typeof log.cost_usd === 'number' && Number.isFinite(log.cost_usd) ? log.cost_usd : 0;
+      const uid = log.user_id || 'default';
+      const compId = log.pc_company_id || '';
+      db.prepare(`
+        INSERT INTO telemetry_daily_rollups (
+          day_utc, user_id, pc_company_id, upstream_id, model,
+          request_count, error_count, prompt_tokens, completion_tokens, cost_usd
+        )
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        ON CONFLICT(day_utc, user_id, pc_company_id, upstream_id, model) DO UPDATE SET
+          request_count = telemetry_daily_rollups.request_count + 1,
+          error_count = telemetry_daily_rollups.error_count + excluded.error_count,
+          prompt_tokens = telemetry_daily_rollups.prompt_tokens + excluded.prompt_tokens,
+          completion_tokens = telemetry_daily_rollups.completion_tokens + excluded.completion_tokens,
+          cost_usd = telemetry_daily_rollups.cost_usd + excluded.cost_usd
+      `).run(
+        dayUtc,
+        uid,
+        compId,
+        log.upstream_id || 'unknown',
+        log.model || 'unknown',
+        isErr,
+        pTok,
+        cTok,
+        costUsd
+      );
+    } catch {
+      // Never fail request logging on rollup aggregation
+    }
   } catch (err: any) {
     console.error('Failed to log request to DB:', err.message);
+  }
+}
+
+export interface TelemetryDailyRollup {
+  dayUtc: string;
+  userId: string;
+  companyId: string;
+  upstreamId: string;
+  model: string;
+  requestCount: number;
+  errorCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+}
+
+export function getTelemetryDailyRollups(
+  days = 90,
+  userId?: string,
+  companyId?: string
+): TelemetryDailyRollup[] {
+  try {
+    const db = getDb();
+    const safeDays = Math.max(1, Math.min(3650, Math.floor(Number(days) || 90)));
+    const cutoffDay = new Date(Date.now() - safeDays * 86_400_000).toISOString().slice(0, 10);
+    const clauses = ['day_utc >= ?'];
+    const params: any[] = [cutoffDay];
+    if (userId) {
+      clauses.push('user_id = ?');
+      params.push(userId);
+    }
+    if (companyId) {
+      clauses.push('pc_company_id = ?');
+      params.push(companyId);
+    }
+    const rows = db
+      .prepare(
+        `SELECT day_utc, user_id, pc_company_id, upstream_id, model, request_count, error_count, prompt_tokens, completion_tokens, cost_usd
+         FROM telemetry_daily_rollups
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY day_utc DESC, cost_usd DESC`
+      )
+      .all(...params) as Array<Record<string, any>>;
+    return rows.map((r) => ({
+      dayUtc: String(r.day_utc),
+      userId: String(r.user_id || 'default'),
+      companyId: String(r.pc_company_id || ''),
+      upstreamId: String(r.upstream_id || 'unknown'),
+      model: String(r.model || 'unknown'),
+      requestCount: Number(r.request_count || 0),
+      errorCount: Number(r.error_count || 0),
+      promptTokens: Number(r.prompt_tokens || 0),
+      completionTokens: Number(r.completion_tokens || 0),
+      costUsd: Number(r.cost_usd || 0),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Prunes raw `request_logs` and `paperclip_assignment_outcomes` older than
+ * `retentionDays`. Never deletes `audit_events` or `telemetry_daily_rollups`.
+ */
+export function pruneExpiredTelemetry(
+  retentionDays: number,
+  userId?: string
+): { deletedRequestLogs: number; deletedOutcomeLogs: number } {
+  try {
+    const db = getDb();
+    const safeDays = Math.max(1, Math.floor(Number(retentionDays) || 30));
+    const modifier = `-${safeDays} days`;
+    const reqRes = userId
+      ? db
+          .prepare("DELETE FROM request_logs WHERE user_id = ? AND timestamp < datetime('now', ?)")
+          .run(userId, modifier)
+      : db.prepare("DELETE FROM request_logs WHERE timestamp < datetime('now', ?)").run(modifier);
+    const outRes = userId
+      ? db
+          .prepare(
+            "DELETE FROM paperclip_assignment_outcomes WHERE user_id = ? AND timestamp < datetime('now', ?)"
+          )
+          .run(userId, modifier)
+      : db
+          .prepare("DELETE FROM paperclip_assignment_outcomes WHERE timestamp < datetime('now', ?)")
+          .run(modifier);
+    return {
+      deletedRequestLogs: Number(reqRes?.changes || 0),
+      deletedOutcomeLogs: Number(outRes?.changes || 0),
+    };
+  } catch {
+    return { deletedRequestLogs: 0, deletedOutcomeLogs: 0 };
+  }
+}
+
+export function getCachedPaperclipEmbedding(cacheKey: string, ttlHours = 168): number[] | null {
+  try {
+    const db = getDb();
+    const safeHours = Math.max(1, Math.floor(Number(ttlHours) || 168));
+    const row = db
+      .prepare(
+        "SELECT vector_json FROM paperclip_embedding_cache WHERE cache_key = ? AND updated_at >= datetime('now', ?)"
+      )
+      .get(cacheKey, `-${safeHours} hours`) as { vector_json?: string } | undefined;
+    if (!row?.vector_json) return null;
+    const parsed = JSON.parse(row.vector_json);
+    return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setCachedPaperclipEmbedding(
+  cacheKey: string,
+  model: string,
+  vector: number[]
+): void {
+  try {
+    if (!Array.isArray(vector) || vector.length === 0) return;
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO paperclip_embedding_cache (cache_key, model, vector_json, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        model = excluded.model,
+        vector_json = excluded.vector_json,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(cacheKey, model || 'default', JSON.stringify(vector));
+  } catch {
+    // Non-fatal cache write failure
   }
 }
 

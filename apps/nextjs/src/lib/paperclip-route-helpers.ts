@@ -1,12 +1,24 @@
 import { NextResponse } from 'next/server';
 import {
+  dispatchAlertWebhooks,
   globalCircuitBreaker,
   getEffectiveCostPer1kTokens,
   isLocalUpstream,
   isPaperclipCompanyAllowed,
+  mergeEffectiveHops,
+  parseVerifiedPaperclipRequestAsync,
+  resolveBearerToken,
   type PaperclipFleetUpstreamSummary,
+  type PaperclipIntegrationConfig,
+  type PaperclipKeyPolicy,
+  type PaperclipRequestContext,
+  type RequestScope,
 } from '@eluvix/router-core';
-import { resolveCallerIdentity, type CallerIdentityResult } from '@/lib/caller-identity';
+import {
+  resolveCallerIdentity,
+  extractApiTokenFromHeaders,
+  type CallerIdentityResult,
+} from '@/lib/caller-identity';
 import { getRouter } from '@/lib/router';
 
 export async function requirePaperclipCaller(
@@ -66,6 +78,145 @@ export function assertPaperclipCompanyScope(
     );
   }
   return null;
+}
+
+export type NamedChatKeyResolution =
+  | {
+      ok: true;
+      isApiKey: boolean;
+      rawToken: string | null;
+      userId?: string;
+      origin?: RequestScope['origin'];
+      hasPaperclipScope: boolean;
+      paperclipPolicy?: PaperclipKeyPolicy;
+    }
+  | {
+      ok: false;
+      status: number;
+      code: string;
+      message: string;
+    };
+
+export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
+  const rawToken = extractApiTokenFromHeaders(req);
+  if (!rawToken || !rawToken.startsWith('elx_')) {
+    return {
+      ok: true,
+      isApiKey: false,
+      rawToken,
+      hasPaperclipScope: false,
+    };
+  }
+  const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
+  if (!resolved.valid) {
+    const status =
+      resolved.reason === 'insufficient-scope'
+        ? 403
+        : resolved.reason === 'rate-limited' || resolved.reason === 'budget-exceeded'
+          ? 429
+          : 401;
+    const message =
+      resolved.reason === 'insufficient-scope'
+        ? 'API key lacks required "chat" scope.'
+        : resolved.reason === 'expired'
+          ? 'API key has expired.'
+          : resolved.reason === 'rate-limited'
+            ? 'API key rate limit (RPM) exceeded.'
+            : resolved.reason === 'budget-exceeded'
+              ? 'API key daily spend budget exceeded.'
+              : 'Incorrect API key provided.';
+    return {
+      ok: false,
+      status,
+      code: resolved.reason || 'invalid_api_key',
+      message,
+    };
+  }
+  if (resolved.role === 'readonly') {
+    return {
+      ok: false,
+      status: 403,
+      code: 'forbidden_readonly_user',
+      message: 'Forbidden: read-only users cannot execute inference requests.',
+    };
+  }
+  return {
+    ok: true,
+    isApiKey: true,
+    rawToken,
+    userId: resolved.userId,
+    origin: resolved.origin,
+    hasPaperclipScope:
+      !resolved.scopes ||
+      resolved.scopes.includes('*') ||
+      resolved.scopes.includes('paperclip'),
+    paperclipPolicy: resolved.paperclip,
+  };
+}
+
+export async function resolvePaperclipInferenceContext(opts: {
+  headers: Headers;
+  rawToken: string | null;
+  hops: number;
+  config?: PaperclipIntegrationConfig;
+  keyPaperclipPolicy?: PaperclipKeyPolicy;
+  hasPaperclipScope: boolean;
+  bodyPaperclip?: unknown;
+}): Promise<
+  | { ok: true; paperclip: PaperclipRequestContext; effectiveHops: number }
+  | { ok: false; status: 403; code: 'company_scope_forbidden'; message: string }
+> {
+  const isAdminOrSessionCaller = !opts.rawToken || !opts.rawToken.startsWith('elx_');
+  const paperclip = await parseVerifiedPaperclipRequestAsync(opts.headers, {
+    config: opts.config,
+    keyPolicy: opts.keyPaperclipPolicy,
+    hasPaperclipScope: opts.hasPaperclipScope,
+    isAdminOrSessionCaller,
+    bodyPaperclip: opts.bodyPaperclip,
+  });
+
+  if (paperclip.signatureStatus === 'invalid' || paperclip.signatureStatus === 'expired') {
+    void dispatchAlertWebhooks({
+      event: 'paperclip.hmac_rejected',
+      severity: 'critical',
+      summary: `Rejected Paperclip context signature (${paperclip.signatureStatus}) for company ${paperclip.companyId || 'unknown'}`,
+      data: {
+        signatureStatus: paperclip.signatureStatus,
+        runId: paperclip.runId,
+        issueId: paperclip.issueId,
+        agentId: paperclip.agentId,
+        companyId: paperclip.companyId,
+      },
+    }).catch(() => {});
+  }
+
+  const rawCompanyHdr = opts.headers.get('x-paperclip-company-id')?.trim();
+  const bodyCompanyId =
+    opts.bodyPaperclip && typeof (opts.bodyPaperclip as any).companyId === 'string'
+      ? String((opts.bodyPaperclip as any).companyId).trim()
+      : undefined;
+  const candidateCompanyId = rawCompanyHdr || paperclip.companyId || bodyCompanyId;
+
+  if (
+    opts.keyPaperclipPolicy?.companyIds &&
+    opts.keyPaperclipPolicy.companyIds.length > 0 &&
+    !isPaperclipCompanyAllowed(candidateCompanyId, opts.keyPaperclipPolicy)
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'company_scope_forbidden',
+      message: candidateCompanyId
+        ? `API key is not authorized for Paperclip company "${candidateCompanyId}".`
+        : 'API key requires an authorized "x-paperclip-company-id" header.',
+    };
+  }
+
+  return {
+    ok: true,
+    paperclip,
+    effectiveHops: mergeEffectiveHops(opts.hops, paperclip),
+  };
 }
 
 export function buildPaperclipFleetSummary(): PaperclipFleetUpstreamSummary[] {

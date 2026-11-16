@@ -3,9 +3,13 @@ import {
   approvePendingAssignment,
   buildCandidateListWithLoad,
   DEFAULT_AUTO_ASSIGN_CONFIG,
+  DEFAULT_SAFETY_FUSE_CONFIG,
   dismissPendingAssignment,
+  getSafetyFuseState,
   handleUnassignedIssueEvent,
   listPendingAssignments,
+  recordSafetyFuseOutcome,
+  resetSafetyFuse,
   supersedePendingAssignment,
   type PluginConfig,
   type PluginHostContext,
@@ -46,6 +50,12 @@ export function validateEluvixPluginConfig(raw: unknown): { ok: true; config: Pl
         ...DEFAULT_AUTO_ASSIGN_CONFIG,
         ...autoRaw,
         mode,
+        safetyFuse: {
+          ...DEFAULT_SAFETY_FUSE_CONFIG,
+          ...(autoRaw.safetyFuse && typeof autoRaw.safetyFuse === 'object'
+            ? (autoRaw.safetyFuse as Record<string, unknown>)
+            : {}),
+        },
       },
       weights:
         obj.weights && typeof obj.weights === 'object'
@@ -191,7 +201,7 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
         issueId,
         topN: 5,
       });
-      const [classification, pendingApproval, shadowDecision] = await Promise.all([
+      const [classification, pendingApproval, shadowDecision, safetyFuse] = await Promise.all([
         issue
           ? callEluvix('/api/v1/paperclip/classify', {
               method: 'POST',
@@ -208,6 +218,7 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
           : Promise.resolve(null),
         hostCtx.state.get(`pending-assignment:${issueId}`).catch(() => null),
         hostCtx.state.get(`shadow:${issueId}`).catch(() => null),
+        getSafetyFuseState(hostCtx, companyId).catch(() => null),
       ]);
       return {
         issue,
@@ -216,16 +227,18 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
         excluded: recommendation?.excluded || [],
         pendingApproval,
         shadowDecision,
+        safetyFuse,
         autoAssignMode: hostCtx.config.autoAssign?.mode || 'advisory',
       };
     },
     'eluvix:dashboard_overview': async (params: Record<string, unknown>) => {
       const companyId = String(params.companyId || '');
-      const [capabilitiesRes, whoamiRes, agentsRes, pendingRes] = await Promise.allSettled([
+      const [capabilitiesRes, whoamiRes, agentsRes, pendingRes, safetyFuseRes] = await Promise.allSettled([
         callEluvix('/api/v1/paperclip/capabilities'),
         callEluvix('/api/v1/paperclip/whoami'),
         companyId ? hostCtx.agents.list({ companyId }) : Promise.resolve([]),
         companyId ? listPendingAssignments(hostCtx, companyId) : Promise.resolve([]),
+        companyId ? getSafetyFuseState(hostCtx, companyId) : Promise.resolve(null),
       ]);
       const agentsList = agentsRes.status === 'fulfilled' ? agentsRes.value : [];
       const agentCandidates =
@@ -237,6 +250,7 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
         whoami: whoamiRes.status === 'fulfilled' ? whoamiRes.value : null,
         agents: agentCandidates,
         pendingApprovals: pendingRes.status === 'fulfilled' ? pendingRes.value : [],
+        safetyFuse: safetyFuseRes.status === 'fulfilled' ? safetyFuseRes.value : null,
         autoAssignMode: hostCtx.config.autoAssign?.mode || 'advisory',
       };
     },
@@ -325,6 +339,8 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
     },
     'eluvix:explain_route': async (params: Record<string, unknown>) =>
       tools['eluvix:explain_route'](params),
+    'eluvix:reset_safety_fuse': async (params: Record<string, unknown>) =>
+      resetSafetyFuse(hostCtx, String(params.companyId || '')),
   };
 
   return {
@@ -344,6 +360,12 @@ export function createEluvixPluginHandlers(hostCtx: PluginHostContext) {
       const REOPEN_WINDOW_MS = 48 * 3600 * 1000;
 
       const postFeedback = async (payload: Record<string, unknown>) => {
+        if (payload.companyId) {
+          await recordSafetyFuseOutcome(hostCtx, String(payload.companyId), {
+            success: Boolean(payload.success),
+            issueId: typeof payload.issueId === 'string' ? payload.issueId : undefined,
+          }).catch(() => {});
+        }
         await callEluvix('/api/v1/paperclip/feedback', {
           method: 'POST',
           body: JSON.stringify(payload),

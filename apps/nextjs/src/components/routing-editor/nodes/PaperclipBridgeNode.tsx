@@ -24,6 +24,8 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
     enabled: data?.enabled ?? true,
     paperclipBaseUrl: data?.paperclipBaseUrl || 'http://127.0.0.1:3100',
     trustHeadersFrom: data?.trustHeadersFrom || 'scoped-key',
+    hmacSecret: typeof data?.hmacSecret === 'string' ? data.hmacSecret : undefined,
+    requireSignedContext: Boolean(data?.requireSignedContext),
     budgetPressure: data?.budgetPressure || DEFAULT_PAPERCLIP_INTEGRATION_CONFIG.budgetPressure,
     priorityPolicy: data?.priorityPolicy || DEFAULT_PAPERCLIP_PRIORITY_POLICY,
   };
@@ -293,7 +295,18 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
 
         <div className="border-t border-zinc-800 pt-2">
           <div className="flex items-center justify-between gap-2">
-            <label className="block text-[10px] text-zinc-400">HMAC Secret (Optional)</label>
+            <div className="flex items-center gap-1.5">
+              <label className="block text-[10px] text-zinc-400">HMAC Secret (Optional)</label>
+              {/^(env|file|bao|vault|keychain):/i.test(hmacSecret.trim()) ? (
+                <span className="rounded bg-emerald-500/20 px-1 py-0.2 text-[9px] font-medium text-emerald-300">
+                  SecretRef
+                </span>
+              ) : (data as any)?.hmacSecretConfigured && !hmacSecret.trim() ? (
+                <span className="rounded bg-amber-500/20 px-1 py-0.2 text-[9px] font-medium text-amber-300">
+                  Stored
+                </span>
+              ) : null}
+            </div>
             <label className="flex cursor-pointer items-center gap-1 text-[10px] text-zinc-300">
               <input
                 type="checkbox"
@@ -307,8 +320,12 @@ export default function PaperclipBridgeNode({ id, data }: { id: string; data: an
             </label>
           </div>
           <input
-            type="password"
-            placeholder="ELUVIX_PAPERCLIP_HMAC_SECRET"
+            type={/^(env|file|bao|vault|keychain):/i.test(hmacSecret.trim()) ? 'text' : 'password'}
+            placeholder={
+              (data as any)?.hmacSecretConfigured && !hmacSecret.trim()
+                ? 'Configured on server (enter new value or SecretRef)'
+                : 'env:PAPERCLIP_ELUVIX_HMAC_SECRET'
+            }
             value={hmacSecret}
             onChange={(e) => {
               const val = e.target.value;

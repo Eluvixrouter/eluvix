@@ -39,6 +39,29 @@ interface ServerData {
   upstreamsCount: number;
 }
 
+interface ScopedApiKeyEntry {
+  id: string;
+  key: string;
+  keyPrefix?: string;
+  label: string;
+  origin: string;
+  userId: string;
+  role?: string;
+  scopes?: string[];
+  expiresAt?: string;
+  maxDailySpendUsd?: number;
+  rpm?: number;
+  paperclip?: {
+    companyIds?: string[];
+    agentIds?: string[];
+    maxTier?: string;
+    maxCostPer1kUsd?: number;
+    allowUnsignedContext?: boolean;
+    hmacSecret?: string;
+  };
+  createdAt: string;
+}
+
 export default function ConfiguratorPage() {
   const [data, setData] = useState<ServerData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,7 +70,21 @@ export default function ConfiguratorPage() {
   const [protocol, setProtocol] = useState<'https' | 'http'>('https');
   const [showApiKey, setShowApiKey] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'opencode' | 'continue' | 'cursor' | 'aider' | 'cline' | 'python' | 'env'>('opencode');
+  const [activeTab, setActiveTab] = useState<'opencode' | 'continue' | 'cursor' | 'aider' | 'cline' | 'python' | 'env' | 'keys'>('opencode');
+  const [scopedKeys, setScopedKeys] = useState<ScopedApiKeyEntry[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const [newlyMintedKey, setNewlyMintedKey] = useState<{ label: string; key: string } | null>(null);
+  const [keyLabel, setKeyLabel] = useState('Paperclip Agent Key');
+  const [keyScopes, setKeyScopes] = useState<string[]>(['chat', 'paperclip']);
+  const [keyCompanyIds, setKeyCompanyIds] = useState('');
+  const [keyMaxTier, setKeyMaxTier] = useState('');
+  const [keyMaxCostPer1k, setKeyMaxCostPer1k] = useState('');
+  const [keyRpm, setKeyRpm] = useState('');
+  const [keyDailySpend, setKeyDailySpend] = useState('');
+  const [keyHmacSecret, setKeyHmacSecret] = useState('');
+  const [keyAllowUnsigned, setKeyAllowUnsigned] = useState(false);
+  const [mintingKey, setMintingKey] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [customLimits, setCustomLimits] = useState<Record<string, { context: number; output: number }>>({});
   const [searchFilter, setSearchFilter] = useState('');
@@ -79,6 +116,104 @@ export default function ConfiguratorPage() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  const fetchKeys = async () => {
+    setKeysLoading(true);
+    setKeysError(null);
+    try {
+      const res = await fetch('/api/v1/keys');
+      const json = await res.json();
+      if (!res.ok) {
+        setKeysError(json?.error?.message || `HTTP ${res.status}`);
+      } else {
+        setScopedKeys(Array.isArray(json.data) ? json.data : []);
+      }
+    } catch (err: any) {
+      setKeysError(err?.message || 'Failed to load scoped keys');
+    } finally {
+      setKeysLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'keys') {
+      fetchKeys();
+    }
+  }, [activeTab]);
+
+  const toggleKeyScope = (scope: string) => {
+    setKeyScopes((prev) =>
+      prev.includes(scope) ? prev.filter((s) => s !== scope) : [...prev, scope]
+    );
+  };
+
+  const handleMintKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMintingKey(true);
+    setKeysError(null);
+    try {
+      const companyIds = keyCompanyIds
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const paperclip: Record<string, unknown> = {};
+      if (companyIds.length > 0) paperclip.companyIds = companyIds;
+      if (keyMaxTier) paperclip.maxTier = keyMaxTier;
+      if (keyMaxCostPer1k.trim() && Number.isFinite(Number(keyMaxCostPer1k))) {
+        paperclip.maxCostPer1kUsd = Number(keyMaxCostPer1k);
+      }
+      if (keyHmacSecret.trim()) paperclip.hmacSecret = keyHmacSecret.trim();
+      if (keyAllowUnsigned) paperclip.allowUnsignedContext = true;
+
+      const payload: Record<string, unknown> = {
+        label: keyLabel.trim() || 'Paperclip Agent Key',
+        origin: keyScopes.includes('paperclip') ? 'harness' : 'client',
+        scopes: keyScopes.length > 0 ? keyScopes : ['chat'],
+        ...(keyRpm.trim() && Number(keyRpm) > 0 ? { rpm: Number(keyRpm) } : {}),
+        ...(keyDailySpend.trim() && Number(keyDailySpend) >= 0
+          ? { maxDailySpendUsd: Number(keyDailySpend) }
+          : {}),
+        ...(Object.keys(paperclip).length > 0 ? { paperclip } : {}),
+      };
+
+      const res = await fetch('/api/v1/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setKeysError(json?.error?.message || `Failed to mint key (HTTP ${res.status})`);
+        return;
+      }
+      if (typeof json.key === 'string') {
+        setNewlyMintedKey({ label: json.label || keyLabel, key: json.key });
+      }
+      setKeyHmacSecret('');
+      await fetchKeys();
+    } catch (err: any) {
+      setKeysError(err?.message || 'Failed to mint key');
+    } finally {
+      setMintingKey(false);
+    }
+  };
+
+  const handleRevokeKey = async (id: string) => {
+    setKeysError(null);
+    try {
+      const res = await fetch(`/api/v1/keys?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        setKeysError(json?.error?.message || `Failed to revoke key (HTTP ${res.status})`);
+        return;
+      }
+      await fetchKeys();
+    } catch (err: any) {
+      setKeysError(err?.message || 'Failed to revoke key');
+    }
+  };
 
   const handleRefreshUpstreams = async () => {
     setRefreshing(true);
@@ -670,6 +805,7 @@ print(response.choices[0].message.content)
               { id: 'cline', label: 'Cline / Claude Dev' },
               { id: 'python', label: 'Python / OpenAI SDK' },
               { id: 'env', label: 'Shell / .env' },
+              { id: 'keys', label: '🔑 Scoped API Keys' },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -959,6 +1095,276 @@ print(response.choices[0].message.content)
                 <pre className="bg-slate-950 border border-slate-800 rounded-lg p-4 font-mono text-xs text-slate-300 overflow-x-auto">
                   {envSnippet}
                 </pre>
+              </div>
+            )}
+
+            {/* Scoped API Keys & Paperclip Policy Manager */}
+            {activeTab === 'keys' && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Scoped API Keys &amp; Paperclip Governance</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Mint least-privilege <code className="text-sky-400">elx_</code> keys scoped by Paperclip company, Switchyard max tier, cost/1k ceiling, and HMAC SecretRef.
+                    </p>
+                  </div>
+                  <button
+                    onClick={fetchKeys}
+                    disabled={keysLoading}
+                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-1.5 rounded-lg border border-slate-700 transition"
+                  >
+                    {keysLoading ? 'Refreshing...' : '↻ Refresh Keys'}
+                  </button>
+                </div>
+
+                {newlyMintedKey && (
+                  <div className="bg-emerald-950/70 border border-emerald-700 rounded-lg p-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-emerald-300">
+                        New API Key Minted ({newlyMintedKey.label}) — Copy Now (shown once)
+                      </span>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => copyToClipboard(newlyMintedKey.key, 'mintedKey')}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-2.5 py-1 rounded"
+                        >
+                          {copiedKey === 'mintedKey' ? '✓ Copied!' : '📋 Copy Key'}
+                        </button>
+                        <button
+                          onClick={() => setNewlyMintedKey(null)}
+                          className="text-xs text-slate-400 hover:text-white px-2 py-1"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                    <div className="font-mono text-xs text-emerald-200 bg-slate-950 border border-emerald-900 rounded px-3 py-2 select-all break-all">
+                      {newlyMintedKey.key}
+                    </div>
+                  </div>
+                )}
+
+                {keysError && (
+                  <div className="bg-rose-950/70 border border-rose-800 text-rose-200 rounded-lg px-4 py-2.5 text-xs">
+                    {keysError}
+                  </div>
+                )}
+
+                {/* Existing Keys Table */}
+                <div className="overflow-x-auto border border-slate-800 rounded-lg bg-slate-950">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                      <tr>
+                        <th className="p-2.5">Label</th>
+                        <th className="p-2.5">Prefix</th>
+                        <th className="p-2.5">Scopes</th>
+                        <th className="p-2.5">Paperclip Companies</th>
+                        <th className="p-2.5">Ceilings</th>
+                        <th className="p-2.5">Limits</th>
+                        <th className="p-2.5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {scopedKeys.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="p-4 text-center text-slate-500">
+                            {keysLoading ? 'Loading keys...' : 'No scoped API keys minted yet.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        scopedKeys.map((k) => (
+                          <tr key={k.id} className="hover:bg-slate-900/50">
+                            <td className="p-2.5 font-medium text-slate-200">{k.label}</td>
+                            <td className="p-2.5 font-mono text-sky-400">{k.key}</td>
+                            <td className="p-2.5">
+                              <div className="flex flex-wrap gap-1">
+                                {(k.scopes || ['chat']).map((s) => (
+                                  <span
+                                    key={s}
+                                    className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[10px]"
+                                  >
+                                    {s}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="p-2.5 font-mono text-[11px] text-amber-300">
+                              {k.paperclip?.companyIds?.length
+                                ? k.paperclip.companyIds.join(', ')
+                                : 'All companies'}
+                            </td>
+                            <td className="p-2.5 text-[11px] text-slate-300">
+                              {[
+                                k.paperclip?.maxTier ? `tier≤${k.paperclip.maxTier}` : null,
+                                typeof k.paperclip?.maxCostPer1kUsd === 'number'
+                                  ? `$${k.paperclip.maxCostPer1kUsd}/1k`
+                                  : null,
+                                k.paperclip?.hmacSecret ? `HMAC:${k.paperclip.hmacSecret}` : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ') || 'Default'}
+                            </td>
+                            <td className="p-2.5 text-[11px] text-slate-400">
+                              {[
+                                typeof k.rpm === 'number' ? `${k.rpm} RPM` : null,
+                                typeof k.maxDailySpendUsd === 'number'
+                                  ? `$${k.maxDailySpendUsd}/day`
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ') || 'Unbounded'}
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <button
+                                onClick={() => handleRevokeKey(k.id)}
+                                className="text-rose-400 hover:text-rose-300 border border-rose-900/60 bg-rose-950/40 px-2 py-1 rounded text-[11px]"
+                              >
+                                Revoke
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mint New Scoped Key Form */}
+                <form
+                  onSubmit={handleMintKey}
+                  className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-4"
+                >
+                  <div className="text-xs font-bold text-sky-400 uppercase tracking-wider">
+                    Mint New Scoped Key
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">Key Label</label>
+                      <input
+                        type="text"
+                        value={keyLabel}
+                        onChange={(e) => setKeyLabel(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white"
+                        placeholder="Paperclip ACME Harness"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">
+                        Company IDs Allowlist (CSV, empty = any)
+                      </label>
+                      <input
+                        type="text"
+                        value={keyCompanyIds}
+                        onChange={(e) => setKeyCompanyIds(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono"
+                        placeholder="cmp-acme, cmp-labs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">
+                        Max Virtual Tier Ceiling
+                      </label>
+                      <select
+                        value={keyMaxTier}
+                        onChange={(e) => setKeyMaxTier(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white"
+                      >
+                        <option value="">No Tier Ceiling</option>
+                        <option value="fast-local">fast-local (Tier 1)</option>
+                        <option value="code-specialist">code-specialist (Tier 2)</option>
+                        <option value="heavy-reasoning">heavy-reasoning (Tier 3)</option>
+                        <option value="frontier-verified">frontier-verified (Tier 4)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">
+                        Max Cost / 1k Tokens (USD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        min="0"
+                        value={keyMaxCostPer1k}
+                        onChange={(e) => setKeyMaxCostPer1k(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono"
+                        placeholder="0.015"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">RPM / Daily Budget ($)</label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          value={keyRpm}
+                          onChange={(e) => setKeyRpm(e.target.value)}
+                          className="w-1/2 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono"
+                          placeholder="RPM"
+                        />
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={keyDailySpend}
+                          onChange={(e) => setKeyDailySpend(e.target.value)}
+                          className="w-1/2 bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono"
+                          placeholder="$/day"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-slate-400 mb-1">
+                        HMAC Secret or SecretRef
+                      </label>
+                      <input
+                        type="text"
+                        value={keyHmacSecret}
+                        onChange={(e) => setKeyHmacSecret(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-xs text-white font-mono"
+                        placeholder="env:PAPERCLIP_ELUVIX_HMAC_SECRET"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-[11px] text-slate-400 mb-1.5">Granted Scopes</div>
+                    <div className="flex flex-wrap gap-2">
+                      {['chat', 'paperclip', 'embeddings', 'audio', 'mcp', 'evals:live', 'export', 'batches', 'rerank', 'prompts', 'webhooks', 'admin:config'].map(
+                        (s) => (
+                          <label
+                            key={s}
+                            className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 px-2 py-1 rounded text-[11px] text-slate-300 cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={keyScopes.includes(s)}
+                              onChange={() => toggleKeyScope(s)}
+                            />
+                            <span className="font-mono">{s}</span>
+                          </label>
+                        )
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+                    <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={keyAllowUnsigned}
+                        onChange={(e) => setKeyAllowUnsigned(e.target.checked)}
+                      />
+                      Allow unsigned `x-paperclip-*` headers for this key
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={mintingKey}
+                      className="bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-bold text-xs px-4 py-2 rounded-lg transition"
+                    >
+                      {mintingKey ? 'Minting...' : '+ Mint Scoped API Key'}
+                    </button>
+                  </div>
+                </form>
               </div>
             )}
           </div>

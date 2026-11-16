@@ -8,6 +8,10 @@ export type AlertWebhookEventType =
   | 'audit.tamper_detected'
   | 'guard.blocked'
   | 'batch.completed'
+  | 'paperclip.budget_forecast'
+  | 'paperclip.tier_escalated'
+  | 'paperclip.hmac_rejected'
+  | 'paperclip.safety_fuse'
   | '*';
 
 export type AlertWebhookProvider = 'json' | 'slack' | 'discord' | 'ntfy';

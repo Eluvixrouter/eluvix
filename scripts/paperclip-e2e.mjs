@@ -27,7 +27,7 @@ const {
   Eluvix,
   createNamedApiKey,
   resolveBearerToken,
-  parseVerifiedPaperclipRequest,
+  parseVerifiedPaperclipRequestAsync,
   signPaperclipContextHeaders,
   evaluatePaperclipCandidateAssignments,
   resolveAndRecordPaperclipFeedback,
@@ -43,9 +43,10 @@ const {
 const { createEluvixPluginHandlers } = await import(
   '../packages/paperclip-plugin/dist/index.js'
 );
-const { executeEluvixLocal } = await import(
-  '../packages/paperclip-adapter/dist/server/execute.js'
-);
+const {
+  executeEluvixLocal,
+  signOutboundPaperclipHeaders,
+} = await import('../packages/paperclip-adapter/dist/server/index.js');
 
 function listenServer(server) {
   return new Promise((resolve, reject) => {
@@ -84,12 +85,13 @@ try {
   });
   const upstreamUrl = await listenServer(upstreamServer);
 
-  // 2. Initialize isolated Switchyard config + HMAC + scoped Paperclip key
+  // 2. Initialize isolated Switchyard config + env: SecretRef HMAC + scoped Paperclip key
   const hmacSecret = 'e2e-paperclip-hmac-secret-32chars';
+  process.env.ELUVIX_E2E_PAPERCLIP_HMAC = hmacSecret;
   const paperclipCfg = {
     ...DEFAULT_PAPERCLIP_INTEGRATION_CONFIG,
     enabled: true,
-    hmacSecret,
+    hmacSecret: 'env:ELUVIX_E2E_PAPERCLIP_HMAC',
     requireSignedContext: true,
   };
   const router = new Eluvix({
@@ -205,7 +207,7 @@ try {
 
     if (urlPath === '/v1/chat/completions' && req.method === 'POST') {
       const parsedBody = JSON.parse(bodyText || '{}');
-      const pcCtx = parseVerifiedPaperclipRequest(req.headers, {
+      const pcCtx = await parseVerifiedPaperclipRequestAsync(req.headers, {
         config: paperclipCfg,
         keyPolicy: resolvedCaller.paperclip,
         hasPaperclipScope: true,
@@ -229,8 +231,8 @@ try {
   });
   const gatewayUrl = await listenServer(gatewayServer);
 
-  // 4. Verify HMAC-signed chat routing stays inside scoped key ceiling (e2e-local)
-  const signedHeaders = signPaperclipContextHeaders(
+  // 4. Verify adapter outbound HMAC signing + env: SecretRef verification stays inside scoped key ceiling
+  const signedHeaders = signOutboundPaperclipHeaders(
     {
       'x-paperclip-company-id': 'comp-a',
       'x-paperclip-agent-id': 'ag-eng',
@@ -240,6 +242,7 @@ try {
     },
     hmacSecret
   );
+  assert.ok(signPaperclipContextHeaders);
   const chatRes = await fetch(`${gatewayUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -399,6 +402,7 @@ try {
 
   console.log('✅ Eluvix x Paperclip E2E passed (S1/S2/S3 + M1/M2 + E1–E6 verified).');
 } finally {
+  delete process.env.ELUVIX_E2E_PAPERCLIP_HMAC;
   if (gatewayServer) await closeServer(gatewayServer);
   if (upstreamServer) await closeServer(upstreamServer);
   if (origXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;

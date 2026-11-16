@@ -1309,6 +1309,7 @@ function generateEluvixConfig(
       : undefined,
     kvPrefixAffinity: swData.kvPrefixAffinity !== false,
     ...(swData.strictModelMatch === true ? { strictModelMatch: true } : {}),
+    ...(swData.agentStepTiering === true ? { agentStepTiering: true } : {}),
     ...(swData.mediaIntentRouting !== undefined ? { mediaIntentRouting: Boolean(swData.mediaIntentRouting) } : {}),
     ...(resolvedConfidentialPolicy ? { confidentialPolicy: resolvedConfidentialPolicy } : {}),
     ...(resolvedQuantizationPolicy ? { quantizationPolicy: resolvedQuantizationPolicy } : {}),

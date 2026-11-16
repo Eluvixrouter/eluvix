@@ -15,11 +15,11 @@ Upon initial startup:
 3. Credentials are saved to `~/.config/eluvix/auth.json` with strict POSIX permissions (`0o600`), readable only by the process owner.
 4. The generated password is displayed in the startup console log for initial sign-in.
 
-### API Authentication
-Programmatic requests to endpoints (such as `/api/v1/chat/completions`) require the master admin password via an HTTP Authorization header:
+### API Authentication & Scoped Key Manager (`/api/v1/keys`)
+Programmatic requests to endpoints (such as `/api/v1/chat/completions`, `/api/v1/messages`, and `/api/v1/responses`) accept the master admin password or scoped Named `elx_...` API Keys (managed by admins via `GET / POST / DELETE /api/v1/keys` or the Configurator **Scoped Keys** tab, with per-key `scopes`, `rpm`, `maxDailySpendUsd`, `companyIds`, `maxTier`, `maxCostPer1kUsd`, and `SecretRef` `hmacSecret` bindings using `env:`, `file:`, `bao:`, `vault:`, or `keychain:`):
 
 ```http
-Authorization: Bearer <ADMIN_PASSWORD>
+Authorization: Bearer <ADMIN_PASSWORD_OR_ELX_KEY>
 ```
 
 ---

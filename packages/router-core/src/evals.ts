@@ -1,4 +1,10 @@
-import { Eluvix, type RouterConfig, type ChatMessage } from './index.js';
+import {
+  Eluvix,
+  isLocalUpstream,
+  type RouterConfig,
+  type ChatMessage,
+  type PaperclipRequestContext,
+} from './index.js';
 import { applyPrivacyGuard, validateChatPrompt } from './guard.js';
 import { evaluateDraftQuality } from './cascade.js';
 import type { RequestScope } from './context/types.js';
@@ -13,6 +19,34 @@ import type {
 
 export * from './eval-types.js';
 
+function buildEvalMessages(evalCase: EvalCase): ChatMessage[] {
+  if (Array.isArray(evalCase.messages) && evalCase.messages.length > 0) {
+    return evalCase.messages as ChatMessage[];
+  }
+  const messages: ChatMessage[] = [];
+  if (evalCase.system) {
+    messages.push({ role: 'system', content: evalCase.system });
+  }
+  messages.push({ role: 'user', content: evalCase.prompt });
+  return messages;
+}
+
+function buildEvalPaperclipContext(evalCase: EvalCase): PaperclipRequestContext | undefined {
+  const pc = evalCase.paperclip;
+  if (!pc) return undefined;
+  return {
+    trusted: true,
+    droppedHeaders: [],
+    ...(pc.priority ? { priority: pc.priority } : {}),
+    ...(pc.budgetRemainingPct !== undefined ? { budgetRemainingPct: pc.budgetRemainingPct } : {}),
+    ...(pc.sensitivity ? { sensitivity: pc.sensitivity } : {}),
+    ...(pc.companyId ? { companyId: pc.companyId } : {}),
+    ...(pc.issueId ? { issueId: pc.issueId } : {}),
+    ...(pc.hop !== undefined ? { hop: pc.hop } : {}),
+    ...(pc.keyPolicy ? { keyPolicy: pc.keyPolicy } : {}),
+  };
+}
+
 export interface RunEvalSuiteOptions {
   mode?: EvalRunMode;
   scope?: RequestScope;
@@ -25,11 +59,8 @@ function evaluateCaseDryRun(
   config: RouterConfig
 ): EvalCaseResult {
   const start = Date.now();
-  const messages: ChatMessage[] = [];
-  if (evalCase.system) {
-    messages.push({ role: 'system', content: evalCase.system });
-  }
-  messages.push({ role: 'user', content: evalCase.prompt });
+  const messages = buildEvalMessages(evalCase);
+  const paperclipCtx = buildEvalPaperclipContext(evalCase);
 
   // 1. Evaluate PromptGuard (defaulting to enabled check if expectBlockedByGuard is asserted or config enables it)
   const effectivePromptGuard = config.promptGuard?.enabled
@@ -69,10 +100,16 @@ function evaluateCaseDryRun(
   }
 
   // 3. Deterministic topology trace via explainRoute()
-  const explanation = router.explainRoute({
-    model: evalCase.model || 'auto',
-    messages: postPrivacyMessages,
-  });
+  const explanation = router.explainRoute(
+    {
+      model: evalCase.model || 'auto',
+      messages: postPrivacyMessages,
+    },
+    {
+      ...(paperclipCtx ? { paperclip: paperclipCtx } : {}),
+      ...(evalCase.paperclip?.hop !== undefined ? { hops: evalCase.paperclip.hop } : {}),
+    }
+  );
 
   const routeOk = !explanation.error && Boolean(explanation.chosenUpstreamId);
   if (!routeOk) {
@@ -133,13 +170,45 @@ function evaluateCaseDryRun(
       expected: String(a.expectBlockedByGuard),
       actual: String(blockedByGuard),
     });
-  } else if (outcomes.length === 0) {
+  } else if (outcomes.length === 0 && !a.expectedPaperclipBiasContains && a.forbidCloudUpstream === undefined && a.expectedStepTier === undefined) {
     // Default sanity check if no explicit assertion fields were set: route must resolve cleanly
     outcomes.push({
       check: 'routeResolved',
       passed: routeOk && Boolean(primaryId),
       expected: 'ok=true with >=1 candidate upstream',
       actual: routeOk ? `selected=${primaryId}` : `error=${explanation.error || 'unroutable'}`,
+    });
+  }
+
+  if (a.expectedPaperclipBiasContains && a.expectedPaperclipBiasContains.length > 0) {
+    const biasJoined = (explanation.paperclipBias?.biasTags || []).join(',');
+    const matchedAll = a.expectedPaperclipBiasContains.every((sub) => biasJoined.includes(sub));
+    outcomes.push({
+      check: 'expectedPaperclipBiasContains',
+      passed: matchedAll,
+      expected: a.expectedPaperclipBiasContains.join(', '),
+      actual: biasJoined || '(none)',
+    });
+  }
+
+  if (a.forbidCloudUpstream !== undefined) {
+    const isLocal = primaryUpstream ? isLocalUpstream(primaryUpstream) : false;
+    outcomes.push({
+      check: 'forbidCloudUpstream',
+      passed: a.forbidCloudUpstream ? Boolean(primaryUpstream && isLocal) : true,
+      expected: a.forbidCloudUpstream ? 'local-only upstream' : 'any',
+      actual: primaryUpstream
+        ? `${primaryUpstream.id} (${isLocal ? 'local' : 'cloud'})`
+        : 'none',
+    });
+  }
+
+  if (a.expectedStepTier !== undefined) {
+    outcomes.push({
+      check: 'expectedStepTier',
+      passed: explanation.agentStepTier === a.expectedStepTier,
+      expected: a.expectedStepTier,
+      actual: String(explanation.agentStepTier || 'none'),
     });
   }
 
@@ -176,11 +245,8 @@ async function evaluateCaseLive(
   options?: RunEvalSuiteOptions
 ): Promise<EvalCaseResult> {
   const start = Date.now();
-  const messages: ChatMessage[] = [];
-  if (evalCase.system) {
-    messages.push({ role: 'system', content: evalCase.system });
-  }
-  messages.push({ role: 'user', content: evalCase.prompt });
+  const messages = buildEvalMessages(evalCase);
+  const paperclipCtx = buildEvalPaperclipContext(evalCase);
 
   let piiRedacted = false;
   if (config.privacyGuard?.enabled || evalCase.assertions.expectPiiRedacted !== undefined) {
@@ -192,32 +258,48 @@ async function evaluateCaseLive(
     piiRedacted = JSON.stringify(check.modifiedMessages) !== beforeStr;
   }
 
-  const dryExplanation = router.explainRoute({
-    model: evalCase.model || 'auto',
-    messages,
-  });
-  const complexityTier = dryExplanation.complexity?.label || 'simple';
-
-  const res = await router.routeChatCompletion(
+  const dryExplanation = router.explainRoute(
     {
       model: evalCase.model || 'auto',
       messages,
-      stream: false,
-      ...(evalCase.assertions.jsonSchema
-        ? {
-            response_format: {
-              type: 'json_schema',
-              json_schema: { name: 'eval_schema', schema: evalCase.assertions.jsonSchema },
-            },
-          }
-        : {}),
     },
     {
-      hops: 1,
-      scope: options?.scope,
-      signal: options?.signal,
+      ...(paperclipCtx ? { paperclip: paperclipCtx } : {}),
+      ...(evalCase.paperclip?.hop !== undefined ? { hops: evalCase.paperclip.hop } : {}),
     }
   );
+  const complexityTier = dryExplanation.complexity?.label || 'simple';
+
+  let res: Response;
+  let thrownError: string | null = null;
+  try {
+    res = await router.routeChatCompletion(
+      {
+        model: evalCase.model || 'auto',
+        messages,
+        stream: false,
+        ...(evalCase.assertions.jsonSchema
+          ? {
+              response_format: {
+                type: 'json_schema',
+                json_schema: { name: 'eval_schema', schema: evalCase.assertions.jsonSchema },
+              },
+            }
+          : {}),
+      },
+      {
+        hops: evalCase.paperclip?.hop ?? 1,
+        scope: options?.scope,
+        signal: options?.signal,
+        ...(paperclipCtx ? { paperclip: paperclipCtx } : {}),
+        silent: true,
+      }
+    );
+  } catch (err: any) {
+    const status = typeof err?.statusCode === 'number' ? err.statusCode : 429;
+    thrownError = err?.message || 'Blocked by router guard';
+    res = new Response(JSON.stringify({ error: { message: thrownError } }), { status });
+  }
 
   const durationMs = Math.max(0, Date.now() - start);
   const rawBody = await res.text();
@@ -226,8 +308,10 @@ async function evaluateCaseLive(
     parsed = JSON.parse(rawBody);
   } catch {}
 
-  const blockedByGuard = res.status === 400 || res.status === 403 || res.status === 422 || !res.ok;
+  const blockedByGuard =
+    thrownError !== null || res.status === 400 || res.status === 403 || res.status === 422 || res.status === 429 || !res.ok;
   const servedUpstreamHdr = res.headers.get('x-eluvix-upstream');
+  const stepTierHdr = res.headers.get('x-eluvix-step-tier') || dryExplanation.agentStepTier;
   const matchedUpstream =
     (config.upstreams || []).find(
       (u) => u.id === servedUpstreamHdr || u.name === servedUpstreamHdr
@@ -300,6 +384,38 @@ async function evaluateCaseLive(
       passed: durationMs <= a.maxLatencyMs,
       expected: `<=${a.maxLatencyMs}ms`,
       actual: `${durationMs}ms`,
+    });
+  }
+
+  if (a.expectedPaperclipBiasContains && a.expectedPaperclipBiasContains.length > 0) {
+    const biasJoined = (dryExplanation.paperclipBias?.biasTags || []).join(',');
+    const matchedAll = a.expectedPaperclipBiasContains.every((sub) => biasJoined.includes(sub));
+    outcomes.push({
+      check: 'expectedPaperclipBiasContains',
+      passed: matchedAll,
+      expected: a.expectedPaperclipBiasContains.join(', '),
+      actual: biasJoined || '(none)',
+    });
+  }
+
+  if (a.forbidCloudUpstream !== undefined) {
+    const isLocal = matchedUpstream ? isLocalUpstream(matchedUpstream) : false;
+    outcomes.push({
+      check: 'forbidCloudUpstream',
+      passed: a.forbidCloudUpstream ? Boolean(matchedUpstream && isLocal) : true,
+      expected: a.forbidCloudUpstream ? 'local-only upstream' : 'any',
+      actual: matchedUpstream
+        ? `${matchedUpstream.id} (${isLocal ? 'local' : 'cloud'})`
+        : 'none',
+    });
+  }
+
+  if (a.expectedStepTier !== undefined) {
+    outcomes.push({
+      check: 'expectedStepTier',
+      passed: stepTierHdr === a.expectedStepTier,
+      expected: a.expectedStepTier,
+      actual: String(stepTierHdr || 'none'),
     });
   }
 

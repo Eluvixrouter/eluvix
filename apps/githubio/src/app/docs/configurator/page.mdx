@@ -66,3 +66,12 @@ You can verify the configuration immediately in your terminal:
 ```bash
 opencode models Eluvix
 ```
+
+---
+
+## Scoped API Key & Paperclip Policy Manager (`Scoped Keys` Tab)
+
+Admin sessions can open the **Scoped Keys** tab inside `/configurator` (backed by `GET / POST / DELETE /api/v1/keys`) to mint, inspect, and revoke `elx_...` tokens:
+- Select granular `ApiKeyScope` permissions (`chat`, `embeddings`, `audio`, `mcp`, `evals:live`, `export`, `admin:config`, `batches`, `rerank`, `prompts`, `webhooks`, `paperclip`, `*`), per-key `rpm`, and `maxDailySpendUsd`.
+- Attach **Paperclip Governance** constraints directly on a key (`companyIds` allowlist, `maxTier`, `maxCostPer1kUsd`, and an optional per-key `hmacSecret` accepting `SecretRef` pointers such as `env:...` or `file:...`).
+- Plaintext keys are displayed once on creation; key hashes are never returned and literal `hmacSecret` strings are masked in key listings.

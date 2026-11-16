@@ -1,4 +1,10 @@
-import { getDb } from './db.js';
+import crypto from 'node:crypto';
+import {
+  getCachedPaperclipEmbedding,
+  getDb,
+  setCachedPaperclipEmbedding,
+} from './db.js';
+import { dispatchAlertWebhooks } from './webhooks.js';
 import {
   classifyPaperclipTask,
   cosineSimilarity,
@@ -10,6 +16,8 @@ import {
   type PaperclipRecommendResult,
   type PaperclipTaskInput,
 } from './paperclip-assign.js';
+
+const BUDGET_FORECAST_ALERTED = new Set<string>();
 
 export interface PaperclipUsageByModel {
   model: string;
@@ -688,17 +696,22 @@ export async function computeSemanticCandidateFit(
   if (typeof router.routeEmbeddings !== 'function' || candidates.length === 0) {
     return undefined;
   }
-  if (!forceEmbeddings) {
-    const hasEmbedUpstream = router
-      .getUpstreams()
-      .some(
-        (u) =>
-          u.healthy !== false &&
-          (u.modalities?.includes('embedding') ||
-            u.models?.some((m) => /embed|bge|nomic|minilm/i.test(m)))
-      );
-    if (!hasEmbedUpstream) return undefined;
+  const embedUpstreams = router
+    .getUpstreams()
+    .filter(
+      (u) =>
+        u.healthy !== false &&
+        (u.modalities?.includes('embedding') ||
+          u.models?.some((m) => /embed|bge|nomic|minilm/i.test(m)))
+    );
+  if (!forceEmbeddings && embedUpstreams.length === 0) {
+    return undefined;
   }
+
+  const embedModelHint =
+    embedUpstreams[0]?.models?.find((m) => /embed|bge|nomic|minilm/i.test(m)) ||
+    embedUpstreams[0]?.models?.[0] ||
+    'default';
 
   const taskText = `${task.title || ''}\n${task.description || ''}\n${(task.labels || []).join(' ')}`.trim();
   if (!taskText) return undefined;
@@ -706,10 +719,29 @@ export async function computeSemanticCandidateFit(
   const candidateTexts = candidates.map((c) =>
     [c.name, c.role || '', c.title || '', c.capabilities || '', c.adapterType || ''].join(' ').trim() || c.id
   );
+  const candidateCacheKeys = candidateTexts.map((text) =>
+    crypto.createHash('sha256').update(`${embedModelHint}::${text}`).digest('hex')
+  );
+
+  const cachedVectors: Array<number[] | null> = candidateCacheKeys.map((key) => {
+    try {
+      return getCachedPaperclipEmbedding(key);
+    } catch {
+      return null;
+    }
+  });
+  const missIndices: number[] = [];
+  const missTexts: string[] = [];
+  for (let i = 0; i < candidates.length; i++) {
+    if (!cachedVectors[i]) {
+      missIndices.push(i);
+      missTexts.push(candidateTexts[i]);
+    }
+  }
 
   try {
     const res = await router.routeEmbeddings(
-      { input: [taskText, ...candidateTexts] },
+      { input: [taskText, ...missTexts] },
       { timeoutMs: 2500 }
     );
     if (!res.ok) return undefined;
@@ -717,14 +749,26 @@ export async function computeSemanticCandidateFit(
     const vectors: number[][] = Array.isArray(json?.data)
       ? json.data.map((d: any) => (Array.isArray(d?.embedding) ? d.embedding : []))
       : [];
-    if (vectors.length !== candidates.length + 1 || vectors[0].length === 0) {
+    if (vectors.length !== 1 + missIndices.length || vectors[0].length === 0) {
       return undefined;
     }
+
+    for (let k = 0; k < missIndices.length; k++) {
+      const origIdx = missIndices[k];
+      const vec = vectors[k + 1];
+      if (vec && vec.length > 0) {
+        cachedVectors[origIdx] = vec;
+        try {
+          setCachedPaperclipEmbedding(candidateCacheKeys[origIdx], embedModelHint, vec);
+        } catch {}
+      }
+    }
+
     const taskVec = vectors[0];
     const out: Record<string, number> = {};
     for (let i = 0; i < candidates.length; i++) {
-      const vec = vectors[i + 1];
-      if (vec.length === taskVec.length) {
+      const vec = cachedVectors[i];
+      if (vec && vec.length === taskVec.length) {
         out[candidates[i].id] = cosineSimilarity(taskVec, vec);
       }
     }
@@ -788,9 +832,39 @@ export async function evaluatePaperclipCandidateAssignments(input: {
     }
   );
   const topN = Math.max(1, Math.min(20, Number(input.topN ?? 5)));
+  const sliced = result.recommendations.slice(0, topN);
+
+  const dayUtc = new Date().toISOString().slice(0, 10);
+  if (BUDGET_FORECAST_ALERTED.size > 2000) {
+    BUDGET_FORECAST_ALERTED.clear();
+  }
+  for (const rec of sliced) {
+    const daysRemaining = rec.budgetForecast?.projectedDaysRemaining;
+    if (typeof daysRemaining === 'number' && Number.isFinite(daysRemaining) && daysRemaining < 3) {
+      const alertKey = `${input.userId || 'default'}::${rec.agentId}::${dayUtc}`;
+      if (!BUDGET_FORECAST_ALERTED.has(alertKey)) {
+        BUDGET_FORECAST_ALERTED.add(alertKey);
+        void dispatchAlertWebhooks({
+          event: 'paperclip.budget_forecast',
+          severity: daysRemaining < 1 ? 'critical' : 'warning',
+          summary: `Paperclip agent ${rec.name} (${rec.agentId}) projected to exhaust budget in ${daysRemaining}d ($${rec.budgetForecast?.burnRateUsdPerDay}/day).`,
+          data: {
+            agentId: rec.agentId,
+            name: rec.name,
+            burnRateUsdPerDay: rec.budgetForecast?.burnRateUsdPerDay ?? null,
+            remainingBudgetUsd: rec.budgetForecast?.remainingBudgetUsd ?? null,
+            projectedDaysRemaining: daysRemaining,
+            companyId: input.companyIds?.[0] ?? null,
+          },
+          userId: input.userId || 'default',
+        }).catch(() => {});
+      }
+    }
+  }
+
   return {
     ...result,
-    recommendations: result.recommendations.slice(0, topN),
+    recommendations: sliced,
     semanticFitUsed: Boolean(semanticFitByAgent && Object.keys(semanticFitByAgent).length > 0),
   };
 }

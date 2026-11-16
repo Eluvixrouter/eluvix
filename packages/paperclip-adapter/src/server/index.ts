@@ -60,6 +60,14 @@ export function getConfigSchema(): AdapterConfigSchema {
         group: 'Connection',
       },
       {
+        key: 'eluvixHmacSecret',
+        label: 'HMAC Context Signing Secret (Optional)',
+        type: 'text',
+        default: 'env:PAPERCLIP_ELUVIX_HMAC_SECRET',
+        hint: 'Shared HMAC-SHA256 secret (or env:VAR / file:/path) used to sign outbound x-paperclip-* headers.',
+        group: 'Connection',
+      },
+      {
         key: 'model',
         label: 'Model / Switchyard Tier',
         type: 'combobox',

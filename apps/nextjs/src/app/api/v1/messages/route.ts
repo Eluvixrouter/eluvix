@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import {
-  resolveBearerToken,
   anthropicToOpenAiChatRequest,
   openAiToAnthropicMessageResponse,
   transformOpenAiSseToAnthropicSse,
@@ -9,7 +8,11 @@ import {
   type RequestScope,
 } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionUserId, extractApiTokenFromHeaders } from '@/lib/caller-identity';
+import { resolveSessionUserId } from '@/lib/caller-identity';
+import {
+  resolveNamedChatApiKey,
+  resolvePaperclipInferenceContext,
+} from '@/lib/paperclip-route-helpers';
 import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
@@ -42,17 +45,17 @@ function anthropicErrorResponse(
  * and full Anthropic SSE event-stream translation.
  */
 export async function POST(req: Request) {
-  let keyUserId: string | undefined;
-  let keyOrigin: RequestScope['origin'] | undefined;
-  const rawToken = extractApiTokenFromHeaders(req);
-  if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken);
-    if (!resolved.valid) {
-      return anthropicErrorResponse(401, 'authentication_error', 'Incorrect API key provided.');
-    }
-    keyUserId = resolved.userId;
-    keyOrigin = resolved.origin;
+  const keyAuth = resolveNamedChatApiKey(req);
+  if (!keyAuth.ok) {
+    const errType =
+      keyAuth.status === 429
+        ? 'rate_limit_error'
+        : keyAuth.status === 403
+          ? 'permission_error'
+          : 'authentication_error';
+    return anthropicErrorResponse(keyAuth.status, errType, keyAuth.message);
   }
+  const { rawToken, userId: keyUserId, origin: keyOrigin, hasPaperclipScope: keyHasPaperclipScope, paperclipPolicy: keyPaperclipPolicy } = keyAuth;
 
   let body: AnthropicMessagesRequest;
   try {
@@ -96,6 +99,18 @@ export async function POST(req: Request) {
       origin,
     };
     const hops = Math.max(0, parseInt(req.headers.get('x-eluvix-hops') || '0', 10) || 0);
+    const pcCtx = await resolvePaperclipInferenceContext({
+      headers: req.headers,
+      rawToken,
+      hops,
+      config: router.getConfig()?.integrations?.paperclip,
+      keyPaperclipPolicy,
+      hasPaperclipScope: keyHasPaperclipScope,
+      bodyPaperclip: (body as any).paperclip,
+    });
+    if (!pcCtx.ok) {
+      return anthropicErrorResponse(pcCtx.status, 'permission_error', pcCtx.message);
+    }
 
     const requestedModel = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : 'claude-3-7-sonnet';
     const chatReq = anthropicToOpenAiChatRequest({ ...body, model: requestedModel }) as unknown as ChatRequest;
@@ -103,7 +118,8 @@ export async function POST(req: Request) {
     const response = await router.routeChatCompletion(chatReq, {
       signal: req.signal,
       scope,
-      hops,
+      hops: pcCtx.effectiveHops,
+      paperclip: pcCtx.paperclip,
     });
 
     const traceHeaders: Record<string, string> = {};

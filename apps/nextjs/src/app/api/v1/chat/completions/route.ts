@@ -1,77 +1,31 @@
 import { NextResponse } from 'next/server';
-import {
-  isPaperclipCompanyAllowed,
-  mergeEffectiveHops,
-  parseVerifiedPaperclipRequest,
-  resolveBearerToken,
-  type PaperclipKeyPolicy,
-  type RequestScope,
-} from '@eluvix/router-core';
+import { type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionIdentity, extractApiTokenFromHeaders } from '@/lib/caller-identity';
+import { resolveSessionIdentity } from '@/lib/caller-identity';
+import {
+  resolveNamedChatApiKey,
+  resolvePaperclipInferenceContext,
+} from '@/lib/paperclip-route-helpers';
 import { classifyChatError } from '@/lib/chat-error';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   // Verify named elx_ API key if used (Authorization: Bearer or x-api-key)
-  let keyUserId: string | undefined;
-  let keyOrigin: RequestScope['origin'] | undefined;
-  let keyHasPaperclipScope = false;
-  let keyPaperclipPolicy: PaperclipKeyPolicy | undefined;
-  const rawToken = extractApiTokenFromHeaders(req);
-  if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
-    if (!resolved.valid) {
-      const status =
-        resolved.reason === 'insufficient-scope'
-          ? 403
-          : resolved.reason === 'rate-limited' || resolved.reason === 'budget-exceeded'
-          ? 429
-          : 401;
-      return NextResponse.json(
-        {
-          error: {
-            message:
-              resolved.reason === 'insufficient-scope'
-                ? 'API key lacks required "chat" scope.'
-                : resolved.reason === 'expired'
-                ? 'API key has expired.'
-                : resolved.reason === 'rate-limited'
-                ? 'API key rate limit (RPM) exceeded.'
-                : resolved.reason === 'budget-exceeded'
-                ? 'API key daily spend budget exceeded.'
-                : 'Incorrect API key provided.',
-            type: 'invalid_request_error',
-            code: resolved.reason || 'invalid_api_key'
-          }
+  const keyAuth = resolveNamedChatApiKey(req);
+  if (!keyAuth.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          message: keyAuth.message,
+          type: keyAuth.code === 'forbidden_readonly_user' ? 'insufficient_role' : 'invalid_request_error',
+          code: keyAuth.code,
         },
-        { status }
-      );
-    }
-    // Readonly named keys may not execute completions (quota spend,
-    // harness triggers, memory write-back). Session readonly callers are
-    // blocked by the middleware blocklist; this is the key path.
-    if (resolved.role === 'readonly') {
-      return NextResponse.json(
-        {
-          error: {
-            message: 'Forbidden: read-only users cannot execute chat requests.',
-            type: 'insufficient_role',
-            code: 'forbidden_readonly_user'
-          }
-        },
-        { status: 403 }
-      );
-    }
-    keyUserId = resolved.userId;
-    keyOrigin = resolved.origin;
-    keyHasPaperclipScope =
-      !resolved.scopes ||
-      resolved.scopes.includes('*') ||
-      resolved.scopes.includes('paperclip');
-    keyPaperclipPolicy = resolved.paperclip;
+      },
+      { status: keyAuth.status }
+    );
   }
+  const { rawToken, userId: keyUserId, origin: keyOrigin, hasPaperclipScope: keyHasPaperclipScope, paperclipPolicy: keyPaperclipPolicy } = keyAuth;
 
   let body: any;
   try {
@@ -234,34 +188,28 @@ export async function POST(req: Request) {
       };
     }
 
-    const pcCfg = router.getConfig()?.integrations?.paperclip;
-    const isAdminOrSessionCaller = !rawToken || !rawToken.startsWith('elx_');
-    const paperclip = parseVerifiedPaperclipRequest(req.headers, {
-      config: pcCfg,
-      keyPolicy: keyPaperclipPolicy,
+    const pcCtx = await resolvePaperclipInferenceContext({
+      headers: req.headers,
+      rawToken,
+      hops,
+      config: router.getConfig()?.integrations?.paperclip,
+      keyPaperclipPolicy,
       hasPaperclipScope: keyHasPaperclipScope,
-      isAdminOrSessionCaller,
+      bodyPaperclip: body.paperclip,
     });
-    const rawCompanyHdr = req.headers.get('x-paperclip-company-id')?.trim();
-    if (
-      keyPaperclipPolicy?.companyIds &&
-      keyPaperclipPolicy.companyIds.length > 0 &&
-      !isPaperclipCompanyAllowed(rawCompanyHdr || paperclip.companyId, keyPaperclipPolicy)
-    ) {
+    if (!pcCtx.ok) {
       return NextResponse.json(
         {
           error: {
-            message: rawCompanyHdr
-              ? `API key is not authorized for Paperclip company "${rawCompanyHdr}".`
-              : 'API key requires an authorized "x-paperclip-company-id" header.',
+            message: pcCtx.message,
             type: 'invalid_request_error',
-            code: 'company_scope_forbidden',
+            code: pcCtx.code,
           },
         },
-        { status: 403 }
+        { status: pcCtx.status }
       );
     }
-    const effectiveHops = mergeEffectiveHops(hops, paperclip);
+    const { paperclip, effectiveHops } = pcCtx;
 
     // Use the core routing logic
     const response = await router.routeChatCompletion(body, {

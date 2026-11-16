@@ -29,6 +29,13 @@ export interface SimulatedExplanation {
   }>;
   rankedUpstreams: Array<{ id: string; name: string; type: string }>;
   chosenUpstreamId: string | null;
+  paperclipBias?: {
+    active: boolean;
+    biasTags: string[];
+    forceLocalOnly?: boolean;
+    effectiveMaxCostPer1kUsd?: number;
+  };
+  agentStepTier?: string;
   error?: string;
 }
 
@@ -200,6 +207,12 @@ interface RouteSimulatorDrawerProps {
     model: string;
     includeVision: boolean;
     confidentialPolicy?: string;
+    paperclip?: {
+      priority?: string;
+      sensitivity?: string;
+      budgetRemainingPct?: number;
+      companyId?: string;
+    };
   }) => Promise<void>;
   onClearOverlay: () => void;
   simulating: boolean;
@@ -219,9 +232,29 @@ export default function RouteSimulatorDrawer({
   const [model, setModel] = useState('auto');
   const [includeVision, setIncludeVision] = useState(false);
   const [confidentialPolicy, setConfidentialPolicy] = useState('disabled');
+  const [pcPriority, setPcPriority] = useState('');
+  const [pcSensitivity, setPcSensitivity] = useState('');
+  const [pcBudgetPct, setPcBudgetPct] = useState('');
+  const [pcCompanyId, setPcCompanyId] = useState('');
   const [showSteps, setShowSteps] = useState(false);
 
   if (!isOpen) return null;
+
+  const buildPaperclipSim = () => {
+    const out: {
+      priority?: string;
+      sensitivity?: string;
+      budgetRemainingPct?: number;
+      companyId?: string;
+    } = {};
+    if (pcPriority) out.priority = pcPriority;
+    if (pcSensitivity) out.sensitivity = pcSensitivity;
+    if (pcBudgetPct !== '' && Number.isFinite(Number(pcBudgetPct))) {
+      out.budgetRemainingPct = Number(pcBudgetPct);
+    }
+    if (pcCompanyId.trim()) out.companyId = pcCompanyId.trim();
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
 
   const runSimulation = () => {
     if (!prompt.trim()) return;
@@ -230,6 +263,7 @@ export default function RouteSimulatorDrawer({
       model,
       includeVision,
       confidentialPolicy: confidentialPolicy !== 'disabled' ? confidentialPolicy : undefined,
+      paperclip: buildPaperclipSim(),
     });
   };
 
@@ -283,6 +317,7 @@ export default function RouteSimulatorDrawer({
                 includeVision: Boolean(sample.vision),
                 confidentialPolicy:
                   confidentialPolicy !== 'disabled' ? confidentialPolicy : undefined,
+                paperclip: buildPaperclipSim(),
               });
             }}
             className="px-2 py-0.5 rounded-full bg-slate-800 hover:bg-sky-900/50 border border-slate-700 hover:border-sky-500/50 text-[10px] text-slate-200 transition"
@@ -312,6 +347,11 @@ export default function RouteSimulatorDrawer({
           title="Requested Model"
         >
           <option value="auto">model: auto</option>
+          <option value="eluvix/auto">eluvix/auto</option>
+          <option value="eluvix/fast-local">eluvix/fast-local</option>
+          <option value="eluvix/code-specialist">eluvix/code-specialist</option>
+          <option value="eluvix/heavy-reasoning">eluvix/heavy-reasoning</option>
+          <option value="eluvix/frontier-verified">eluvix/frontier-verified</option>
           <option value="gemini-4-carbon">gemini-4-carbon</option>
           <option value="gemini-4-argon">gemini-4-argon</option>
           <option value="gemini-3.8-flash">gemini-3.8-flash</option>
@@ -357,6 +397,52 @@ export default function RouteSimulatorDrawer({
         </button>
       </div>
 
+      {/* Paperclip Org Context Simulator Controls */}
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-mono">
+        <span className="text-[10px] text-slate-400 font-semibold">Paperclip Context:</span>
+        <select
+          value={pcPriority}
+          onChange={(e) => setPcPriority(e.target.value)}
+          className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-amber-300 outline-none"
+          title="Simulated Paperclip Priority"
+        >
+          <option value="">Priority: None</option>
+          <option value="critical">Priority: critical</option>
+          <option value="high">Priority: high</option>
+          <option value="medium">Priority: medium</option>
+          <option value="low">Priority: low</option>
+        </select>
+        <select
+          value={pcSensitivity}
+          onChange={(e) => setPcSensitivity(e.target.value)}
+          className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-rose-300 outline-none"
+          title="Simulated Paperclip Data Sensitivity"
+        >
+          <option value="">Sensitivity: None</option>
+          <option value="public">Sensitivity: public</option>
+          <option value="internal">Sensitivity: internal</option>
+          <option value="confidential">Sensitivity: confidential</option>
+        </select>
+        <select
+          value={pcBudgetPct}
+          onChange={(e) => setPcBudgetPct(e.target.value)}
+          className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-emerald-300 outline-none"
+          title="Simulated Paperclip Budget Remaining Percentage"
+        >
+          <option value="">Budget %: None</option>
+          <option value="100">Budget: 100%</option>
+          <option value="15">Budget: 15% (Frugal)</option>
+          <option value="3">Budget: 3% (Local-Only)</option>
+        </select>
+        <input
+          type="text"
+          value={pcCompanyId}
+          onChange={(e) => setPcCompanyId(e.target.value)}
+          placeholder="companyId (optional)"
+          className="w-36 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-200 outline-none"
+        />
+      </div>
+
       {/* Explanation Summary Strip */}
       {explanation && (
         <div className="mt-2.5 pt-2.5 border-t border-slate-800 space-y-2">
@@ -377,6 +463,16 @@ export default function RouteSimulatorDrawer({
                   <span className="px-2 py-0.5 rounded bg-fuchsia-950/70 border border-fuchsia-500/40 text-fuchsia-300">
                     Intent: {explanation.modality.synthesisIntent}
                     {explanation.modality.hasVisionInput ? ' + vision' : ''}
+                  </span>
+                )}
+                {explanation.paperclipBias?.active && (
+                  <span className="px-2 py-0.5 rounded bg-amber-950/70 border border-amber-500/40 text-amber-200">
+                    📎 Bias: {explanation.paperclipBias.biasTags.join(', ')}
+                  </span>
+                )}
+                {explanation.agentStepTier && (
+                  <span className="px-2 py-0.5 rounded bg-sky-950/70 border border-sky-500/40 text-sky-200">
+                    🪜 Step Tier: {explanation.agentStepTier}
                   </span>
                 )}
                 {explanation.rankedUpstreams.length > 1 && (

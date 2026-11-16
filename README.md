@@ -26,7 +26,7 @@
 - **Eluvix Visual Node Routing Editor Pro Studio (`/editor`)**: 30+ specialized nodes with **Spotlight Command Palette (`Cmd+K`)**, **50-state deep Undo/Redo (`Cmd+Z`)**, **Deterministic Sugiyama Topological Auto-Layout**, **Interactive Live Route Simulator** (emerald/amber animated edge overlays), **Golden Eval Gate (`🧪 Evals`)**, and **One-Click Diagnostic Auto-Fix**.
 - **Playground 2.0**: Multimodal evaluation studio with **real-time SSE streaming speedometer (TTFT ms & tok/s)**, **drag-and-drop/clipboard Vision attachments**, **ComfyUI Image & Media Studio**, **A/B Split Arena with DPO Preference Voting**, and collapsible `<think>` reasoning accordions.
 - **Observability 2.0 & Rolling 24h Cloud Spend Guardrails**: Native **Prometheus `0.0.4` metrics exposition (`/api/v1/metrics`)** (including `eluvix_vram_evictions_total` & `eluvix_vram_active_workloads`), rolling 24-hour cloud spend caps in SQLite (`maxDailySpendUsd`), `prefer-local` / `strict-local` / `reject` guardrails, `X-Eluvix-Budget-Fallback: local-sovereign` headers, and a live 24h Spend Meter in `/observability`.
-- **Paperclip Agent Org Integration (`@eluvix/paperclip-adapter` & `@eluvix/paperclip-plugin`)**: Full 3-tier [Paperclip](https://github.com/paperclipai/paperclip) integration featuring `eluvix/*` virtual Switchyard models, an isolated `eluvix_local` OpenCode harness adapter with mid-run virtual tier escalation and authoritative `costStatus: "reported"` correlation, HMAC-SHA256 signed context headers + per-key `companyIds`/`maxTier`/`maxCostPer1kUsd` ceilings, `PaperclipBridgeNode` with live SSRF-guarded health probe in the **Eluvix Visual Node Routing Editor**, 5 bundled React plugin UI slots, and `off | advisory | shadow | auto | auto-with-approval` task assignment backed by semantic embeddings and decayed Beta posteriors (`docs/paperclip/e2e.md`).
+- **Paperclip Agent Org Integration (`@eluvix/paperclip-adapter` & `@eluvix/paperclip-plugin`)**: Full 3-tier [Paperclip](https://github.com/paperclipai/paperclip) integration featuring `eluvix/*` virtual Switchyard models across `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/route-explain`, and `DesktopRouterServer`; an isolated `eluvix_local` OpenCode harness adapter with mid-run virtual tier escalation, `SecretRef` (`env:`, `file:`, `bao:`, `vault:`, `keychain:`) HMAC signing, and authoritative `costStatus: "reported"` correlation; intra-heartbeat trajectory step tiering (`X-Eluvix-Step-Tier`); company/issue episodic memory sub-partitions (`${userId}::pc:${companyId}`); admin Scoped API Key Manager (`/api/v1/keys` & `/configurator` tab) with per-key `companyIds`/`maxTier`/`maxCostPer1kUsd` ceilings; `PaperclipBridgeNode` + Route Simulator Paperclip controls + `paperclip-org-governance` Golden Eval suite; 5 bundled React plugin UI slots; `off | advisory | shadow | auto | auto-with-approval` task assignment with Auto-Assign Safety Fuse, governance webhooks (`paperclip.*`), cached SQLite candidate embeddings (`paperclip_embedding_cache`), and long-horizon `telemetry_daily_rollups` (`docs/paperclip/e2e.md`).
 - **Zero-Trust Confidential Silicon (AMD SEV-SNP / Intel TDX / NVIDIA H100 & B200 CC)**: Enforces hardware-attested TEE routing (`require-dual-attestation`, `require-tee`, `prefer-tee`), verifying **VMPL 0**, **Restricted Injection (`#HV`)**, **384-bit Launch Measurements**, **NVIDIA SPDM 1.2 RIMs**, and **512-bit `REPORT_DATA` binding** (`SHA512(nonce || ephemeral_pubkey)`) with fail-closed HTTP 503 protection and encrypted `tmpfs` model weight unsealing.
 - **Disaggregated LLM Serving (RDMA / RoCEv2)**: Separates compute-bound prompt Prefill ($>2,048\text{ FLOPs/Byte}$) from memory-bound auto-regressive Decode ($16\text{–}32\text{ FLOPs/Byte}$) across 100G/200G/400G/800G fabrics using **vLLM NIXL** and **SGLang Mooncake** layer-pipelined connectors.
 - **DeepSeek MLA & GQA KV-Cache Modeling**: Built-in KV-footprint math modeling Grouped-Query Attention ($160\text{ KiB/tok}$ in FP8) vs. DeepSeek Multi-Head Latent Attention ($34.3\text{ KiB/tok}$ in FP8, a **$4.66\times$ compression**).
@@ -162,22 +162,22 @@ docker compose \
 Eluvix maintains a comprehensive test suite across the monorepo:
 
 ```bash
-# Test router core (43 active test files, 391 passing tests; 1 opt-in live-ollama smoke skip)
+# Test router core (48 active test files, 476 passing tests; 1 opt-in live-ollama smoke skip)
 npm --prefix packages/router-core test
 
-# Test Paperclip plugin & adapter packages (3 test files, 18 tests)
+# Test Paperclip plugin & adapter packages (3 test files, 20 tests)
 npm --prefix packages/paperclip-plugin test && npm --prefix packages/paperclip-adapter test
 
 # Run offline Paperclip x Eluvix full-stack E2E harness (loopback HTTP + SQLite + adapter + plugin)
 node scripts/paperclip-e2e.mjs
 
-# Test Next.js application & Eluvix Visual Node Routing Editor (22 test files, 181 tests)
+# Test Next.js application & Eluvix Visual Node Routing Editor (24 test files, 200 tests)
 npm --prefix apps/nextjs test
 
 # Run Golden Routing & Security Regression Eval Suite from CLI
 npx eluvix-eval run suite.json
 
-# Run full monorepo production build (68 passing Vitest files / 590 tests + offline E2E)
+# Run full monorepo production build (75 passing Vitest files / 696 tests + offline E2E)
 pnpm build
 ```
 

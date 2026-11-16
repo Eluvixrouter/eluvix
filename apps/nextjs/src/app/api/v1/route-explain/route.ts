@@ -3,7 +3,7 @@ import {
   Eluvix,
   isPaperclipCompanyAllowed,
   mergeEffectiveHops,
-  parseVerifiedPaperclipRequest,
+  parseVerifiedPaperclipRequestAsync,
   resolveBearerToken,
   type PaperclipKeyPolicy,
   type RequestScope,
@@ -154,7 +154,7 @@ export async function POST(req: Request) {
 
     const pcCfg = routerConfig?.integrations?.paperclip;
     const isAdminOrSessionCaller = !token || !token.startsWith('elx_');
-    const paperclip = parseVerifiedPaperclipRequest(req?.headers, {
+    const paperclip = await parseVerifiedPaperclipRequestAsync(req?.headers, {
       config: pcCfg,
       keyPolicy: keyPaperclipPolicy,
       hasPaperclipScope: keyHasPaperclipScope,

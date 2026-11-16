@@ -2,6 +2,27 @@ import crypto from 'node:crypto';
 
 export type AutoAssignMode = 'off' | 'advisory' | 'shadow' | 'auto-with-approval' | 'auto';
 
+export interface SafetyFuseConfig {
+  enabled: boolean;
+  windowSize: number;
+  maxFailureRate: number;
+  minSamples: number;
+}
+
+export interface SafetyFuseState {
+  tripped: boolean;
+  trippedAt?: string;
+  failureRate?: number;
+  outcomes: Array<{ success: boolean; at: string; issueId?: string }>;
+}
+
+export const DEFAULT_SAFETY_FUSE_CONFIG: SafetyFuseConfig = {
+  enabled: true,
+  windowSize: 10,
+  maxFailureRate: 0.4,
+  minSamples: 5,
+};
+
 export interface AutoAssignConfig {
   mode: AutoAssignMode;
   companies?: string[];
@@ -12,6 +33,7 @@ export interface AutoAssignConfig {
   requireUnassigned: boolean;
   excludeLabels: string[];
   costGuardUsd?: number;
+  safetyFuse?: SafetyFuseConfig;
 }
 
 export const DEFAULT_AUTO_ASSIGN_CONFIG: AutoAssignConfig = {
@@ -23,6 +45,7 @@ export const DEFAULT_AUTO_ASSIGN_CONFIG: AutoAssignConfig = {
   maxTreeDepth: 4,
   requireUnassigned: true,
   excludeLabels: ['no-auto-assign'],
+  safetyFuse: { ...DEFAULT_SAFETY_FUSE_CONFIG },
 };
 
 export interface PluginConfig {
@@ -391,6 +414,125 @@ export interface AutoAssignDecision {
   confidence?: number;
 }
 
+export async function getSafetyFuseState(
+  ctx: PluginHostContext,
+  companyId: string
+): Promise<SafetyFuseState> {
+  if (!companyId) {
+    return { tripped: false, outcomes: [] };
+  }
+  const raw = (await ctx.state.get(`safety-fuse:${companyId}`).catch(() => null)) as
+    | Partial<SafetyFuseState>
+    | null;
+  if (!raw || typeof raw !== 'object') {
+    return { tripped: false, outcomes: [] };
+  }
+  return {
+    tripped: Boolean(raw.tripped),
+    ...(typeof raw.trippedAt === 'string' ? { trippedAt: raw.trippedAt } : {}),
+    ...(typeof raw.failureRate === 'number' ? { failureRate: raw.failureRate } : {}),
+    outcomes: Array.isArray(raw.outcomes) ? raw.outcomes : [],
+  };
+}
+
+export async function recordSafetyFuseOutcome(
+  ctx: PluginHostContext,
+  companyId: string,
+  outcome: { success: boolean; issueId?: string }
+): Promise<{ state: SafetyFuseState; newlyTripped: boolean }> {
+  if (!companyId) {
+    return { state: { tripped: false, outcomes: [] }, newlyTripped: false };
+  }
+  const fuseCfg: SafetyFuseConfig = {
+    ...DEFAULT_SAFETY_FUSE_CONFIG,
+    ...(ctx.config.autoAssign?.safetyFuse || {}),
+  };
+  const windowSize = Math.max(1, Math.min(100, Math.floor(fuseCfg.windowSize || 10)));
+  const minSamples = Math.max(1, Math.min(windowSize, Math.floor(fuseCfg.minSamples || 5)));
+  const maxFailureRate =
+    typeof fuseCfg.maxFailureRate === 'number' && Number.isFinite(fuseCfg.maxFailureRate)
+      ? Math.max(0, Math.min(1, fuseCfg.maxFailureRate))
+      : 0.4;
+
+  const current = await getSafetyFuseState(ctx, companyId);
+  const nextOutcomes = [
+    ...current.outcomes,
+    {
+      success: Boolean(outcome.success),
+      at: new Date().toISOString(),
+      ...(outcome.issueId ? { issueId: outcome.issueId } : {}),
+    },
+  ].slice(-windowSize);
+
+  const failures = nextOutcomes.filter((o) => !o.success).length;
+  const failureRate = nextOutcomes.length > 0 ? failures / nextOutcomes.length : 0;
+
+  let tripped = current.tripped;
+  let trippedAt = current.trippedAt;
+  let recordedFailureRate = current.failureRate;
+  let newlyTripped = false;
+
+  if (
+    fuseCfg.enabled &&
+    !current.tripped &&
+    nextOutcomes.length >= minSamples &&
+    failureRate > maxFailureRate
+  ) {
+    tripped = true;
+    trippedAt = new Date().toISOString();
+    recordedFailureRate = Number(failureRate.toFixed(3));
+    newlyTripped = true;
+  }
+
+  const nextState: SafetyFuseState = {
+    tripped,
+    ...(trippedAt ? { trippedAt } : {}),
+    ...(recordedFailureRate !== undefined ? { failureRate: recordedFailureRate } : {}),
+    outcomes: nextOutcomes,
+  };
+  await ctx.state.set(`safety-fuse:${companyId}`, nextState).catch(() => {});
+
+  if (newlyTripped && ctx.activity) {
+    await ctx.activity
+      .log({
+        companyId,
+        action: 'eluvix.safety_fuse_tripped',
+        entityType: 'company',
+        entityId: companyId,
+        details: {
+          failureRate: recordedFailureRate,
+          sampleCount: nextOutcomes.length,
+          maxFailureRate,
+        },
+      })
+      .catch(() => {});
+  }
+
+  return { state: nextState, newlyTripped };
+}
+
+export async function resetSafetyFuse(
+  ctx: PluginHostContext,
+  companyId: string
+): Promise<{ ok: boolean; state: SafetyFuseState }> {
+  const nextState: SafetyFuseState = { tripped: false, outcomes: [] };
+  if (!companyId) {
+    return { ok: false, state: nextState };
+  }
+  await ctx.state.set(`safety-fuse:${companyId}`, nextState).catch(() => {});
+  if (ctx.activity) {
+    await ctx.activity
+      .log({
+        companyId,
+        action: 'eluvix.safety_fuse_reset',
+        entityType: 'company',
+        entityId: companyId,
+      })
+      .catch(() => {});
+  }
+  return { ok: true, state: nextState };
+}
+
 export async function handleUnassignedIssueEvent(
   issue: PaperclipIssueLike,
   ctx: PluginHostContext,
@@ -400,6 +542,13 @@ export async function handleUnassignedIssueEvent(
   if (cfg.mode === 'off') {
     return { action: 'skipped', reason: 'mode=off' };
   }
+
+  const fuseState =
+    cfg.safetyFuse?.enabled !== false
+      ? await getSafetyFuseState(ctx, issue.companyId)
+      : { tripped: false, outcomes: [] };
+  const safetyFuseDowngraded = cfg.mode === 'auto' && Boolean(fuseState.tripped);
+  const effectiveMode: AutoAssignMode = safetyFuseDowngraded ? 'auto-with-approval' : cfg.mode;
 
   // S4 guard: never touch checked-out or already-assigned issues
   if (issue.checkoutRunId) {
@@ -476,13 +625,13 @@ export async function handleUnassignedIssueEvent(
   const companyAllowedForAuto =
     Array.isArray(cfg.companies) &&
     (cfg.companies.includes(issue.companyId) ||
-      (cfg.mode === 'auto-with-approval' && cfg.companies.length === 0));
+      (effectiveMode === 'auto-with-approval' && cfg.companies.length === 0));
   const meetsThresholds =
     companyAllowedForAuto &&
     confidence >= cfg.minConfidence &&
     (cfg.costGuardUsd === undefined || estCost <= cfg.costGuardUsd);
 
-  if (cfg.mode === 'auto-with-approval' && meetsThresholds) {
+  if (effectiveMode === 'auto-with-approval' && meetsThresholds) {
     const depth = await computeIssueTreeDepth(issue, ctx, cfg.maxTreeDepth + 1);
     if (depth > cfg.maxTreeDepth) {
       return await postAdvisory(issue, top, ctx, `tree_depth_${depth}_exceeds_${cfg.maxTreeDepth}`);
@@ -515,10 +664,13 @@ export async function handleUnassignedIssueEvent(
     const approvalDedupeKey = `approval-advised:${issue.id}`;
     const prevHash = await ctx.state.get(approvalDedupeKey);
     if (prevHash !== hash) {
+      const fusePrefix = safetyFuseDowngraded
+        ? '[Safety Fuse Tripped — Auto downgraded to Approval] '
+        : '';
       await ctx.issues.addComment(
         issue.id,
         issue.companyId,
-        `[Eluvix Switchyard Approval Requested] Proposed assignee: **${top.name}** (confidence ${(confidence * 100).toFixed(0)}%, est. $${estCost.toFixed(4)}). Approve or dismiss in the Eluvix Switchyard panel. Rationale: ${top.rationale}`
+        `${fusePrefix}[Eluvix Switchyard Approval Requested] Proposed assignee: **${top.name}** (confidence ${(confidence * 100).toFixed(0)}%, est. $${estCost.toFixed(4)}). Approve or dismiss in the Eluvix Switchyard panel. Rationale: ${top.rationale}`
       );
       await ctx.state.set(approvalDedupeKey, hash);
     }
@@ -533,19 +685,20 @@ export async function handleUnassignedIssueEvent(
           recommendedAgentId: top.agentId,
           confidence,
           estimatedCostUsd: estCost,
+          ...(safetyFuseDowngraded ? { safetyFuseDowngraded: true } : {}),
         },
       });
     }
 
     return {
       action: 'pending_approval',
-      reason: 'awaiting_approval',
+      reason: safetyFuseDowngraded ? 'safety_fuse_tripped' : 'awaiting_approval',
       topAgentId: top.agentId,
       confidence,
     };
   }
 
-  const canAuto = cfg.mode === 'auto' && meetsThresholds;
+  const canAuto = effectiveMode === 'auto' && meetsThresholds;
 
   if (canAuto) {
     const depth = await computeIssueTreeDepth(issue, ctx, cfg.maxTreeDepth + 1);
@@ -598,7 +751,9 @@ export async function handleUnassignedIssueEvent(
     issue,
     top,
     ctx,
-    cfg.mode === 'auto' || cfg.mode === 'auto-with-approval' ? 'auto_threshold_fallback' : 'advisory'
+    effectiveMode === 'auto' || effectiveMode === 'auto-with-approval'
+      ? 'auto_threshold_fallback'
+      : 'advisory'
   );
 }
 

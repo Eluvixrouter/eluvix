@@ -128,6 +128,7 @@ When `mediaIntentRouting` is enabled (default `true`), Switchyard classifies eve
 
 When Paperclip integration (`integrations.paperclip`) is enabled and HMAC-verified/scoped context arrives (`eluvix/auto`, `eluvix/fast-local`, `eluvix/code-specialist`, `eluvix/heavy-reasoning`, `eluvix/frontier-verified`):
 - Issue priority, remaining budget percentage, and sensitivity dynamically bias tier floors/ceilings and local-only egress (`X-Eluvix-Paperclip-Bias`), while per-key `maxTier` / `maxCostPer1kUsd` ceilings enforce strict upper bounds (`key-tier-ceiling`, `key-cost-ceiling`).
+- On `eluvix/auto` (or `model: "auto"` when `agentStepTiering: true`), intra-heartbeat trajectory analysis (`classifyAgentTrajectoryStep`) steps lightweight tool inspections down to `fast-local`, edits/patches to `code-specialist`, and stack-trace/test failure loops to `heavy-reasoning` (`X-Eluvix-Step-Tier`), clamped inside active Paperclip floor/ceiling bounds.
 
 ---
 

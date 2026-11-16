@@ -1313,6 +1313,12 @@ export default function RoutingEditor() {
       model: string;
       includeVision: boolean;
       confidentialPolicy?: string;
+      paperclip?: {
+        priority?: string;
+        sensitivity?: string;
+        budgetRemainingPct?: number;
+        companyId?: string;
+      };
     }) => {
       setIsSimulating(true);
       try {
@@ -1350,6 +1356,7 @@ export default function RoutingEditor() {
             model: params.model || 'auto',
             messages: [{ role: 'user', content: userContent }],
             ...(previewCfg ? { configOverride: previewCfg } : {}),
+            ...(params.paperclip ? { paperclip: params.paperclip } : {}),
           }),
         });
         const data = await res.json();

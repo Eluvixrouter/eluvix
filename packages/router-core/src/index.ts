@@ -30,13 +30,16 @@ import {
 import {
   type PaperclipIntegrationConfig,
   type PaperclipRequestContext,
+  type PaperclipStepTier,
   type ResolvedPaperclipBias,
   PAPERCLIP_STEP_TIER_RANK,
   PAPERCLIP_VIRTUAL_MODELS,
+  classifyAgentTrajectoryStep,
   mergeEffectiveHops,
   resolvePaperclipRoutingBias,
   resolveVirtualTierAlias,
 } from './paperclip-context.js';
+import { dispatchAlertWebhooks } from './webhooks.js';
 
 function paperclipLogFields(paperclip?: PaperclipRequestContext) {
   if (!paperclip) return {};
@@ -67,7 +70,8 @@ function paperclipSpanAttributes(
 function applyPaperclipResponseHeaders(
   headers: Headers,
   paperclip?: PaperclipRequestContext,
-  paperclipBias?: ResolvedPaperclipBias
+  paperclipBias?: ResolvedPaperclipBias,
+  agentStepTier?: PaperclipStepTier
 ): void {
   if (paperclip?.runId) {
     headers.set('x-eluvix-correlation-id', paperclip.runId);
@@ -80,6 +84,9 @@ function applyPaperclipResponseHeaders(
       ? 'relaxed'
       : paperclipBias.biasTags.join(',') || 'none';
     headers.set('x-eluvix-paperclip-bias', biasLabel);
+  }
+  if (agentStepTier) {
+    headers.set('x-eluvix-step-tier', agentStepTier);
   }
 }
 
@@ -188,6 +195,11 @@ export interface SwitchyardConfig {
    * or wildcard upstream match. Defaults to false.
    */
   strictModelMatch?: boolean;
+  /**
+   * When true, enables intra-heartbeat trajectory step tiering for plain `auto`
+   * multi-turn tool-calling loops (`eluvix/auto` always enables it). Defaults to false.
+   */
+  agentStepTiering?: boolean;
 }
 
 export type BudgetExhaustedAction = 'prefer-local' | 'strict-local' | 'reject';
@@ -469,6 +481,7 @@ export interface RouteTraceStep {
     | 'structured-outputs-filter'
     | 'budget-guardrail'
     | 'paperclip-context'
+    | 'agent-step-tier'
     | 'circuit-breaker'
     | 'fallback-chain'
     | 'consensus'
@@ -506,6 +519,8 @@ export interface RouteExplanation {
   steps: RouteTraceStep[];
   rankedUpstreams: Array<{ id: string; name: string; type: UpstreamType }>;
   chosenUpstreamId: string | null;
+  paperclipBias?: ResolvedPaperclipBias;
+  agentStepTier?: PaperclipStepTier;
   error?: string;
 }
 
@@ -1018,6 +1033,7 @@ export class Eluvix {
       scope?: Partial<RequestScope>;
       hops?: number;
       paperclip?: PaperclipRequestContext;
+      silent?: boolean;
     }
   ): Promise<Response> {
     const hops = mergeEffectiveHops(options?.hops ?? 0, options?.paperclip);
@@ -1041,10 +1057,20 @@ export class Eluvix {
         options?.scope?.sessionId ||
         (typeof request.metadata?.sessionId === 'string' ? request.metadata.sessionId : undefined),
       agentId:
+        options?.paperclip?.agentId ||
         options?.scope?.agentId ||
         (typeof request.metadata?.agentId === 'string' ? request.metadata.agentId : undefined),
+      companyId: options?.paperclip?.companyId || options?.scope?.companyId,
+      issueId: options?.paperclip?.issueId || options?.scope?.issueId,
       origin: options?.scope?.origin || 'client'
     };
+    const rawPcCompany = (scope.companyId || '').trim();
+    const sanitizedPcCompany = rawPcCompany
+      ? rawPcCompany.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 64)
+      : '';
+    const memoryScope: RequestScope = sanitizedPcCompany
+      ? { ...scope, userId: `${scope.userId}::pc:${sanitizedPcCompany}` }
+      : scope;
 
     let effectiveRequest: ResolvedChatRequest = {
       ...request,
@@ -1241,7 +1267,7 @@ export class Eluvix {
         const budgetTokens = this.config.memory.recallBudgetTokens ?? 600;
         const recallResult = await this.contextProvider.recall(
           lastUserQuery,
-          scope,
+          memoryScope,
           budgetTokens,
           options?.signal
         );
@@ -2032,7 +2058,7 @@ export class Eluvix {
                     user: { role: 'user', content: lastUserQuery },
                     assistant: assistantOutputText
                   },
-                  scope
+                  memoryScope
                 )
                 .catch(() => {});
             }
@@ -2085,7 +2111,7 @@ export class Eluvix {
                         user: { role: 'user', content: lastUserQuery },
                         assistant: fullAssistantText
                       },
-                      scope
+                      memoryScope
                     )
                     .catch(() => {});
                 }
@@ -2316,7 +2342,7 @@ export class Eluvix {
                   void this.contextProvider
                     .remember(
                       { user: { role: 'user', content: lastUserQuery }, assistant: draftText },
-                      scope
+                      memoryScope
                     )
                     .catch(() => {});
                 }
@@ -2330,7 +2356,12 @@ export class Eluvix {
                 acceptedHeaders.set('x-eluvix-tokens', String(draftPromptTokens));
                 acceptedHeaders.set('x-eluvix-ttft-ms', String(draftDurationMs));
                 acceptedHeaders.set('x-eluvix-cost-usd', draftCostUsd.toFixed(6));
-                applyPaperclipResponseHeaders(acceptedHeaders, options?.paperclip, selection.paperclipBias);
+                applyPaperclipResponseHeaders(
+                  acceptedHeaders,
+                  options?.paperclip,
+                  selection.paperclipBias,
+                  selection.agentStepTier
+                );
                 if (selection.vendorAlias?.aliasApplied) {
                   acceptedHeaders.set(
                     'x-eluvix-model-alias',
@@ -2776,7 +2807,7 @@ export class Eluvix {
                           user: { role: 'user', content: lastUserQuery },
                           assistant: fullAssistantText
                         },
-                        scope
+                        memoryScope
                       )
                       .catch(() => {});
                   }
@@ -2803,7 +2834,7 @@ export class Eluvix {
                     user: { role: 'user', content: lastUserQuery },
                     assistant: assistantOutputText
                   },
-                  scope
+                  memoryScope
                 )
                 .catch(() => {});
             }
@@ -2949,7 +2980,7 @@ export class Eluvix {
                           user: { role: 'user', content: lastUserQuery },
                           assistant: fullAssistantText
                         },
-                        scope
+                        memoryScope
                       )
                       .catch(() => {});
                   }
@@ -3008,7 +3039,30 @@ export class Eluvix {
             newResponse.headers.set('x-eluvix-tokens', promptTokens.toString());
             newResponse.headers.set('x-eluvix-ttft-ms', String(ttftMs));
             newResponse.headers.set('x-eluvix-cost-usd', syncCostUsd.toFixed(6));
-            applyPaperclipResponseHeaders(newResponse.headers, options?.paperclip, selection.paperclipBias);
+            applyPaperclipResponseHeaders(
+              newResponse.headers,
+              options?.paperclip,
+              selection.paperclipBias,
+              selection.agentStepTier
+            );
+            if (attemptsMade > 1 && options?.paperclip && !options?.silent) {
+              void dispatchAlertWebhooks({
+                event: 'paperclip.tier_escalated',
+                severity: 'warning',
+                summary: `Paperclip run ${options.paperclip.runId || 'unknown'} escalated to ${upstream.id} (${servedModel}) after ${attemptsMade} attempts`,
+                data: {
+                  runId: options.paperclip.runId,
+                  issueId: options.paperclip.issueId,
+                  agentId: options.paperclip.agentId,
+                  companyId: options.paperclip.companyId,
+                  upstreamId: upstream.id,
+                  servedModel,
+                  attemptsMade,
+                  stepTier: selection.agentStepTier,
+                },
+                userId: scope.userId,
+              }).catch(() => {});
+            }
             if (selection.budgetFallback) {
               newResponse.headers.set('x-eluvix-budget-fallback', 'local-sovereign');
             }
@@ -3433,7 +3487,9 @@ export class Eluvix {
         },
         steps: selection.steps,
         rankedUpstreams: selection.targetUpstreams.map(u => ({ id: u.id, name: u.name, type: u.type })),
-        chosenUpstreamId: selection.targetUpstreams[0]?.id ?? null
+        chosenUpstreamId: selection.targetUpstreams[0]?.id ?? null,
+        ...(selection.paperclipBias ? { paperclipBias: selection.paperclipBias } : {}),
+        ...(selection.agentStepTier ? { agentStepTier: selection.agentStepTier } : {}),
       };
     } catch (err: any) {
       return {
@@ -3478,6 +3534,7 @@ export class Eluvix {
     rolling24hSpendUsd?: number;
     vendorAlias?: VendorModelAliasResult;
     paperclipBias?: ResolvedPaperclipBias;
+    agentStepTier?: PaperclipStepTier;
   } {
     const steps: RouteTraceStep[] = [];
     const fail = (message: string): never => {
@@ -4034,6 +4091,60 @@ export class Eluvix {
         paperclipBias.biasTags.push('virtual-tier');
       }
       paperclipBias.active = true;
+    }
+
+    let resolvedStepTier: PaperclipStepTier | undefined;
+    const shouldClassifyStepTier =
+      !virtualTier &&
+      (effectiveRequest.model === 'eluvix/auto' ||
+        (effectiveRequest.model === 'auto' && switchyardConfig.agentStepTiering === true));
+    if (shouldClassifyStepTier) {
+      const stepClass = classifyAgentTrajectoryStep(effectiveRequest.messages);
+      if (stepClass.isAgentLoop && stepClass.stepTier) {
+        let stepTier: PaperclipStepTier = stepClass.stepTier;
+        if (
+          paperclipBias.minTier &&
+          PAPERCLIP_STEP_TIER_RANK[stepTier] < PAPERCLIP_STEP_TIER_RANK[paperclipBias.minTier]
+        ) {
+          stepTier = paperclipBias.minTier;
+        }
+        if (
+          paperclipBias.maxTier &&
+          PAPERCLIP_STEP_TIER_RANK[stepTier] > PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier]
+        ) {
+          stepTier = paperclipBias.maxTier;
+        }
+        resolvedStepTier = stepTier;
+        if (stepTier === 'fast-local') {
+          paperclipBias.preferLocal = true;
+          paperclipBias.maxTier = paperclipBias.maxTier
+            ? PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier] <= PAPERCLIP_STEP_TIER_RANK['fast-local']
+              ? paperclipBias.maxTier
+              : 'fast-local'
+            : 'fast-local';
+        } else {
+          paperclipBias.minTier = paperclipBias.minTier
+            ? PAPERCLIP_STEP_TIER_RANK[paperclipBias.minTier] >= PAPERCLIP_STEP_TIER_RANK[stepTier]
+              ? paperclipBias.minTier
+              : stepTier
+            : stepTier;
+          if (
+            paperclipBias.maxTier &&
+            PAPERCLIP_STEP_TIER_RANK[paperclipBias.minTier] >
+              PAPERCLIP_STEP_TIER_RANK[paperclipBias.maxTier]
+          ) {
+            paperclipBias.minTier = paperclipBias.maxTier;
+          }
+        }
+        if (!paperclipBias.biasTags.includes(`step:${stepTier}`)) {
+          paperclipBias.biasTags.push(`step:${stepTier}`);
+        }
+        paperclipBias.active = true;
+        steps.push({
+          stage: 'agent-step-tier',
+          detail: `trajectory step=${stepTier} reason=${stepClass.reason || 'loop'} toolTurns=${stepClass.toolTurnCount}`,
+        });
+      }
     }
 
     if (paperclipBias.active) {
@@ -4674,7 +4785,8 @@ export class Eluvix {
       budgetFallback,
       rolling24hSpendUsd,
       vendorAlias,
-      paperclipBias
+      paperclipBias,
+      agentStepTier: resolvedStepTier,
     };
   }
 

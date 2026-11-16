@@ -41,7 +41,7 @@ export class BuiltinContextProvider implements ContextProvider {
     }
 
     const userId = scope.userId || 'default';
-    let items = searchMemoryItems(trimmed, userId, 10);
+    let items = searchMemoryItems(trimmed, userId, scope.issueId ? 24 : 10);
     if (this.retentionDays !== undefined) {
       // M-20: recall excludes items older than the retention window.
       // (Exclusion at recall time — stored rows are not deleted. Items
@@ -52,6 +52,32 @@ export class BuiltinContextProvider implements ContextProvider {
         const created = Date.parse(item.created_at);
         return Number.isNaN(created) || created >= cutoff;
       });
+    }
+    if (scope.issueId && items.length > 0) {
+      items = items
+        .map((item) => {
+          let matchesIssue = false;
+          if (item.metadata) {
+            try {
+              const parsed =
+                typeof item.metadata === 'string'
+                  ? JSON.parse(item.metadata)
+                  : (item.metadata as Record<string, any>);
+              if (parsed?.issueId && parsed.issueId === scope.issueId) {
+                matchesIssue = true;
+              }
+            } catch {
+              // Ignore unparseable metadata JSON
+            }
+          }
+          const baseScore = typeof item.score === 'number' ? item.score : 0;
+          return {
+            ...item,
+            score: matchesIssue ? Number((baseScore + 1.5).toFixed(3)) : baseScore,
+          };
+        })
+        .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        .slice(0, 10);
     }
     const blocks: RecallBlock[] = [];
     let usedTokens = 0;
@@ -117,7 +143,9 @@ export class BuiltinContextProvider implements ContextProvider {
       content: summary,
       metadata: {
         origin: scope.origin,
-        agentId: scope.agentId
+        agentId: scope.agentId,
+        ...(scope.companyId ? { companyId: scope.companyId } : {}),
+        ...(scope.issueId ? { issueId: scope.issueId } : {}),
       }
     });
   }

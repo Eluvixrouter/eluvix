@@ -14,7 +14,17 @@ import { saveConfig } from '../router';
 import { compileGraph } from '../orchestration/compiler';
 import { decompileConfigToGraph } from '../orchestration/decompiler';
 import { analyzeGraphDiagnostics } from '../orchestration/diagnostics';
-import { GET as getObservability } from '../../app/api/v1/observability/route';
+import {
+  DELETE as deleteObservability,
+  GET as getObservability,
+} from '../../app/api/v1/observability/route';
+import {
+  DELETE as deleteKeys,
+  GET as getKeys,
+  POST as postKeys,
+} from '../../app/api/v1/keys/route';
+import { POST as postMessages } from '../../app/api/v1/messages/route';
+import { POST as postResponses } from '../../app/api/v1/responses/route';
 import { GET as getModels } from '../../app/api/v1/models/route';
 import { GET as getWhoami } from '../../app/api/v1/paperclip/whoami/route';
 import { GET as getCapabilities } from '../../app/api/v1/paperclip/capabilities/route';
@@ -400,5 +410,276 @@ describe('Paperclip Next.js Routes & Editor Bridge', () => {
     const obsJson = await obsRes.json();
     expect(obsJson.data.paperclip.totalRequests).toBeGreaterThanOrEqual(1);
     expect(obsJson.data.paperclip.recentRuns.some((r: any) => r.runId === 'run-obs-1')).toBe(true);
+    expect(Array.isArray(obsJson.data.dailyRollups)).toBe(true);
+    expect(obsJson.data.dailyRollups.length).toBeGreaterThanOrEqual(1);
+
+    const nonAdminPruneRes = await deleteObservability(
+      new NextRequest('http://127.0.0.1:3588/api/v1/observability?olderThanDays=30', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${scopedToken}` },
+      })
+    );
+    expect(nonAdminPruneRes.status).toBe(403);
+
+    const obsAdminKey = createNamedApiKey({
+      name: 'Obs Admin',
+      userId: 'pc-user',
+      role: 'admin',
+      scopes: ['*'],
+    }).key;
+    const pruneRes = await deleteObservability(
+      new NextRequest('http://127.0.0.1:3588/api/v1/observability?olderThanDays=30', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${obsAdminKey}` },
+      })
+    );
+    expect(pruneRes.status).toBe(200);
+    const pruneJson = await pruneRes.json();
+    expect(pruneJson.success).toBe(true);
+    expect(pruneJson.olderThanDays).toBe(30);
+  });
+
+  it('manages scoped API keys via /api/v1/keys with admin RBAC & masks hmacSecret across /keys and /capabilities', async () => {
+    saveConfig({
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434/v1',
+          models: ['llama3.2:latest'],
+          costPer1kTokens: 0,
+          priority: 1,
+        },
+      ],
+      integrations: {
+        paperclip: {
+          enabled: true,
+          paperclipBaseUrl: 'http://127.0.0.1:3100',
+          hmacSecret: 'raw-top-secret-hmac-value',
+          requireSignedContext: true,
+        },
+      },
+    });
+
+    // Capabilities must mask literal hmacSecret while advertising hmacSigningConfigured
+    const capRes = await getCapabilities(
+      new NextRequest('http://127.0.0.1:3588/api/v1/paperclip/capabilities', {
+        headers: { Authorization: `Bearer ${paperclipToken}` },
+      })
+    );
+    expect(capRes.status).toBe(200);
+    const capJson = await capRes.json();
+    expect(capJson.paperclipPolicy?.hmacSecret).toBe('raw-to...alue');
+    expect(capJson.paperclipPolicy?.hmacSigningConfigured).toBe(true);
+
+    // Non-admin bearer cannot mint/list keys (403)
+    const nonAdminGet = await getKeys(
+      new NextRequest('http://127.0.0.1:3588/api/v1/keys', {
+        headers: { Authorization: `Bearer ${paperclipToken}` },
+      })
+    );
+    expect(nonAdminGet.status).toBe(403);
+
+    const adminKey = createNamedApiKey({
+      name: 'Admin Manager Key',
+      userId: 'admin-user',
+      role: 'admin',
+      scopes: ['*'],
+    }).key;
+
+    // Mint a key with literal hmacSecret & companyIds
+    const postRes = await postKeys(
+      new NextRequest('http://127.0.0.1:3588/api/v1/keys', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          label: 'Company B Worker',
+          scopes: ['chat', 'paperclip'],
+          paperclip: {
+            companyIds: ['comp-b'],
+            maxTier: 'code-specialist',
+            hmacSecret: 'literal-key-hmac-secret',
+          },
+        }),
+      })
+    );
+    expect(postRes.status).toBe(201);
+    const postJson = await postRes.json();
+    expect(postJson.key).toMatch(/^elx_/);
+    expect(postJson.paperclip?.hmacSecret).toBe('litera...cret');
+
+    const listRes = await getKeys(
+      new NextRequest('http://127.0.0.1:3588/api/v1/keys', {
+        headers: { Authorization: `Bearer ${adminKey}` },
+      })
+    );
+    expect(listRes.status).toBe(200);
+    const listJson = await listRes.json();
+    const listedWorker = listJson.data.find((k: any) => k.label === 'Company B Worker');
+    expect(listedWorker).toBeDefined();
+    expect(listedWorker.key).toMatch(/^elx_[A-Za-z]+\.\.\.$/);
+    expect(listedWorker.paperclip?.hmacSecret).toBe('litera...cret');
+
+    // Mint a SecretRef key and confirm env: pointer stays visible
+    const refRes = await postKeys(
+      new NextRequest('http://127.0.0.1:3588/api/v1/keys', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          label: 'Company A Ref Key',
+          scopes: ['chat', 'paperclip'],
+          paperclip: {
+            companyIds: ['comp-a'],
+            hmacSecret: 'env:COMP_A_HMAC_SECRET',
+          },
+        }),
+      })
+    );
+    expect(refRes.status).toBe(201);
+    const refJson = await refRes.json();
+    expect(refJson.paperclip?.hmacSecret).toBe('env:COMP_A_HMAC_SECRET');
+
+    // Delete newly minted key
+    const delRes = await deleteKeys(
+      new NextRequest(`http://127.0.0.1:3588/api/v1/keys?id=${encodeURIComponent(listedWorker.id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminKey}` },
+      })
+    );
+    expect(delRes.status).toBe(200);
+  });
+
+  it('enforces Paperclip companyIds and attaches response headers on /api/v1/messages & /api/v1/responses', async () => {
+    saveConfig({
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434/v1',
+          models: ['llama3.2:latest'],
+          costPer1kTokens: 0,
+          priority: 1,
+        },
+      ],
+      integrations: {
+        paperclip: {
+          enabled: true,
+          hmacSecret: 'multi-proto-hmac-secret',
+          requireSignedContext: true,
+        },
+      },
+    });
+
+    const scopedKey = createNamedApiKey({
+      name: 'CompA MultiProto Key',
+      userId: 'pc-user',
+      scopes: ['chat', 'paperclip'],
+      paperclip: { companyIds: ['comp-a'] },
+    }).key;
+
+    // Cross-company rejection (403) on /api/v1/messages
+    const badHdrs = signPaperclipContextHeaders(
+      { 'x-paperclip-company-id': 'comp-b', 'x-paperclip-run-id': 'run-msg-bad' },
+      'multi-proto-hmac-secret'
+    );
+    const msgForbidden = await postMessages(
+      new NextRequest('http://127.0.0.1:3588/api/v1/messages', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${scopedKey}`,
+          'content-type': 'application/json',
+          ...badHdrs,
+        },
+        body: JSON.stringify({
+          model: 'eluvix/auto',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      })
+    );
+    expect(msgForbidden.status).toBe(403);
+
+    // Cross-company rejection (403) on /api/v1/responses
+    const respForbidden = await postResponses(
+      new NextRequest('http://127.0.0.1:3588/api/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${scopedKey}`,
+          'content-type': 'application/json',
+          ...badHdrs,
+        },
+        body: JSON.stringify({
+          model: 'eluvix/auto',
+          input: 'hi',
+        }),
+      })
+    );
+    expect(respForbidden.status).toBe(403);
+
+    // Authorized company-a request on /api/v1/messages & /api/v1/responses preserves correlation headers
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'cmpl-proto',
+          model: 'llama3.2:latest',
+          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    const okHdrs = signPaperclipContextHeaders(
+      {
+        'x-paperclip-company-id': 'comp-a',
+        'x-paperclip-run-id': 'run-msg-ok',
+        'x-paperclip-issue-priority': 'high',
+      },
+      'multi-proto-hmac-secret'
+    );
+
+    const msgOk = await postMessages(
+      new NextRequest('http://127.0.0.1:3588/api/v1/messages', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${scopedKey}`,
+          'content-type': 'application/json',
+          ...okHdrs,
+        },
+        body: JSON.stringify({
+          model: 'eluvix/auto',
+          max_tokens: 64,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      })
+    );
+    expect(msgOk.status).toBe(200);
+    expect(msgOk.headers.get('x-eluvix-correlation-id')).toBe('run-msg-ok');
+
+    const respOk = await postResponses(
+      new NextRequest('http://127.0.0.1:3588/api/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${scopedKey}`,
+          'content-type': 'application/json',
+          ...okHdrs,
+        },
+        body: JSON.stringify({
+          model: 'eluvix/auto',
+          input: 'hi',
+        }),
+      })
+    );
+    expect(respOk.status).toBe(200);
+    expect(respOk.headers.get('x-eluvix-correlation-id')).toBe('run-msg-ok');
   });
 });

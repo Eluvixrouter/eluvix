@@ -4,6 +4,8 @@ export interface RequestScope {
   userId: string;
   sessionId?: string;
   agentId?: string;
+  companyId?: string;
+  issueId?: string;
   origin: 'client' | 'harness' | 'playground';
 }
 

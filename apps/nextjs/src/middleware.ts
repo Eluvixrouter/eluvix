@@ -64,7 +64,8 @@ export function isProtectedMutationPath(pathname: string): boolean {
     pathname.startsWith('/api/v1/files') ||
     pathname.startsWith('/api/v1/batches') ||
     pathname.startsWith('/api/v1/prompts') ||
-    pathname.startsWith('/api/v1/webhooks')
+    pathname.startsWith('/api/v1/webhooks') ||
+    pathname.startsWith('/api/v1/keys')
   );
 }
 
@@ -140,6 +141,7 @@ export async function middleware(req: NextRequest) {
           normalizedApiPath.startsWith('/api/v1/rerank') ||
           normalizedApiPath.startsWith('/api/v1/prompts') ||
           normalizedApiPath.startsWith('/api/v1/webhooks') ||
+          normalizedApiPath.startsWith('/api/v1/keys') ||
           normalizedApiPath.startsWith('/api/v1/paperclip'))
       ) {
         return NextResponse.next();

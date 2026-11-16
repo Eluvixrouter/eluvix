@@ -4,6 +4,21 @@ Track every architectural milestone, hardware optimization, security hardening t
 
 ---
 
+## v1.3.1 — Paperclip Integration v2.1: SecretRefs, Trajectory Step Tiering, Safety Fuse, Key Manager & Long-Horizon Rollups *(November 14, 2026)*
+
+### 🔐 SecretRef HMAC Resolution, Key Manager & Multi-Endpoint Parity
+- **`SecretRef` Paperclip HMAC Signing & Display Masking**: `parseVerifiedPaperclipRequestAsync` and `@eluvix/paperclip-adapter` resolve `hmacSecret` via `env:`, `file:`, `bao:`, `vault:`, and `keychain:` SecretRefs (failing closed if unresolved), sign outbound `x-paperclip-*` headers in `eluvix_local`, mask literals while keeping `SecretRef` pointers readable across `/api/v1/keys` and `/api/v1/paperclip/capabilities`, and surface SecretRef/configured badges in `PaperclipBridgeNode`.
+- **Multi-Endpoint & `DesktopRouterServer` Parity**: Enforces Paperclip `companyIds` (`403` isolation), `maxTier`/`maxCostPer1kUsd` ceilings, and `x-eluvix-hops` consistently across `/api/v1/chat/completions`, `/api/v1/messages`, `/api/v1/responses`, `/api/v1/route-explain`, and `DesktopRouterServer` (including `/v1/paperclip/health`, `/v1/keys`, and `/v1/observability`).
+- **Admin Scoped Key & Policy Manager (`/api/v1/keys` & `/configurator`)**: Full CRUD API and Configurator UI tab to mint/revoke `elx_...` tokens with `scopes`, `rpm`, `maxDailySpendUsd`, `companyIds`, `maxTier`, `maxCostPer1kUsd`, and `SecretRef` `hmacSecret` bindings.
+
+### 🧠 Step Tiering, Company/Issue Memory Partitions, Safety Fuse & Rollups
+- **Intra-Heartbeat Trajectory Step Tiering (`X-Eluvix-Step-Tier`)**: `classifyAgentTrajectoryStep` classifies multi-turn agent tool loops into `fast-local`, `code-specialist`, or `heavy-reasoning` on `eluvix/auto` (or `auto` with `agentStepTiering: true`).
+- **Company/Issue Episodic Memory & Cached Assignee Embeddings**: Scopes Paperclip episodic memory under `` `${userId}::pc:${companyId}` `` with `+1.5` `issueId` recall affinity, and caches `/v1/embeddings` candidate vectors in SQLite `paperclip_embedding_cache` (SHA-256 keyed).
+- **Governance Webhooks & Auto-Assign Safety Fuse**: Emits signed webhooks for `paperclip.budget_forecast`, `paperclip.tier_escalated`, `paperclip.hmac_rejected`, and `paperclip.safety_fuse`; adds a tripwire Safety Fuse in `@eluvix/paperclip-plugin` (`auto` &rarr; `auto-with-approval`, resettable via `eluvix:reset_safety_fuse`).
+- **`paperclip-org-governance` Eval Suite, Route Simulator & Retention Rollups**: Adds Paperclip assertions + `'paperclip-org-governance'` starter suite to `eluvix-eval`, Paperclip simulation controls in `RouteSimulatorDrawer`, and SQLite `telemetry_daily_rollups` preserved across `DELETE /api/v1/observability?olderThanDays=30` pruning (**75 passing Vitest files / 696 tests** + offline E2E).
+
+---
+
 ## v1.3.0 — Paperclip Agent Org Integration (`eluvix_local` Adapter, `@eluvix/paperclip-plugin` & Priority-Aware Switchyard) *(November 12, 2026)*
 
 ### 📎 Three-Tier Paperclip Integration

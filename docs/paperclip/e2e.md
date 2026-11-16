@@ -70,13 +70,16 @@ curl -sS http://127.0.0.1:3588/api/v1/paperclip/whoami \
    - `auto-with-approval`: queues Switchyard assignment proposals into `ctx.state` (`eluvix:approve_assignment`, `eluvix:dismiss_assignment`, and Paperclip `approval.decided` hooks) so board operators or lead agents confirm before mutating `assigneeAgentId`
 3. `@eluvix/paperclip-plugin` registers interactive React UI slots (`taskDetailView`, `page` `/switchyard`, `dashboardWidget`, `sidebar`, `detailTab`), tracks live agent `openIssueCount`, and evaluates delayed 48-hour reward stability (`done` without reopen/reassignment).
 
+- **Trusted Step Tiering & Endpoints**: Multi-endpoint enforcement covers `/api/v1/chat/completions`, `/api/v1/messages`, `/api/v1/responses`, `/api/v1/route-explain`, and `DesktopRouterServer` (`/v1/paperclip/health`, `/v1/keys`, `/v1/observability`). Multi-turn agent tool loops emit `X-Eluvix-Step-Tier` (`fast-local`, `code-specialist`, `heavy-reasoning`), partition episodic memory per `${userId}::pc:${companyId}`, and cache candidate embeddings in SQLite `paperclip_embedding_cache`.
+- **Governance Webhooks & Safety Fuse**: Eluvix dispatches signed webhooks for `paperclip.budget_forecast`, `paperclip.tier_escalated`, `paperclip.hmac_rejected`, and `paperclip.safety_fuse`. `@eluvix/paperclip-plugin` automatically downgrades `auto` -> `auto-with-approval` if repeated assignment failures trip the Safety Fuse (`eluvix:reset_safety_fuse` resets it).
+
 ---
 
 ## 5. Security Hardening & E2E Script (`scripts/paperclip-e2e.mjs`)
 
-- **HMAC Context Verification (`X-Paperclip-Context-Ts`, `X-Paperclip-Context-Sig`)**: Signs canonical sorted `x-paperclip-*` context headers (`v1.<ts>.<hmac_hex>`) with a 300s skew window when `requireSignedContext: true`.
-- **Per-Key Company & Cost/Tier Ceilings**: API keys in `keys.json` can bind `paperclip: { companyIds, maxTier, maxCostPer1kUsd, hmacSecret, allowUnsignedContext }`, enforcing `403` across HTTP routes and company-scoped SQLite queries.
-- **Offline E2E Harness**: Run the self-contained loopback gateway + adapter + plugin + SQLite verification suite anytime without external infrastructure:
+- **`SecretRef` HMAC Context Verification (`X-Paperclip-Context-Ts`, `X-Paperclip-Context-Sig`)**: Resolves `hmacSecret` via `env:`, `file:`, `bao:`, `vault:`, and `keychain:` pointers (without falling back to literal reference strings), signs canonical sorted `x-paperclip-*` context headers (`v1.<ts>.<hmac_hex>`) via `signOutboundPaperclipHeaders` in `eluvix_local`, and enforces a 300s replay window when `requireSignedContext: true`.
+- **Admin Key Manager (`/api/v1/keys`) & Per-Key Ceilings**: Keys in `keys.json` (mintable via `POST /api/v1/keys` or the `/configurator` **Scoped Keys** tab) bind `paperclip: { companyIds, maxTier, maxCostPer1kUsd, hmacSecret, allowUnsignedContext }`, enforcing `403` across HTTP routes and company-scoped SQLite queries while masking literal `hmacSecret` values in API responses.
+- **Offline E2E Harness**: Run the self-contained loopback gateway (`SecretRef` `env:ELUVIX_E2E_PAPERCLIP_HMAC` verification) + adapter + plugin + SQLite verification suite anytime without external infrastructure:
   ```bash
   node scripts/paperclip-e2e.mjs
   ```
