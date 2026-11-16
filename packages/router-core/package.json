@@ -126,7 +126,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.1.1",
     "ldapts": "^9.2.0"
   },
   "devDependencies": {
