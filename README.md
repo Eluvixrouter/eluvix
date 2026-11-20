@@ -6,7 +6,7 @@
 [![Vitest](https://img.shields.io/badge/Vitest-Passing-brightgreen.svg)](https://vitest.dev/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Eluvix** is an intelligent, sovereign, multimodal AI routing operating system, disaggregated inference coordinator, native MCP server, and visual node studio. It unites on-premises GPU clusters (NVIDIA CUDA or AMD ROCm), local containers, and frontier cloud models behind universal OpenAI (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/generations`), Anthropic (`/v1/messages`), and Model Context Protocol (`/v1/mcp` & `eluvix-mcp` stdio) endpoints.
+**Eluvix** is a sovereign **tokenomics mitigation** and multimodal AI routing operating system, disaggregated inference coordinator, native MCP server, and visual node studio. It unites on-premises GPU clusters (NVIDIA CUDA or AMD ROCm), local containers, and frontier cloud models behind universal OpenAI (`/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/generations`), Anthropic (`/v1/messages`), and Model Context Protocol (`/v1/mcp` & `eluvix-mcp` stdio) endpoints—shifting routine LLM and autonomous agent token burn onto `$0.00` local hardware while reserving frontier cloud spend for complex reasoning.
 
 ---
 

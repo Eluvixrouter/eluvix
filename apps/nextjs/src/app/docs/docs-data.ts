@@ -40,7 +40,7 @@ export const DOC_SECTIONS: DocSection[] = [
     icon: '🚀',
     summary: 'Install dependencies, configure zero-config auth, manage local TLS certificates, and boot the server with same-port HTTP to HTTPS auto-upgrade on port 3588.',
     content: {
-      overview: 'Eluvix is a sovereign, multimodal LLM routing gateway and node studio. It runs on bare metal or inside Docker, bridging local hardware (NVIDIA CUDA or AMD ROCm) and frontier cloud models into a single OpenAI-compatible endpoint.',
+      overview: 'Eluvix is a sovereign tokenomics mitigation and multimodal LLM routing gateway and node studio. It runs on bare metal or inside Docker, shifting routine token burn to local hardware (NVIDIA CUDA or AMD ROCm) while bridging frontier cloud models into a single OpenAI-compatible endpoint.',
       subsections: [
         {
           title: 'Prerequisites',

@@ -30,7 +30,7 @@ export default function Home() {
 
           {/* Subtitle with exciting value props */}
           <p className="mx-auto max-w-3xl text-slate-300 text-base sm:text-lg md:text-xl leading-relaxed mb-10">
-            Big Tech treats your private prompts, proprietary code, and trade secrets as free training data while charging premium token tolls. <strong className="text-white font-semibold">Eluvix</strong> is the sovereign routing gateway that sanitizes PII in-flight, routes 85%+ of workloads to your <strong className="text-emerald-400 font-semibold">$0 local GPU</strong>, and only escalates to cloud frontier models when deep reasoning truly demands it.
+            Big Tech treats your private prompts, proprietary code, and trade secrets as free training data while charging premium token tolls. <strong className="text-white font-semibold">Eluvix</strong> is the sovereign <strong className="text-sky-300 font-semibold">tokenomics mitigation</strong> and AI routing gateway that sanitizes PII in-flight, shifts 85%+ of workloads to your <strong className="text-emerald-400 font-semibold">$0 local GPU</strong>, and only escalates to cloud frontier models when deep reasoning truly demands it.
           </p>          {/* CTA Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-16">
             <Link 
@@ -196,13 +196,13 @@ export default function Home() {
           
           <div className="text-center max-w-3xl mx-auto">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-bold border border-emerald-500/20 mb-4">
-              💰 Financial Autonomy
+              💰 Tokenomics Mitigation &amp; Financial Autonomy
             </div>
             <h2 className="text-3xl sm:text-5xl font-black text-white tracking-tight mb-4">
               Slash Your AI Spend by up to <span className="text-emerald-400">88%</span>.
             </h2>
             <p className="text-slate-400 text-base sm:text-lg">
-              Stop burning expensive cloud tokens on simple code refactors, formatting queries, and chat banter. Eluvix pays for itself on day one.
+              Stop burning expensive cloud tokens on simple code refactors, routine agent tool loops, and chat banter. Eluvix brings systematic tokenomics mitigation to every prompt and autonomous run—paying for itself on day one.
             </p>
           </div>
 
@@ -214,7 +214,7 @@ export default function Home() {
               <div className="text-2xl mb-3">⚖️</div>
               <h4 className="text-lg font-bold text-white mb-2">Cost-Complexity Matrix</h4>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Dynamically grades incoming prompts. Routes 80-90% of simple tasks to local hardware ($0.00/token) and only spends cloud credits when high reasoning depth is required.
+                Core tokenomics mitigation engine: dynamically grades incoming prompts, routing 80–90% of routine tasks to local hardware ($0.00/token) and spending cloud credits only when deep reasoning is required.
               </p>
             </div>
 
@@ -222,7 +222,7 @@ export default function Home() {
               <div className="text-2xl mb-3">🛑</div>
               <h4 className="text-lg font-bold text-white mb-2">Hard Financial Budget Caps</h4>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Set a strict `maxCostPerRequest` ceiling (e.g. $0.05). If an autonomous agent loop spins out of control, Eluvix automatically cuts off runaway API billing.
+                Set strict `maxCostPerRequest` ceilings (e.g. $0.05) and rolling 24h spend caps. If an autonomous agent loop spins out of control, Eluvix&apos;s tokenomics mitigation guardrails cut off runaway API billing.
               </p>
             </div>
 
@@ -254,9 +254,9 @@ export default function Home() {
             
             <div className="flex flex-col gap-2 rounded-xl border border-slate-800/80 bg-slate-900/50 p-6 shadow-xl hover:border-sky-500/40 transition-colors">
               <div className="text-3xl mb-2">⚖️</div>
-              <h3 className="text-base font-bold text-white">Cost-Complexity</h3>
+              <h3 className="text-base font-bold text-white">Tokenomics Mitigation</h3>
               <p className="text-slate-400 text-xs leading-relaxed">
-                Grades prompts by token count, code blocks, and reasoning difficulty to choose the most cost-effective tier.
+                Grades prompts by token count, code blocks, and reasoning depth to shift routine traffic onto $0 local tiers before escalating.
               </p>
             </div>
 

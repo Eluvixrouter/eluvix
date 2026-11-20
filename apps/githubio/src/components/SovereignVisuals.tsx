@@ -19,7 +19,7 @@ export function DataFlowDiagram() {
             Live Architectural Data Path
           </div>
           <h3 className="text-xl md:text-2xl font-bold text-white tracking-tight">
-            How Eluvix Guards Your Data & Slashes Costs
+            How Eluvix Delivers Privacy &amp; Tokenomics Mitigation
           </h3>
         </div>
 
@@ -52,7 +52,7 @@ export function DataFlowDiagram() {
                 : 'text-slate-400 hover:text-white'
             }`}
           >
-            💰 $0 Local Savings
+            💰 Tokenomics Mitigation
           </button>
         </div>
       </div>
@@ -241,7 +241,7 @@ export function CostComparisonWidget() {
             Calculate Your Compute Savings
           </h3>
           <p className="text-sm text-slate-400 mt-1">
-            See how much you keep in your pocket by routing routine completions to your local silicon.
+            Model your tokenomics mitigation impact—see how much cloud spend you keep by routing routine completions to local silicon.
           </p>
         </div>
 

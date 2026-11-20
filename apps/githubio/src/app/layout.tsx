@@ -6,8 +6,8 @@ import { ThemeSwitcher } from '@/components/ThemeSwitcher';
 import { THEME_INIT_SCRIPT } from '@/lib/themes';
 
 export const metadata: Metadata = {
-  title: 'Eluvix | Sovereign AI Routing & Privacy Shield',
-  description: 'Guarding individual privacy and crushing cloud AI bills. The intelligent multimodal LLM routing gateway for local hardware and cloud fallbacks.',
+  title: 'Eluvix | Sovereign Tokenomics Mitigation & AI Routing Gateway',
+  description: 'Tokenomics mitigation, sovereign AI routing, and privacy protection. Shift 85%+ of LLM and agent token burn to $0 local hardware with budget-capped cloud fallbacks.',
   icons: {
     icon: '/favicon.svg',
     shortcut: '/favicon.svg',
@@ -87,7 +87,7 @@ export default function RootLayout({
               <div className="md:col-span-1 space-y-4">
                 <Logo size="md" />
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  The intelligent, privacy-first AI routing gateway. Defends the individual user against predatory cloud token costs and intrusive data harvesting.
+                  The sovereign tokenomics mitigation and privacy-first AI routing gateway. Defends individuals and agent fleets against runaway cloud token costs and intrusive data harvesting.
                 </p>
                 <div className="flex items-center gap-2 pt-2">
                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
