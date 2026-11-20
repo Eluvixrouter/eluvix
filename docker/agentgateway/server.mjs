@@ -9,9 +9,47 @@
 // See docker/README.md.
 // ============================================================================
 import http from 'http';
+import fs from 'fs';
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+const CONFIG_PATH = process.env.AGENT_GATEWAY_CONFIG_PATH || '/config/gateway.json';
+
+const DEFAULT_GATEWAYS = {
+  gateways: [
+    {
+      id: 'agentgateway-primary',
+      accessPolicy: 'restrictive',
+      protocols: ['mcp', 'a2a'],
+      activeConnections: 3,
+      mcpEndpoints: ['/mcp/tools', '/mcp/resources']
+    }
+  ]
+};
+
+let activeGatewayConfig = { ...DEFAULT_GATEWAYS };
+let lastConfigMtimeMs = 0;
+
+function syncMountedConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return;
+    const stat = fs.statSync(CONFIG_PATH);
+    if (stat.mtimeMs === lastConfigMtimeMs) return;
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8').trim();
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+      activeGatewayConfig = Array.isArray(parsed.gateways)
+        ? parsed
+        : { ...DEFAULT_GATEWAYS, ...parsed };
+      lastConfigMtimeMs = stat.mtimeMs;
+    }
+  } catch (err) {
+    console.warn(`[AgentGateway] Could not reload mounted config at ${CONFIG_PATH}:`, err?.message || err);
+  }
+}
+
+syncMountedConfig();
 
 function applyCors(req, res) {
   const origin = req.headers.origin;
@@ -73,10 +111,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/health' || url.pathname === '/healthz') {
+      syncMountedConfig();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', service: 'agentgateway', port: PORT }));
+      res.end(JSON.stringify({ status: 'ok', service: 'agentgateway', port: PORT, configLoaded: lastConfigMtimeMs > 0 }));
       return;
     }
+
+    syncMountedConfig();
 
     if (url.pathname === '/v1/models' || url.pathname === '/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -92,17 +133,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/v1/gateways' || url.pathname === '/gateways') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        gateways: [
-          {
-            id: 'agentgateway-primary',
-            accessPolicy: 'restrictive',
-            protocols: ['mcp', 'a2a'],
-            activeConnections: 3,
-            mcpEndpoints: ['/mcp/tools', '/mcp/resources']
-          }
-        ]
-      }));
+      res.end(JSON.stringify(activeGatewayConfig));
       return;
     }
 

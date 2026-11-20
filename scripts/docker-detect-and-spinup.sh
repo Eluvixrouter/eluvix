@@ -237,11 +237,28 @@ spin_up() {
   cd "${ROOT_DIR}"
 
   echo "🔍 [Eluvix] Detecting hardware acceleration (NVIDIA CUDA / AMD ROCm / CPU)..."
-  detect_and_configure_gpu "false" > /dev/null
+  local gpu_json
+  gpu_json="$(detect_and_configure_gpu "true" || echo '{"vendor":"cpu"}')"
+  local gpu_vendor="cpu"
+  if echo "${gpu_json}" | grep -q '"vendor":"nvidia"'; then
+    gpu_vendor="nvidia"
+  elif echo "${gpu_json}" | grep -q '"vendor":"amd"'; then
+    gpu_vendor="amd"
+  fi
+  echo "   Detected acceleration profile: ${gpu_vendor}"
 
   local profile="${ARG2:-all}"
   echo "🚀 [Eluvix] Spinning up modular containers (profile: ${profile})..."
-  docker compose --profile "${profile}" up -d --build
+  if [ "${gpu_vendor}" != "nvidia" ] && { [ "${profile}" = "all" ] || [ "${profile}" = "inference" ]; }; then
+    echo "ℹ️ Skipping CUDA-only sglang container on ${gpu_vendor} host."
+    if [ "${profile}" = "inference" ]; then
+      docker compose --profile all up -d --build ollama vllm
+    else
+      docker compose --profile all up -d --build switchyard vllm-sr agent-router agentgateway ollama vllm openviking lightrag graphiti trueforge opencode sandbox
+    fi
+  else
+    docker compose --profile "${profile}" up -d --build
+  fi
 
   echo "📦 [Eluvix] Waiting for Ollama to become ready..."
   # Poll the Ollama API until it actually answers (bounded: 30 x 2s = 60s).
@@ -313,7 +330,7 @@ spin_up() {
     echo "   Inspect 'docker compose logs <service>', fix the cause, and re-run."
     exit 1
   fi
-  if [ "${profile}" = "inference" ] || [ "${profile}" = "all" ]; then
+  if [ "${gpu_vendor}" = "nvidia" ] && { [ "${profile}" = "inference" ] || [ "${profile}" = "all" ]; }; then
     if ! docker compose --profile "${profile}" ps sglang --format '{{.Status}}' 2>/dev/null | grep -qi "running"; then
       echo "❌ sglang container is not in the running state."
       echo "   Inspect 'docker compose logs sglang', fix the cause, and re-run."

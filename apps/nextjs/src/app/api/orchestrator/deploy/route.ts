@@ -1,14 +1,27 @@
 import { NextResponse } from 'next/server';
 import { orchestratorManager, DeploymentTier } from '@/lib/orchestration/manager';
 import { reloadConfig } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
+    const identity = await resolveCallerIdentity(req);
+    if (identity.ok && identity.role === 'readonly') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Forbidden: read-only users cannot deploy router configurations',
+          logs: ['✗ Forbidden: read-only users cannot deploy router configurations']
+        },
+        { status: 403 }
+      );
+    }
+
     const body = await req.json().catch(() => ({}));
     
-    // Normalize target tier (default to k3d, or compose/local)
+    // Normalize target tier (default to k3d, or compose/docker/local)
     const tier: DeploymentTier = body.tier || 'k3d';
 
     // Normalize compiled configs (can be passed at root or in body.compiledConfigs)
@@ -31,7 +44,7 @@ export async function POST(req: Request) {
       compiledConfigs
     });
 
-    if (tier === 'local' && result.success) {
+    if ((tier === 'local' || tier === 'docker' || tier === 'compose') && result.success) {
       try {
         reloadConfig();
         result.logs.push('✓ Reloaded active in-memory Next.js Switchyard router configuration.');

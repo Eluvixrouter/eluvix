@@ -4,6 +4,8 @@ global:
 
 switchyard:
   replicaCount: 1
+  image:
+    tag: "latest"
   service:
     # NodePort so the k3d host-port mappings (k3d-config.yaml maps host
     # ports onto the cluster nodes) land on a real listener.
@@ -24,6 +26,8 @@ switchyard:
 
 nextjs:
   replicaCount: 1
+  image:
+    tag: "latest"
   service:
     type: NodePort
     port: 3588
@@ -64,6 +68,8 @@ ollama:
 
 agentRouter:
   replicaCount: 1
+  image:
+    tag: "latest"
   service:
     type: NodePort
     nodePort: 8002
@@ -77,6 +83,8 @@ agentRouter:
 
 agentGateway:
   replicaCount: 1
+  image:
+    tag: "latest"
   service:
     type: NodePort
     nodePort: 8003

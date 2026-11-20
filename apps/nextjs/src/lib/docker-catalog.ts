@@ -10,6 +10,8 @@ export interface DockerCatalogEntry {
   composeFile: string;
   description: string;
   defaultSelected?: boolean;
+  /** False for host/Podman-managed engines not defined as a service in docker/compose/*.yml */
+  inCompose?: boolean;
 }
 
 export const DOCKER_SERVICE_CATALOG: DockerCatalogEntry[] = [
@@ -65,7 +67,8 @@ export const DOCKER_SERVICE_CATALOG: DockerCatalogEntry[] = [
     category: 'inference',
     composeFile: 'docker/compose/inference.yml',
     description: 'Podman / OCI containerized AI runner (containers/ramalama)',
-    defaultSelected: false
+    defaultSelected: false,
+    inCompose: false
   },
   {
     name: 'comfyui',
@@ -74,7 +77,8 @@ export const DOCKER_SERVICE_CATALOG: DockerCatalogEntry[] = [
     category: 'inference',
     composeFile: 'docker/compose/inference.yml',
     description: 'ComfyUI node-based diffusion & media workflow engine (:8188)',
-    defaultSelected: false
+    defaultSelected: false,
+    inCompose: false
   },
   {
     name: 'vllm',
@@ -131,6 +135,15 @@ export const DOCKER_SERVICE_CATALOG: DockerCatalogEntry[] = [
     defaultSelected: true
   },
   {
+    name: 'opencode',
+    container: 'eluvix-opencode',
+    port: 4096,
+    category: 'harnesses',
+    composeFile: 'docker/compose/harnesses.yml',
+    description: 'OpenCode autonomous coding harness',
+    defaultSelected: false
+  },
+  {
     name: 'sandbox',
     container: 'eluvix-sandbox',
     port: 3986,
@@ -149,8 +162,14 @@ export const COMPOSE_MODULE_FILES = [
   'docker/compose/harnesses.yml'
 ];
 
+export function getComposeServiceCatalog(): DockerCatalogEntry[] {
+  return DOCKER_SERVICE_CATALOG.filter((s) => s.inCompose !== false);
+}
+
 export function getServicesByCategory(category: DockerServiceCategory): string[] {
-  return DOCKER_SERVICE_CATALOG.filter((s) => s.category === category).map((s) => s.name);
+  return getComposeServiceCatalog()
+    .filter((s) => s.category === category)
+    .map((s) => s.name);
 }
 
 /**
@@ -195,6 +214,9 @@ export function getRequiredServicesForConfig(config?: RouterConfig | null): stri
       if (kind === 'trueforge' || ep.includes(':8790')) {
         needed.add('trueforge');
       }
+      if (kind === 'opencode' || ep.includes(':4096')) {
+        needed.add('opencode');
+      }
       if (u.harness?.sandboxEndpoint || u.harness?.sandboxType === 'docker-local') {
         needed.add('sandbox');
       }
@@ -222,4 +244,18 @@ export function getRequiredServicesForConfig(config?: RouterConfig | null): stri
   }
 
   return Array.from(needed);
+}
+
+/**
+ * Same as getRequiredServicesForConfig, restricted to services actually
+ * declared in docker/compose/*.yml (excluding Podman/host-only engines such
+ * as ramalama or comfyui that would cause `docker compose up` to fail).
+ */
+export function getComposeServicesForConfig(config?: RouterConfig | null): string[] {
+  const validCompose = new Set(getComposeServiceCatalog().map((s) => s.name));
+  const required = getRequiredServicesForConfig(config).filter((s) => validCompose.has(s));
+  if (required.length === 0) {
+    return ['switchyard'];
+  }
+  return required;
 }

@@ -3,8 +3,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
 import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
-import { saveConfig, validateConfig } from '@/lib/router';
-import { DOCKER_SERVICE_CATALOG } from '@/lib/docker-catalog';
+import { getConfigPath, redactConfigForApi, saveConfig, validateConfig } from '@/lib/router';
+import {
+  DOCKER_SERVICE_CATALOG,
+  getComposeServiceCatalog,
+  getComposeServicesForConfig,
+  getServicesByCategory
+} from '@/lib/docker-catalog';
 
 export type DeploymentTier = 'local' | 'docker' | 'compose' | 'k3d';
 
@@ -30,6 +35,7 @@ export interface DeploymentResponse {
 
 export class OrchestrationManager {
   private repoRoot: string;
+  public runCommand = executeSafeCommand;
 
   constructor() {
     // Determine repo root (eluvix root directory)
@@ -132,10 +138,11 @@ export class OrchestrationManager {
     }
 
     // 3. Check Docker Compose
+    const composeCatalog = getComposeServiceCatalog();
     const composeStatus = {
       running: false,
       activeServices: 0,
-      totalServices: DOCKER_SERVICE_CATALOG.length,
+      totalServices: composeCatalog.length,
       services: [] as any[]
     };
 
@@ -144,7 +151,7 @@ export class OrchestrationManager {
         const psOut = await executeSafeCommand('docker', ['ps', '--format', '{{.Names}}'], { timeoutMs: 4000 });
         const runningNames = psOut.stdout.split('\n').map(s => s.trim()).filter(Boolean);
 
-        composeStatus.services = DOCKER_SERVICE_CATALOG.map(entry => {
+        composeStatus.services = composeCatalog.map(entry => {
           const isRunning = runningNames.includes(entry.container);
           return {
             name: entry.container,
@@ -164,10 +171,9 @@ export class OrchestrationManager {
 
     // 4. Check Local Host config
     const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
-    const configDir = isTest
-      ? path.join(os.tmpdir(), 'eluvix-test-config')
-      : getAppPaths('eluvix').configDir;
-    const localConfigPath = path.join(configDir, 'config.json');
+    const localConfigPath = isTest
+      ? path.join(os.tmpdir(), 'eluvix-test-config', 'config.json')
+      : getConfigPath();
     const localStatus = {
       configExists: fs.existsSync(localConfigPath),
       configPath: localConfigPath,
@@ -204,54 +210,58 @@ export class OrchestrationManager {
   }
 
   /**
-   * Level 1: Local Host Binaries
+   * Parses and validates the compiled RouterConfig from a DeploymentRequest
+   * before any disk, container, or Kubernetes state is mutated.
    */
-  private async deployLocal(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
-    logs.push('[Level 1: Local] Preparing local configuration deployment...');
-    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
-    const configDir = isTest
-      ? path.join(os.tmpdir(), 'eluvix-test-config')
-      : getAppPaths('eluvix').configDir;
-    fs.mkdirSync(configDir, { recursive: true });
-
-    const targetFile = path.join(configDir, 'config.json');
-    const configData = req.compiledConfigs.rawRouterConfig || JSON.parse(req.compiledConfigs.eluvixJson || '{}');
-
-    // Authoritative deployment: the compiled graph is the source of truth
-    // for the active router configuration. Upstreams that are not in this
-    // deployment are removed from config.json instead of being silently
-    // preserved from the previous configuration.
-    const mergedConfig = configData;
-
-    // Validate BEFORE touching disk. Previously the file was overwritten
-    // first and saveConfig validation errors were swallowed, destroying
-    // the live config while reporting success.
+  private resolveAndValidateConfig(
+    req: DeploymentRequest,
+    logs: string[]
+  ): { ok: true; config: any } | { ok: false; error: string } {
+    let configData: any;
     try {
-      validateConfig(mergedConfig);
+      configData =
+        req.compiledConfigs?.rawRouterConfig ||
+        JSON.parse(req.compiledConfigs?.eluvixJson || '{}');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logs.push(`✗ Failed to parse compiled router config JSON: ${message}`);
+      return { ok: false, error: `Invalid compiled JSON: ${message}` };
+    }
+
+    try {
+      validateConfig(configData);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logs.push(`✗ Refusing to deploy invalid configuration: ${message}`);
-      return {
-        success: false,
-        tier: 'local',
-        message: `Local deployment refused: ${message}`,
-        logs,
-        durationMs: Date.now() - startTime
-      };
+      return { ok: false, error: message };
     }
+
     // validateConfig only requires upstreams to be an array, but an empty
     // graph is a total routing outage — refuse it as a failed deploy
     // rather than reporting success with zero upstreams.
-    if (mergedConfig.upstreams.length === 0) {
+    if (configData.upstreams.length === 0) {
       logs.push('✗ Refusing to deploy an empty upstream graph (zero upstreams would leave the router unable to route)');
-      return {
-        success: false,
-        tier: 'local',
-        message: 'Local deployment refused: upstreams must contain at least one upstream',
-        logs,
-        durationMs: Date.now() - startTime
-      };
+      return { ok: false, error: 'upstreams must contain at least one upstream' };
     }
+
+    return { ok: true, config: configData };
+  }
+
+  /**
+   * Authoritatively persists the validated RouterConfig to the host config
+   * file (with 0o600 .bak backup & rollback), reloads the in-memory router,
+   * and synchronizes OpenCode's provider model catalog.
+   */
+  private persistAuthoritativeLocalConfig(
+    mergedConfig: any,
+    logs: string[]
+  ): { ok: true; targetFile: string; configDir: string } | { ok: false; error: string } {
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
+    const targetFile = isTest
+      ? path.join(os.tmpdir(), 'eluvix-test-config', 'config.json')
+      : getConfigPath();
+    const configDir = path.dirname(targetFile);
+    fs.mkdirSync(configDir, { recursive: true });
 
     // Back up the previous config before overwriting (same .bak precedent
     // as configurator/apply), so a failed deploy never destroys it.
@@ -289,13 +299,7 @@ export class OrchestrationManager {
       }
       const message = err instanceof Error ? err.message : String(err);
       logs.push(`✗ Failed to save and reload active router configuration: ${message}`);
-      return {
-        success: false,
-        tier: 'local',
-        message: `Local deployment failed: ${message}`,
-        logs,
-        durationMs: Date.now() - startTime
-      };
+      return { ok: false, error: message };
     }
 
     // Synchronize active Eluvix models & auth into OpenCode config (~/.config/opencode/opencode.json)
@@ -308,26 +312,220 @@ export class OrchestrationManager {
       console.warn('Could not sync OpenCode config:', syncErr);
     }
 
-    // If local switchyard server is reachable, trigger hot-reload
+    return { ok: true, targetFile, configDir };
+  }
+
+  /**
+   * Resolves the directory where secret-redacted runtime artifacts for Docker
+   * Compose containers (eluvix.json, bifrost.yaml, routing.json, gateway.json)
+   * are written and mounted read-only into /config.
+   */
+  public getRuntimeConfigDir(): string {
+    if (process.env.ELUVIX_RUNTIME_CONFIG_DIR) {
+      return process.env.ELUVIX_RUNTIME_CONFIG_DIR;
+    }
+    const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
+    if (isTest) {
+      return path.join(os.tmpdir(), 'eluvix-test-runtime-config');
+    }
+    return path.join(this.repoRoot, 'docker', 'runtime-config');
+  }
+
+  /**
+   * Writes secret-redacted runtime config artifacts for mounted Docker
+   * containers (switchyard, agent-router, agentgateway). Raw API keys and
+   * HMAC literals are stripped via redactConfigForApi so mounted files carry
+   * zero raw credentials while containers run as unprivileged `node`.
+   */
+  public writeDockerRuntimeConfigs(
+    req: DeploymentRequest,
+    validatedConfig: any,
+    logs: string[]
+  ): string {
+    const runtimeDir = this.getRuntimeConfigDir();
+    fs.mkdirSync(runtimeDir, { recursive: true });
+
+    const redactedRouter = redactConfigForApi(validatedConfig);
+    const written: string[] = [];
+
+    const writeArtifact = (filename: string, content: string) => {
+      const fullPath = path.join(runtimeDir, filename);
+      fs.writeFileSync(fullPath, content, { encoding: 'utf-8', mode: 0o644 });
+      written.push(filename);
+    };
+
+    writeArtifact('eluvix.json', JSON.stringify(redactedRouter, null, 2));
+    if (typeof req.compiledConfigs?.bifrostYaml === 'string' && req.compiledConfigs.bifrostYaml.trim()) {
+      writeArtifact('bifrost.yaml', req.compiledConfigs.bifrostYaml);
+    }
+    writeArtifact(
+      'routing.json',
+      typeof req.compiledConfigs?.agentRouterJson === 'string' && req.compiledConfigs.agentRouterJson.trim()
+        ? req.compiledConfigs.agentRouterJson
+        : '{}'
+    );
+    writeArtifact(
+      'gateway.json',
+      typeof req.compiledConfigs?.agentGatewayJson === 'string' && req.compiledConfigs.agentGatewayJson.trim()
+        ? req.compiledConfigs.agentGatewayJson
+        : '{}'
+    );
+
+    logs.push(`✓ Written mounted container runtime configs (${written.join(', ')}) to ${runtimeDir}`);
+    return runtimeDir;
+  }
+
+  /**
+   * Best-effort live push to the local Switchyard proxy (port 8080) with
+   * Bearer auth when configured and a bounded 3s timeout.
+   */
+  private async syncLiveSwitchyard(validatedConfig: any, logs: string[]): Promise<void> {
+    const swPort = process.env.SWITCHYARD_PORT || '8080';
+    const token = (process.env.SWITCHYARD_AUTH_TOKEN || process.env.ADMIN_PASSWORD || '').trim();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     try {
-      const res = await fetch('http://127.0.0.1:8080/v1/config', {
+      const res = await fetch(`http://127.0.0.1:${swPort}/v1/config`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mergedConfig)
+        headers,
+        body: JSON.stringify(redactConfigForApi(validatedConfig)),
+        signal: AbortSignal.timeout(3000)
       });
       if (res.ok) {
-        logs.push('✓ Live local Switchyard balancer (port 8080) synchronized successfully.');
+        logs.push(`✓ Live local Switchyard balancer (port ${swPort}) synchronized successfully.`);
+      } else if (res.status === 503) {
+        logs.push(
+          `ℹ️ Local Switchyard (port ${swPort}) config API disabled (no SWITCHYARD_AUTH_TOKEN set); mounted /config/eluvix.json reloads automatically.`
+        );
       } else {
-        logs.push(`ℹ️ Local Switchyard server returned HTTP ${res.status}. Config saved to disk.`);
+        logs.push(
+          `ℹ️ Local Switchyard server (port ${swPort}) returned HTTP ${res.status}. Mounted /config/eluvix.json and host config remain authoritative.`
+        );
       }
     } catch {
-      logs.push('ℹ️ No local Switchyard proxy detected at port 8080. Config saved to ~/.config/eluvix/config.json for next launch.');
+      logs.push(
+        `ℹ️ No local Switchyard HTTP endpoint detected on port ${swPort}. Config saved to disk for next launch.`
+      );
     }
+  }
+
+  /**
+   * Polls health endpoints for deployed compose services with a bounded
+   * timeout so deployment reports genuine container readiness.
+   */
+  private async waitForComposeServicesHealth(
+    services: string[],
+    logs: string[],
+    timeoutMs = 45000
+  ): Promise<{ healthy: string[]; unhealthy: string[] }> {
+    const catalogByName = new Map(DOCKER_SERVICE_CATALOG.map((s) => [s.name, s]));
+    const checkable = services
+      .map((name) => catalogByName.get(name))
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry && entry.name !== 'sglang'));
+
+    const pending = new Set(checkable.map((e) => e.name));
+    const healthy: string[] = [];
+    const deadline = Date.now() + timeoutMs;
+
+    while (pending.size > 0 && Date.now() < deadline) {
+      for (const name of Array.from(pending)) {
+        const entry = catalogByName.get(name)!;
+        const probeUrl =
+          name === 'ollama'
+            ? `http://127.0.0.1:${entry.port}/api/tags`
+            : `http://127.0.0.1:${entry.port}/health`;
+        try {
+          const res = await fetch(probeUrl, { signal: AbortSignal.timeout(2000) });
+          if (res.ok) {
+            pending.delete(name);
+            healthy.push(name);
+          }
+        } catch {
+          // still starting
+        }
+      }
+      if (pending.size > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+
+    const unhealthy = Array.from(pending);
+    if (healthy.length > 0) {
+      logs.push(`✓ Verified healthy containers: ${healthy.join(', ')}`);
+    }
+    if (unhealthy.length > 0) {
+      logs.push(`⚠️ Containers still starting or unhealthy after ${Math.round(timeoutMs / 1000)}s: ${unhealthy.join(', ')}`);
+    }
+    return { healthy, unhealthy };
+  }
+
+  /**
+   * Runs GPU hardware detection (NVIDIA CUDA / AMD ROCm / CPU) non-fatally so
+   * docker-compose.override.yml matches the host before spinning up containers.
+   */
+  private async detectHostGpuForDocker(logs: string[]): Promise<void> {
+    const scriptPath = path.join(this.repoRoot, 'scripts', 'docker-detect-and-spinup.sh');
+    if (!fs.existsSync(scriptPath)) return;
+    try {
+      const detect = await this.runCommand('bash', [scriptPath, 'detect', '--json'], {
+        cwd: this.repoRoot,
+        timeoutMs: 15000
+      });
+      if (detect.success && detect.stdout.trim()) {
+        try {
+          const hw = JSON.parse(detect.stdout.trim());
+          logs.push(`✓ Hardware acceleration profile: ${hw.vendor || 'cpu'} (${hw.model || 'CPU'})`);
+        } catch {
+          logs.push(`✓ Hardware detection completed.`);
+        }
+      }
+    } catch {
+      logs.push('ℹ️ Hardware detection skipped (non-fatal).');
+    }
+  }
+
+  /**
+   * Level 1: Local Host Binaries
+   */
+  private async deployLocal(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
+    logs.push('[Level 1: Local] Preparing local configuration deployment...');
+    const validated = this.resolveAndValidateConfig(req, logs);
+    if (!validated.ok) {
+      return {
+        success: false,
+        tier: 'local',
+        message: `Local deployment refused: ${validated.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    const persisted = this.persistAuthoritativeLocalConfig(validated.config, logs);
+    if (!persisted.ok) {
+      return {
+        success: false,
+        tier: 'local',
+        message: `Local deployment failed: ${persisted.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    // Keep mounted container configs fresh too if runtime-config is already active
+    const existingRuntimeEluvix = path.join(this.getRuntimeConfigDir(), 'eluvix.json');
+    if (fs.existsSync(existingRuntimeEluvix)) {
+      this.writeDockerRuntimeConfigs(req, validated.config, logs);
+    }
+
+    await this.syncLiveSwitchyard(validated.config, logs);
 
     return {
       success: true,
       tier: 'local',
-      message: 'Local configuration deployed successfully to ~/.config/eluvix/config.json',
+      message: `Local configuration deployed successfully to ${persisted.targetFile}`,
       logs,
       durationMs: Date.now() - startTime
     };
@@ -465,23 +663,83 @@ export class OrchestrationManager {
   }
 
   /**
-   * Level 2: Standalone Docker Containers
+   * Level 2: Standalone Docker Containers (minimal topology-required services)
    */
   private async deployDocker(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
-    logs.push('[Level 2: Docker] Deploying to standalone Docker container...');
-    const scriptPath = path.join(this.repoRoot, 'scripts', 'docker-detect-and-spinup.sh');
-
-    if (!fs.existsSync(scriptPath)) {
-      throw new Error(`Orchestration script not found: ${scriptPath}`);
+    logs.push('[Level 2: Docker] Preparing topology-scoped Docker container deployment...');
+    const validated = this.resolveAndValidateConfig(req, logs);
+    if (!validated.ok) {
+      return {
+        success: false,
+        tier: 'docker',
+        message: `Docker deployment refused: ${validated.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
     }
 
-    const res = await executeSafeCommand('bash', [scriptPath, 'up'], { cwd: this.repoRoot });
-    logs.push(res.stdout || res.stderr);
+    const persisted = this.persistAuthoritativeLocalConfig(validated.config, logs);
+    if (!persisted.ok) {
+      return {
+        success: false,
+        tier: 'docker',
+        message: `Docker deployment failed: ${persisted.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
 
+    this.writeDockerRuntimeConfigs(req, validated.config, logs);
+
+    const dockerCheck = await this.runCommand('docker', ['info', '--format', '{{.ServerVersion}}'], {
+      cwd: this.repoRoot,
+      timeoutMs: 5000
+    });
+    if (!dockerCheck.success) {
+      logs.push(`✗ Docker daemon is unavailable: ${dockerCheck.stderr || dockerCheck.stdout}`);
+      return {
+        success: false,
+        tier: 'docker',
+        message: 'Docker daemon is not running or inaccessible. Host config was still saved.',
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    await this.detectHostGpuForDocker(logs);
+
+    // Deploy only the minimal compose services required by this graph (plus switchyard)
+    const targetSet = new Set<string>(['switchyard', ...getComposeServicesForConfig(validated.config)]);
+    const targetServices = Array.from(targetSet);
+    logs.push(`🚀 Building & starting topology containers: ${targetServices.join(', ')}`);
+
+    const res = await this.runCommand(
+      'docker',
+      ['compose', '--profile', 'all', 'up', '-d', '--build', '--force-recreate', ...targetServices],
+      { cwd: this.repoRoot, timeoutMs: 180000 }
+    );
+    if (res.stdout.trim()) logs.push(res.stdout.trim());
+    if (!res.success) {
+      if (res.stderr.trim()) logs.push(res.stderr.trim());
+      return {
+        success: false,
+        tier: 'docker',
+        message: `Docker deployment failed for [${targetServices.join(', ')}].`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    const health = await this.waitForComposeServicesHealth(targetServices, logs, 35000);
+    await this.syncLiveSwitchyard(validated.config, logs);
+
+    const allHealthy = health.unhealthy.length === 0;
     return {
-      success: res.success,
+      success: allHealthy,
       tier: 'docker',
-      message: res.success ? 'Docker containers successfully launched and updated.' : 'Docker deployment encountered errors.',
+      message: allHealthy
+        ? `Deployed ${targetServices.length} topology Docker container(s) (${targetServices.join(', ')}) with live runtime config.`
+        : `Containers started, but health checks timed out for: ${health.unhealthy.join(', ')}.`,
       logs,
       durationMs: Date.now() - startTime
     };
@@ -491,31 +749,108 @@ export class OrchestrationManager {
    * Level 3: Docker-Compose Stack
    */
   private async deployCompose(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
-    logs.push('[Level 3: Docker Compose] Orchestrating full compose stack...');
-    const scriptPath = path.join(this.repoRoot, 'scripts', 'docker-detect-and-spinup.sh');
-
-    // Run spinup script
-    const res = await executeSafeCommand('bash', [scriptPath, 'up'], {
-      cwd: this.repoRoot,
-      timeoutMs: 180000
-    });
-
-    logs.push(res.stdout);
-    if (!res.success) {
-      logs.push(res.stderr);
+    logs.push('[Level 3: Docker Compose] Preparing compiled config sync & compose stack deployment...');
+    const validated = this.resolveAndValidateConfig(req, logs);
+    if (!validated.ok) {
       return {
         success: false,
         tier: 'compose',
-        message: 'Docker Compose spin-up encountered errors.',
+        message: `Docker Compose deployment refused: ${validated.error}`,
         logs,
         durationMs: Date.now() - startTime
       };
     }
 
+    const persisted = this.persistAuthoritativeLocalConfig(validated.config, logs);
+    if (!persisted.ok) {
+      return {
+        success: false,
+        tier: 'compose',
+        message: `Docker Compose deployment failed: ${persisted.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    this.writeDockerRuntimeConfigs(req, validated.config, logs);
+
+    const dockerCheck = await this.runCommand('docker', ['info', '--format', '{{.ServerVersion}}'], {
+      cwd: this.repoRoot,
+      timeoutMs: 5000
+    });
+    if (!dockerCheck.success) {
+      logs.push(`✗ Docker daemon is unavailable: ${dockerCheck.stderr || dockerCheck.stdout}`);
+      return {
+        success: false,
+        tier: 'compose',
+        message: 'Docker daemon is not running or inaccessible. Host config was still saved.',
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    await this.detectHostGpuForDocker(logs);
+
+    // Build target service list: core control plane + topology-required services
+    // + any already-running Eluvix compose services. This updates the active
+    // stack without pulling unused heavy images (like CUDA-only sglang) unless
+    // explicitly present in the topology or already running.
+    const composeCatalog = getComposeServiceCatalog();
+    const containerToService = new Map(composeCatalog.map((s) => [s.container, s.name]));
+    const targetSet = new Set<string>([
+      ...getServicesByCategory('core'),
+      ...getComposeServicesForConfig(validated.config)
+    ]);
+
+    try {
+      const psOut = await this.runCommand('docker', ['ps', '--format', '{{.Names}}'], {
+        cwd: this.repoRoot,
+        timeoutMs: 5000
+      });
+      if (psOut.success) {
+        for (const containerName of psOut.stdout.split('\n').map((s) => s.trim()).filter(Boolean)) {
+          const svc = containerToService.get(containerName);
+          if (svc) targetSet.add(svc);
+        }
+      }
+    } catch {
+      // Non-fatal; core + topology services still deploy
+    }
+
+    const targetServices = Array.from(targetSet);
+    logs.push(`🚀 Applying compiled runtime config & updating Compose stack: ${targetServices.join(', ')}`);
+
+    const res = await this.runCommand(
+      'docker',
+      ['compose', '--profile', 'all', 'up', '-d', '--build', '--force-recreate', ...targetServices],
+      {
+        cwd: this.repoRoot,
+        timeoutMs: 180000
+      }
+    );
+
+    if (res.stdout.trim()) logs.push(res.stdout.trim());
+    if (!res.success) {
+      if (res.stderr.trim()) logs.push(res.stderr.trim());
+      return {
+        success: false,
+        tier: 'compose',
+        message: `Docker Compose deployment encountered errors while updating [${targetServices.join(', ')}].`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    const health = await this.waitForComposeServicesHealth(targetServices, logs, 45000);
+    await this.syncLiveSwitchyard(validated.config, logs);
+
+    const allHealthy = health.unhealthy.length === 0;
     return {
-      success: true,
+      success: allHealthy,
       tier: 'compose',
-      message: 'Docker Compose service stack successfully deployed and running.',
+      message: allHealthy
+        ? `Docker Compose stack synced and running (${targetServices.join(', ')}).`
+        : `Docker Compose updated, but health checks timed out for: ${health.unhealthy.join(', ')}.`,
       logs,
       durationMs: Date.now() - startTime
     };
@@ -527,97 +862,229 @@ export class OrchestrationManager {
   private async deployK3d(req: DeploymentRequest, logs: string[], startTime: number): Promise<DeploymentResponse> {
     logs.push('[Level 4: k3d + Helm] Initiating local Kubernetes deployment...');
 
-    // 1. Check if k3d cluster exists
-    const clusterCheck = await executeSafeCommand('k3d', ['cluster', 'list', '--no-headers']);
-    if (!clusterCheck.stdout.includes('eluvix-local')) {
-      logs.push('🚀 Creating k3d cluster "eluvix-local" with load balancer ports...');
-      const createCluster = await executeSafeCommand('k3d', [
-        'cluster',
-        'create',
-        '--config',
-        path.join(this.repoRoot, 'k3d-config.yaml')
-      ], {
-        cwd: this.repoRoot,
-        timeoutMs: 180000
-      });
-      logs.push(createCluster.stdout);
-      if (!createCluster.success) {
-        logs.push(createCluster.stderr);
-        throw new Error(`Failed to create k3d cluster: ${createCluster.stderr}`);
-      }
-    } else {
-      logs.push('✓ Cluster "eluvix-local" detected.');
+    const validated = this.resolveAndValidateConfig(req, logs);
+    if (!validated.ok) {
+      return {
+        success: false,
+        tier: 'k3d',
+        message: `k3d deployment refused: ${validated.error}`,
+        logs,
+        durationMs: Date.now() - startTime
+      };
     }
 
-    // 2. Ensure nodes are ready
-    logs.push('⏳ Checking node readiness...');
-    await executeSafeCommand('kubectl', [
-      'wait',
-      '--for=condition=Ready',
-      'nodes',
-      '--all',
-      '--context',
-      'k3d-eluvix-local',
-      '--timeout=60s'
-    ]);
-
-    // 3. Ensure namespace exists
-    logs.push('📦 Ensuring "eluvix" namespace exists...');
-    await executeSafeCommand('bash', [
-      '-c',
-      'kubectl create namespace eluvix --context k3d-eluvix-local --dry-run=client -o yaml | kubectl apply --context k3d-eluvix-local -f -'
-    ]).catch(() => {});
-
-    // 4. Write temporary custom values containing compiled configs
-    const tempValuesPath = path.join(
-      os.tmpdir(),
-      `eluvix-helm-values-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.yaml`
-    );
-    try {
-      const customValues = {
-        routingConfig: {
-          eluvixJson: req.compiledConfigs.eluvixJson || '',
-          bifrostYaml: req.compiledConfigs.bifrostYaml || '',
-          agentRouterJson: req.compiledConfigs.agentRouterJson || '',
-          agentGatewayJson: req.compiledConfigs.agentGatewayJson || ''
-        }
-      };
-      fs.writeFileSync(tempValuesPath, JSON.stringify(customValues, null, 2), { encoding: 'utf-8', mode: 0o600 });
-      logs.push('✓ Injected compiled routing graphs into Helm values.');
-
-      // 5. Deploy / Upgrade Helm release
-      logs.push('🚀 Running Helm upgrade --install eluvix...');
-      const helmResult = await executeSafeCommand('helm', [
-        'upgrade',
-        '--install',
-        'eluvix',
-        path.join(this.repoRoot, 'helm', 'eluvix'),
-        '-f',
-        path.join(this.repoRoot, 'helm', 'eluvix', 'values-local.yaml'),
-        '-f',
-        tempValuesPath,
-        '--namespace',
-        'eluvix',
-        '--kube-context',
-        'k3d-eluvix-local'
-      ], {
-        cwd: this.repoRoot,
-        timeoutMs: 120000
-      });
-
-      logs.push(helmResult.stdout);
-      if (!helmResult.success) {
-        logs.push(helmResult.stderr);
+    // 0. Verify required CLI toolchains
+    for (const [cmd, args] of [
+      ['docker', ['info', '--format', '{{.ServerVersion}}']],
+      ['k3d', ['version']],
+      ['kubectl', ['version', '--client', '-o', 'json']],
+      ['helm', ['version', '--short']]
+    ] as const) {
+      const check = await this.runCommand(cmd, [...args], { cwd: this.repoRoot, timeoutMs: 5000 });
+      if (!check.success) {
+        const errText = check.stderr || check.stdout || `${cmd} is unavailable`;
+        logs.push(`✗ Prerequisite failed (${cmd}): ${errText}`);
         return {
           success: false,
           tier: 'k3d',
-          message: `Helm deployment failed: ${helmResult.stderr}`,
+          message: `k3d deployment prerequisite missing or stopped: ${cmd}`,
+          logs,
+          durationMs: Date.now() - startTime
+        };
+      }
+    }
+
+    // 1. Check if k3d cluster exists (and start it if stopped, or create + import images if missing)
+    const clusterCheck = await this.runCommand('k3d', ['cluster', 'list', '--no-headers'], {
+      cwd: this.repoRoot,
+      timeoutMs: 10000
+    });
+    const clusterExists = clusterCheck.stdout
+      .split('\n')
+      .some((line) => line.trim().startsWith('eluvix-local'));
+
+    if (!clusterExists) {
+      logs.push('🚀 Creating k3d cluster "eluvix-local" with load balancer ports...');
+      const createCluster = await this.runCommand(
+        'k3d',
+        ['cluster', 'create', '--config', path.join(this.repoRoot, 'k3d-config.yaml')],
+        { cwd: this.repoRoot, timeoutMs: 180000 }
+      );
+      if (createCluster.stdout.trim()) logs.push(createCluster.stdout.trim());
+      if (!createCluster.success) {
+        if (createCluster.stderr.trim()) logs.push(createCluster.stderr.trim());
+        return {
+          success: false,
+          tier: 'k3d',
+          message: `Failed to create k3d cluster: ${createCluster.stderr || createCluster.stdout}`,
           logs,
           durationMs: Date.now() - startTime
         };
       }
 
-      logs.push('✨ Helm release "eluvix" deployed successfully on k3d cluster.');
+      // Build and import local images so pods never stall in ImagePullBackOff
+      const k3dImages: Array<{ tag: string; args: string[] }> = [
+        { tag: 'eluvix-nextjs:latest', args: ['build', '-t', 'eluvix-nextjs:latest', '-f', 'apps/nextjs/Dockerfile', '.'] },
+        { tag: 'eluvix-switchyard:latest', args: ['build', '-t', 'eluvix-switchyard:latest', 'docker/switchyard'] },
+        { tag: 'eluvix-agent-router:latest', args: ['build', '-t', 'eluvix-agent-router:latest', 'docker/agent-router'] },
+        { tag: 'eluvix-agentgateway:latest', args: ['build', '-t', 'eluvix-agentgateway:latest', 'docker/agentgateway'] }
+      ];
+      for (const img of k3dImages) {
+        logs.push(`🔨 Building image ${img.tag}...`);
+        const buildRes = await this.runCommand('docker', img.args, { cwd: this.repoRoot, timeoutMs: 300000 });
+        if (!buildRes.success) {
+          if (buildRes.stderr.trim()) logs.push(buildRes.stderr.trim());
+          return {
+            success: false,
+            tier: 'k3d',
+            message: `Failed to build Docker image ${img.tag} for k3d cluster.`,
+            logs,
+            durationMs: Date.now() - startTime
+          };
+        }
+      }
+      logs.push('📥 Importing local Eluvix images into k3d cluster "eluvix-local"...');
+      const importRes = await this.runCommand(
+        'k3d',
+        ['image', 'import', ...k3dImages.map((i) => i.tag), '--cluster', 'eluvix-local'],
+        { cwd: this.repoRoot, timeoutMs: 180000 }
+      );
+      if (!importRes.success) {
+        if (importRes.stderr.trim()) logs.push(importRes.stderr.trim());
+        return {
+          success: false,
+          tier: 'k3d',
+          message: `Failed to import images into k3d cluster: ${importRes.stderr || importRes.stdout}`,
+          logs,
+          durationMs: Date.now() - startTime
+        };
+      }
+    } else {
+      const infoCheck = await this.runCommand('kubectl', ['cluster-info', '--context', 'k3d-eluvix-local'], {
+        cwd: this.repoRoot,
+        timeoutMs: 8000
+      });
+      if (!infoCheck.success) {
+        logs.push('▶️ Cluster "eluvix-local" is stopped; starting cluster...');
+        const startRes = await this.runCommand('k3d', ['cluster', 'start', 'eluvix-local'], {
+          cwd: this.repoRoot,
+          timeoutMs: 120000
+        });
+        if (!startRes.success) {
+          if (startRes.stderr.trim()) logs.push(startRes.stderr.trim());
+          return {
+            success: false,
+            tier: 'k3d',
+            message: `Failed to start stopped k3d cluster: ${startRes.stderr || startRes.stdout}`,
+            logs,
+            durationMs: Date.now() - startTime
+          };
+        }
+      }
+      logs.push('✓ Cluster "eluvix-local" is active.');
+    }
+
+    // 2. Ensure nodes are ready
+    logs.push('⏳ Checking node readiness...');
+    const waitNodes = await this.runCommand(
+      'kubectl',
+      ['wait', '--for=condition=Ready', 'nodes', '--all', '--context', 'k3d-eluvix-local', '--timeout=90s'],
+      { cwd: this.repoRoot, timeoutMs: 95000 }
+    );
+    if (!waitNodes.success) {
+      if (waitNodes.stderr.trim()) logs.push(waitNodes.stderr.trim());
+      return {
+        success: false,
+        tier: 'k3d',
+        message: 'k3d cluster nodes did not become Ready in time.',
+        logs,
+        durationMs: Date.now() - startTime
+      };
+    }
+
+    // 3. Ensure namespace exists cleanly without shell piping
+    logs.push('📦 Ensuring "eluvix" namespace exists...');
+    const nsCheck = await this.runCommand(
+      'kubectl',
+      ['get', 'namespace', 'eluvix', '--context', 'k3d-eluvix-local'],
+      { cwd: this.repoRoot, timeoutMs: 10000 }
+    );
+    if (!nsCheck.success) {
+      const nsCreate = await this.runCommand(
+        'kubectl',
+        ['create', 'namespace', 'eluvix', '--context', 'k3d-eluvix-local'],
+        { cwd: this.repoRoot, timeoutMs: 10000 }
+      );
+      if (!nsCreate.success) {
+        if (nsCreate.stderr.trim()) logs.push(nsCreate.stderr.trim());
+        return {
+          success: false,
+          tier: 'k3d',
+          message: `Failed to create namespace "eluvix": ${nsCreate.stderr || nsCreate.stdout}`,
+          logs,
+          durationMs: Date.now() - startTime
+        };
+      }
+    }
+
+    // 4. Write temporary custom values containing secret-redacted compiled configs
+    const tempValuesPath = path.join(
+      os.tmpdir(),
+      `eluvix-helm-values-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.yaml`
+    );
+    try {
+      const redactedJson = JSON.stringify(redactConfigForApi(validated.config), null, 2);
+      const customValues = {
+        routingConfig: {
+          eluvixJson: redactedJson,
+          bifrostYaml: req.compiledConfigs.bifrostYaml || '',
+          agentRouterJson: req.compiledConfigs.agentRouterJson || '{}',
+          agentGatewayJson: req.compiledConfigs.agentGatewayJson || '{}'
+        }
+      };
+      fs.writeFileSync(tempValuesPath, JSON.stringify(customValues, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      logs.push('✓ Injected secret-redacted compiled routing graphs into Helm values (ConfigMap rollout enabled).');
+
+      // 5. Deploy / Upgrade Helm release (checksum/config annotations trigger pod rollouts automatically)
+      logs.push('🚀 Running Helm upgrade --install eluvix --wait...');
+      const helmResult = await this.runCommand(
+        'helm',
+        [
+          'upgrade',
+          '--install',
+          'eluvix',
+          path.join(this.repoRoot, 'helm', 'eluvix'),
+          '-f',
+          path.join(this.repoRoot, 'helm', 'eluvix', 'values-local.yaml'),
+          '-f',
+          tempValuesPath,
+          '--namespace',
+          'eluvix',
+          '--kube-context',
+          'k3d-eluvix-local',
+          '--wait',
+          '--timeout',
+          '180s'
+        ],
+        {
+          cwd: this.repoRoot,
+          timeoutMs: 210000
+        }
+      );
+
+      if (helmResult.stdout.trim()) logs.push(helmResult.stdout.trim());
+      if (!helmResult.success) {
+        if (helmResult.stderr.trim()) logs.push(helmResult.stderr.trim());
+        return {
+          success: false,
+          tier: 'k3d',
+          message: `Helm deployment failed: ${helmResult.stderr || helmResult.stdout}`,
+          logs,
+          durationMs: Date.now() - startTime
+        };
+      }
+
+      logs.push('✨ Helm release "eluvix" deployed and rolled out cleanly on k3d cluster.');
       return {
         success: true,
         tier: 'k3d',

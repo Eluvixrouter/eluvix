@@ -1,18 +1,18 @@
 import { NextResponse } from 'next/server';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
 import { isValidContainerName, isAuthorizedAdmin } from '@/lib/api-helpers';
 import {
-  DOCKER_SERVICE_CATALOG,
   type DockerServiceCategory,
-  getRequiredServicesForConfig,
+  getComposeServiceCatalog,
+  getComposeServicesForConfig,
   getServicesByCategory
 } from '@/lib/docker-catalog';
 import { getConfig } from '@/lib/router';
 
-const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
 
 export const dynamic = 'force-dynamic';
 
@@ -53,9 +53,11 @@ export async function POST(req: Request) {
       // Body empty or not JSON
     }
 
+    const composeServiceSet = new Set(getComposeServiceCatalog().map((s) => s.name));
+
     if (requestedServices.length === 0 && requestedProfile) {
       if (requestedProfile === 'topology') {
-        requestedServices = getRequiredServicesForConfig(getConfig());
+        requestedServices = getComposeServicesForConfig(getConfig());
       } else if (
         requestedProfile === 'core' ||
         requestedProfile === 'inference' ||
@@ -64,22 +66,30 @@ export async function POST(req: Request) {
       ) {
         requestedServices = getServicesByCategory(requestedProfile as DockerServiceCategory);
       } else if (requestedProfile === 'all') {
-        requestedServices = DOCKER_SERVICE_CATALOG.map((s) => s.name);
+        requestedServices = getComposeServiceCatalog().map((s) => s.name);
       }
     }
 
-    // Default to all catalog services when no specific service or profile is requested
-    const targetList =
+    // Default to all compose-backed services when no specific service or profile is requested
+    const targetList = (
       requestedServices.length > 0
         ? requestedServices
-        : DOCKER_SERVICE_CATALOG.map((s) => s.name);
+        : getComposeServiceCatalog().map((s) => s.name)
+    ).filter((s) => composeServiceSet.has(s));
+
+    if (targetList.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No valid Docker Compose services selected.' },
+        { status: 400 }
+      );
+    }
 
     // Pre-flight: detect GPU acceleration (NVIDIA CUDA / AMD ROCm / CPU)
     const detectScript = path.join(rootDir, 'scripts', 'docker-detect-and-spinup.sh');
     let hardwareInfo: Record<string, unknown> | null = null;
     if (fs.existsSync(detectScript)) {
       try {
-        const { stdout: detectOut } = await execAsync(`bash "${detectScript}" detect --json`, {
+        const { stdout: detectOut } = await execFileAsync('bash', [detectScript, 'detect', '--json'], {
           cwd: rootDir,
           timeout: 15000
         });
@@ -94,13 +104,14 @@ export async function POST(req: Request) {
       }
     }
 
-    const serviceArgs = targetList.join(' ');
-    const composeCmd = `docker compose --profile all up -d --build ${serviceArgs}`;
-
-    const { stdout, stderr } = await execAsync(composeCmd, {
-      cwd: rootDir,
-      timeout: 180000 // 3 minutes
-    });
+    const { stdout, stderr } = await execFileAsync(
+      'docker',
+      ['compose', '--profile', 'all', 'up', '-d', '--build', ...targetList],
+      {
+        cwd: rootDir,
+        timeout: 180000 // 3 minutes
+      }
+    );
 
     return NextResponse.json({
       success: true,

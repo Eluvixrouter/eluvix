@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ALLOWED_EXECUTABLES, executeSafeCommand } from '../executor';
+import { ALLOWED_EXECUTABLES, executeSafeCommand, type CommandExecutionResult } from '../executor';
 import { orchestratorManager } from '../manager';
+import { getComposeServicesForConfig } from '@/lib/docker-catalog';
 
 describe('Orchestration Subsystem', () => {
   it('should maintain strict command allowlist', () => {
@@ -287,6 +288,329 @@ describe('Orchestration Subsystem', () => {
       // The backup holds the same credentials as config.json: it must be
       // 0600, never the umask default (audit H-11 class).
       expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  describe('multi-tier deployments (docker, compose, k3d) & runtime config sync', () => {
+    const origRuntimeDir = process.env.ELUVIX_RUNTIME_CONFIG_DIR;
+    const origSwToken = process.env.SWITCHYARD_AUTH_TOKEN;
+    const origXdgConfig = process.env.XDG_CONFIG_HOME;
+    const origXdgData = process.env.XDG_DATA_HOME;
+    let tempDirs: string[] = [];
+
+    function makeTempDir(prefix: string): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+      tempDirs.push(dir);
+      return dir;
+    }
+
+    function okCmd(command: string, args: string[], stdout = ''): CommandExecutionResult {
+      return { command, args, exitCode: 0, stdout, stderr: '', success: true, durationMs: 5 };
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      if (origRuntimeDir === undefined) delete process.env.ELUVIX_RUNTIME_CONFIG_DIR;
+      else process.env.ELUVIX_RUNTIME_CONFIG_DIR = origRuntimeDir;
+      if (origSwToken === undefined) delete process.env.SWITCHYARD_AUTH_TOKEN;
+      else process.env.SWITCHYARD_AUTH_TOKEN = origSwToken;
+      if (origXdgConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = origXdgConfig;
+      if (origXdgData === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = origXdgData;
+      for (const dir of tempDirs) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      tempDirs = [];
+    });
+
+    it('getComposeServicesForConfig excludes non-compose host engines (ramalama, comfyui) and includes opencode', () => {
+      const svcs = getComposeServicesForConfig({
+        strategy: 'cost-complexity',
+        upstreams: [
+          { id: 'r1', name: 'RamaLama', type: 'ramalama', endpoint: 'http://127.0.0.1:8085/v1', models: ['*'] },
+          { id: 'c1', name: 'ComfyUI', type: 'comfyui', endpoint: 'http://127.0.0.1:8188', models: ['flux'] },
+          { id: 'o1', name: 'Ollama', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1', models: ['llama3.2'] },
+          {
+            id: 'h1',
+            name: 'OpenCode',
+            type: 'harness',
+            endpoint: 'http://127.0.0.1:4096',
+            models: ['*'],
+            harness: { kind: 'opencode' }
+          }
+        ]
+      } as any);
+      expect(svcs).toContain('ollama');
+      expect(svcs).toContain('opencode');
+      expect(svcs).not.toContain('ramalama');
+      expect(svcs).not.toContain('comfyui');
+      expect(svcs).not.toContain('sglang');
+    });
+
+    it('docker tier writes secret-redacted runtime bundle, deploys only minimal topology containers, and sends auth header to Switchyard', async () => {
+      const runtimeDir = makeTempDir('eluvix-runtime-docker-');
+      process.env.ELUVIX_RUNTIME_CONFIG_DIR = runtimeDir;
+      process.env.SWITCHYARD_AUTH_TOKEN = 'test-sw-token-123';
+
+      const commands: Array<{ cmd: string; args: string[] }> = [];
+      vi.spyOn(orchestratorManager, 'runCommand').mockImplementation(async (cmd, args) => {
+        commands.push({ cmd, args });
+        if (cmd === 'docker' && args[0] === 'info') return okCmd(cmd, args, '27.0.0');
+        if (cmd === 'bash' && args.includes('detect')) return okCmd(cmd, args, '{"vendor":"amd","model":"Radeon"}');
+        if (cmd === 'docker' && args[0] === 'compose') return okCmd(cmd, args, 'Container eluvix-switchyard Recreated');
+        return okCmd(cmd, args);
+      });
+
+      const fetchCalls: Array<{ url: string; headers?: any }> = [];
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        fetchCalls.push({ url, headers: init?.headers });
+        return new Response(JSON.stringify({ status: 'ok', success: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      });
+
+      const sampleConfig = {
+        strategy: 'cost-complexity',
+        upstreams: [
+          {
+            id: 'ollama-1',
+            name: 'Local Ollama',
+            type: 'ollama',
+            endpoint: 'http://127.0.0.1:11434/v1',
+            apiKey: 'sk-super-secret-must-not-leak',
+            models: ['llama3.2']
+          }
+        ]
+      };
+
+      const res = await orchestratorManager.deploy({
+        tier: 'docker',
+        compiledConfigs: {
+          rawRouterConfig: sampleConfig,
+          eluvixJson: JSON.stringify(sampleConfig),
+          bifrostYaml: 'routing_strategy: cost-complexity\n',
+          agentRouterJson: JSON.stringify({ preference: 'speed' }),
+          agentGatewayJson: JSON.stringify({ accessPolicy: 'restrictive' })
+        }
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.tier).toBe('docker');
+
+      // Runtime bundle written with zero raw API keys
+      const mountedEluvix = fs.readFileSync(path.join(runtimeDir, 'eluvix.json'), 'utf-8');
+      expect(mountedEluvix).not.toContain('sk-super-secret-must-not-leak');
+      expect(JSON.parse(mountedEluvix).upstreams[0].apiKeyConfigured).toBe(true);
+      expect(fs.readFileSync(path.join(runtimeDir, 'bifrost.yaml'), 'utf-8')).toContain('cost-complexity');
+      expect(JSON.parse(fs.readFileSync(path.join(runtimeDir, 'routing.json'), 'utf-8')).preference).toBe('speed');
+      expect(JSON.parse(fs.readFileSync(path.join(runtimeDir, 'gateway.json'), 'utf-8')).accessPolicy).toBe('restrictive');
+
+      // Only topology containers + switchyard were launched (no sglang!)
+      const composeCall = commands.find((c) => c.cmd === 'docker' && c.args[0] === 'compose');
+      expect(composeCall).toBeDefined();
+      expect(composeCall!.args).toContain('switchyard');
+      expect(composeCall!.args).toContain('ollama');
+      expect(composeCall!.args).toContain('--force-recreate');
+      expect(composeCall!.args).not.toContain('sglang');
+
+      // Switchyard live sync included Bearer token
+      const swPush = fetchCalls.find((c) => c.url.includes(':8080/v1/config'));
+      expect(swPush).toBeDefined();
+      expect((swPush!.headers as Record<string, string>)['Authorization']).toBe('Bearer test-sw-token-123');
+    });
+
+    it('compose tier syncs core + topology + already-running containers without pulling unused sglang', async () => {
+      const runtimeDir = makeTempDir('eluvix-runtime-compose-');
+      process.env.ELUVIX_RUNTIME_CONFIG_DIR = runtimeDir;
+
+      const commands: Array<{ cmd: string; args: string[] }> = [];
+      vi.spyOn(orchestratorManager, 'runCommand').mockImplementation(async (cmd, args) => {
+        commands.push({ cmd, args });
+        if (cmd === 'docker' && args[0] === 'info') return okCmd(cmd, args, '27.0.0');
+        if (cmd === 'bash' && args.includes('detect')) return okCmd(cmd, args, '{"vendor":"amd","model":"Radeon"}');
+        if (cmd === 'docker' && args[0] === 'ps') {
+          return okCmd(cmd, args, 'eluvix-switchyard\neluvix-openviking\neluvix-ollama\n');
+        }
+        if (cmd === 'docker' && args[0] === 'compose') return okCmd(cmd, args, 'Stack updated');
+        return okCmd(cmd, args);
+      });
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      );
+
+      const sampleConfig = {
+        strategy: 'lowest-latency',
+        upstreams: [
+          { id: 'vllm-1', name: 'vLLM', type: 'vllm', endpoint: 'http://127.0.0.1:8000/v1', models: ['qwen'] }
+        ]
+      };
+
+      const res = await orchestratorManager.deploy({
+        tier: 'compose',
+        compiledConfigs: {
+          rawRouterConfig: sampleConfig,
+          eluvixJson: JSON.stringify(sampleConfig),
+          bifrostYaml: 'routing_strategy: lowest-latency\n'
+        }
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.tier).toBe('compose');
+      expect(fs.existsSync(path.join(runtimeDir, 'eluvix.json'))).toBe(true);
+
+      const composeCall = commands.find((c) => c.cmd === 'docker' && c.args[0] === 'compose');
+      expect(composeCall).toBeDefined();
+      // Core + topology (vllm) + running (openviking, ollama) included; unused sglang excluded
+      for (const expectedSvc of ['switchyard', 'vllm-sr', 'agent-router', 'agentgateway', 'vllm', 'openviking', 'ollama']) {
+        expect(composeCall!.args).toContain(expectedSvc);
+      }
+      expect(composeCall!.args).not.toContain('sglang');
+    });
+
+    it('k3d tier validates config, starts stopped cluster or imports images on create, and deploys redacted Helm values', async () => {
+      // 1. Refuses empty upstream graph BEFORE shelling out
+      const runSpy = vi.spyOn(orchestratorManager, 'runCommand');
+      const invalidRes = await orchestratorManager.deploy({
+        tier: 'k3d',
+        compiledConfigs: { rawRouterConfig: { upstreams: [] }, eluvixJson: '{"upstreams":[]}' }
+      });
+      expect(invalidRes.success).toBe(false);
+      expect(runSpy).not.toHaveBeenCalled();
+
+      // 2. Existing stopped cluster -> starts cluster, creates missing namespace, runs helm upgrade --wait
+      const commands: Array<{ cmd: string; args: string[] }> = [];
+      let capturedTempValuesContent = '';
+      runSpy.mockImplementation(async (cmd, args) => {
+        commands.push({ cmd, args });
+        if (cmd === 'k3d' && args[0] === 'cluster' && args[1] === 'list') {
+          return okCmd(cmd, args, 'eluvix-local   0/1   0/2   true\n');
+        }
+        if (cmd === 'kubectl' && args[0] === 'cluster-info') {
+          return { command: cmd, args, exitCode: 1, stdout: '', stderr: 'connection refused', success: false, durationMs: 5 };
+        }
+        if (cmd === 'kubectl' && args[0] === 'get' && args[1] === 'namespace') {
+          return { command: cmd, args, exitCode: 1, stdout: '', stderr: 'NotFound', success: false, durationMs: 5 };
+        }
+        if (cmd === 'helm' && args[0] === 'upgrade') {
+          const tempIdx = args.lastIndexOf('-f');
+          if (tempIdx >= 0 && args[tempIdx + 1] && fs.existsSync(args[tempIdx + 1])) {
+            capturedTempValuesContent = fs.readFileSync(args[tempIdx + 1], 'utf-8');
+          }
+          return okCmd(cmd, args, 'Release "eluvix" has been upgraded.');
+        }
+        return okCmd(cmd, args, 'ok');
+      });
+
+      const validCfg = {
+        strategy: 'cost-complexity',
+        upstreams: [
+          {
+            id: 'openai-1',
+            name: 'OpenAI',
+            type: 'openai',
+            endpoint: 'https://api.openai.com/v1',
+            apiKey: 'sk-live-secret-k3d-never-in-configmap',
+            models: ['gpt-4o']
+          }
+        ]
+      };
+
+      const res = await orchestratorManager.deploy({
+        tier: 'k3d',
+        compiledConfigs: {
+          rawRouterConfig: validCfg,
+          eluvixJson: JSON.stringify(validCfg),
+          bifrostYaml: 'routing_strategy: cost-complexity\n',
+          agentRouterJson: '{"preference":"balanced"}',
+          agentGatewayJson: '{"accessPolicy":"restrictive"}'
+        }
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.tier).toBe('k3d');
+      expect(commands.some((c) => c.cmd === 'k3d' && c.args[0] === 'cluster' && c.args[1] === 'start')).toBe(true);
+      expect(commands.some((c) => c.cmd === 'kubectl' && c.args[0] === 'create' && c.args[1] === 'namespace')).toBe(true);
+      expect(commands.some((c) => c.cmd === 'bash')).toBe(false);
+      const helmCmd = commands.find((c) => c.cmd === 'helm' && c.args[0] === 'upgrade');
+      expect(helmCmd).toBeDefined();
+      expect(helmCmd!.args).toContain('--wait');
+      // Redacted values injected into Helm ConfigMap — zero raw API keys
+      expect(capturedTempValuesContent).toContain('openai-1');
+      expect(capturedTempValuesContent).not.toContain('sk-live-secret-k3d-never-in-configmap');
+    });
+
+    it('POST /api/v1/config?authoritative=1 drops removed optional blocks while preserving egressPolicy and POST /api/orchestrator/deploy blocks readonly callers', async () => {
+      const xdgCfg = makeTempDir('eluvix-cfg-auth-');
+      const xdgData = makeTempDir('eluvix-data-auth-');
+      process.env.XDG_CONFIG_HOME = xdgCfg;
+      process.env.XDG_DATA_HOME = xdgData;
+      process.env.ADMIN_PASSWORD = 'orch-test-admin-pw';
+
+      const configRoute = await import('@/app/api/v1/config/route');
+      const deployRoute = await import('@/app/api/orchestrator/deploy/route');
+      const core = await import('@eluvix/router-core');
+
+      // Seed config with egressPolicy + memory
+      const seedRes = await configRoute.POST(
+        new Request('http://127.0.0.1:3588/api/v1/config', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer orch-test-admin-pw',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            upstreams: [
+              { id: 'u1', name: 'Ollama', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1', models: ['m1'] }
+            ],
+            egressPolicy: 'local-only',
+            memory: { enabled: true, provider: 'openviking' }
+          })
+        })
+      );
+      expect(seedRes.status).toBe(200);
+
+      // Authoritative editor apply WITHOUT memory removes memory while preserving egressPolicy
+      const authRes = await configRoute.POST(
+        new Request('http://127.0.0.1:3588/api/v1/config?authoritative=1', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer orch-test-admin-pw',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            upstreams: [
+              { id: 'u2', name: 'Ollama 2', type: 'ollama', endpoint: 'http://127.0.0.1:11434/v1', models: ['m2'] }
+            ]
+          })
+        })
+      );
+      expect(authRes.status).toBe(200);
+      const authJson = await authRes.json();
+      expect(authJson.config.upstreams.map((u: any) => u.id)).toEqual(['u2']);
+      expect(authJson.config.memory).toBeUndefined();
+      expect(authJson.config.egressPolicy).toBe('local-only');
+
+      // Readonly key cannot deploy via /api/orchestrator/deploy
+      const roKey = core.createNamedApiKey({
+        label: 'readonly-deploy-check',
+        userId: 'ro-user',
+        role: 'readonly'
+      }).key;
+      const blockedDeploy = await deployRoute.POST(
+        new Request('http://127.0.0.1:3588/api/orchestrator/deploy', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${roKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ tier: 'local', compiledConfigs: {} })
+        })
+      );
+      expect(blockedDeploy.status).toBe(403);
     });
   });
 });

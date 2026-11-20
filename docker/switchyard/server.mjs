@@ -9,9 +9,11 @@
 // See docker/README.md.
 // ============================================================================
 import http from 'http';
+import fs from 'fs';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
+const CONFIG_PATH = process.env.ELUVIX_CONFIG_PATH || '/config/eluvix.json';
 
 function estimateComplexity(messages) {
   if (!messages || messages.length === 0) return { score: 1, label: 'simple' };
@@ -30,6 +32,29 @@ let activeSwConfig = {
   strategy: 'cost-complexity',
   upstreams: []
 };
+let lastConfigMtimeMs = 0;
+
+function syncMountedConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return;
+    const stat = fs.statSync(CONFIG_PATH);
+    if (stat.mtimeMs === lastConfigMtimeMs) return;
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8').trim();
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      activeSwConfig = {
+        strategy: parsed.strategy || activeSwConfig.strategy || 'cost-complexity',
+        ...parsed
+      };
+      lastConfigMtimeMs = stat.mtimeMs;
+    }
+  } catch (err) {
+    console.warn(`[Switchyard] Could not reload mounted config at ${CONFIG_PATH}:`, err?.message || err);
+  }
+}
+
+syncMountedConfig();
 
 function applyCors(req, res) {
   const origin = req.headers.origin;
@@ -92,10 +117,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/' || url.pathname === '/health' || url.pathname === '/healthz') {
+      syncMountedConfig();
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', service: 'switchyard', port: PORT }));
+      res.end(JSON.stringify({
+        status: 'ok',
+        service: 'switchyard',
+        port: PORT,
+        configLoaded: lastConfigMtimeMs > 0,
+        strategy: activeSwConfig.strategy || 'cost-complexity',
+        upstreamCount: Array.isArray(activeSwConfig.upstreams) ? activeSwConfig.upstreams.length : 0
+      }));
       return;
     }
+
+    syncMountedConfig();
 
     if (url.pathname === '/v1/config' || url.pathname === '/config') {
       // The config endpoint mutates live routing state, so it is never served

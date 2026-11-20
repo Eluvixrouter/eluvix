@@ -32,13 +32,28 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Merge over the live config: a partial body must not silently drop
-    // sections the caller never mentioned (egressPolicy, memory). Absent
-    // egressPolicy means allow-egress in router-core, so a replace would
-    // fail-open egress for a local-only deployment. Explicit nulls still
-    // go through saveConfig validation and are rejected where invalid.
-    const merged = { ...getConfig(), ...body };
-    const updated = saveConfig(merged);
+    const current = getConfig();
+    const url = new URL(req.url, 'http://localhost');
+    const isAuthoritative =
+      url.searchParams.get('authoritative') === '1' ||
+      req.headers.get('x-eluvix-authoritative-apply') === '1';
+
+    // Default POST merges over the live config so partial updates never silently
+    // drop sections the caller did not mention (audit L-C1: egressPolicy/memory).
+    // Authoritative full-graph applies from the Eluvix Visual Node Routing Editor
+    // replace the live config so deleting optional nodes (memory, paperclip,
+    // privacy, fallbackChains, etc.) actually removes them — while still
+    // preserving egressPolicy when omitted so a local-only deployment never
+    // fails open accidentally.
+    const nextConfig = isAuthoritative
+      ? {
+          ...(current.egressPolicy !== undefined && body.egressPolicy === undefined
+            ? { egressPolicy: current.egressPolicy }
+            : {}),
+          ...body
+        }
+      : { ...current, ...body };
+    const updated = saveConfig(nextConfig);
     const isAdmin = identity.ok && identity.role === 'admin';
     if (isAdmin) {
       return NextResponse.json({ success: true, config: updated });

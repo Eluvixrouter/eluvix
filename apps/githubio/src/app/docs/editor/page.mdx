@@ -143,4 +143,8 @@ Clicking **"Compile & Save"** converts visual graph connections into synchronize
 | `codex.json` | OpenAI Codex | Codex CLI toolchain, reasoning effort, and approval policies |
 | `claudecode.json` | Claude Code | Claude Code permissions, tool toggles, and token budgets |
 
-Compiled configurations are saved to SQLite via `POST /api/v1/config` and immediately hot-reloaded without service downtime.
+Compiled configurations are applied authoritatively via `POST /api/v1/config?authoritative=1` (hot-reloading `~/.config/eluvix/config.json` without downtime) and can be deployed across all four orchestration tiers via `POST /api/orchestrator/deploy`:
+- **Local Native Host (`local`)**: Validates, backs up (`0o600`), persists `~/.config/eluvix/config.json`, syncs OpenCode models, and pushes live updates to local Switchyard (`:8080`).
+- **Standalone Docker (`docker`)**: Writes secret-redacted runtime artifacts (`eluvix.json`, `bifrost.yaml`, `routing.json`, `gateway.json`) to `docker/runtime-config/` (mounted read-only at `/config`), builds/recreates only the minimal containers required by the canvas topology, and verifies `/health`.
+- **Docker Compose (`compose`)**: Writes the secret-redacted runtime bundle to `docker/runtime-config/`, runs GPU detection, recreates the core control plane (`switchyard`, `vllm-sr`, `agent-router`, `agentgateway`) plus topology-required and already-running Compose services (never pulling unused CUDA-only `sglang`), and verifies container health.
+- **k3d / Helm Cluster (`k3d`)**: Validates the graph, starts stopped clusters or builds/imports local `:latest` images on creation, injects secret-redacted `routingConfig` Helm values, and triggers rolling pod restarts via `checksum/config` ConfigMap annotations.

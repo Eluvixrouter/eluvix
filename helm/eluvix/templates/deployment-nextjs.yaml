@@ -14,6 +14,8 @@ spec:
       app.kubernetes.io/component: nextjs
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-routing.yaml") . | sha256sum }}
       labels:
         {{- include "eluvix.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: nextjs

@@ -13,6 +13,8 @@ release/
 *.tmp*
 *.tsbuildinfo
 docker-compose.override.yml
+docker/runtime-config/*
+!docker/runtime-config/.gitkeep
 
 # Credential-bearing files that must never land in the repo (audit L-19).
 # Note: apps/nextjs/.eluvix-config.json stays tracked DELIBERATELY — the

@@ -1,0 +1,2 @@
+# Compiled, secret-redacted runtime configuration bundle written by Eluvix OrchestrationManager
+# (eluvix.json, bifrost.yaml, routing.json, gateway.json) and mounted read-only into Compose services.

@@ -13,6 +13,9 @@ services:
     # serves canned chat completions). Never commit a real token here.
     environment:
       - SWITCHYARD_AUTH_TOKEN=${SWITCHYARD_AUTH_TOKEN:-}
+      - ELUVIX_CONFIG_PATH=/config/eluvix.json
+    volumes:
+      - ../runtime-config:/config:ro
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -47,6 +50,10 @@ services:
     profiles: ["core", "all"]
     ports:
       - "127.0.0.1:${AGENT_ROUTER_PORT:-8002}:8002"
+    environment:
+      - AGENT_ROUTER_CONFIG_PATH=/config/routing.json
+    volumes:
+      - ../runtime-config:/config:ro
     restart: unless-stopped
     networks:
       - eluvix-net
@@ -64,6 +71,10 @@ services:
     profiles: ["core", "all"]
     ports:
       - "127.0.0.1:${AGENT_GATEWAY_PORT:-8003}:8003"
+    environment:
+      - AGENT_GATEWAY_CONFIG_PATH=/config/gateway.json
+    volumes:
+      - ../runtime-config:/config:ro
     restart: unless-stopped
     networks:
       - eluvix-net

@@ -14,6 +14,8 @@ spec:
       app.kubernetes.io/component: agent-router
   template:
     metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-routing.yaml") . | sha256sum }}
       labels:
         {{- include "eluvix.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: agent-router
@@ -34,6 +36,12 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.agentRouter.port }}"
+            - name: AGENT_ROUTER_CONFIG_PATH
+              value: /config/routing.json
+          volumeMounts:
+            - name: routing-config-volume
+              mountPath: /config
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /health
@@ -48,4 +56,8 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.agentRouter.resources | nindent 12 }}
+      volumes:
+        - name: routing-config-volume
+          configMap:
+            name: {{ include "eluvix.fullname" . }}-routing-config
 {{- end }}

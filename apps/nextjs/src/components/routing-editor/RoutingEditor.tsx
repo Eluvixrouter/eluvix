@@ -775,7 +775,12 @@ export default function RoutingEditor() {
   const [availableSecrets, setAvailableSecrets] = useState<{key: string, path: string}[]>([]);
   const [isDeploying, setIsDeploying] = useState(false);
   const [deployResult, setDeployResult] = useState<{success?: boolean, message?: string} | null>(null);
-  const [selectedTier, setSelectedTier] = useState<'k3d' | 'compose' | 'docker' | 'local'>('k3d');
+  const [selectedTier, setSelectedTier] = useState<'k3d' | 'compose' | 'docker' | 'local'>('compose');
+  const userSelectedTierRef = useRef(false);
+  const selectDeploymentTier = useCallback((tier: 'k3d' | 'compose' | 'docker' | 'local') => {
+    userSelectedTierRef.current = true;
+    setSelectedTier(tier);
+  }, []);
   const [orchestratorStatus, setOrchestratorStatus] = useState<any>(null);
   const [deployLogs, setDeployLogs] = useState<string[]>([]);
   const [isCreatingCluster, setIsCreatingCluster] = useState(false);
@@ -1609,10 +1614,21 @@ export default function RoutingEditor() {
       if (res.ok) {
         const data = await res.json();
         setOrchestratorStatus(data);
+        if (!userSelectedTierRef.current) {
+          if (data?.k3d?.running) {
+            setSelectedTier('k3d');
+          } else if (data?.compose?.running) {
+            setSelectedTier('compose');
+          } else {
+            setSelectedTier('local');
+          }
+        }
+        return data;
       }
     } catch (e) {
       console.warn('Failed to query orchestrator status:', e);
     }
+    return null;
   }, []);
 
   const handleCreateCluster = useCallback(async () => {
@@ -1625,9 +1641,11 @@ export default function RoutingEditor() {
         body: JSON.stringify({ action: 'create' })
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Failed to create cluster');
+      if (data.stdout) setDeployLogs(prev => [...prev, data.stdout]);
+      if (data.stderr) setDeployLogs(prev => [...prev, data.stderr]);
+      if (!data.success) throw new Error(data.error || data.stderr || 'Failed to create cluster');
       showToast('k3d cluster created successfully');
-      setDeployLogs(prev => [...prev, data.stdout || '✓ k3d cluster created.']);
+      if (!data.stdout) setDeployLogs(prev => [...prev, '✓ k3d cluster created.']);
       await fetchOrchestratorStatus();
     } catch (e: any) {
       showToast(`Cluster creation failed: ${e.message}`);
@@ -1724,25 +1742,34 @@ export default function RoutingEditor() {
     setIsExportModalOpen(true);
     setDeployResult(null);
     setDeployLogs([]);
-    fetchOrchestratorStatus();
+    const statusPromise = fetchOrchestratorStatus();
 
     try {
       // Authoritative apply: the canvas is the source of truth for the live
-      // router configuration. Upstreams that are not on the canvas are
-      // removed, so deleting a node in the editor actually deletes it from
-      // the router instead of silently preserving it.
+      // router configuration. Upstreams and optional modules that are not on
+      // the canvas are removed, so deleting a node in the editor actually
+      // deletes it from the router instead of silently preserving it.
       const payloadToSave = compiled.rawRouterConfig;
 
-      const res = await fetch('/api/v1/config', {
+      const res = await fetch('/api/v1/config?authoritative=1', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Eluvix-Authoritative-Apply': '1'
+        },
         body: JSON.stringify(payloadToSave)
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `Router rejected config (HTTP ${res.status})`);
       }
-      setDeployResult({ success: true, message: 'Live router configuration applied to memory.' });
+      const statusData = await statusPromise;
+      const followUpHint = statusData?.compose?.running
+        ? 'Live host router updated. Click "Deploy to Docker Compose" below to sync running containers.'
+        : statusData?.k3d?.running
+        ? 'Live host router updated. Click "Deploy to k3d Cluster (Helm)" below to roll out pods.'
+        : 'Live router configuration applied to memory & ~/.config/eluvix/config.json.';
+      setDeployResult({ success: true, message: followUpHint });
       showToast('Synchronized live router configuration');
     } catch (e: any) {
       console.warn('Failed to sync live router config:', e);
@@ -1764,12 +1791,14 @@ export default function RoutingEditor() {
           compiledConfigs
         })
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || data.message || 'Failed to deploy');
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data.logs) && data.logs.length > 0) {
+        setDeployLogs(data.logs);
       }
-      
-      setDeployLogs(data.logs || []);
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || data.message || `Deployment failed (HTTP ${res.status})`);
+      }
+
       setDeployResult({ success: true, message: data.message || `Successfully deployed to ${selectedTier.toUpperCase()}.` });
       showToast(`Successfully deployed to ${selectedTier.toUpperCase()}`);
       await fetchOrchestratorStatus();
@@ -5156,7 +5185,7 @@ export default function RoutingEditor() {
                 <div className="grid grid-cols-4 gap-2">
                   <button
                     type="button"
-                    onClick={() => setSelectedTier('k3d')}
+                    onClick={() => selectDeploymentTier('k3d')}
                     className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
                       selectedTier === 'k3d'
                         ? 'bg-cyan-950/60 border-cyan-500 shadow-md shadow-cyan-950/50'
@@ -5170,14 +5199,14 @@ export default function RoutingEditor() {
                       {orchestratorStatus?.k3d?.running
                         ? `🟢 Active (${orchestratorStatus.k3d.nodesCount} nodes)`
                         : orchestratorStatus?.k3d?.exists
-                        ? '🟡 Stopped'
-                        : '⚪ Not created'}
+                        ? '🟡 Stopped (auto-starts)'
+                        : '⚪ Auto-provisions'}
                     </div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setSelectedTier('compose')}
+                    onClick={() => selectDeploymentTier('compose')}
                     className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
                       selectedTier === 'compose'
                         ? 'bg-blue-950/60 border-blue-500 shadow-md shadow-blue-950/50'
@@ -5189,14 +5218,14 @@ export default function RoutingEditor() {
                     </div>
                     <div className="text-[11px] text-gray-400 mt-1">
                       {orchestratorStatus?.compose?.running
-                        ? `🟢 ${orchestratorStatus.compose.activeServices}/6 running`
+                        ? `🟢 ${orchestratorStatus.compose.activeServices}/${orchestratorStatus.compose.totalServices ?? 12} running`
                         : '⚪ Stack stopped'}
                     </div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setSelectedTier('docker')}
+                    onClick={() => selectDeploymentTier('docker')}
                     className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
                       selectedTier === 'docker'
                         ? 'bg-indigo-950/60 border-indigo-500 shadow-md shadow-indigo-950/50'
@@ -5207,13 +5236,13 @@ export default function RoutingEditor() {
                       <span>📦</span> Standalone Docker
                     </div>
                     <div className="text-[11px] text-gray-400 mt-1">
-                      {orchestratorStatus?.tools?.docker ? '🟢 Daemon active' : '⚪ Daemon stopped'}
+                      {orchestratorStatus?.tools?.docker ? '🟢 Topology containers' : '⚪ Daemon stopped'}
                     </div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setSelectedTier('local')}
+                    onClick={() => selectDeploymentTier('local')}
                     className={`p-2.5 rounded-lg border text-left transition flex flex-col justify-between ${
                       selectedTier === 'local'
                         ? 'bg-emerald-950/60 border-emerald-500 shadow-md shadow-emerald-950/50'

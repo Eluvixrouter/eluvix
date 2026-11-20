@@ -276,7 +276,10 @@ Executes Golden Routing & Security Regression Eval Suites (including the built-i
 Retrieves the active `@eluvix/router-core` configuration JSON (upstreams, routing strategies, latency thresholds, security guard settings).
 
 ### `POST /api/v1/config`
-Updates and immediately hot-reloads the active router configuration without service restart. Validates upstream definitions and threshold numbers before saving.
+Updates and immediately hot-reloads the active router configuration without service restart. Validates upstream definitions and threshold numbers before saving. Default requests merge partial JSON payloads over the live config (preserving omitted `egressPolicy` / `memory` sections); pass `?authoritative=1` (or `X-Eluvix-Authoritative-Apply: 1`, used by the **Eluvix Visual Node Routing Editor** after diff confirmation) for an authoritative full-graph replace that removes deleted optional modules while still preserving an omitted `egressPolicy`.
+
+### `POST /api/orchestrator/deploy`
+Deploys compiled routing topologies across all four orchestration tiers (`local`, `docker`, `compose`, `k3d`; read-only callers receive `403`). Validates upstreams before mutating state, writes secret-redacted container runtime bundles (`eluvix.json`, `bifrost.yaml`, `routing.json`, `gateway.json`) mounted read-only at `/config` for Docker/Compose services, auto-starts or provisions `k3d` clusters with `:latest` local images and ConfigMap rollout checksums, and reloads the active Next.js router.
 
 ---
 
