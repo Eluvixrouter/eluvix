@@ -7,7 +7,12 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
   const { updateNodeData } = useReactFlow();
   const [provider, setProvider] = useState(data?.provider || 'builtin');
   const [endpoint, setEndpoint] = useState(
-    data?.endpoint || (data?.provider === 'mem0' ? 'http://localhost:8888' : 'http://localhost:1933')
+    data?.endpoint ??
+      (data?.provider === 'mem0'
+        ? 'http://localhost:8888'
+        : data?.provider === 'claudemem'
+          ? ''
+          : 'http://localhost:1933')
   );
   const [recallBudgetTokens, setRecallBudgetTokens] = useState(data?.recallBudgetTokens ?? 600);
   const [readingLevel, setReadingLevel] = useState(data?.readingLevel || 'L1');
@@ -61,7 +66,7 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
           <span className="text-lg">🧠</span>
           <div>
             <div className="font-bold text-purple-400 text-sm">Context &amp; Memory Engine</div>
-            <div className="text-[10px] text-gray-400 font-mono">OpenViking / Graphiti / LightRAG / Mem0</div>
+            <div className="text-[10px] text-gray-400 font-mono">OpenViking / Graphiti / LightRAG / Mem0 / Claude-Mem</div>
           </div>
         </div>
         <span className="text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded font-mono uppercase">
@@ -78,6 +83,9 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
               value={provider}
               onChange={(e) => {
                 const next = e.target.value;
+                // null = no endpoint default (builtin hides the field);
+                // '' = leave empty so the provider auto-detects the local
+                // worker (claudemem: 127.0.0.1:37700 + uid % 100).
                 const defaultUrl =
                   next === 'openviking'
                     ? 'http://localhost:1933'
@@ -91,10 +99,16 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
                     ? 'http://localhost:8005'
                     : next === 'supermemory'
                     ? 'http://localhost:6767'
-                    : '';
+                    : next === 'claudemem'
+                    ? ''
+                    : null;
                 setProvider(next);
-                if (defaultUrl) setEndpoint(defaultUrl);
-                syncData({ provider: next, ...(defaultUrl ? { endpoint: defaultUrl } : {}) });
+                if (defaultUrl !== null) {
+                  setEndpoint(defaultUrl);
+                  syncData({ provider: next, endpoint: defaultUrl });
+                } else {
+                  syncData({ provider: next });
+                }
               }}
             >
               <option value="builtin">SQLite Builtin (Zero-Dep)</option>
@@ -104,6 +118,7 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
               <option value="mem0">Mem0 REST (:8888)</option>
               <option value="cognee">Cognee ECL Graph (:8005)</option>
               <option value="supermemory">Supermemory (:6767)</option>
+              <option value="claudemem">Claude-Mem (auto port)</option>
             </select>
           </div>
           <div>
@@ -135,6 +150,12 @@ export default function MemoryNode({ id, data }: { id: string; data: any }) {
                 syncData({ endpoint: e.target.value });
               }}
             />
+            {provider === 'claudemem' && (
+              <div className="text-[10px] text-gray-500 mt-1">
+                Empty = auto-detect the local worker (127.0.0.1:37700 + uid % 100). Set explicitly on Windows or when the
+                worker runs elsewhere. Recall-only: the worker must already be running.
+              </div>
+            )}
           </div>
         )}
 

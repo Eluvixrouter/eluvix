@@ -112,7 +112,7 @@ The Routing Editor organizes nodes into functional categories:
   - Headless tool approval policies: `auto-approve-readonly` (permits reads, halts on writes), `auto-deny`, `surface` (interactive SSE approval prompt).
   - Configurable loop limit (`maxHops`: 1–5) and loop-guard stage compilation.
 - **Memory Engine (`memoryNode`)**:
-  - Context and long-term memory providers: `openviking`, `mem0`, `sqlite`.
+  - Context and long-term memory providers: `openviking`, `mem0`, `claudemem`, `sqlite`.
   - Configurable max memory token budget (100–2,000 tokens) prepended in `<recalled_context>`.
   - Privacy Egress Firewall: `cloudMode: "filter"` or `cloudMode: "strip"` to safeguard private memory from third-party cloud leakage.
 - **Local Engine & Synthesis Nodes (`ramalamaNode`, `comfyuiNode`, `lemonadeNode`, `vllmNode`, `ollamaNode`)**:

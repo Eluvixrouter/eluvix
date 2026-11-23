@@ -2,7 +2,7 @@
 
 LLMs are inherently stateless. While standard applications rely on naive prompt stuffing or simple sliding window buffers, modern agent workflows require long-term episodic retention, semantic recall, and user-isolated context stores.
 
-Eluvix includes a unified **Memory & Context Engine** capable of interfacing with dedicated agent memory databases ([OpenViking](https://github.com/volcengine/OpenViking), [Mem0](https://github.com/mem0ai/mem0)) and a zero-dependency embedded SQLite provider.
+Eluvix includes a unified **Memory & Context Engine** capable of interfacing with dedicated agent memory databases ([OpenViking](https://github.com/volcengine/OpenViking), [Mem0](https://github.com/mem0ai/mem0), [Claude-Mem](https://github.com/thedotmack/claude-mem)) and a zero-dependency embedded SQLite provider.
 
 ---
 
@@ -49,6 +49,7 @@ Upstream Model Output ──► Execution Finalized
 | **Cognee** | External Service | REST `http://127.0.0.1:8004` | Extract-Cognify-Load (ECL) graph pipeline turning unstructured docs into graphs |
 | **Supermemory** | Cloud / Self-Hosted | REST `https://api.supermemory.ai` | Low-latency universal memory API |
 | **Mem0** | External Service | REST `http://127.0.0.1:8888` | Entity and graph-based episodic memory store |
+| **Claude-Mem** | External Service | REST `http://127.0.0.1:37700` + uid % 100 (auto-detected) | Recall-only cross-session agent memory via the local claude-mem worker |
 | **Built-in SQLite** | Embedded Engine | Direct SQLite (`~/.config/eluvix/memory.db`) | Local zero-dependency BM25 FTS5 keyword & phrase matching |
 
 ---
@@ -120,7 +121,20 @@ Eluvix supports [Mem0](https://github.com/mem0ai/mem0) for multi-agent memory ma
 
 ---
 
-## 3. Built-in Embedded SQLite Memory
+## 3. Claude-Mem Integration (Recall-Only)
+
+Eluvix supports [Claude-Mem](https://github.com/thedotmack/claude-mem) as a recall-only memory provider:
+
+- **Endpoint**: The local claude-mem worker, auto-detected as `http://127.0.0.1:37700` + uid % 100 (or set explicitly in the Memory Node / config, or via `CLAUDE_MEM_WORKER_ENDPOINT`). The worker must already be running — Eluvix does not start it. `health()` fails with install/start guidance when it is down.
+- **User Scoping**: Eluvix maps each `userId` to a claude-mem project key `eluvix:<userId>`; recall is exact-match on that project, and foreign-project rows are dropped.
+- **Search**: Executes `GET /api/search?query=&project=&format=json` against the worker; observation and session-summary rows become recall blocks.
+- **Token Auth**: When the worker runs in token mode, set the token in the provider `apiKey` (or `CLAUDE_MEM_LOCAL_API_TOKEN`); it is sent as `X-Claude-Mem-Token`.
+- **Version**: Targets claude-mem 16.1.0; `health()` warns when the worker reports a different major.minor.
+- **Write-Back**: Recall-only in v1 — `remember()` is a deliberate no-op. Raw turns are never saved to the worker; capture already happens through claude-mem's own OpenCode/Antigravity plugins where they are installed.
+
+---
+
+## 4. Built-in Embedded SQLite Memory
 
 For environments without Docker or where running external sidecars is impractical, Eluvix includes a **zero-dependency embedded SQLite memory engine**:
 
@@ -131,7 +145,7 @@ For environments without Docker or where running external sidecars is impractica
 
 ---
 
-## 4. Memory Egress Guard (Privacy Firewall)
+## 5. Memory Egress Guard (Privacy Firewall)
 
 Injecting user memories into prompts introduces a critical security concern: **accidental memory leakage to public cloud models**.
 
@@ -166,7 +180,7 @@ Retain Full      Inspect `cloudMode` Policy:
 
 ---
 
-## 5. Per-User Scoped Caching
+## 6. Per-User Scoped Caching
 
 When memory injection is active, the standard prompt hash is insufficient for caching because two users asking the exact same question will have different recalled context.
 
@@ -176,7 +190,7 @@ Eluvix prevents cross-user cache collisions:
 
 ---
 
-## 6. Programmatic Memory API (`/api/v1/memory`)
+## 7. Programmatic Memory API (`/api/v1/memory`)
 
 Eluvix provides a REST endpoint for managing memories directly:
 
@@ -228,12 +242,12 @@ curl -k -X POST https://127.0.0.1:3588/api/v1/memory \
 
 ---
 
-## 7. Visual Editor Configuration (`MemoryNode`)
+## 8. Visual Editor Configuration (`MemoryNode`)
 
 In the Visual Routing Editor (`/editor`):
 
 1. Drag a **Memory Engine** node from the palette onto the canvas.
-2. Choose your context backend: `openviking`, `mem0`, or `sqlite`.
+2. Choose your context backend: `openviking`, `mem0`, `claudemem`, or `sqlite`.
 3. Set the **Max Memory Tokens** slider (default: `500` tokens).
 4. Configure the **Cloud Egress Mode**: `filter` or `strip`.
 5. Connect the Memory Engine node upstream of your task router or model gateways. Injected context indicators (`x-eluvix-memory`, `x-eluvix-memory-tokens`) will automatically be reported in chat completion response headers.

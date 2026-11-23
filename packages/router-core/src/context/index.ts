@@ -7,10 +7,12 @@ export * from './graphiti.js';
 export * from './lightrag.js';
 export * from './cognee.js';
 export * from './supermemory.js';
+export * from './claudemem.js';
 export * from './knowledge.js';
 
 import type { ChatMessage } from '../index.js';
 import { BuiltinContextProvider } from './builtin.js';
+import { ClaudeMemContextProvider } from './claudemem.js';
 import { CogneeContextProvider } from './cognee.js';
 import { GraphitiContextProvider } from './graphiti.js';
 import { LightRagContextProvider } from './lightrag.js';
@@ -60,6 +62,9 @@ export function createContextProvider(config?: MemoryConfig): ContextProvider {
   }
   if (providerType === 'supermemory') {
     return new SupermemoryContextProvider(config);
+  }
+  if (providerType === 'claudemem') {
+    return new ClaudeMemContextProvider(config);
   }
   return new BuiltinContextProvider(config);
 }
