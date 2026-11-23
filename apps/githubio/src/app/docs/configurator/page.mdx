@@ -75,3 +75,57 @@ Admin sessions can open the **Scoped Keys** tab inside `/configurator` (backed b
 - Select granular `ApiKeyScope` permissions (`chat`, `embeddings`, `audio`, `mcp`, `evals:live`, `export`, `admin:config`, `batches`, `rerank`, `prompts`, `webhooks`, `paperclip`, `*`), per-key `rpm`, and `maxDailySpendUsd`.
 - Attach **Paperclip Governance** constraints directly on a key (`companyIds` allowlist, `maxTier`, `maxCostPer1kUsd`, and an optional per-key `hmacSecret` accepting `SecretRef` pointers such as `env:...` or `file:...`).
 - Plaintext keys are displayed once on creation; key hashes are never returned and literal `hmacSecret` strings are masked in key listings.
+
+---
+
+## OpenCode as a Multica Model Backend (Eluvix → Multica)
+
+[Multica](https://github.com/multica-ai/multica) drives agent CLIs on operator machines and never proxies model calls, so Eluvix serves as the model backend by pointing the daemon machine's OpenCode provider at Eluvix's OpenAI-compatible endpoint. The web gateway (port 3588) is the primary target. This integration is built on Multica: Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it.
+
+### 1. Mint a chat-scoped key
+
+In the **Scoped Keys** tab above (admin role required), mint an `elx_...` key with the `chat` scope and a `maxDailySpendUsd` cap — that cap is what bounds what Multica runs can spend. The key is shown once on creation.
+
+### 2. Add the provider on the daemon machine
+
+Add this block to `~/.config/opencode/opencode.json` on the machine that runs the Multica daemon. Use the exact model ids from `GET /api/v1/models` (the example uses `qwen2.5-coder` from the default local Ollama upstream). Put the key in the daemon environment as `ELUVIX_API_KEY` — never in the JSON file or in git.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "eluvix": {
+      "name": "Eluvix",
+      "env": ["ELUVIX_API_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:3588/api/v1"
+      },
+      "models": {
+        "qwen2.5-coder": { "name": "Qwen 2.5 Coder (via Eluvix)" }
+      }
+    }
+  }
+}
+```
+
+The desktop server is the alternative target: `baseURL` `http://127.0.0.1:3001/v1` with the per-install desktop token from `~/.config/eluvix/desktop-token` as the credential (send it as `Authorization: Bearer` or the `x-eluvix-desktop-token` header). Both servers are verified for the OpenCode path: streaming SSE with `tool_calls`, non-streaming JSON, model discovery (`GET /v1/models` lists configured models plus `auto`), and the 401 auth envelope — including SSE synthesis when an upstream answers JSON to a `stream: true` request.
+
+### 3. Wire the provider into Multica
+
+Per-agent delivery uses Multica's own env injection:
+
+```bash
+# At agent creation
+multica agent create --custom-env-file ./eluvix-env.json
+# Or afterwards (replaces the whole set; keys set to **** keep their value)
+multica agent env set <agent-id> --custom-env-stdin < ./eluvix-env.json
+```
+
+The model is then referenced as `eluvix/qwen2.5-coder` when creating the agent or picking a model, and Multica's picker lists the Eluvix-served models from the runtime catalog.
+
+### Topology
+
+The Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine, so OpenCode reaches Eluvix over loopback: `http://127.0.0.1:3588/api/v1` — plain HTTP on loopback stays plain by design. Use `https://127.0.0.1:3588/api/v1` with `NODE_EXTRA_CA_CERTS="$HOME/.local/share/mkcert/rootCA.pem"` only if the tool requires TLS. Runs execute on the daemon machine, not in the cluster — the cluster only hosts the Multica server.
+
+Verify with `opencode models Eluvix` on the daemon machine, then assign a Multica issue to the agent and watch the run tokens flow through Eluvix routing, cost caps, and observability.

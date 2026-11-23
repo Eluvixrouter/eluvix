@@ -775,6 +775,7 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
               ['Continue.dev', '~/.continue/config.json', 'OpenAI-compatible provider block'],
               ['Cline / Roo-Code', 'VSCode Settings > Cline', 'Custom OpenAI Endpoint'],
               ['OpenHands', 'config.toml', 'LLM base_url configuration'],
+              ['OpenCode', '~/.config/opencode/opencode.json', 'OpenAI-compatible provider block (see Multica recipe below)'],
               ['Python OpenAI SDK', 'os.environ["OPENAI_BASE_URL"]', 'export OPENAI_BASE_URL="https://127.0.0.1:3588/api/v1"'],
             ],
           },
@@ -782,6 +783,33 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
         {
           title: 'Admin Scoped API Key & Paperclip Policy Manager (/api/v1/keys)',
           body: 'Use the Scoped Keys tab on /configurator (admin role required) to mint, list, and revoke elx_ API keys with custom scopes, rpm limits, maxDailySpendUsd caps, and Paperclip governance policies (companyIds allowlist, maxTier, maxCostPer1kUsd, and SecretRef hmacSecret bindings). Plaintext keys are shown once on creation and literal hmacSecret values are masked in listings.',
+        },
+        {
+          title: 'OpenCode as a Multica model backend (Eluvix → Multica)',
+          body: 'Multica drives agent CLIs on operator machines and never proxies model calls, so Eluvix serves as the model backend by pointing the daemon machine\'s OpenCode provider at Eluvix\'s OpenAI-compatible endpoint. The web gateway (port 3588) is the primary target: mint a chat-scoped elx_ key in the Scoped Keys tab above (set maxDailySpendUsd to cap what Multica runs can spend), then add the provider to ~/.config/opencode/opencode.json on the daemon machine. Use the exact model ids from GET /api/v1/models (or GET /v1/models on the desktop server); the example below uses qwen2.5-coder from the default local Ollama upstream. The desktop server is the alternative target: baseURL http://127.0.0.1:3001/v1 with the per-install desktop token from ~/.config/eluvix/desktop-token as the credential (send it as Authorization: Bearer or the x-eluvix-desktop-token header). Eluvix verifies the full path live: streaming SSE with tool_calls, non-streaming JSON, model discovery, and the 401 auth envelope, including SSE synthesis when an upstream answers JSON to a stream:true request. Topology: the Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine, so OpenCode reaches Eluvix over loopback (http://127.0.0.1:3588/api/v1 — plain HTTP on loopback stays plain by design; use https://127.0.0.1:3588/api/v1 with NODE_EXTRA_CA_CERTS="$HOME/.local/share/mkcert/rootCA.pem" only if the tool requires TLS). This integration is built on Multica (https://github.com/multica-ai/multica): Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it.',
+          code: {
+            language: 'json',
+            content: `{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "eluvix": {
+      "name": "Eluvix",
+      "env": ["ELUVIX_API_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:3588/api/v1"
+      },
+      "models": {
+        "qwen2.5-coder": { "name": "Qwen 2.5 Coder (via Eluvix)" }
+      }
+    }
+  }
+}`,
+          },
+        },
+        {
+          title: 'Wiring the Eluvix provider into Multica',
+          body: 'Put the provider block above in opencode.json on the machine that runs the Multica daemon (usually ~/.config/opencode/opencode.json), and put the elx_ key in the daemon environment as ELUVIX_API_KEY — never in the JSON file or in git. Per-agent delivery uses Multica\'s own env injection: `multica agent create --custom-env-file ./eluvix-env.json` at creation, or `multica agent env set <agent-id> --custom-env-stdin < ./eluvix-env.json` afterwards (it replaces the whole set; keys set to `****` keep their existing value). The model is then referenced as `eluvix/qwen2.5-coder` when creating the agent or picking a model, and Multica\'s picker lists the Eluvix-served models from the runtime catalog. Runs execute on the daemon machine, not in the cluster — the cluster only hosts the Multica server. Verify with `opencode models Eluvix` on the daemon machine, then assign a Multica issue to the agent and watch the run tokens flow through Eluvix routing, cost caps, and observability.',
         },
       ],
     },

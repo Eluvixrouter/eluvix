@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc && pnpm run copy-assets",
     "copy-assets": "node scripts/copy-assets.mjs",
+    "test": "vitest run",
     "start": "electron .",
     "pack": "pnpm run build && electron-builder --dir --publish never",
     "dist": "pnpm run build && electron-builder --publish never",
@@ -23,6 +24,7 @@
     "@types/node": "^20.14.0",
     "electron": "^45.0.0",
     "electron-builder": "^26.18.0",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.9"
   }
 }
