@@ -85,7 +85,7 @@ export function sanitizeLoadedConfig(raw: unknown): LoadedConfigSanitization {
     } else {
       if (
         config.memory.provider !== undefined &&
-        !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory'].includes(config.memory.provider)
+        !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory', 'claudemem'].includes(config.memory.provider)
       ) {
         warnings.push(`Repairing invalid memory.provider ${JSON.stringify(config.memory.provider)} to "builtin"`);
         config.memory = { ...config.memory, provider: 'builtin' };
@@ -229,9 +229,9 @@ export function validateConfig(config: any): void {
     }
     if (
       config.memory.provider !== undefined &&
-      !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory'].includes(config.memory.provider)
+      !['builtin', 'openviking', 'mem0', 'graphiti', 'lightrag', 'cognee', 'supermemory', 'claudemem'].includes(config.memory.provider)
     ) {
-      throw new ConfigValidationError('Invalid configuration: "memory.provider" must be "builtin", "openviking", "mem0", "graphiti", "lightrag", "cognee", or "supermemory"');
+      throw new ConfigValidationError('Invalid configuration: "memory.provider" must be "builtin", "openviking", "mem0", "graphiti", "lightrag", "cognee", "supermemory", or "claudemem"');
     }
     if (
       config.memory.cloudMode !== undefined &&
@@ -335,7 +335,7 @@ export function redactConfigForApi(config: RouterConfig): any {
     });
   }
   // The memory section carries a provider credential too (mem0 /
-  // OpenViking Authorization tokens) — same treatment.
+  // OpenViking Authorization tokens, claude-mem X-Claude-Mem-Token) — same treatment.
   if (clone.memory && typeof clone.memory === 'object' && 'apiKey' in clone.memory) {
     const { apiKey, ...rest } = clone.memory;
     clone.memory = { ...rest, apiKeyConfigured: typeof apiKey === 'string' && apiKey.length > 0 };

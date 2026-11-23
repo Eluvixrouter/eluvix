@@ -30,7 +30,8 @@ export type MemoryProviderType =
   | 'graphiti'
   | 'lightrag'
   | 'cognee'
-  | 'supermemory';
+  | 'supermemory'
+  | 'claudemem';
 
 export interface MemoryConfig {
   enabled?: boolean;
