@@ -174,6 +174,56 @@ In the Eluvix Visual Routing Editor (`/editor`), you can add and wire a **Harnes
    - `opencode` (Port 4096)
    - `acp` (Stdio JSON-RPC)
    - `hermes` (Port 8080)
+   - `multica` (Multica server, default `http://localhost:8080`)
 4. Configure the **Tool Approval Policy** (`auto-approve-readonly`, `auto-deny`, `surface`).
 5. Set the **Max Hops Limit** (`1` to `5`).
 6. Connect the harness node to an upstream model or intent port. When compiled, the router automatically applies loop guarding and turn orchestration.
+
+---
+
+## 6. Multica Harness — Dispatch Work to Multica Agents
+
+[Multica](https://github.com/multica-ai/multica) is a source-available team workspace where humans assign work to AI coding agents running on runtimes the operator controls. The Multica harness (`model: harness/multica`) lets an Eluvix flow dispatch real coding work into a separately deployed Multica server and read the run back.
+
+This integration is built on Multica: Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it.
+
+### How a dispatch works
+
+1. The adapter spawns the operator-installed `multica` CLI and creates an issue from the prompt (`issue create --title "<first line>" --description-stdin --pr-auto-complete off`).
+2. It assigns the configured agent (`issue assign MUL-123 --to "Backend Agent"`) — assigning is what starts a run.
+3. It polls `issue runs` until the latest run is terminal (`completed`, `failed`, `cancelled`) or the request deadline hits.
+4. It fetches `issue run-messages` and returns the transcript as the chat completion text.
+
+A run that is still working at the deadline is reported, never cancelled. Follow-up turns on a per-session harness steer the live run (`issue comment add --steer`) instead of opening a new issue; `RequestScope.issueId` dispatches into an existing `MUL-123` issue, and `RequestScope.companyId` maps to the Multica workspace id.
+
+### Auth and guardrails
+
+- Auth is the calling user's own Multica PAT (`mul_…`) on the upstream `apiKey` (literal or SecretRef). Never a shared token; run-scoped `mat_…` task tokens are refused.
+- The server URL is validated with the SSRF guard (loopback/LAN carve-out) before it reaches the CLI. The CLI binary is resolved through the spawn gate (`MULTICA_CLI_BINARIES`). The PAT is injected into the direct child's environment only and never lives in `process.env`.
+- Dispatches are review-gated: issues are created with `--pr-auto-complete off`, so a human approves the result in Multica before anything merges. Approval policy `never` refuses dispatch entirely.
+
+### Topology
+
+The Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine. Runs execute on the daemon machine, not in the cluster — the cluster only hosts the Multica server.
+
+### Upstream config
+
+```json
+{
+  "id": "multica-1",
+  "name": "Multica Dispatch",
+  "type": "harness",
+  "endpoint": "http://localhost:8080",
+  "models": ["harness/multica"],
+  "apiKey": "env:MULTICA_PAT",
+  "harness": {
+    "kind": "multica",
+    "agentId": "Backend Agent",
+    "approvals": "surface",
+    "sessionMode": "per-eluvix-session",
+    "multica": { "workspaceId": "ws-uuid", "project": "Core" }
+  }
+}
+```
+
+Transcript ingestion into Eluvix memory is a separate, later step (phase d) and is intentionally not part of this harness: run transcripts must pass the T5 response-guard scan before any write-back.

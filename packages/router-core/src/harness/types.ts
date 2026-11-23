@@ -10,7 +10,8 @@ export type HarnessKind =
   | 'openhands'
   | 'mastra'
   | 'letta'
-  | 'a2a';
+  | 'a2a'
+  | 'multica';
 
 export type HarnessApprovalPolicy = 'auto-deny' | 'auto-approve-readonly' | 'read-only' | 'surface' | 'never';
 
@@ -29,6 +30,48 @@ export interface HarnessMidLoopGuardConfig {
   redactionStyle?: 'token' | 'asterisk' | 'hash';
   stripInjection?: boolean;
   blockOnInjection?: boolean;
+}
+
+/**
+ * Multica-specific harness options (kind 'multica').
+ *
+ * Multica is a source-available team workspace that drives agent CLIs on
+ * operator machines. Eluvix dispatches work into it by spawning the
+ * operator-installed `multica` CLI (never a bundled binary — the Multica
+ * License forbids embedding) and polling run state back. The credential is
+ * the calling user's own Multica PAT (`mul_…`), held in
+ * `UpstreamConfig.apiKey` (literal or SecretRef); it is resolved per call
+ * and injected into the direct child's environment only — see
+ * harness/multica.ts and the MULTICA_TOKEN denylist entry in env.ts.
+ */
+export interface MulticaHarnessConfig {
+  /**
+   * Multica server URL (the backend, e.g. `http://localhost:8080` for a
+   * self-host, or the in-cluster service address). Overrides
+   * `UpstreamConfig.endpoint` for the CLI `--server-url` flag. Validated
+   * with the SSRF guard (loopback/LAN carve-out) before use.
+   */
+  serverUrl?: string;
+  /**
+   * Multica workspace UUID. Overrides the CLI `--workspace-id` flag.
+   * Defaults to `RequestScope.companyId` (paperclip mapping) when set,
+   * else the CLI's configured default workspace.
+   */
+  workspaceId?: string;
+  /**
+   * Multica CLI profile name (`--profile`). Isolates server/token/
+   * workspace when the operator runs several Multica instances.
+   */
+  profile?: string;
+  /**
+   * Multica project name passed to `issue create --project`.
+   */
+  project?: string;
+  /**
+   * Milliseconds between `issue runs` polls while waiting for a dispatched
+   * run to finish. Default 5000.
+   */
+  pollIntervalMs?: number;
 }
 
 export interface HarnessConfig {
@@ -115,4 +158,8 @@ export interface HarnessConfig {
    * Agent-Computer Interface profile for SWE-agent (`default` | `cve-patch` | `test-repair`).
    */
   aciProfile?: 'default' | 'cve-patch' | 'test-repair';
+  /**
+   * Multica-specific options (kind 'multica' only). See MulticaHarnessConfig.
+   */
+  multica?: MulticaHarnessConfig;
 }

@@ -7,7 +7,8 @@ import {
   tryResolveCliExecutable,
   getDeniedCliDirs,
   ANTIGRAVITY_CLI_BINARIES,
-  ACP_CLI_BINARIES
+  ACP_CLI_BINARIES,
+  MULTICA_CLI_BINARIES
 } from '../cli-exec.js';
 import {
   isTrustedLocalOrigin,
@@ -47,6 +48,26 @@ describe('resolveCliExecutable', () => {
       allowedBasenames: ANTIGRAVITY_CLI_BINARIES
     });
     expect(resolved).toBe(fs.realpathSync(fakeAgy));
+  });
+
+  it('multica allowlist: resolves `multica` but refuses every other binary name', () => {
+    const fakeMultica = path.join(scratchDir, 'multica');
+    fs.writeFileSync(fakeMultica, '#!/bin/sh\necho fake multica\n', { mode: 0o755 });
+    expect(
+      resolveCliExecutable(fakeMultica, { allowedBasenames: MULTICA_CLI_BINARIES })
+    ).toBe(fs.realpathSync(fakeMultica));
+    expect(() =>
+      resolveCliExecutable(path.join(scratchDir, 'multica-server'), {
+        allowedBasenames: MULTICA_CLI_BINARIES
+      })
+    ).toThrow(/not an authorized CLI binary/);
+    expect(() =>
+      resolveCliExecutable('sh', { allowedBasenames: MULTICA_CLI_BINARIES })
+    ).toThrow(/not an authorized CLI binary/);
+    // And the multica binary is NOT smuggled in through the ACP allowlist.
+    expect(() =>
+      resolveCliExecutable(fakeMultica, { allowedBasenames: ACP_CLI_BINARIES })
+    ).toThrow(/not an authorized CLI binary/);
   });
 
   it('resolves a bare name via PATH', () => {

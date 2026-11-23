@@ -27,7 +27,7 @@ export const PALETTE_NODE_CATALOG: PaletteNodeSpec[] = [
   { type: 'antigravityNode', title: 'Google Antigravity Agent (Gemini 4 Carbon)', subtitle: 'Autonomous CLI & Extended Thinking (cli://agy)', icon: '🚀', category: 'Agent CLI', keywords: 'gemini 4 carbon argon flash agy subagents', customData: { model: 'gemini-4-carbon' } },
   { type: 'claudeCodeNode', title: 'Anthropic Claude Code Agent', subtitle: 'Terminal Pair-Programmer CLI', icon: '🧠', category: 'Agent CLI', keywords: 'claude opus sonnet coding terminal' },
   { type: 'codexNode', title: 'OpenAI Codex CLI Agent', subtitle: 'Sandboxed Terminal Reasoning Agent', icon: '💻', category: 'Agent CLI', keywords: 'o3 o1 codex bash sandbox' },
-  { type: 'harnessNode', title: 'Agent Harness (TrueForge / OpenCode / Aider)', subtitle: 'Multi-Step Coding & ACP Harness (:8790)', icon: '🛠️', category: 'Agent Harness', keywords: 'trueforge opencode aider swe-agent cline plandex acp' },
+  { type: 'harnessNode', title: 'Agent Harness (TrueForge / OpenCode / Aider)', subtitle: 'Multi-Step Coding & ACP Harness (:8790)', icon: '🛠️', category: 'Agent Harness', keywords: 'trueforge opencode aider swe-agent cline plandex acp multica' },
   { type: 'openaiNode', title: 'OpenAI Frontier Provider', subtitle: 'HTTPS Cloud API (GPT-4o / o3)', icon: '🌐', category: 'Cloud Provider', keywords: 'cloud gpt-4o frontier fallback' },
   { type: 'claudeNode', title: 'Anthropic Claude Provider', subtitle: 'HTTPS Cloud API (Claude Sonnet / Opus)', icon: '✨', category: 'Cloud Provider', keywords: 'cloud anthropic sonnet opus' },
   { type: 'billamaNode', title: 'Billama Decentralized GPU Mesh', subtitle: 'Community P2P Inference Marketplace', icon: '🕸️', category: 'Cloud Mesh', keywords: 'decentralized p2p gpu marketplace' },

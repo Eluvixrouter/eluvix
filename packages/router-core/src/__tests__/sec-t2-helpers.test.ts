@@ -13,6 +13,7 @@ const ADMIN_PW = 'ADMIN' + '_PASSWORD';
 const NEXTAUTH = 'NEXTAUTH' + '_SECRET';
 const MEM0 = 'MEM0' + '_API_KEY';
 const OVK = 'OPENVIKING' + '_API_KEY';
+const MULTICA = 'MULTICA' + '_TOKEN';
 const KEEP = 'ELUVIX_TEST_KEEP_ME';
 
 describe('H-1: buildChildEnv denylist scrub (D3)', () => {
@@ -21,6 +22,7 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     delete process.env[NEXTAUTH];
     delete process.env[MEM0];
     delete process.env[OVK];
+    delete process.env[MULTICA];
     delete process.env[KEEP];
   });
 
@@ -29,6 +31,7 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     process.env[NEXTAUTH] = 'dummy-secret';
     process.env[MEM0] = 'dummy-mem0';
     process.env[OVK] = 'dummy-ovk';
+    process.env[MULTICA] = 'mul_dummy';
     process.env[KEEP] = 'keep-me';
 
     const env = buildChildEnv({ ELUVIX_ORIGIN: 'harness' });
@@ -36,11 +39,15 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     expect(env[NEXTAUTH]).toBeUndefined();
     expect(env[MEM0]).toBeUndefined();
     expect(env[OVK]).toBeUndefined();
+    // MULTICA_TOKEN is denylisted like the rest: the multica adapter is
+    // the single spawn site that may carry it, via direct assignment
+    // after buildChildEnv returns — never via extra, never via process.env.
+    expect(env[MULTICA]).toBeUndefined();
     expect(env[KEEP]).toBe('keep-me');
     expect(env.ELUVIX_ORIGIN).toBe('harness');
     expect(typeof env.PATH).toBe('string');
-    // The denylist constant itself names exactly the four scrubbed keys.
-    expect([...CHILD_ENV_DENYLIST].sort()).toEqual([ADMIN_PW, MEM0, NEXTAUTH, OVK].sort());
+    // The denylist constant itself names exactly the five scrubbed keys.
+    expect([...CHILD_ENV_DENYLIST].sort()).toEqual([ADMIN_PW, MEM0, MULTICA, NEXTAUTH, OVK].sort());
   });
 
   it('extras cannot re-introduce a denied key', () => {

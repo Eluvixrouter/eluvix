@@ -255,6 +255,7 @@ export function decompileConfigToGraph(config: RouterConfig): {
       const h = u.harness as Record<string, any>;
       Object.assign(baseData, {
         kind: h.kind || 'trueforge',
+        agentId: h.agentId,
         transport: h.transport || (u.endpoint?.startsWith('acp://') ? 'acp' : 'http'),
         profile: h.profile,
         workspaceDir: h.workspaceDir,
@@ -263,6 +264,8 @@ export function decompileConfigToGraph(config: RouterConfig): {
         command: h.command,
         args: h.args,
         cwd: h.cwd,
+        sessionMode: h.sessionMode,
+        ...(h.multica && typeof h.multica === 'object' ? { multica: h.multica } : {}),
         ...(typeof h.providerIsLocal === 'boolean'
           ? { providerIsLocal: h.providerIsLocal }
           : {}),

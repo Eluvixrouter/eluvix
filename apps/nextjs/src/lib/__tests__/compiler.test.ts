@@ -260,6 +260,69 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(upstream.harness.cwd).toBe('/tmp/agent-home');
     });
 
+    it('compiles a multica harness node to a harness/multica upstream with its dispatch options', () => {
+      const result = compileGraph(
+        [
+          harnessNode({
+            kind: 'multica',
+            endpoint: undefined,
+            agentId: 'Backend Agent',
+            command: 'multica',
+            cwd: '/home/operator',
+            multica: { workspaceId: 'ws-1', profile: 'staging', project: 'Core' },
+          }),
+        ],
+        []
+      );
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.type).toBe('harness');
+      expect(upstream.endpoint).toBe('http://localhost:8080');
+      expect(upstream.models).toContain('harness/multica');
+      expect(upstream.models).toContain('multica/Backend Agent');
+      expect(upstream.harness.kind).toBe('multica');
+      expect(upstream.harness.agentId).toBe('Backend Agent');
+      expect(upstream.harness.command).toBe('multica');
+      expect(upstream.harness.cwd).toBe('/home/operator');
+      expect(upstream.harness.multica).toEqual({
+        workspaceId: 'ws-1',
+        profile: 'staging',
+        project: 'Core',
+      });
+    });
+
+    it('multica node without an explicit endpoint defaults to the self-host backend', () => {
+      const result = compileGraph([harnessNode({ kind: 'multica', endpoint: undefined })], []);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.endpoint).toBe('http://localhost:8080');
+    });
+
+    it('multica node without multica options emits no multica block', () => {
+      const result = compileGraph([harnessNode({ kind: 'multica' })], []);
+      const upstream = result.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(upstream.harness).not.toHaveProperty('multica');
+    });
+
+    it('multica node round-trips through decompileConfigToGraph with kind, options and sessionMode', () => {
+      const result = compileGraph(
+        [
+          harnessNode({
+            kind: 'multica',
+            agentId: 'Backend Agent',
+            sessionMode: 'per-eluvix-session',
+            multica: { workspaceId: 'ws-1', project: 'Core' },
+          }),
+        ],
+        []
+      );
+      const decompiled = decompileConfigToGraph(result.rawRouterConfig);
+      const node = decompiled.nodes.find((n: any) => n.id === 'harness-1');
+      expect(node?.type).toBe('harnessNode');
+      expect(node?.data.kind).toBe('multica');
+      expect(node?.data.agentId).toBe('Backend Agent');
+      expect(node?.data.sessionMode).toBe('per-eluvix-session');
+      expect(node?.data.multica).toEqual({ workspaceId: 'ws-1', project: 'Core' });
+    });
+
     it('emits memory apiKey, recallTimeoutMs, autoCommitTurns, and openviking scopePrefixes from node data', () => {
       const nodes: Node[] = [
         {

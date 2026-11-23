@@ -272,13 +272,13 @@ pnpm dev`,
     category: 'Agent Ecosystem',
     icon: '🤖',
     badge: 'NEW',
-    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, OpenHands, Mastra, Letta, A2A, opencode, ACP, and Hermes, protected by the Loop Guard firewall.',
+    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, OpenHands, Mastra, Letta, A2A, opencode, ACP, Hermes, and Multica, protected by the Loop Guard firewall.',
     content: {
-      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates 8 Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
+      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates 9 Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
       subsections: [
         {
           title: 'Supported Agent Harnesses',
-          body: 'Eluvix provides native protocol adapters for 8 self-hosted and federated agent runtimes:',
+          body: 'Eluvix provides native protocol adapters for 9 self-hosted and federated agent runtimes:',
           table: {
             headers: ['Harness Kind', 'Default Port', 'Protocol & Primary Use Case'],
             rows: [
@@ -290,6 +290,7 @@ pnpm dev`,
               ['opencode', ':4096', 'Terminal-first autonomous coding server with session message streaming'],
               ['acp', 'stdio', 'Agent Client Protocol JSON-RPC 2.0 over stdio (e.g. Goose, Zed agents)'],
               ['hermes', ':8642', 'Lightweight OpenAI-compatible multi-step tool loop'],
+              ['multica', ':8080', 'Dispatch work to Multica agents: create issue, assign agent, poll runs, steer — CLI-spawn, review-gated'],
             ],
           },
         },
@@ -321,6 +322,40 @@ docker compose up -d trueforge openhands
         {
           title: 'Agent Client Protocol (ACP) & opencode',
           body: 'Eluvix supports opencode (autonomous coding agent server on port 4096) and the Agent Client Protocol (ACP), a standardized JSON-RPC 2.0 stdio protocol created by Zed and Anthropic for bidirectional editor-to-agent communication.',
+        },
+        {
+          title: 'Multica Harness — Dispatch Work to Multica Agents (Eluvix → Multica)',
+          body: 'Multica is a source-available team workspace where humans assign work to AI coding agents running on runtimes the operator controls. The Multica harness lets an Eluvix flow dispatch real coding work into a separately deployed Multica server (self-hosted, e.g. the VOW Helm install, or Multica Cloud) and read the run back: the adapter spawns the operator-installed `multica` CLI, creates an issue from the prompt, assigns the configured agent (assigning is what starts a run), polls `issue runs` until the run is terminal or the request deadline hits, then returns the run transcript as the chat completion. A run that is still working at the deadline is reported, never cancelled. Follow-up turns on a per-session harness steer the live run (`issue comment add --steer`) instead of opening a new issue. Auth is the calling user\'s own Multica PAT (`mul_…`) on the upstream apiKey (literal or SecretRef) — never a shared token, never a run-scoped `mat_…` token, which the adapter refuses. The server URL is validated with the SSRF guard (loopback/LAN carve-out) before it reaches the CLI, the CLI binary is resolved through the spawn gate (`MULTICA_CLI_BINARIES`), and the PAT is injected into the direct child\'s environment only. Dispatches are review-gated: issues are created with `--pr-auto-complete off`, so a human approves the result in Multica before anything merges. This integration is built on Multica (https://github.com/multica-ai/multica): Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it. Topology: the Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine; runs execute on the daemon machine, not in the cluster.',
+          code: {
+            language: 'json',
+            content: `// Upstream entry (model: "harness/multica"). The apiKey is the
+// calling user's own Multica PAT — a SecretRef is preferred.
+{
+  "id": "multica-1",
+  "name": "Multica Dispatch",
+  "type": "harness",
+  "endpoint": "http://localhost:8080",
+  "models": ["harness/multica"],
+  "apiKey": "env:MULTICA_PAT",
+  "harness": {
+    "kind": "multica",
+    "agentId": "Backend Agent",
+    "approvals": "surface",
+    "sessionMode": "per-eluvix-session",
+    "multica": { "workspaceId": "ws-uuid", "project": "Core" }
+  }
+}
+
+// CLI commands the adapter runs (operator-installed binary only):
+//   multica --server-url <url> [--workspace-id <id>] issue create
+//     --title "<first line>" --description-stdin --pr-auto-complete off
+//   multica issue assign MUL-123 --to "Backend Agent"
+//   multica issue runs MUL-123
+//   multica issue run-messages <run-id> --issue MUL-123
+//   multica issue comment add MUL-123 --content-stdin --steer <run-id>
+//   multica issue cancel-task <run-id> --issue MUL-123
+//   multica issue rerun-task <run-id> --issue MUL-123 [--fresh]`,
+          },
         },
         {
           title: 'Infinite Loop Guard & Hop Limiter (x-eluvix-hops)',

@@ -43,6 +43,15 @@ export const ACP_CLI_BINARIES: readonly string[] = [
   'agy'
 ];
 
+/**
+ * The Multica CLI binary. The operator installs it themselves (`multica`
+ * from multica.ai / the self-host installer); Eluvix never ships it — the
+ * Multica License (Part I 1a) forbids embedding Multica as a component of
+ * a commercially distributed product. The harness spawns it via
+ * resolveCliExecutable with this allowlist only.
+ */
+export const MULTICA_CLI_BINARIES: readonly string[] = ['multica'];
+
 export interface ResolveCliExecutableOptions {
   /** Basenames that may execute (e.g. ANTIGRAVITY_CLI_BINARIES). */
   allowedBasenames: readonly string[];
