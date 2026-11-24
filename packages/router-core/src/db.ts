@@ -140,6 +140,32 @@ function initSchema(db: SqliteDb) {
 
     CREATE INDEX IF NOT EXISTS idx_harness_sessions_user_updated ON harness_sessions(user_id, updated_at DESC);
 
+    -- Multica transcript ingestion (phase d): which Eluvix-dispatched
+    -- runs have had their transcripts pulled into memory, and how far.
+    -- One row per (user, upstream, issue, run); run_id '' is the
+    -- issue-level watch row created at dispatch time, run rows are
+    -- created by the ingestion sweep when it first sees a run. last_seq
+    -- is the highest ingested message sequence number (the CLI's
+    -- run-messages --since filter); seen_hashes is a JSON array of
+    -- SHA-256(role + text) for ingested messages — the dedup backstop
+    -- when messages carry no sequence number. Rows are keyed by the
+    -- owning user only: ingestion never writes under another user.
+    CREATE TABLE IF NOT EXISTS multica_ingestion_state (
+      user_id TEXT NOT NULL DEFAULT 'default',
+      upstream_id TEXT NOT NULL,
+      issue_key TEXT NOT NULL,
+      run_id TEXT NOT NULL DEFAULT '',
+      session_mode TEXT NOT NULL DEFAULT 'per-request',
+      last_seq INTEGER,
+      seen_hashes TEXT NOT NULL DEFAULT '[]',
+      ingested_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'watching',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, upstream_id, issue_key, run_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_multica_ingestion_user_updated ON multica_ingestion_state(user_id, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS response_store (
       id TEXT NOT NULL,
       user_id TEXT NOT NULL DEFAULT 'default',

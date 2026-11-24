@@ -302,6 +302,47 @@ describe('Eluvix Canvas Compiler — tiers, capability, egress', () => {
       expect(upstream.harness).not.toHaveProperty('multica');
     });
 
+    it('multica node emits ingestion options only when the opt-in is set', () => {
+      const on = compileGraph(
+        [
+          harnessNode({
+            kind: 'multica',
+            multica: { ingestTranscripts: true, ingestPollIntervalMs: 30000 }
+          })
+        ],
+        []
+      );
+      const onUpstream = on.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(onUpstream.harness.multica).toEqual({
+        ingestTranscripts: true,
+        ingestPollIntervalMs: 30000
+      });
+      // Off (default): neither key is emitted, so existing graphs
+      // compile identically.
+      const off = compileGraph([harnessNode({ kind: 'multica' })], []);
+      const offUpstream = off.rawRouterConfig.upstreams.find((u: any) => u.id === 'harness-1');
+      expect(offUpstream.harness).not.toHaveProperty('multica');
+    });
+
+    it('multica node round-trips ingestion options through decompileConfigToGraph', () => {
+      const result = compileGraph(
+        [
+          harnessNode({
+            kind: 'multica',
+            multica: { workspaceId: 'ws-1', ingestTranscripts: true, ingestPollIntervalMs: 45000 }
+          })
+        ],
+        []
+      );
+      const decompiled = decompileConfigToGraph(result.rawRouterConfig);
+      const node = decompiled.nodes.find((n: any) => n.id === 'harness-1');
+      expect(node?.data.multica).toEqual({
+        workspaceId: 'ws-1',
+        ingestTranscripts: true,
+        ingestPollIntervalMs: 45000
+      });
+    });
+
     it('multica node round-trips through decompileConfigToGraph with kind, options and sessionMode', () => {
       const result = compileGraph(
         [

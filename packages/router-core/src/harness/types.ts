@@ -72,6 +72,22 @@ export interface MulticaHarnessConfig {
    * run to finish. Default 5000.
    */
   pollIntervalMs?: number;
+  /**
+   * Opt-in transcript ingestion (phase d): when true, transcripts of
+   * runs dispatched through this upstream are pulled into Eluvix memory
+   * by a background poller once the run is terminal. Default false —
+   * transcripts contain code and secrets, so nothing is ingested unless
+   * the operator enables it for this upstream. Every write-back goes
+   * through the T5 scan gate (prompt-guard + PII scrub) and is scoped to
+   * the owning user only.
+   */
+  ingestTranscripts?: boolean;
+  /**
+   * Milliseconds between ingestion sweeps when `ingestTranscripts` is
+   * true. Default 60000. Clamped to 10000–600000 by the ingestion
+   * module.
+   */
+  ingestPollIntervalMs?: number;
 }
 
 export interface HarnessConfig {

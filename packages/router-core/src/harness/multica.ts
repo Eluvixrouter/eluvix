@@ -9,6 +9,12 @@ import { buildChildEnv } from './env.js';
 import { resolveUpstreamSecret } from '../secrets.js';
 import { validateUpstreamHttpEndpoint } from '../ssrf-guard.js';
 import { setBounded, DEFAULT_MAX_CACHE_ENTRIES } from '../bounded-map.js';
+import {
+  registerMulticaIssueForIngestion,
+  ensureMulticaIngestionStarted,
+  clampIngestIntervalMs,
+  type MulticaIngestionDeps
+} from './multica-ingestion.js';
 import type { MulticaHarnessConfig } from './types.js';
 
 /**
@@ -118,6 +124,10 @@ export interface MulticaRun {
 export interface MulticaMessage {
   role: string;
   text: string;
+  /** Message sequence number from the run transcript (drives `--since` dedup in phase d). */
+  seq?: number;
+  /** API message type (text/thinking/tool-use/tool-result/status/error); only 'text' rows hold agent prose. */
+  type?: string;
   raw: unknown;
 }
 
@@ -205,9 +215,13 @@ function normalizeMessage(value: unknown): MulticaMessage | null {
   if (!rec) return null;
   const text = strField(rec, ['content', 'text', 'body', 'message']);
   if (!text) return null;
+  const seqRaw = rec.seq;
+  const typeRaw = rec.type;
   return {
     role: (strField(rec, ['role', 'author', 'actor', 'sender']) || 'agent').toLowerCase(),
     text,
+    ...(typeof seqRaw === 'number' && Number.isFinite(seqRaw) ? { seq: Math.floor(seqRaw) } : {}),
+    ...(typeof typeRaw === 'string' && typeRaw.trim() ? { type: typeRaw.trim().toLowerCase() } : {}),
     raw: value
   };
 }
@@ -587,17 +601,22 @@ export async function multicaListRuns(
     .filter((r): r is MulticaRun => r !== null);
 }
 
-/** Fetch one run's transcript messages. */
+/** Fetch one run's transcript messages. `since` is a message sequence number: only messages after it are returned. */
 export async function multicaRunMessages(
   runner: MulticaCliRunner,
   issueKey: string,
   runId: string,
   timeoutMs: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  since?: number
 ): Promise<MulticaMessage[]> {
+  const args = ['issue', 'run-messages', runId, '--issue', issueKey];
+  if (typeof since === 'number' && Number.isFinite(since) && since > 0) {
+    args.push('--since', String(Math.floor(since)));
+  }
   const out = await runJson(
     runner,
-    ['issue', 'run-messages', runId, '--issue', issueKey],
+    args,
     undefined,
     timeoutMs,
     signal,
@@ -730,7 +749,8 @@ export async function forwardMulticaHarness(
   timeoutMs = 60000,
   clientSignal?: AbortSignal,
   scope?: RequestScope,
-  hops = 0
+  hops = 0,
+  ingestionDeps?: MulticaIngestionDeps
 ): Promise<Response> {
   // The Multica dispatch channel carries text only: forwarding a
   // tool-bearing request would silently drop the tools. Fail the attempt
@@ -808,6 +828,28 @@ export async function forwardMulticaHarness(
         sKey,
         { issueKey },
         DEFAULT_MAX_CACHE_ENTRIES
+      );
+    }
+  }
+
+  // Transcript ingestion (phase d, opt-in): register the dispatched
+  // issue so the poller comes back for its runs — including runs that
+  // are still working when this request's deadline hits. Registration
+  // is best-effort and never fails a dispatch; without ingestion deps
+  // (direct harness calls outside the router) nothing is registered.
+  if (cfg.multica.ingestTranscripts === true && ingestionDeps) {
+    try {
+      registerMulticaIssueForIngestion({
+        userId: scope?.userId || 'default',
+        upstreamId: upstream.id,
+        issueKey,
+        sessionMode: cfg.sessionMode
+      });
+      ensureMulticaIngestionStarted(ingestionDeps, clampIngestIntervalMs(cfg.multica.ingestPollIntervalMs));
+    } catch (err) {
+      console.warn(
+        `[MulticaIngestion] Failed to register ${issueKey} for ingestion:`,
+        err instanceof Error ? err.message : String(err)
       );
     }
   }

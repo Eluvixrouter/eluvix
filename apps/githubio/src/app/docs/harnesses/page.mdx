@@ -226,4 +226,11 @@ The Multica server runs in-cluster (VOW Helm install) while the Multica daemon a
 }
 ```
 
-Transcript ingestion into Eluvix memory is a separate, later step (phase d) and is intentionally not part of this harness: run transcripts must pass the T5 response-guard scan before any write-back.
+### Transcript ingestion (opt-in)
+
+A dispatch returns the transcript when the run finishes inside the request deadline — and the router's standard write-back stores that completion text. Runs that are still working at the deadline never reach memory that way. With `harness.multica.ingestTranscripts: true` (default off), a background poller (default every 60 seconds, `ingestPollIntervalMs`, clamped 10s–10min) re-reads terminal runs for Eluvix-dispatched issues and remembers their messages: one L1 record per agent message, with the issue key, run id, and agent carried as provenance, under the dispatching user only.
+
+- Every message passes the T5 response-guard scan first (prompt-guard + PII scrub): an injection detection blocks the record entirely, PII is redacted and the redacted form stored.
+- User-role messages (dispatch prompts, steering) are skipped — they are already in memory via the standard write-back. Failed and cancelled runs are ingested; what went wrong is signal for future runs.
+- Dedup is a per-run high-water mark (`run-messages --since`) plus a content-hash backstop, so re-ingesting a run writes nothing new. Per-request issues stop being polled once their run is done; session issues keep being watched for new runs.
+- Ingestion is keyed off a persisted registry in `eluvix.db`, not the in-memory session map, so a restart resumes where the poller left off. Issues created outside Eluvix (directly in the Multica UI) are not tracked.

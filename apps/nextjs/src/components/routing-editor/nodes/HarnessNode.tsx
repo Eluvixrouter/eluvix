@@ -26,6 +26,12 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
   const [multicaWorkspaceId, setMulticaWorkspaceId] = useState(data?.multica?.workspaceId || '');
   const [multicaProfile, setMulticaProfile] = useState(data?.multica?.profile || '');
   const [multicaProject, setMulticaProject] = useState(data?.multica?.project || '');
+  const [multicaIngestTranscripts, setMulticaIngestTranscripts] = useState(
+    data?.multica?.ingestTranscripts === true
+  );
+  const [multicaIngestPollIntervalMs, setMulticaIngestPollIntervalMs] = useState(
+    data?.multica?.ingestPollIntervalMs !== undefined ? String(data.multica.ingestPollIntervalMs) : ''
+  );
 
   // Keep local editable state in sync when the node data reference changes
   // (layout load, undo/redo, decompile). Adjusting state during render is the
@@ -58,6 +64,12 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
       if (data?.multica?.workspaceId !== undefined) setMulticaWorkspaceId(data.multica.workspaceId);
       if (data?.multica?.profile !== undefined) setMulticaProfile(data.multica.profile);
       if (data?.multica?.project !== undefined) setMulticaProject(data.multica.project);
+      if (data?.multica?.ingestTranscripts !== undefined) {
+        setMulticaIngestTranscripts(data.multica.ingestTranscripts === true);
+      }
+      if (data?.multica?.ingestPollIntervalMs !== undefined) {
+        setMulticaIngestPollIntervalMs(String(data.multica.ingestPollIntervalMs));
+      }
     }
   }
 
@@ -295,6 +307,56 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
               Auth is the calling user&apos;s own Multica PAT (`mul_…`) on the upstream
               apiKey — never a shared token, never a run-scoped `mat_…` token.
             </p>
+            <label className="flex items-start gap-2 text-[11px] text-gray-300 cursor-pointer">
+              <input
+                type="checkbox"
+                className="nodrag mt-0.5"
+                checked={multicaIngestTranscripts}
+                onChange={(e) => {
+                  const next = e.target.checked;
+                  setMulticaIngestTranscripts(next);
+                  syncData({
+                    multica: {
+                      ...(dataRef.current?.multica || {}),
+                      ingestTranscripts: next ? true : undefined
+                    }
+                  });
+                }}
+              />
+              <span>
+                Ingest run transcripts into memory once runs finish (opt-in).
+                Every message is T5-scan-gated (injection blocked, PII
+                redacted) and stored under the dispatching user only.
+              </span>
+            </label>
+            {multicaIngestTranscripts && (
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-400 mb-1">
+                  Ingestion sweep interval (ms, default 60000)
+                </label>
+                <input
+                  type="number"
+                  min={10000}
+                  max={600000}
+                  step={1000}
+                  placeholder="60000"
+                  className="nodrag w-full bg-gray-950 border border-gray-700 focus:border-indigo-500 rounded p-1.5 text-white text-[11px] font-mono outline-none"
+                  value={multicaIngestPollIntervalMs}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setMulticaIngestPollIntervalMs(next);
+                    const parsed = Number(next);
+                    syncData({
+                      multica: {
+                        ...(dataRef.current?.multica || {}),
+                        ingestPollIntervalMs:
+                          next.trim() && Number.isFinite(parsed) ? parsed : undefined
+                      }
+                    });
+                  }}
+                />
+              </div>
+            )}
           </div>
         )}
 

@@ -1219,6 +1219,10 @@ function generateEluvixConfig(
           ...(multicaOpts.project ? { project: String(multicaOpts.project) } : {}),
           ...(multicaOpts.pollIntervalMs !== undefined
             ? { pollIntervalMs: Number(multicaOpts.pollIntervalMs) }
+            : {}),
+          ...(multicaOpts.ingestTranscripts === true ? { ingestTranscripts: true } : {}),
+          ...(multicaOpts.ingestPollIntervalMs !== undefined
+            ? { ingestPollIntervalMs: Number(multicaOpts.ingestPollIntervalMs) }
             : {})
         }
       : null;

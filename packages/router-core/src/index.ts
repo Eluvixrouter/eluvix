@@ -4861,7 +4861,21 @@ export class Eluvix {
     };
 
     if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
-      return forwardHarnessRequest(upstream, effectiveRequest, timeoutMs, clientSignal, scope, hops);
+      // Transcript ingestion deps (phase d): only the Multica adapter
+      // reads them. The memory switch here mirrors canRemember minus
+      // the last-user-query condition — ingestion has no user query.
+      return forwardHarnessRequest(upstream, effectiveRequest, timeoutMs, clientSignal, scope, hops, {
+        getUpstreams: () => this.config.upstreams,
+        getContextProvider: () => this.contextProvider ?? undefined,
+        canRemember: () =>
+          Boolean(this.contextProvider) &&
+          Boolean(this.config.memory?.enabled) &&
+          this.config.memory?.writeBack !== false,
+        guardConfig: {
+          promptGuard: this.config.promptGuard,
+          privacyGuard: this.config.privacyGuard
+        }
+      });
     }
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {
