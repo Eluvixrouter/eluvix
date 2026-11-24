@@ -290,15 +290,51 @@ export function gateMulticaTranscriptText(
   text: string,
   guardConfig?: MulticaIngestionDeps['guardConfig']
 ): MulticaGateResult {
+  // Safety floor, mirroring the router's assistantTextSafeForMemory: the
+  // gate runs at full strength regardless of config. Operator config is
+  // spread first for its additive parts, then every knob that could weaken
+  // the scan is forced back on — a config must never neuter ingestion
+  // gating. (Note: `enabled` alone never disarmed it — both scanners
+  // ignore that flag — but all-threat-vectors-off, a raised threshold, or
+  // all-detectPii-off did. The forced config below is used for both the
+  // scan and the redaction, so a neutered privacy config cannot make
+  // redaction miss PII either.)
+  const forcedPromptGuard = {
+    ...(guardConfig?.promptGuard || {}),
+    enabled: true,
+    threshold: Math.min(guardConfig?.promptGuard?.threshold ?? 0.80, 0.80),
+    threatVectors: {
+      instructionOverride: true,
+      danJailbreak: true,
+      systemPromptLeak: true,
+      obfuscation: true,
+      fake_system_token_injection: true,
+      unconditional_compliance: true
+    }
+  };
+  const forcedPrivacyGuard = {
+    ...(guardConfig?.privacyGuard || {}),
+    enabled: true,
+    action: guardConfig?.privacyGuard?.action ?? 'warn',
+    detectPii: {
+      ...(guardConfig?.privacyGuard?.detectPii || {}),
+      email: true,
+      ssn: true,
+      creditCard: true,
+      apiKey: true,
+      ipAddress: true,
+      phone: true
+    }
+  };
   const scan = scanResponseContent(text, {
-    promptGuard: { ...(guardConfig?.promptGuard || {}), enabled: true },
-    privacyGuard: guardConfig?.privacyGuard
+    promptGuard: forcedPromptGuard,
+    privacyGuard: forcedPrivacyGuard
   });
   if (!scan.injection.passed) {
     return { action: 'blocked', text: '', rules: scan.rules };
   }
   if (scan.piiTypes.length > 0) {
-    const { redacted } = scanAndMaskPii(text, guardConfig?.privacyGuard);
+    const { redacted } = scanAndMaskPii(text, forcedPrivacyGuard);
     if (!redacted.trim()) {
       return { action: 'blocked', text: '', rules: scan.rules };
     }
