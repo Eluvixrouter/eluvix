@@ -10,7 +10,7 @@ switchyard:
   enabled: true
   image:
     repository: eluvix-switchyard
-    tag: "1.0.4"
+    tag: "latest"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8080
@@ -44,7 +44,7 @@ nextjs:
   enabled: true
   image:
     repository: eluvix-nextjs
-    tag: "1.0.4"
+    tag: "latest"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 3588
@@ -109,7 +109,7 @@ agentRouter:
   enabled: true
   image:
     repository: eluvix-agent-router
-    tag: "1.0.4"
+    tag: "latest"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8002
@@ -129,7 +129,7 @@ agentGateway:
   enabled: true
   image:
     repository: eluvix-agentgateway
-    tag: "1.0.4"
+    tag: "latest"
     pullPolicy: IfNotPresent
   replicaCount: 1
   port: 8003
