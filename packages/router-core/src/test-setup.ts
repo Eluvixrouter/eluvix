@@ -20,3 +20,7 @@ process.env.XDG_DATA_HOME = path.join(root, 'data');
 // never under the ambient NODE_ENV=test/VITEST markers, which must not
 // authorize arbitrary script execution in a deployed process.
 process.env.ELUVIX_ALLOW_TEST_AGENTS = '1';
+// Hunt-3 L-A7: per-worker VRAM lease dir so parallel workers' arbiters
+// never see each other's cross-process leases (production shares one
+// dir across processes on the box; tests must not).
+process.env.ELUVIX_VRAM_LEASE_DIR = path.join(root, 'vram-leases');

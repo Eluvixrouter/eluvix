@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import type { RouterConfig, UpstreamConfig } from './index.js';
 import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
 
@@ -57,6 +61,45 @@ function normalizeLocalBaseUrl(endpoint: string): string {
     .replace(/\/v1$/, '');
 }
 
+/**
+ * Cross-process lease directory (hunt-3 L-A7). The in-process counters
+ * below cannot see a second Eluvix process (desktop daemon + Next.js
+ * gateway) sharing one Ollama/ComfyUI on the same box, so a process
+ * could evict weights while the other had a stream in flight. Each
+ * lease is one file per in-flight request, named
+ * `<kind>-<pid>-<random>.lease`, holding `{ pid, kind, upstreamId }`.
+ * The directory is the OS temp dir, shared by every process on the
+ * box; a lease whose owner pid is dead is stale and is removed on
+ * sight. All file operations are best-effort: if the temp dir is
+ * unwritable, the arbiter degrades to in-process counters only and
+ * never blocks inference.
+ */
+// Overridable for tests: the per-worker test setup points this at a
+// worker-private temp dir so parallel workers' arbiters never see each
+// other's leases. In production the env var is unset and every process
+// on the box shares os.tmpdir()/eluvix-vram-leases — which is the point.
+function getVramLeaseDir(): string {
+  return process.env.ELUVIX_VRAM_LEASE_DIR || path.join(os.tmpdir(), 'eluvix-vram-leases');
+}
+
+function readLeaseMeta(file: string): { pid?: number; kind?: string } | null {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as { pid?: number; kind?: string };
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: any) {
+    // ESRCH: no such process. EPERM: alive, just not signalable.
+    return err?.code !== 'ESRCH';
+  }
+}
+
 export function classifyLocalEngineWorkload(upstream: UpstreamConfig): {
   kind: VramWorkloadKind | null;
   engineKey: string;
@@ -102,6 +145,71 @@ export class CooperativeVramArbiter {
   private skippedActiveInFlight = 0;
   private recentEvents: VramEvictionEvent[] = [];
   private mutexTail: Promise<void> = Promise.resolve();
+  /** Absolute paths of cross-process lease files created by this instance. */
+  private crossProcessLeases = new Set<string>();
+
+  /**
+   * Creates one cross-process lease file for an in-flight request
+   * (hunt-3 L-A7). Returns the file path, or null when the lease could
+   * not be created (best-effort: the in-process counters still apply).
+   */
+  private acquireCrossProcessLease(kind: VramWorkloadKind, upstreamId: string): string | null {
+    try {
+      fs.mkdirSync(getVramLeaseDir(), { recursive: true });
+      const name = `${kind}-${process.pid}-${crypto.randomBytes(6).toString('hex')}.lease`;
+      const file = path.join(getVramLeaseDir(), name);
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ pid: process.pid, kind, upstreamId, acquiredAt: Date.now() }),
+        { flag: 'wx' }
+      );
+      this.crossProcessLeases.add(file);
+      return file;
+    } catch {
+      return null;
+    }
+  }
+
+  private releaseCrossProcessLease(file: string | null): void {
+    if (!file) return;
+    this.crossProcessLeases.delete(file);
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // Already removed (e.g. by another process's stale cleanup).
+    }
+  }
+
+  /**
+   * True when any live process on this box holds an in-flight lease of
+   * `kind` — including this process's own leases. Stale leases (owner
+   * pid dead) are removed and ignored. Returns false when the lease
+   * directory cannot be read: fail-open to the in-process counters.
+   */
+  private hasLiveCrossProcessLease(kind: VramWorkloadKind): boolean {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(getVramLeaseDir());
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (!entry.startsWith(`${kind}-`) || !entry.endsWith('.lease')) continue;
+      const file = path.join(getVramLeaseDir(), entry);
+      const meta = readLeaseMeta(file);
+      if (!meta || typeof meta.pid !== 'number') continue;
+      if (!isPidAlive(meta.pid)) {
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          // Another process removed it first.
+        }
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
 
   private pushEvent(ev: VramEvictionEvent): void {
     this.recentEvents.push(ev);
@@ -152,13 +260,27 @@ export class CooperativeVramArbiter {
       return () => {};
     }
 
+    // Hunt-3 L-A7: claim a cross-process lease BEFORE any eviction
+    // decision, so a sibling process on this box sees this request in
+    // flight. Only llm/media kinds participate in eviction; audio
+    // leases are in-process only. The lease is created up front (not
+    // inside the mutex) because the eviction checks below must observe
+    // other processes' leases, and our own lease must be visible to
+    // them for the whole request.
+    const crossProcessLease =
+      kind === 'llm' || kind === 'media'
+        ? this.acquireCrossProcessLease(kind, upstream.id)
+        : null;
+
     const arbiterCfg = config.vramArbiter;
     if (arbiterCfg?.enabled) {
       await this.runUnderTransitionMutex(async () => {
         const timeoutMs = Math.max(250, arbiterCfg.transitionTimeoutMs ?? 1500);
 
         if (kind === 'media' && arbiterCfg.evictOllamaBeforeComfyUi !== false) {
-          if (this.activeInFlight.llm > 0) {
+          // Hunt-3 L-A7: skip eviction when ANY process on this box has
+          // an LLM stream in flight, not just this one.
+          if (this.activeInFlight.llm > 0 || this.hasLiveCrossProcessLease('llm')) {
             this.skippedActiveInFlight++;
           } else {
             const ollamaUpstreams = (config.upstreams || []).filter(
@@ -187,7 +309,12 @@ export class CooperativeVramArbiter {
                   const modelName = (m?.name || m?.model || '').trim();
                   if (!modelName) continue;
                   // Re-verify zero in-flight requests before evicting
-                  if (this.activeInFlight.llm > 0 || (this.activeByUpstream.get(ollamaU.id) || 0) > 0) {
+                  // (in-process AND cross-process — hunt-3 L-A7).
+                  if (
+                    this.activeInFlight.llm > 0 ||
+                    (this.activeByUpstream.get(ollamaU.id) || 0) > 0 ||
+                    this.hasLiveCrossProcessLease('llm')
+                  ) {
                     this.skippedActiveInFlight++;
                     break;
                   }
@@ -220,7 +347,7 @@ export class CooperativeVramArbiter {
           arbiterCfg.evictComfyUiBeforeLlm !== false &&
           this.lastActiveWorkload === 'media'
         ) {
-          if (this.activeInFlight.media > 0) {
+          if (this.activeInFlight.media > 0 || this.hasLiveCrossProcessLease('media')) {
             this.skippedActiveInFlight++;
           } else {
             const comfyUpstreams = (config.upstreams || []).filter(
@@ -274,6 +401,7 @@ export class CooperativeVramArbiter {
     return () => {
       if (released) return;
       released = true;
+      this.releaseCrossProcessLease(crossProcessLease);
       this.activeInFlight[kind] = Math.max(0, this.activeInFlight[kind] - 1);
       const nextEng = Math.max(0, (this.activeByEngine.get(engineKey) || 0) - 1);
       if (nextEng === 0) this.activeByEngine.delete(engineKey);
@@ -303,6 +431,9 @@ export class CooperativeVramArbiter {
   }
 
   reset(): void {
+    for (const file of [...this.crossProcessLeases]) {
+      this.releaseCrossProcessLease(file);
+    }
     this.activeInFlight = { llm: 0, media: 0, audio: 0 };
     this.activeByEngine.clear();
     this.activeByUpstream.clear();

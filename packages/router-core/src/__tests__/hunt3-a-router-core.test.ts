@@ -865,3 +865,96 @@ describe('L-A12: MCP transcribe must cap audio_base64', () => {
     expect(fetchCalls).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------- L-A7
+
+describe('L-A7: VRAM arbiter must see in-flight work in other processes', () => {
+  const vramConfig: any = {
+    vramArbiter: { enabled: true },
+    upstreams: [
+      {
+        id: 'ollama-local',
+        name: 'Local Ollama',
+        type: 'ollama',
+        endpoint: 'http://127.0.0.1:11434',
+        priority: 20,
+        models: ['qwen2.5:14b'],
+      },
+      {
+        id: 'comfy-local',
+        name: 'Local ComfyUI',
+        type: 'comfyui',
+        endpoint: 'http://127.0.0.1:8188',
+        priority: 20,
+        models: ['*'],
+      },
+    ],
+  };
+
+  function mockEngineFetch() {
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.endsWith('/api/ps')) {
+        return new Response(JSON.stringify({ models: [{ name: 'qwen2.5:14b' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/api/generate') || url.endsWith('/free')) {
+        return new Response(JSON.stringify({ done: true }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+  }
+
+  it('a second arbiter instance does not evict Ollama while the first holds an LLM lease', async () => {
+    const { CooperativeVramArbiter } = await import('../vram-arbiter.js');
+    mockEngineFetch();
+    const procA = new CooperativeVramArbiter();
+    const procB = new CooperativeVramArbiter();
+    const releaseLlm = await procA.acquireLease(vramConfig.upstreams[0], vramConfig);
+    try {
+      const releaseMedia = await procB.acquireLease(vramConfig.upstreams[1], vramConfig);
+      try {
+        expect(procB.getStats().ollamaEvictions).toBe(0);
+        expect(procB.getStats().skippedActiveInFlight).toBeGreaterThan(0);
+      } finally {
+        releaseMedia();
+      }
+    } finally {
+      releaseLlm();
+    }
+    // Once the other process's lease is gone, eviction proceeds.
+    const releaseMedia2 = await procB.acquireLease(vramConfig.upstreams[1], vramConfig);
+    try {
+      expect(procB.getStats().ollamaEvictions).toBe(1);
+    } finally {
+      releaseMedia2();
+    }
+    procA.reset();
+    procB.reset();
+  });
+
+  it('a stale lease from a dead process does not block eviction', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { CooperativeVramArbiter } = await import('../vram-arbiter.js');
+    mockEngineFetch();
+    const leaseDir = process.env.ELUVIX_VRAM_LEASE_DIR!;
+    fs.mkdirSync(leaseDir, { recursive: true });
+    const stale = path.join(leaseDir, 'llm-999999999-deadbeef.lease');
+    fs.writeFileSync(
+      stale,
+      JSON.stringify({ pid: 999999999, kind: 'llm', upstreamId: 'ollama-local', acquiredAt: 1 })
+    );
+    const arbiter = new CooperativeVramArbiter();
+    const releaseMedia = await arbiter.acquireLease(vramConfig.upstreams[1], vramConfig);
+    try {
+      expect(arbiter.getStats().ollamaEvictions).toBe(1);
+      expect(fs.existsSync(stale)).toBe(false);
+    } finally {
+      releaseMedia();
+      arbiter.reset();
+    }
+  });
+});
