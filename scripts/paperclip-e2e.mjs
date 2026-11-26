@@ -9,6 +9,12 @@
  *   3. Task classification + semantic/burn-rate/hierarchy-aware assignee ranking (E1/E3/E5)
  *   4. `@eluvix/paperclip-plugin` `auto-with-approval` -> approve -> feedback -> re-rank (S3/E2)
  *   5. `@eluvix/paperclip-adapter` mid-run virtual tier escalation & usage correlation (E4)
+ *   6. Paperclip HTTP routes (`recommend-assignee`, `classify`, `feedback`,
+ *      `usage`) exercised over loopback fetch — not just defined.
+ *
+ * An overall watchdog (ELUVIX_E2E_TIMEOUT_MS, default 120s) fails the run
+ * instead of hanging CI: the script is offline and mock-based, so a hang
+ * is always a bug, never a slow network.
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -23,12 +29,20 @@ const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eluvix-e2e-data-'));
 process.env.XDG_CONFIG_HOME = tmpConfigDir;
 process.env.XDG_DATA_HOME = tmpDataDir;
 
+// Overall watchdog: fail loudly instead of hanging CI if any step stalls.
+const E2E_TIMEOUT_MS = Number(process.env.ELUVIX_E2E_TIMEOUT_MS || 120_000);
+const e2eWatchdog = setTimeout(() => {
+  console.error(`❌ Eluvix x Paperclip E2E timed out after ${E2E_TIMEOUT_MS}ms`);
+  process.exit(1);
+}, E2E_TIMEOUT_MS);
+
 const {
   Eluvix,
   createNamedApiKey,
   resolveBearerToken,
   parseVerifiedPaperclipRequestAsync,
   signPaperclipContextHeaders,
+  classifyPaperclipTask,
   evaluatePaperclipCandidateAssignments,
   resolveAndRecordPaperclipFeedback,
   getPaperclipUsageByCorrelation,
@@ -176,8 +190,18 @@ try {
     }
 
     if (urlPath === '/api/v1/paperclip/classify' && req.method === 'POST') {
+      const body = JSON.parse(bodyText || '{}');
+      // Real classification via router-core, not a hardcoded stub: the
+      // response must reflect the task that was actually posted.
+      const classification = classifyPaperclipTask({
+        title: typeof body.title === 'string' ? body.title : '',
+        description: typeof body.description === 'string' ? body.description : undefined,
+        priority: body.priority,
+        labels: Array.isArray(body.labels) ? body.labels.map(String) : undefined,
+        sensitivity: body.sensitivity,
+      });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ suggestedTier: 'code-specialist', complexityLabel: 'moderate' }));
+      res.end(JSON.stringify(classification));
       return;
     }
 
@@ -258,22 +282,8 @@ try {
   assert.equal(chatRes.status, 200);
   assert.equal(chatRes.headers.get('x-eluvix-upstream'), 'e2e-local');
 
-  // 5. Verify Plugin auto-with-approval -> approve -> feedback -> re-rank
-  const stateMap = new Map();
-  const issues = new Map([
-    [
-      'iss-e2e-1',
-      {
-        id: 'iss-e2e-1',
-        companyId: 'comp-a',
-        identifier: 'E2E-1',
-        title: 'Write TypeScript unit tests for Switchyard',
-        description: 'Ensure full Vitest coverage',
-        status: 'todo',
-        priority: 'high',
-      },
-    ],
-  ]);
+  // Candidate agents shared by the route checks below and the plugin
+  // flow in step 5.
   const agents = [
     {
       id: 'ag-eng',
@@ -293,6 +303,78 @@ try {
       status: 'idle',
     },
   ];
+
+  // 4b. Exercise the paperclip HTTP routes the mock gateway defines.
+  // Previously only /v1/chat/completions was ever fetched, so the
+  // recommend-assignee / classify / feedback / usage handlers were dead
+  // code and the classify handler returned a hardcoded stub.
+  const e2eTask = {
+    title: 'Write TypeScript unit tests for Switchyard',
+    description: 'Ensure full Vitest coverage',
+    priority: 'high',
+  };
+
+  // recommend-assignee: semantic/burn-rate/hierarchy-aware ranking (E1/E3/E5)
+  const recRes = await fetch(`${gatewayUrl}/api/v1/paperclip/recommend-assignee`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task: e2eTask, candidates: agents, topN: 5 }),
+  });
+  assert.equal(recRes.status, 200);
+  const recBody = await recRes.json();
+  assert.equal(recBody.classification.suggestedTier, 'code-specialist');
+  assert.equal(recBody.classification.complexityLabel, 'moderate');
+  assert.ok(Array.isArray(recBody.recommendations) && recBody.recommendations.length === 2);
+  assert.equal(recBody.recommendations[0].agentId, 'ag-eng');
+
+  // classify: real classifyPaperclipTask call — the response must reflect
+  // the posted task, not a canned tier/label pair.
+  const clsRes = await fetch(`${gatewayUrl}/api/v1/paperclip/classify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(e2eTask),
+  });
+  assert.equal(clsRes.status, 200);
+  const clsBody = await clsRes.json();
+  assert.equal(clsBody.suggestedTier, 'code-specialist');
+  assert.equal(clsBody.complexityLabel, 'moderate');
+  assert.ok(Array.isArray(clsBody.modalities) && clsBody.modalities.includes('code'));
+
+  // feedback: record an outcome via the route. Uses a separate issue
+  // (iss-e2e-route) so the plugin flow in step 5 (iss-e2e-1) stays
+  // independent — feedback dedupes per (userId, issueId, agentId).
+  const fbRes = await fetch(`${gatewayUrl}/api/v1/paperclip/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      issueId: 'iss-e2e-route',
+      agentId: 'ag-eng',
+      companyId: 'comp-a',
+      task: e2eTask,
+      success: true,
+    }),
+  });
+  assert.equal(fbRes.status, 200);
+  const fbBody = await fbRes.json();
+  assert.equal(fbBody.ok, true);
+  assert.ok(typeof fbBody.taskClass === 'string' && fbBody.taskClass.includes('moderate'));
+
+  // 5. Verify Plugin auto-with-approval -> approve -> feedback -> re-rank
+  const stateMap = new Map();
+  const issues = new Map([
+    [
+      'iss-e2e-1',
+      {
+        id: 'iss-e2e-1',
+        companyId: 'comp-a',
+        identifier: 'E2E-1',
+        title: 'Write TypeScript unit tests for Switchyard',
+        description: 'Ensure full Vitest coverage',
+        status: 'todo',
+        priority: 'high',
+      },
+    ],
+  ]);
   const pluginHandlers = createEluvixPluginHandlers({
     config: {
       eluvixBaseUrl: gatewayUrl,
@@ -400,7 +482,18 @@ try {
   assert.equal(execRes.costStatus, 'reported');
   assert.equal(execRes.usage?.inputTokens, 24);
 
-  console.log('✅ Eluvix x Paperclip E2E passed (S1/S2/S3 + M1/M2 + E1–E6 verified).');
+  // usage: the adapter run above logged exactly one request under
+  // correlation run-e2e-adapter — the route must attribute that request.
+  const usageRes = await fetch(`${gatewayUrl}/api/v1/paperclip/usage/run-e2e-adapter`);
+  assert.equal(usageRes.status, 200);
+  const usageBody = await usageRes.json();
+  assert.equal(usageBody.runId, 'run-e2e-adapter');
+  assert.equal(usageBody.requests, 1);
+  assert.equal(usageBody.inputTokens, 24);
+  assert.equal(usageBody.outputTokens, 12);
+
+  clearTimeout(e2eWatchdog);
+  console.log('✅ Eluvix x Paperclip E2E passed (S1/S2/S3 + M1/M2 + E1–E6 verified, paperclip routes recommend-assignee/classify/feedback/usage exercised).');
 } finally {
   delete process.env.ELUVIX_E2E_PAPERCLIP_HMAC;
   if (gatewayServer) await closeServer(gatewayServer);

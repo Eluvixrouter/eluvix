@@ -11,9 +11,9 @@ Eluvix provides a **split, pick-and-choose Docker Compose architecture** located
 ```
 docker/
 ├── compose/
-│   ├── core.yml          # Core Eluvix gateway, Next.js UI & SQLite volume
+│   ├── core.yml          # Switchyard, vLLM-SR, agent-router & agentgateway sims
 │   ├── inference.yml     # vLLM, SGLang, and Ollama inference engines
-│   ├── harnesses.yml     # TrueForge, OpenHands SWE agent runners
+│   ├── harnesses.yml     # TrueForge, OpenCode & sandbox agent runners
 │   └── memory.yml        # Graphiti, LightRAG, and OpenViking databases
 ├── README.md             # Quick reference for compose commands
 └── ...
@@ -24,11 +24,20 @@ docker/
 ## 2. Compose Subsystems
 
 ### 1. Core Gateway (`core.yml`)
-The minimal standalone footprint:
+The minimal standalone footprint — the four canned-response simulator
+services the dashboard talks to locally (no Next.js app, no SQLite
+volume in this file):
 - **Services**:
-  - `eluvix`: Next.js web application, visual node editor, and Switchyard routing engine.
-- **Ports**: `3588` (HTTPS/HTTP dual-protocol auto-upgrade), `3580` (HTTP redirect).
-- **Volumes**: `eluvix-data` mapped to `/app/data` (stores SQLite `request_logs`, `chat_history`, and layout definitions).
+  - `switchyard`: Switchyard routing-engine sim (`:8080`).
+  - `vllm-sr`: vLLM semantic-router sim (`:8001`).
+  - `agent-router`: agent-router sim (`:8002`).
+  - `agentgateway`: agent-gateway (MCP tool server) sim (`:8003`).
+- **Volumes**: none — `switchyard`, `agent-router`, and `agentgateway`
+  mount `docker/runtime-config` read-only for their config. There is no
+  `eluvix-data` volume and no `eluvix` service in any compose file; the
+  Next.js dashboard (`:3588`, HTTP redirect `:3580`) runs from
+  `apps/nextjs` (local `pnpm dev` or `docker-compose.prod.yml`), not
+  from `core.yml`.
 
 ### 2. Local Inference Pool (`inference.yml`)
 GPU-accelerated local inference containers:
@@ -44,13 +53,13 @@ Autonomous coding agent runtimes:
 - **Services**:
   - `trueforge`: Native sovereign coding agent container (`:8790`).
   - `opencode`: Eluvix-forked OpenCode coding agent server (`:4096`).
-  - `openhands`: OpenHands software engineering harness (`:3000`).
+  - `sandbox`: Execution sandbox server (`:3986`).
 - **Profile**: `--profile harness`.
 
 ### 4. Memory & Context Retrieval (`memory.yml`)
 Context augmentation databases:
 - **Services**:
-  - `graphiti`: Temporal knowledge graph service (`:8000`).
+  - `graphiti`: Temporal knowledge graph service (`:8004`).
   - `lightrag`: Dual-level graph-based RAG service (`:9621`).
   - `openviking`: Context database for episodic memory (`:1933`).
 - **Profile**: `--profile memory`.

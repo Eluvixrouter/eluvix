@@ -170,16 +170,19 @@ npm --prefix packages/router-core test
 # Test Paperclip plugin & adapter packages (3 test files, 20 tests)
 npm --prefix packages/paperclip-plugin test && npm --prefix packages/paperclip-adapter test
 
-# Run offline Paperclip x Eluvix full-stack E2E harness (loopback HTTP + SQLite + adapter + plugin)
+# Run offline Paperclip x Eluvix full-stack E2E harness (loopback HTTP + SQLite + adapter + plugin; also run in CI)
 node scripts/paperclip-e2e.mjs
 
-# Test Next.js application & Eluvix Visual Node Routing Editor (24 test files, 205 tests)
+# Test Next.js application & Eluvix Visual Node Routing Editor (24 test files, 211 tests)
 npm --prefix apps/nextjs test
+
+# Test Desktop application (1 test file, 8 tests)
+npm --prefix apps/desktop test
 
 # Run Golden Routing & Security Regression Eval Suite from CLI
 npx eluvix-eval run suite.json
 
-# Run full monorepo production build (76 passing Vitest files / 716 tests + offline E2E)
+# Run full monorepo production build (builds only — run the test commands above to verify the suites; 80 passing Vitest files / 771 tests + offline E2E)
 pnpm build
 ```
 
