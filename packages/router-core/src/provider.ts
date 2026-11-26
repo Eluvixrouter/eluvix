@@ -10,6 +10,7 @@ import {
   validateProviderServerUrl,
   ProviderDbSettings
 } from './db.js';
+import { fetchWithSafeRedirects } from './fetch-redirects.js';
 
 export interface GpuInfo {
   vendor: 'NVIDIA' | 'AMD' | 'APPLE' | 'INTEL' | 'CPU';
@@ -930,7 +931,9 @@ export class EluvixProviderAgent extends EventEmitter {
       })),
     };
 
-    const res = await fetch(registerUrl, {
+    // Hunt-3 L-A2: nodeToken rides in the JSON body, which 307/308
+    // redirects preserve — route through the safe redirect policy.
+    const res = await fetchWithSafeRedirects(registerUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -1005,7 +1008,8 @@ export class EluvixProviderAgent extends EventEmitter {
     };
 
     try {
-      const res = await fetch(heartbeatUrl, {
+      // Hunt-3 L-A2: nodeToken rides in the JSON body — safe redirects only.
+      const res = await fetchWithSafeRedirects(heartbeatUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

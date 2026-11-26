@@ -323,3 +323,90 @@ describe('L-A1: prompt-guard evasion — filler bound and verb/noun synonyms', (
     expect(checkPromptHeuristics('What is the weather like today?', 0.8).passed).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------- L-A2
+
+describe('L-A2: credential-bearing outbound calls must not follow cross-origin redirects', () => {
+  it('webhook dispatch refuses a cross-origin redirect and never sends the signature to the evil host', async () => {
+    const { registerAlertWebhook, dispatchAlertWebhooks } = await import('../webhooks.js');
+    registerAlertWebhook({
+      name: 'h3-la2',
+      url: 'http://127.0.0.1:9099/hooks/eluvix',
+      provider: 'json',
+      secret: 'whsec_hunt3',
+      events: ['budget.threshold'],
+    });
+    const seenUrls: string[] = [];
+    const seenInits: any[] = [];
+    globalThis.fetch = vi.fn(async (url: any, init: any) => {
+      seenUrls.push(String(url));
+      seenInits.push(init);
+      return new Response('go there', {
+        status: 302,
+        headers: { location: 'https://evil.example/hooks/eluvix' },
+      });
+    }) as unknown as typeof fetch;
+    const res = await dispatchAlertWebhooks({
+      event: 'budget.threshold',
+      severity: 'warning',
+      summary: 'test',
+      data: {},
+    });
+    expect(res.delivered).toBe(0);
+    expect(res.failed).toBe(1);
+    expect(seenUrls).not.toContain('https://evil.example/hooks/eluvix');
+    expect(seenUrls.every((u) => u.startsWith('http://127.0.0.1:9099'))).toBe(true);
+    // The mechanism: redirects are handled manually, never by the
+    // platform default (which would follow to the evil host).
+    expect(seenInits.length).toBeGreaterThan(0);
+    expect(seenInits.every((i) => i?.redirect === 'manual')).toBe(true);
+  });
+
+  it('webhook dispatch follows a same-origin redirect (negative control)', async () => {
+    const { registerAlertWebhook, dispatchAlertWebhooks } = await import('../webhooks.js');
+    registerAlertWebhook({
+      name: 'h3-la2-same',
+      url: 'http://127.0.0.1:9099/hooks/eluvix',
+      provider: 'json',
+      secret: 'whsec_hunt3',
+      // Distinct event from the cross-origin test above: dispatch sends
+      // to every enabled webhook subscribed to the event, and tests in
+      // this file share one DB.
+      events: ['audit.tamper_detected'],
+    });
+    globalThis.fetch = vi.fn(async (url: any) => {
+      if (String(url).endsWith('/hooks/eluvix')) {
+        return new Response('moved', { status: 302, headers: { location: '/hooks/eluvix2' } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = await dispatchAlertWebhooks({
+      event: 'audit.tamper_detected',
+      severity: 'warning',
+      summary: 'test',
+      data: {},
+    });
+    expect(res.delivered).toBe(1);
+    expect(res.failed).toBe(0);
+  });
+
+  it('vault secret fetch refuses a cross-origin redirect and never sends X-Vault-Token elsewhere', async () => {
+    const { resolveUpstreamSecret, clearSecretReferenceCache } = await import('../secrets.js');
+    clearSecretReferenceCache();
+    const seenUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: any) => {
+      seenUrls.push(String(url));
+      return new Response('go there', {
+        status: 302,
+        headers: { location: 'https://evil.example/v1/secret' },
+      });
+    }) as unknown as typeof fetch;
+    const val = await resolveUpstreamSecret('vault:secret/data/key#api_key', {
+      baoAddr: 'http://127.0.0.1:8200',
+      baoToken: 'test-vault-token',
+    });
+    expect(val).toBeUndefined();
+    expect(seenUrls).not.toContain('https://evil.example/v1/secret');
+    expect(seenUrls.length).toBeGreaterThan(0);
+  });
+});

@@ -8,6 +8,7 @@
 
 import { applyPrivacyGuard } from './guard.js';
 import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
+import { fetchWithSafeRedirects } from './fetch-redirects.js';
 
 export interface ObservabilityExporterConfig {
   enabled?: boolean;
@@ -357,8 +358,16 @@ export class OtlpTraceExporter {
       ],
     };
 
+    // Hunt-3 L-A2: the Langfuse Authorization header must not ride a
+    // cross-origin redirect. An explicitly injected fetchImpl (tests) is
+    // honored as-is; the default global fetch goes through the safe
+    // redirect policy instead.
+    const safeFetch =
+      fetchImpl === globalThis.fetch
+        ? (input: string, init?: RequestInit) => fetchWithSafeRedirects(input, init)
+        : fetchImpl;
     try {
-      const res = await fetchImpl(endpoint, {
+      const res = await safeFetch(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(mergedPayload),
