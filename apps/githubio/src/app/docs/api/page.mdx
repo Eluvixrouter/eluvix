@@ -159,6 +159,7 @@ Stateful multi-turn orchestration endpoint for Codex CLI and OpenAI Agents SDK:
 ### `POST /api/v1/embeddings` (Matryoshka Dimension-Pinned Embeddings)
 OpenAI-compatible vector embedding endpoint routing to local Ollama (`nomic-embed-text`, `bge-m3`), RamaLama, vLLM, or cloud providers:
 - Scrubs PII via `PrivacyGuard` prior to embedding generation.
+- Requires the `embeddings` scope — readonly or wrongly-scoped keys get `403`.
 - Enforces **Matryoshka L2-normalized dimension pinning** (`dimensions`) so switching between local and cloud embedding models never breaks downstream pgvector, Qdrant, or SQLite vector table schemas.
 
 ---
@@ -166,10 +167,10 @@ OpenAI-compatible vector embedding endpoint routing to local Ollama (`nomic-embe
 ## 1c. Headless Sovereign Audio (`/v1/audio/transcriptions` & `/v1/audio/speech`)
 
 ### `POST /api/v1/audio/transcriptions`
-OpenAI Whisper-compatible multipart/form-data Speech-to-Text (STT) endpoint routing `file`, `model`, `language`, and `response_format` to local Speaches Faster-Whisper (`:8005`), `whisper.cpp`, or cloud fallback, applying `PrivacyGuard` redaction to transcribed text.
+OpenAI Whisper-compatible multipart/form-data Speech-to-Text (STT) endpoint routing `file`, `model`, `language`, and `response_format` to local Speaches Faster-Whisper (`:8005`), `whisper.cpp`, or cloud fallback, applying `PrivacyGuard` redaction to transcribed text. Requires the `audio` scope — readonly or wrongly-scoped keys get `403`.
 
 ### `POST /api/v1/audio/speech`
-OpenAI TTS-compatible Text-to-Speech synthesis endpoint routing `{ model, input, voice, response_format, speed }` to local Kokoro-FastAPI (`:8880`), Piper TTS, or cloud TTS, streaming `audio/mpeg`, `audio/wav`, or `audio/opus` bytes after `PrivacyGuard` input scrubbing.
+OpenAI TTS-compatible Text-to-Speech synthesis endpoint routing `{ model, input, voice, response_format, speed }` to local Kokoro-FastAPI (`:8880`), Piper TTS, or cloud TTS, streaming `audio/mpeg`, `audio/wav`, or `audio/opus` bytes after `PrivacyGuard` input scrubbing. Requires the `audio` scope — readonly or wrongly-scoped keys get `403`.
 
 ---
 
@@ -221,7 +222,7 @@ Returns aggregate summary statistics: total request volume, average latency per 
 - **`DELETE ?olderThanDays=<days>`** *(Admin required)*: Prunes expired rows from `request_logs` and `paperclip_assignment_outcomes` older than `<days>` while keeping `telemetry_daily_rollups` and the SHA-256 `audit_events` hash chain intact.
 
 ### `GET /api/v1/metrics`
-Returns Prometheus `0.0.4` text exposition metrics (`text/plain; version=0.0.4; charset=utf-8`), including request counters, token counters, TTFT/ITL gauges, rolling 24-hour cloud spend (`eluvix_rolling_24h_spend_usd`), daily spend cap (`eluvix_daily_spend_cap_usd`), and circuit breaker states. Supports `Authorization: Bearer elx_...` Named API Keys.
+Returns Prometheus `0.0.4` text exposition metrics (`text/plain; version=0.0.4; charset=utf-8`), including request counters, token counters, TTFT/ITL gauges, rolling 24-hour cloud spend (`eluvix_rolling_24h_spend_usd`), daily spend cap (`eluvix_daily_spend_cap_usd`), and circuit breaker states. Supports `Authorization: Bearer elx_...` Named API Keys. Aggregates and rolling spend are scoped to the caller's `userId`; only admin callers see global aggregates.
 
 ### `POST /api/v1/route-explain`
 Executes a non-destructive Switchyard dry-run trace and returns modality classification, complexity tier, intra-heartbeat trajectory step tier (`agentStepTier`), Paperclip org routing bias & per-key ceiling enforcement, budget guardrail evaluation, candidate scores, and the winning upstream without invoking any model. Supports Paperclip context headers (`X-Paperclip-*` with HMAC verification) and optional body `paperclip` simulator fields.
@@ -231,7 +232,7 @@ Executes a non-destructive Switchyard dry-run trace and returns modality classif
 ## 4b. ComfyUI Media Synthesis & Status
 
 ### `POST /api/v1/images/generations`
-OpenAI-compatible local image, video, and 3D mesh generation endpoint backed by ComfyUI (`:8188`). Supports `model` workflow presets (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), `prompt`, `negative_prompt`, `size` (e.g. `"1024x1024"`), `seed`, and `response_format` (`"url"` or `"b64_json"`).
+OpenAI-compatible local image, video, and 3D mesh generation endpoint backed by ComfyUI (`:8188`). Supports `model` workflow presets (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`), `prompt`, `negative_prompt`, `size` (e.g. `"1024x1024"`), `seed`, and `response_format` (`"url"` or `"b64_json"`). Requires the `images` scope — readonly or wrongly-scoped keys get `403`.
 
 ### `GET /api/v1/images/view`
 SSRF-guarded HTTPS media proxy that streams generated PNG, WEBP, MP4, or GLB files from the configured ComfyUI `/view` endpoint without mixed-content warnings.
@@ -263,23 +264,23 @@ Records human preference votes from Playground 2.0 A/B Arena (`{ prompt, chosen,
 ## 5b. Sovereign MCP Server & Golden Eval Suites
 
 ### `GET / POST /api/v1/mcp`
-Native Model Context Protocol (`2025-06-18`) Streamable-HTTP JSON-RPC 2.0 endpoint (mirrored over stdio via `npx eluvix-mcp`). Exposes 7 sovereign tools (`eluvix_route_explain`, `eluvix_list_models`, `eluvix_smart_complete`, `eluvix_memory_query`, `eluvix_memory_store`, `eluvix_privacy_scrub`, `eluvix_generate_image`) and `eluvix://` resources while enforcing `x-eluvix-hops` loop protection (`>= 2` rejected).
+Native Model Context Protocol (`2025-06-18`) Streamable-HTTP JSON-RPC 2.0 endpoint (mirrored over stdio via `npx eluvix-mcp`). Exposes 7 sovereign tools (`eluvix_route_explain`, `eluvix_list_models`, `eluvix_smart_complete`, `eluvix_memory_query`, `eluvix_memory_store`, `eluvix_privacy_scrub`, `eluvix_generate_image`) and `eluvix://` resources while enforcing `x-eluvix-hops` loop protection (`>= 2` rejected). `POST` requires the `mcp` scope and refuses readonly keys.
 
 ### `POST /api/v1/evals/run`
-Executes Golden Routing & Security Regression Eval Suites (including the built-in `paperclip-org-governance` suite; `mode: "dry-run"` for `\$0.00` deterministic routing/DLP/injection/Paperclip bias & `expectedStepTier` assertions, or `mode: "live"` for full upstream regex/judge verification; `readonly` keys are restricted to `dry-run` and `configOverride` upstreams are validated via `ssrf-guard`). Also runnable in CI/CD via `npx eluvix-eval run evals.json`.
+Executes Golden Routing & Security Regression Eval Suites (including the built-in `paperclip-org-governance` suite; `mode: "dry-run"` for `\$0.00` deterministic routing/DLP/injection/Paperclip bias & `expectedStepTier` assertions, or `mode: "live"` for full upstream regex/judge verification; `readonly` keys are restricted to `dry-run` and `configOverride` upstreams are validated via `ssrf-guard`). Invalid `configOverride` values are rejected with `400` in both live and dry-run modes. Also runnable in CI/CD via `npx eluvix-eval run evals.json`.
 
 ---
 
 ## 6. Dynamic Router Configuration
 
 ### `GET /api/v1/config`
-Retrieves the active `@eluvix/router-core` configuration JSON (upstreams, routing strategies, latency thresholds, security guard settings).
+Retrieves the active `@eluvix/router-core` configuration JSON (upstreams, routing strategies, latency thresholds, security guard settings). Admins see the raw config; everyone else gets upstream/memory API keys as `configured` flags and observability secrets (Langfuse secret key, `Authorization` headers) as `*Configured` flags.
 
 ### `POST /api/v1/config`
-Updates and immediately hot-reloads the active router configuration without service restart. Validates upstream definitions and threshold numbers before saving. Default requests merge partial JSON payloads over the live config (preserving omitted `egressPolicy` / `memory` sections); pass `?authoritative=1` (or `X-Eluvix-Authoritative-Apply: 1`, used by the **Eluvix Visual Node Routing Editor** after diff confirmation) for an authoritative full-graph replace that removes deleted optional modules while still preserving an omitted `egressPolicy`.
+Updates and immediately hot-reloads the active router configuration without service restart. Validates upstream definitions and threshold numbers before saving. Default requests merge partial JSON payloads over the live config (preserving omitted `egressPolicy` / `memory` sections); pass `?authoritative=1` (or `X-Eluvix-Authoritative-Apply: 1`, used by the **Eluvix Visual Node Routing Editor** after diff confirmation) for an authoritative full-graph replace that removes deleted optional modules while still preserving an omitted `egressPolicy`. Persistence failures throw instead of being swallowed, so memory and disk cannot silently diverge.
 
 ### `POST /api/orchestrator/deploy`
-Deploys compiled routing topologies across all four orchestration tiers (`local`, `docker`, `compose`, `k3d`; read-only callers receive `403`). Validates upstreams before mutating state, writes secret-redacted container runtime bundles (`eluvix.json`, `bifrost.yaml`, `routing.json`, `gateway.json`) mounted read-only at `/config` for Docker/Compose services, auto-starts or provisions `k3d` clusters with `:latest` local images and ConfigMap rollout checksums, and reloads the active Next.js router.
+Deploys compiled routing topologies across all four orchestration tiers (`local`, `docker`, `compose`, `k3d`; read-only callers receive `403`). Validates upstreams before mutating state, writes secret-redacted container runtime bundles (`eluvix.json`, `bifrost.yaml`, `routing.json`, `gateway.json`) mounted read-only at `/config` for Docker/Compose services, auto-starts or provisions `k3d` clusters with `:latest` local images and ConfigMap rollout checksums, and reloads the active Next.js router. Bifrost upstream keys are emitted as `${ELUVIX_UPSTREAM_API_KEY_<NODE_ID>}` environment references (never raw values) and `bifrost.yaml` is written `0600`; OpenCode is provisioned with a scoped `configurator:opencode` key (reused when still valid, otherwise freshly minted) instead of the master admin password.
 
 ---
 
@@ -317,8 +318,8 @@ Enables programmatic CRUD for visual routing graph topologies (`lib/layouts`):
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/v1/layouts` | `GET` | Lists all saved layouts, active slug, and layouts directory path. |
-| `/api/v1/layouts` | `POST` | Saves a new layout topology (`slug`, `name`, `nodes`, `edges`, `viewport`). |
+| `/api/v1/layouts` | `GET` | Lists all saved layouts and the active slug (no longer returns the layouts directory path). Caller identity is enforced (`401` unauthenticated). |
+| `/api/v1/layouts` | `POST` | Saves a new layout topology (`slug`, `name`, `nodes`, `edges`, `viewport`). Caller identity is enforced (`401` unauthenticated, `403` readonly mutations); imports validate node types against the shared `KNOWN_NODE_TYPES` registry and node data (`cliPath` must be a bare or absolute `agy` path with no shell characters, endpoints must use an allowed scheme with no embedded credentials, edges must reference existing nodes). |
 | `/api/v1/layouts/[slug]` | `GET` | Fetches a specific layout by its slug. |
 | `/api/v1/layouts/[slug]` | `PUT` | Updates an existing layout definition. |
 | `/api/v1/layouts/[slug]` | `DELETE` | Deletes a custom layout (protects built-in examples). |
@@ -476,7 +477,7 @@ Manage and test SSRF-guarded outbound alerting webhooks (`slack`, `discord`, `nt
 
 ## 15. Paperclip Integration & Correlation API (v1.3)
 
-All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope (or an authenticated dashboard session for `/api/v1/paperclip/health`). Multi-endpoint parity across `/api/v1/chat/completions`, `/api/v1/messages`, `/api/v1/responses`, `/api/v1/route-explain`, and `DesktopRouterServer` enforces per-key `companyIds` isolation (`403` on cross-company access), `maxTier` / `maxCostPer1kUsd` ceilings, `x-eluvix-hops` loop checks, company/issue episodic memory partitioning (`` `${userId}::pc:${companyId}` ``), and `SecretRef` (`env:`, `file:`, `bao:`, `vault:`, `keychain:`) HMAC secret resolution.
+All `/api/v1/paperclip/*` endpoints require a named API key with the `paperclip` (or `*`) scope (or an authenticated dashboard session for `/api/v1/paperclip/health`). Only admin or `admin:config`-scoped callers may probe an arbitrary Paperclip base URL via the health endpoint; the target's response body is never echoed (status + latency only). Multi-endpoint parity across `/api/v1/chat/completions`, `/api/v1/messages`, `/api/v1/responses`, `/api/v1/route-explain`, and `DesktopRouterServer` enforces per-key `companyIds` isolation (`403` on cross-company access), `maxTier` / `maxCostPer1kUsd` ceilings, `x-eluvix-hops` loop checks, company/issue episodic memory partitioning (`` `${userId}::pc:${companyId}` ``), and `SecretRef` (`env:`, `file:`, `bao:`, `vault:`, `keychain:`) HMAC secret resolution.
 
 ### `GET /api/v1/paperclip/whoami`
 Returns caller identity (`userId`), `paperclipIntegrationEnabled`, `trustHeadersFrom`, per-key `paperclip` policy (`companyIds`, `maxTier`, `maxCostPer1kUsd`, masked `hmacSecret`), `egressPolicy`, and `rolling24hSpendUsd`.

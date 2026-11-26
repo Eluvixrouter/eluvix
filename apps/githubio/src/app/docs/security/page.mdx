@@ -22,6 +22,14 @@ Programmatic requests to endpoints (such as `/api/v1/chat/completions`, `/api/v1
 Authorization: Bearer <ADMIN_PASSWORD_OR_ELX_KEY>
 ```
 
+Scopes are enforced per route, not just on chat: `embeddings` requires the `embeddings` scope, audio routes the `audio` scope, image generation the `images` scope, and MCP `POST` the `mcp` scope — a readonly or wrongly-scoped key receives `403` (`API key lacks required "<scope>" scope.`). A `maxDailySpendUsd` cap is enforced against the key owner's rolling 24-hour spend from the request logs; exceeding it returns `429` (`budget-exceeded`). Config API responses redact observability secrets (the Langfuse secret key and `Authorization` headers) to `*Configured` flags, and posting a redacted config back preserves the stored values.
+
+### Request Hardening
+
+- A `Host` header carrying userinfo (`127.0.0.1:PORT@evil.com`) is rejected outright, so it can no longer slip past the local-host allowlist.
+- `PORT` and `HTTP_PORT` are validated as integers `1–65535`; a bad value logs a clear error and falls back to the default instead of crashing.
+- Docker up/down/logs require a real admin identity (`ELUVIX_ADMIN_TOKEN` env, an admin bearer token, or an admin/operator session or key) and fail closed when no admin token is configured — the old loopback dev bypass is gone.
+
 ---
 
 ## Automated Local TLS & Same-Port Auto-Upgrade
