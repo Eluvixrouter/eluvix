@@ -491,7 +491,10 @@ export class DesktopRouterServer extends EventEmitter {
     // leaving config updated while the router still serves the old one.
     // Hunt-3 C-L18: deep-merge nested sections — a partial {memory: {...}}
     // used to replace the whole stored section wholesale.
-    const nextConfig = deepMergeDesktopConfig(this.config, newConfig);
+    const nextConfig = deepMergeDesktopConfig(
+      this.config as unknown as Record<string, unknown>,
+      newConfig as unknown as Record<string, unknown>
+    ) as unknown as RouterConfig;
     const nextRouter = new Eluvix(nextConfig);
     this.config = nextConfig;
     this.router = nextRouter;
