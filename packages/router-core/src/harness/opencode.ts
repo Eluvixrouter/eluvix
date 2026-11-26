@@ -577,7 +577,11 @@ export async function forwardOpencodeHarness(
           permId,
           toolName,
           approvalPolicy,
-          harnessCfg.autoApproveTools,
+          // Hunt-3 B-M1: the reply must use the EFFECTIVE list
+          // (explicit + vectorcraft + artcraft), not the raw config
+          // list — otherwise vectorcraft/artcraft tools the session
+          // was just told Eluvix can use are denied here.
+          effectiveAutoApproveTools,
           controller.signal
         );
       } else if (
