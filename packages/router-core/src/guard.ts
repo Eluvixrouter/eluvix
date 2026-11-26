@@ -70,10 +70,20 @@ const INJECTION_PATTERNS: Array<{ regex: RegExp; label: string; weight: number }
     // Bounded filler words between the trigger verb and the target noun:
     // the old pattern required exactly one anchor word, so doubling it
     // ("previous previous") or inserting one ("the", "secret") defeated
-    // the match while preserving meaning. Up to 4 fillers covers the
-    // observed evasions without turning the pattern into a free-form
-    // verb-to-noun span.
-    regex: /(?:ignore|disregard|forget|override|bypass)\s+(?:\w+\s+){0,4}(?:instructions|prompts|rules|commands|directives)/i,
+    // the match while preserving meaning. Up to 8 fillers covers the
+    // observed evasions (5–6 fillers) without turning the pattern into a
+    // free-form verb-to-noun span. Hunt-3 L-A1 also widened the verb
+    // (overlook/neglect/dismiss) and noun (orders/guidelines/directions)
+    // lists — the synonym gap was undocumented.
+    regex: /(?:ignore|disregard|forget|override|bypass|overlook|neglect|dismiss)\s+(?:\w+\s+){0,8}(?:instructions|prompts|rules|commands|directives|orders|guidelines|directions)/i,
+    label: 'instruction_override',
+    weight: 0.95
+  },
+  {
+    // Multi-word override verbs ("set aside your instructions",
+    // "pay no attention to your instructions") — same label/weight as
+    // the single-verb pattern above (hunt-3 L-A1).
+    regex: /(?:set\s+aside|pay\s+no\s+attention\s+to|turn\s+a\s+blind\s+eye\s+to)\s+(?:\w+\s+){0,4}(?:instructions|prompts|rules|commands|directives|orders|guidelines|directions)/i,
     label: 'instruction_override',
     weight: 0.95
   },
