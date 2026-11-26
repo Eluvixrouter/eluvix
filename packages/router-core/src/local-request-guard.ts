@@ -52,6 +52,10 @@ const ALLOWED_LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'eluvix.lo
  */
 export function isAllowedLocalHost(hostHeader: string | undefined | null): boolean {
   if (!hostHeader) return false;
+  // Hunt-3 C-L20: a Host of the form `127.0.0.1:PORT@evil.com` used to pass
+  // — the single-colon branch sliced at the first colon and saw only the
+  // local host. An authority with userinfo is never a plain local host.
+  if (hostHeader.includes('@')) return false;
   let host = hostHeader.trim().toLowerCase();
   if (host.startsWith('[')) {
     const close = host.indexOf(']');
@@ -137,5 +141,11 @@ export function getOrCreateDesktopToken(appName = 'eluvix'): DesktopTokenResult 
 
   const token = crypto.randomBytes(32).toString('hex');
   fs.writeFileSync(tokenFile, token + '\n', { encoding: 'utf8', mode: 0o600 });
+  // Hunt-3 C-L19: writeFileSync's `mode` is creation-only — a pre-existing
+  // empty 0644 file keeps 0644 after the new token lands in it. Tighten
+  // explicitly, as the non-empty branch already does above.
+  try {
+    fs.chmodSync(tokenFile, 0o600);
+  } catch {}
   return { token, tokenFile, isNew: true };
 }
