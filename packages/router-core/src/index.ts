@@ -4140,7 +4140,11 @@ export class Eluvix {
       Number.isFinite(switchyardConfig.maxDailySpendUsd) &&
       switchyardConfig.maxDailySpendUsd > 0
     ) {
-      rolling24hSpendUsd = getRollingSpendUsd(24);
+      // Hunt-3 L-A10: the cap is scoped per user. The global 24h total
+      // used to trip maxDailySpendUsd for every user when one heavy user
+      // spent through it (a cross-user DoS on paid upstreams). Unscoped
+      // callers land in the shared 'default' partition, as elsewhere.
+      rolling24hSpendUsd = getRollingSpendUsd(24, options?.scope?.userId || 'default');
       const capUsd = switchyardConfig.maxDailySpendUsd;
       if (rolling24hSpendUsd >= capUsd) {
         const action: BudgetExhaustedAction = switchyardConfig.budgetExhaustedAction || 'prefer-local';

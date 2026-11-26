@@ -750,3 +750,61 @@ describe('L-A9: distillation pairs must be prompt-guard scanned', () => {
     expect(listDistillationPairs(user).length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------- L-A10
+
+describe('L-A10: daily spend cap must be scoped per user', () => {
+  it("one heavy user's spend does not trip the cap for another user", async () => {
+    const { logRequest } = await import('../db.js');
+    // Seed $2.50 of spend for user-a only (cap is $2.00).
+    logRequest({
+      model: 'gpt-4o',
+      upstream_id: 'paid-cloud',
+      status: 200,
+      duration_ms: 500,
+      cost_usd: 2.5,
+      user_id: 'user-a',
+    });
+    const router = new Eluvix({
+      strategy: 'priority',
+      switchyard: {
+        strategy: 'priority',
+        maxDailySpendUsd: 2.0,
+        budgetExhaustedAction: 'prefer-local',
+      },
+      upstreams: [
+        {
+          id: 'paid-cloud',
+          name: 'Paid Cloud Frontier',
+          type: 'openai-compatible',
+          endpoint: 'https://api.paid-cloud.example',
+          priority: 100,
+          costPer1kTokens: 0.02,
+          models: ['*'],
+        },
+        {
+          id: 'local-ramalama',
+          name: 'Local RamaLama Sovereign',
+          type: 'ramalama',
+          endpoint: 'http://127.0.0.1:8080',
+          priority: 10,
+          costPer1kTokens: 0,
+          models: ['*'],
+        },
+      ],
+    } as any);
+    // user-a trips their own cap and falls back to local.
+    const explA = router.explainRoute(
+      { model: 'auto', messages: [{ role: 'user', content: 'Summarize this.' }] },
+      { scope: { userId: 'user-a' } }
+    );
+    expect(explA.chosenUpstreamId).toBe('local-ramalama');
+    // user-b is unaffected and keeps the paid upstream.
+    const explB = router.explainRoute(
+      { model: 'auto', messages: [{ role: 'user', content: 'Summarize this.' }] },
+      { scope: { userId: 'user-b' } }
+    );
+    expect(explB.chosenUpstreamId).toBe('paid-cloud');
+    expect(explB.steps.some((s) => s.stage === 'budget-guardrail')).toBe(true);
+  });
+});
