@@ -572,7 +572,7 @@ describe('hunt3 slice C regressions: C-M6 health probe, C-M8 eval override, C-L1
 
     // Route-level: credential-less loopback GET /api/v1/docker/logs is 401.
     const { GET } = await import('../../app/api/v1/docker/logs/route');
-    const res = await GET(new Request('http://127.0.0.1:3588/api/v1/docker/logs?service=router'));
+    const res = await GET(new Request('http://127.0.0.1:3588/api/v1/docker/logs?service=router') as any);
     expect(res.status).toBe(401);
   });
 
@@ -726,7 +726,7 @@ describe('hunt3 slice C regressions: C-L4 saveConfig failure, C-L15 deep merge',
     expect(body.config.memory.recallBudgetTokens).toBe(1234);
     expect(body.config.memory.writeBack.enabled).toBe(true);
     // And the stored config agrees (not just the response).
-    expect(libRouter.getConfig().memory.cloudMode).toBe('filter');
+    expect(libRouter.getConfig().memory?.cloudMode).toBe('filter');
   });
 });
 
@@ -739,7 +739,7 @@ describe('hunt3 slice C regressions: C-L7 cascade badge, C-L13 docker poll reset
       'utf8'
     );
     expect(src).toContain('applyDiff.cascadeChanged');
-    expect(src).toMatch(/cascadeChanged && \(\s*<span[^>]*>\s*🔀 Speculative Cascade/s);
+    expect(src).toMatch(/cascadeChanged && \(\s*<span[^>]*>\s*🔀 Speculative Cascade/);
   });
 
   it('C-L13: the shared docker poll interval resets to the default once polling stops', async () => {
