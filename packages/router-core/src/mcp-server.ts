@@ -15,6 +15,13 @@ import type { RequestScope } from './context/types.js';
 import { addMemoryItem, searchMemoryItems, getRollingSpendUsd, listBanditArms } from './db.js';
 import { getVramArbiterStats } from './vram-arbiter.js';
 import { gateTextForMemory } from './guard.js';
+// NOTE (rebase onto main 7589d53 / PR #39): hunt-3 L-A3's inline MCP
+// memory-store scan is subsumed by phase (e)'s shared forced-strength
+// gate — executeMemoryStore() routes every MCP memory write through
+// gateTextForMemory(), which blocks injection fail-closed and redacts PII
+// regardless of configured guard modes. The L-A3 imports
+// (applyPrivacyGuard/scanAndMaskPii/validateChatPrompt) are therefore
+// intentionally not re-added here.
 
 export const ELUVIX_MCP_PROTOCOL_VERSION = '2025-06-18';
 
