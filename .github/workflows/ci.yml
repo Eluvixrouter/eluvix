@@ -40,6 +40,17 @@ jobs:
     - name: Build Router Core
       run: pnpm --filter @eluvix/router-core build
 
+    # Hunt-3 D-H3-03: the offline Paperclip E2E harness
+    # (scripts/paperclip-e2e.mjs) was never executed by CI, so the
+    # paperclip routes it defines went unexercised. It needs the
+    # router-core, plugin, and adapter dists built first; it stays
+    # offline/mock-based (loopback HTTP + SQLite), no network.
+    - name: Build Paperclip Plugin & Adapter
+      run: pnpm --filter @eluvix/paperclip-plugin build && pnpm --filter @eluvix/paperclip-adapter build
+
+    - name: Run Offline Paperclip E2E
+      run: node scripts/paperclip-e2e.mjs
+
     - name: Run Unit Tests (Router Core)
       run: pnpm --filter @eluvix/router-core test
 
