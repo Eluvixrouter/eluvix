@@ -19,11 +19,15 @@
   let currentConfig = null;
   let serverEndpoint = 'https://127.0.0.1:3001/v1';
   let desktopToken = null;
+  let desktopAdminToken = null;
 
   // Desktop API auth (audit C-1): the main process hands us the per-install
-  // token over IPC; every direct fetch to the local server must carry it.
-  function desktopAuthHeaders() {
-    return desktopToken ? { 'x-eluvix-desktop-token': desktopToken } : {};
+  // tokens over IPC; every direct fetch to the local server must carry one.
+  // Hunt-3 C-M9: the chat token is least-privilege (inference + read-only
+  // discovery); admin fetches use the admin token instead.
+  function desktopAuthHeaders(admin = false) {
+    const token = admin ? desktopAdminToken : desktopToken;
+    return token ? { 'x-eluvix-desktop-token': token } : {};
   }
 
   async function init() {
@@ -45,6 +49,9 @@
 ${keyLine}`;
         if (api.getDesktopToken) {
           desktopToken = await api.getDesktopToken();
+        }
+        if (api.getDesktopAdminToken) {
+          desktopAdminToken = await api.getDesktopAdminToken();
         }
       } else {
         statusText.textContent = 'Server Stopped';
@@ -110,7 +117,7 @@ ${keyLine}`;
             <div class="header-right-controls">
               <label class="priority-label">
                 Priority:
-                <input type="number" class="edit-priority" data-index="${index}" value="${upstream.priority}" />
+                <input type="number" class="edit-priority" data-index="${index}" value="${escapeHtml(String(upstream.priority))}" />
               </label>
               <button class="btn-delete" data-index="${index}" title="Remove Node">✕</button>
             </div>
@@ -202,7 +209,7 @@ ${keyLine}`;
               })
             : await (await fetch(`${serverEndpoint.replace(/\/v1$/, '')}/api/detect-models`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders() },
+                headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders(true) },
                 body: JSON.stringify({
                   id: upstream.id,
                   name: upstream.name,
@@ -321,7 +328,7 @@ ${keyLine}`;
           ? await api.detectModels({ all: true })
           : await (await fetch(`${serverEndpoint.replace(/\/v1$/, '')}/api/detect-models`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders() },
+              headers: { 'Content-Type': 'application/json', ...desktopAuthHeaders(true) },
               body: JSON.stringify({ all: true })
             })).json();
 
@@ -515,7 +522,9 @@ ${keyLine}`;
         providerSaveSettingsBtn.disabled = true;
         try {
           const config = {
-            nodeToken: providerNodeToken.value.trim(),
+            // Hunt-3 C-M10: omit an empty token — the stored token
+            // survives a save that does not change it.
+            ...(providerNodeToken.value.trim() ? { nodeToken: providerNodeToken.value.trim() } : {}),
             engineType: providerEngineType.value,
             engineUrl: providerEngineUrl.value.trim(),
             pricingMode: providerPricingMode.value,
@@ -540,7 +549,15 @@ ${keyLine}`;
       if (data && data.success) {
         if (data.status) updateProviderUI(data.status);
         if (data.settings) {
-          if (providerNodeToken) providerNodeToken.value = data.settings.node_token || '';
+          if (providerNodeToken) {
+            // Hunt-3 C-M10: the token value is never returned now; keep
+            // the field blank and show whether one is stored. A blank
+            // save keeps the stored token (see the save handler).
+            providerNodeToken.value = '';
+            providerNodeToken.placeholder = data.settings.node_token_configured
+              ? 'Configured \u2014 leave blank to keep'
+              : 'blm_node_... (from web dashboard)';
+          }
           if (providerEngineType) providerEngineType.value = data.settings.engine_type || 'ollama';
           if (providerEngineUrl) providerEngineUrl.value = data.settings.engine_url || 'http://localhost:11434';
           if (providerPricingMode) providerPricingMode.value = data.settings.pricing_mode || 'market';
@@ -639,7 +656,7 @@ ${keyLine}`;
       const tokens = (j.prompt_tokens || 0) + (j.completion_tokens || 0);
       const earned = (j.earned_usd || 0).toFixed(5);
       const time = j.timestamp ? new Date(j.timestamp).toLocaleTimeString() : 'now';
-      html += `<tr><td>${time}</td><td>${escapeHtml(j.model)}</td><td>${tokens}</td><td>${j.duration_ms}ms</td><td style="color: #34d399;">+$${earned}</td></tr>`;
+      html += `<tr><td>${time}</td><td>${escapeHtml(j.model)}</td><td>${escapeHtml(String(tokens))}</td><td>${escapeHtml(String(j.duration_ms))}ms</td><td style="color: #34d399;">+$${escapeHtml(earned)}</td></tr>`;
     });
     html += '</tbody></table>';
     providerJobsFeed.innerHTML = html;

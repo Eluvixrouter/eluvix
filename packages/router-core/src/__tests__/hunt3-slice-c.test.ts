@@ -10,6 +10,7 @@ import {
 import { logRequest } from '../db.js';
 import {
   getOrCreateDesktopToken,
+  getOrCreateDesktopAdminToken,
   isAllowedLocalHost,
 } from '../local-request-guard.js';
 
@@ -48,6 +49,34 @@ describe('hunt3 slice C router-core regressions', () => {
     } catch {
       // ignore
     }
+  });
+
+it('C-M9: the admin token is a second, distinct 0600 token, stable across calls', () => {
+    const chat = getOrCreateDesktopToken();
+    const admin = getOrCreateDesktopAdminToken();
+    expect(admin.token).toBeTruthy();
+    expect(admin.token).not.toBe(chat.token);
+    expect(admin.tokenFile.endsWith('desktop-admin-token')).toBe(true);
+    expect(admin.isNew).toBe(true);
+    expect(fs.statSync(admin.tokenFile).mode & 0o777).toBe(0o600);
+    // Second call returns the same token, not a fresh one.
+    const again = getOrCreateDesktopAdminToken();
+    expect(again.token).toBe(admin.token);
+    expect(again.isNew).toBe(false);
+    // A pre-existing empty 0644 admin file is tightened, like the chat token (C-L19).
+    const stale = getOrCreateDesktopAdminToken();
+    expect(stale.token).toBe(admin.token);
+  });
+
+  it('C-M9: a pre-existing empty 0644 admin token file is tightened to 0600', () => {
+    const configDir = path.join(testDir, 'config', 'eluvix');
+    fs.mkdirSync(configDir, { recursive: true });
+    const adminFile = path.join(configDir, 'desktop-admin-token');
+    fs.writeFileSync(adminFile, '');
+    fs.chmodSync(adminFile, 0o644);
+    const admin = getOrCreateDesktopAdminToken();
+    expect(admin.token).toBeTruthy();
+    expect(fs.statSync(adminFile).mode & 0o777).toBe(0o600);
   });
 
   it('C-M2: a capped key is rejected once the owner\'s logged 24h spend reaches the cap', () => {

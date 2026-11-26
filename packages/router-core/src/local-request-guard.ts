@@ -20,6 +20,7 @@ import { getAppPaths } from './paths.js';
 
 export const DESKTOP_TOKEN_HEADER = 'x-eluvix-desktop-token';
 export const DESKTOP_TOKEN_FILENAME = 'desktop-token';
+export const DESKTOP_ADMIN_TOKEN_FILENAME = 'desktop-admin-token';
 
 /**
  * Trusted local origins for browser-originated requests. Mirrors the
@@ -144,6 +145,45 @@ export function getOrCreateDesktopToken(appName = 'eluvix'): DesktopTokenResult 
   // Hunt-3 C-L19: writeFileSync's `mode` is creation-only — a pre-existing
   // empty 0644 file keeps 0644 after the new token lands in it. Tighten
   // explicitly, as the non-empty branch already does above.
+  try {
+    fs.chmodSync(tokenFile, 0o600);
+  } catch {}
+  return { token, tokenFile, isNew: true };
+}
+
+/**
+ * Load the per-install desktop ADMIN token, generating and persisting one
+ * on first run. Hunt-3 C-M9: the single desktop token used to be both the
+ * chat credential (safe to paste into an OpenAI-compatible client) and the
+ * full admin credential (mints elx_ keys, exports history, registers
+ * webhooks). The two are now separate files with the same 0o600 discipline:
+ * `desktop-token` is chat-only (inference + read-only discovery), and
+ * `desktop-admin-token` is required for config, provider, keys, export,
+ * webhook, MCP and eval routes. The admin token also works on chat routes,
+ * so the renderer — which holds both over IPC — needs no route-by-route
+ * token juggling beyond choosing the least-privilege one.
+ */
+export function getOrCreateDesktopAdminToken(appName = 'eluvix'): DesktopTokenResult {
+  const { configDir } = getAppPaths(appName);
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+  const tokenFile = path.join(configDir, DESKTOP_ADMIN_TOKEN_FILENAME);
+
+  if (fs.existsSync(tokenFile)) {
+    try {
+      const existing = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (existing) {
+        try {
+          fs.chmodSync(tokenFile, 0o600);
+        } catch {}
+        return { token: existing, tokenFile, isNew: false };
+      }
+    } catch {}
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(tokenFile, token + '\n', { encoding: 'utf8', mode: 0o600 });
   try {
     fs.chmodSync(tokenFile, 0o600);
   } catch {}
