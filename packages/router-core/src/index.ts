@@ -418,6 +418,53 @@ function getProviderSettings(...args: Parameters<typeof dbModule.getProviderSett
 function getRollingSpendUsd(...args: Parameters<typeof dbModule.getRollingSpendUsd>) {
   return dbModule.getRollingSpendUsd(...args);
 }
+
+/**
+ * Deferred D8 warn-mode response guard for streamed replies (hunt-3 M-A3).
+ * The non-stream path scans the completed reply before the Response is
+ * built, so its `x-eluvix-guard` headers can be set up front. A streamed
+ * reply's full text only exists once the tee has pulled the stream to
+ * [DONE] — after the Response (and its headers) already left the router.
+ * This holder lets a stream tee run the same scan at completion, emit the
+ * same warn log, and stamp the headers onto the Response object it is
+ * attached to; a consumer reading headers after consuming the body sees
+ * them. `attach()` also applies rules that fired before attachment (the
+ * tee cannot fire before the caller starts reading, which is after the
+ * router returns, so in practice the scan always runs post-attach).
+ */
+interface DeferredResponseGuardState {
+  rules: string[] | null;
+  headers: Headers | null;
+  scan(text: string, promptGuard?: any, privacyGuard?: any): void;
+  attach(headers: Headers): void;
+}
+function createDeferredResponseGuardState(): DeferredResponseGuardState {
+  const state: DeferredResponseGuardState = {
+    rules: null,
+    headers: null,
+    scan(text, promptGuard, privacyGuard) {
+      if (!text || !promptGuard?.enabled || state.rules) return;
+      const respScan = scanResponseContent(text, { promptGuard, privacyGuard });
+      if (!respScan.detected) return;
+      state.rules = respScan.rules;
+      console.warn(
+        `[Response Guard Warning] Upstream response matched guard rules (${respScan.rules.join(', ')}); returning as-is (warn mode). Content is never logged.`
+      );
+      if (state.headers) {
+        state.headers.set('x-eluvix-guard', 'response-warn');
+        state.headers.set('x-eluvix-guard-rules', respScan.rules.join(','));
+      }
+    },
+    attach(headers) {
+      state.headers = headers;
+      if (state.rules) {
+        headers.set('x-eluvix-guard', 'response-warn');
+        headers.set('x-eluvix-guard-rules', state.rules.join(','));
+      }
+    },
+  };
+  return state;
+}
 function getBanditArmsForTier(tier: string) {
   try {
     if (typeof (dbModule as any).getBanditArmsForTier === 'function') {
@@ -2086,7 +2133,7 @@ export class Eluvix {
               }
             } catch {}
 
-            if (canRemember && assistantOutputText.trim().length > 0 && this.contextProvider) {
+            if (canRemember && assistantOutputText.trim().length > 0 && this.contextProvider && this.assistantTextSafeForMemory(assistantOutputText)) {
               void this.contextProvider
                 .remember(
                   {
@@ -2096,6 +2143,22 @@ export class Eluvix {
                   memoryScope
                 )
                 .catch(() => {});
+            }
+
+            // D8 warn-mode scan (hunt-3 M-A3): the consensus path returns
+            // before the standard non-stream scan, so scan here too.
+            if (assistantOutputText && this.config.promptGuard?.enabled) {
+              const consensusScan = scanResponseContent(assistantOutputText, {
+                promptGuard: this.config.promptGuard,
+                privacyGuard: this.config.privacyGuard
+              });
+              if (consensusScan.detected) {
+                consensusRes.headers.set('x-eluvix-guard', 'response-warn');
+                consensusRes.headers.set('x-eluvix-guard-rules', consensusScan.rules.join(','));
+                console.warn(
+                  `[Response Guard Warning] Upstream response matched guard rules (${consensusScan.rules.join(', ')}); returning as-is (warn mode). Content is never logged.`
+                );
+              }
             }
 
             logRequest({
@@ -2136,10 +2199,17 @@ export class Eluvix {
                 },
               });
             }
+            const consensusStreamGuard = createDeferredResponseGuardState();
             const teeBody = teeSseStreamForMemory(
               consensusBody,
               (fullAssistantText) => {
-                if (consensusProviderRef && fullAssistantText.trim().length > 0) {
+                // D8 warn-mode scan for streamed consensus replies (M-A3):
+                // the full text only exists at stream completion.
+                consensusStreamGuard.scan(fullAssistantText, this.config.promptGuard, this.config.privacyGuard);
+                // H-8: gate the streamed consensus write-back on the same
+                // response-guard scan the standard paths use — judge-synthesized
+                // text must not enter memory unscanned.
+                if (consensusProviderRef && fullAssistantText.trim().length > 0 && this.assistantTextSafeForMemory(fullAssistantText)) {
                   void consensusProviderRef
                     .remember(
                       {
@@ -2168,10 +2238,12 @@ export class Eluvix {
                 });
               }
             );
-            return new Response(teeBody, {
+            const streamedConsensusRes = new Response(teeBody, {
               status: consensusRes.status,
               headers: consensusRes.headers
             });
+            consensusStreamGuard.attach(streamedConsensusRes.headers);
+            return streamedConsensusRes;
           }
 
           return consensusRes;
@@ -2373,7 +2445,7 @@ export class Eluvix {
                 if (cacheConfig?.enabled && cacheKey && !effectiveRequest.stream) {
                   this.setCachedResponse(cacheKey, parsedDraft, lastUserQuery);
                 }
-                if (canRemember && draftText.trim().length > 0 && this.contextProvider) {
+                if (canRemember && draftText.trim().length > 0 && this.contextProvider && this.assistantTextSafeForMemory(draftText)) {
                   void this.contextProvider
                     .remember(
                       { user: { role: 'user', content: lastUserQuery }, assistant: draftText },
@@ -2383,6 +2455,21 @@ export class Eluvix {
                 }
 
                 const acceptedHeaders = new Headers(draftRes.headers);
+                // D8 warn-mode scan (hunt-3 M-A3): the cascade path returns
+                // before the standard non-stream scan, so scan here too.
+                if (draftText && this.config.promptGuard?.enabled) {
+                  const draftScan = scanResponseContent(draftText, {
+                    promptGuard: this.config.promptGuard,
+                    privacyGuard: this.config.privacyGuard
+                  });
+                  if (draftScan.detected) {
+                    acceptedHeaders.set('x-eluvix-guard', 'response-warn');
+                    acceptedHeaders.set('x-eluvix-guard-rules', draftScan.rules.join(','));
+                    console.warn(
+                      `[Response Guard Warning] Upstream response matched guard rules (${draftScan.rules.join(', ')}); returning as-is (warn mode). Content is never logged.`
+                    );
+                  }
+                }
                 acceptedHeaders.set('x-eluvix-upstream', draftUpstream.id);
                 acceptedHeaders.set('x-eluvix-model', draftServedModel);
                 acceptedHeaders.set('x-eluvix-cascade', 'draft-accepted');
@@ -2678,6 +2765,9 @@ export class Eluvix {
             let schemaValidationHeader: 'native' | 'validated' | 'repaired' | 'escalated' | null = null;
             let outputGuardStatusHeader: string | null = null;
             let outputGuardRedactionsHeader = 0;
+            // Deferred D8 warn-mode guard for streamed replies (hunt-3 M-A3):
+            // the full text only exists once a stream tee completes.
+            const streamGuard = createDeferredResponseGuardState();
 
             let responseBody: any = response.body;
             let assistantOutputText = '';
@@ -2832,6 +2922,8 @@ export class Eluvix {
                 responseBody = teeSseStreamForMemory(
                   responseBody as ReadableStream<Uint8Array>,
                   (fullAssistantText) => {
+                    // D8 warn-mode scan for streamed replies (M-A3).
+                    streamGuard.scan(fullAssistantText, this.config.promptGuard, this.config.privacyGuard);
                     // H-8: the assembled reply is scanned before write-back
                     // even though the streamed response itself cannot be
                     // un-sent — a poisoned reply must not enter memory.
@@ -3003,6 +3095,8 @@ export class Eluvix {
               responseBody = teeSseStreamForMemory(
                 responseBody as ReadableStream<Uint8Array>,
                 (fullAssistantText) => {
+                  // D8 warn-mode scan for streamed replies (M-A3).
+                  streamGuard.scan(fullAssistantText, this.config.promptGuard, this.config.privacyGuard);
                   // H-8 (adapted to the two-tee structure on new main):
                   // this is the tee that actually carries non-antigravity
                   // streams — the assembled reply must be scanned before
@@ -3039,6 +3133,7 @@ export class Eluvix {
               statusText: response.statusText,
               headers: new Headers(response.headers)
             });
+            streamGuard.attach(newResponse.headers);
             newResponse.headers.set('x-eluvix-upstream', upstream.id);
             if (responseGuardRules) {
               newResponse.headers.set('x-eluvix-guard', 'response-warn');
