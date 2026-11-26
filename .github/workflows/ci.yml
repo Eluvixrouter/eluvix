@@ -87,6 +87,13 @@ jobs:
     - name: Check releases page lists current version
       run: grep -q "^## v$(cat VERSION) " apps/githubio/src/app/docs/releases/page.mdx
 
+    # Hunt-3 D-H3-07: README test counts went stale with no check on
+    # them. The script asserts the per-suite file counts and summed
+    # total match the on-disk inventory (test totals are verified by
+    # the suites themselves in CI).
+    - name: Check README test counts match inventory
+      run: node scripts/check-readme-counts.mjs
+
     - name: Build GitHub Pages Documentation Site
       run: pnpm --filter githubio build
       env:
