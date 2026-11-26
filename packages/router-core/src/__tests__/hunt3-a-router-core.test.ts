@@ -235,3 +235,57 @@ describe('M-A3: D8 warn-mode response guard must run for streamed replies too', 
     expect(res.headers.get('x-eluvix-guard')).toBe('response-warn');
   });
 });
+
+// ---------------------------------------------------------------- M-A2
+
+describe('M-A2: paperclip loopback trust must be proven, not assumed', () => {
+  it('does NOT trust loopback-mode headers when isLoopbackCaller is omitted', async () => {
+    const { parseVerifiedPaperclipRequest } = await import('../paperclip-auth.js');
+    const { DEFAULT_PAPERCLIP_INTEGRATION_CONFIG, resolvePaperclipRoutingBias } = await import(
+      '../paperclip-context.js'
+    );
+    const cfg = {
+      ...DEFAULT_PAPERCLIP_INTEGRATION_CONFIG,
+      enabled: true,
+      trustHeadersFrom: 'loopback' as const,
+    };
+    const headers = new Headers({
+      'x-paperclip-issue-priority': 'critical',
+      'x-paperclip-sensitivity': 'confidential',
+    });
+    const parsed = parseVerifiedPaperclipRequest(headers, { config: cfg });
+    expect(parsed.trusted).toBe(false);
+    // The parsed struct echoes raw header values; the security property is
+    // that no routing bias is applied from untrusted headers.
+    expect(resolvePaperclipRoutingBias(parsed, cfg).active).toBe(false);
+  });
+
+  it('trusts loopback-mode headers when a real loopback determination is passed', async () => {
+    const { parseVerifiedPaperclipRequest } = await import('../paperclip-auth.js');
+    const { DEFAULT_PAPERCLIP_INTEGRATION_CONFIG } = await import('../paperclip-context.js');
+    const cfg = {
+      ...DEFAULT_PAPERCLIP_INTEGRATION_CONFIG,
+      enabled: true,
+      trustHeadersFrom: 'loopback' as const,
+    };
+    const headers = new Headers({ 'x-paperclip-issue-priority': 'critical' });
+    const parsed = parseVerifiedPaperclipRequest(headers, {
+      config: cfg,
+      isLoopbackCaller: true,
+    });
+    expect(parsed.trusted).toBe(true);
+    expect(parsed.priority).toBe('critical');
+  });
+
+  it('isLoopbackRemoteAddress accepts only real loopback addresses', async () => {
+    const { isLoopbackRemoteAddress } = await import('../paperclip-auth.js');
+    expect(isLoopbackRemoteAddress('127.0.0.1')).toBe(true);
+    expect(isLoopbackRemoteAddress('127.0.0.2')).toBe(true);
+    expect(isLoopbackRemoteAddress('::1')).toBe(true);
+    expect(isLoopbackRemoteAddress('::ffff:127.0.0.1')).toBe(true);
+    expect(isLoopbackRemoteAddress('192.168.1.5')).toBe(false);
+    expect(isLoopbackRemoteAddress('10.0.0.1')).toBe(false);
+    expect(isLoopbackRemoteAddress(undefined)).toBe(false);
+    expect(isLoopbackRemoteAddress('')).toBe(false);
+  });
+});

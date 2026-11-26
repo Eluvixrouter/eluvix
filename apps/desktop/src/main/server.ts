@@ -32,6 +32,7 @@ import {
   saveStoredResponse,
   PAPERCLIP_VIRTUAL_MODELS,
   parseVerifiedPaperclipRequestAsync,
+  isLoopbackRemoteAddress,
   sanitizePaperclipIntegrationForDisplay,
   sanitizePaperclipKeyPolicyForDisplay,
   mergeEffectiveHops,
@@ -728,6 +729,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: (chatReq as any).paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -925,6 +927,7 @@ export class DesktopRouterServer extends EventEmitter {
         const explainPaperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: explainPcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveExplainHops = mergeEffectiveHops(baseExplainHops, explainPaperclip);
@@ -989,6 +992,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -1112,6 +1116,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
