@@ -493,3 +493,43 @@ describe("L-A4: paperclip usage queries must not skip the user filter for 'defau
     expect(getPaperclipUsageByCorrelation(runId, 'admin').requests).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------- L-A5
+
+describe("L-A5: paperclip modality filter must not exempt 'code'", () => {
+  it('excludes an agent that does not support code from a code task', async () => {
+    const { classifyPaperclipTask, recommendPaperclipAssignees } = await import(
+      '../paperclip-assign.js'
+    );
+    const task = {
+      title: 'Write a TypeScript function',
+      description: 'Implement export const add in TypeScript with unit tests.',
+    };
+    expect(classifyPaperclipTask(task).modalities).toContain('code');
+    const result = recommendPaperclipAssignees(task, [
+      {
+        id: 'agt-nocode',
+        name: 'Text Only',
+        capabilities: 'writing, docs',
+        supportedModalities: ['text'],
+        budgetMonthlyCents: 10000,
+        spentMonthlyCents: 0,
+      } as any,
+      {
+        id: 'agt-coder',
+        name: 'Coder',
+        capabilities: 'typescript, code',
+        supportedModalities: ['text', 'code'],
+        budgetMonthlyCents: 10000,
+        spentMonthlyCents: 0,
+      } as any,
+    ]);
+    expect(result.recommendations.map((r) => r.agentId)).toContain('agt-coder');
+    expect(result.recommendations.map((r) => r.agentId)).not.toContain('agt-nocode');
+    expect(
+      result.excluded.some(
+        (e) => e.agentId === 'agt-nocode' && e.reasonCode === 'modality_unsupported'
+      )
+    ).toBe(true);
+  });
+});

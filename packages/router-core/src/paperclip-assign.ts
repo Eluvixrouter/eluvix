@@ -574,8 +574,11 @@ export function recommendPaperclipAssignees(
     }
 
     if (c.supportedModalities && c.supportedModalities.length > 0) {
+      // Hunt-3 L-A5: 'code' used to be exempted here, so a task needing
+      // code could be assigned to an agent whose supportedModalities
+      // lacked it. The filter now means what it says for every modality.
       const missing = classification.modalities.filter(
-        (m) => m !== 'code' && !c.supportedModalities!.includes(m)
+        (m) => !c.supportedModalities!.includes(m)
       );
       if (missing.length > 0) {
         excluded.push({
