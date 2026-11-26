@@ -41,6 +41,59 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 export const MAX_SAFE_REDIRECTS = 3;
 
 /**
+ * Maximum response body a memory provider (or the A2A adapter) will parse
+ * as JSON (hunt-3 B-L6). Matches the repo's 10MB body cap
+ * (`apps/desktop/src/main/server.ts: MAX_BODY_BYTES`). The body is read
+ * incrementally and the parse is refused as soon as the cap is crossed,
+ * so a compromised server returning a multi-hundred-MB body cannot OOM
+ * the router process while recall sits on the chat hot path.
+ */
+export const MAX_PROVIDER_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+export async function readCappedJson(
+  res: Response,
+  maxBytes: number = MAX_PROVIDER_RESPONSE_BYTES
+): Promise<any> {
+  const body = res.body;
+  if (!body || typeof (body as ReadableStream<Uint8Array>).getReader !== 'function') {
+    // Non-streaming stub (e.g. a test double exposing only .json()).
+    return await res.json();
+  }
+  const reader = (body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          try {
+            await reader.cancel();
+          } catch {}
+          throw new Error(
+            `Response body exceeds the ${maxBytes}-byte JSON parse cap; refusing to parse`
+          );
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(merged));
+}
+
+/**
  * fetch() with redirect: 'manual' plus the policy above. Drop-in
  * replacement for fetch at call sites that talk to configured
  * endpoints. Throws on cross-origin redirects and on redirect loops.

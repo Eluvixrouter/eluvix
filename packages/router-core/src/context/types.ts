@@ -111,6 +111,11 @@ export interface KnowledgeBaseConfig {
   collectionUri?: string;
   topK?: number;
   maxTokens?: number;
+  /**
+   * Recall timeout in milliseconds (hunt-3 B-M4). Defaults to 1500 when
+   * unset, matching Mem0/OpenViking's `recallTimeoutMs`.
+   */
+  recallTimeoutMs?: number;
   citationMode?: 'inline-uris' | 'silent';
   /**
    * Controls whether retrieved knowledge may be sent to cloud upstreams:
