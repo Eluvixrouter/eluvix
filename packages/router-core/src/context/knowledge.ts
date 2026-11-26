@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { KnowledgeBaseConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export const KNOWLEDGE_BLOCK_START = '<eluvix-knowledge>';
 export const KNOWLEDGE_BLOCK_END = '</eluvix-knowledge>';
@@ -23,7 +24,7 @@ export async function recallKnowledgeBase(
   try {
     if (backend === 'openviking-resources') {
       const endpoint = (config.endpoint || 'http://localhost:1933').replace(/\/+$/, '');
-      const res = await fetch(`${endpoint}/api/v1/search/find`, {
+      const res = await fetchWithSafeRedirects(`${endpoint}/api/v1/search/find`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -71,7 +72,7 @@ export async function recallKnowledgeBase(
 
     if (backend === 'lightrag') {
       const endpoint = (config.endpoint || 'http://localhost:9621').replace(/\/+$/, '');
-      const res = await fetch(`${endpoint}/query`, {
+      const res = await fetchWithSafeRedirects(`${endpoint}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

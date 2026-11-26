@@ -1,6 +1,7 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { buildHarnessPrompt } from './prompt.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export async function forwardA2aHarness(
   upstream: UpstreamConfig,
@@ -55,7 +56,7 @@ export async function forwardA2aHarness(
       }
     };
 
-    const res = await fetch(base, {
+    const res = await fetchWithSafeRedirects(base, {
       method: 'POST',
       headers,
       body: JSON.stringify(rpcPayload),

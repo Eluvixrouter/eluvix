@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export class GraphitiContextProvider implements ContextProvider {
   public readonly id = 'graphiti';
@@ -19,7 +20,7 @@ export class GraphitiContextProvider implements ContextProvider {
 
   public async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.endpoint}/health`, { method: 'GET' });
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, { method: 'GET' });
       return res.ok;
     } catch {
       return false;
@@ -34,7 +35,7 @@ export class GraphitiContextProvider implements ContextProvider {
   ): Promise<RecallResult> {
     const start = Date.now();
     try {
-      const res = await fetch(`${this.endpoint}/search`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/search`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -101,7 +102,7 @@ export class GraphitiContextProvider implements ContextProvider {
     try {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
-      await fetch(`${this.endpoint}/messages`, {
+      await fetchWithSafeRedirects(`${this.endpoint}/messages`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({

@@ -7,6 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -47,7 +48,7 @@ export class Mem0ContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(`${this.endpoint}/health`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, {
         method: 'GET',
         headers: this.buildHeaders(),
         signal: controller.signal
@@ -83,7 +84,7 @@ export class Mem0ContextProvider implements ContextProvider {
     }
 
     try {
-      const res = await fetch(`${this.endpoint}/v1/memories/search/`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/search/`, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify({
@@ -186,7 +187,7 @@ export class Mem0ContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     try {
-      await fetch(`${this.endpoint}/v1/memories/`, {
+      await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/`, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify({

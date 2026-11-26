@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../index.js';
 import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export class SupermemoryContextProvider implements ContextProvider {
   public readonly id = 'supermemory';
@@ -19,7 +20,7 @@ export class SupermemoryContextProvider implements ContextProvider {
 
   public async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.endpoint}/health`, { method: 'GET' });
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, { method: 'GET' });
       return res.ok;
     } catch {
       return false;
@@ -34,7 +35,7 @@ export class SupermemoryContextProvider implements ContextProvider {
   ): Promise<RecallResult> {
     const start = Date.now();
     try {
-      const res = await fetch(`${this.endpoint}/v3/search`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/v3/search`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -95,7 +96,7 @@ export class SupermemoryContextProvider implements ContextProvider {
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
       const tags = [scope.userId || 'default'];
       if (scope.sessionId) tags.push(scope.sessionId);
-      await fetch(`${this.endpoint}/v3/memories`, {
+      await fetchWithSafeRedirects(`${this.endpoint}/v3/memories`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({

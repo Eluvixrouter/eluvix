@@ -1,6 +1,7 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { buildHarnessPrompt } from './prompt.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export async function forwardLettaHarness(
   upstream: UpstreamConfig,
@@ -39,7 +40,7 @@ export async function forwardLettaHarness(
   const promptText = buildHarnessPrompt(request.messages, { includeHistory: true });
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithSafeRedirects(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({

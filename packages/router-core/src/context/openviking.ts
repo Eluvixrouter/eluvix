@@ -8,6 +8,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -46,8 +47,10 @@ export class OpenVikingContextProvider implements ContextProvider {
       'Content-Type': 'application/json'
     };
     if (this.apiKey) {
+      // Hunt-3 B-M2: the key is sent exactly once, as Authorization.
+      // The second copy as X-Api-Key crossed cross-origin redirects,
+      // because fetch strips Authorization but NOT custom headers.
       headers['Authorization'] = `Bearer ${this.apiKey}`;
-      headers['X-Api-Key'] = this.apiKey;
     }
     if (scope?.userId) {
       headers['X-OpenViking-User'] = scope.userId;
@@ -59,7 +62,7 @@ export class OpenVikingContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(`${this.endpoint}/health`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, {
         method: 'GET',
         headers: this.buildHeaders(),
         signal: controller.signal
@@ -115,7 +118,7 @@ export class OpenVikingContextProvider implements ContextProvider {
     }
 
     try {
-      const res = await fetch(`${this.endpoint}/api/v1/search/find`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/api/v1/search/find`, {
         method: 'POST',
         headers: this.buildHeaders(scope),
         body: JSON.stringify({
@@ -243,7 +246,7 @@ export class OpenVikingContextProvider implements ContextProvider {
     const timer = setTimeout(() => controller.abort(), 3000);
 
     try {
-      const res = await fetch(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`, {
         method: 'POST',
         headers: this.buildHeaders(scope),
         body: JSON.stringify({
@@ -285,7 +288,7 @@ export class OpenVikingContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     try {
-      await fetch(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`, {
+      await fetchWithSafeRedirects(`${this.endpoint}/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`, {
         method: 'POST',
         headers: this.buildHeaders(scope),
         body: JSON.stringify({

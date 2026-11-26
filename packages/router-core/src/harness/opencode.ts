@@ -95,7 +95,10 @@ async function replyToOpenCodePermission(
   if (policy === 'surface') return false;
   const approved = isToolAutoApproved(policy, [toolName], autoApproveTools);
   try {
-    await fetch(
+    // Hunt-3 B-M2: the permission reply rides the safe-redirect policy
+    // like every other harness fetch — a bare fetch here let a
+    // compromised server 307-bounce the reply to an internal URL.
+    await fetchWithSafeRedirects(
       `${baseUrl}/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(permissionId)}/reply`,
       {
         method: 'POST',
