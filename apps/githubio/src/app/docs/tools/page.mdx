@@ -44,11 +44,16 @@ External AI IDEs and agents can connect to Eluvix over two transports:
 | `eluvix_list_models` | Lists configured local & cloud models with capability tags and per-1k token pricing. |
 | `eluvix_smart_complete` | Dispatches a completion through PrivacyGuard, SemanticGuard, and Switchyard (increments `x-eluvix-hops`; blocks recursion when `hops >= 2`). |
 | `eluvix_memory_query` | Queries user-scoped recall across OpenViking, Graphiti, LightRAG, Mem0, or SQLite FTS5. |
-| `eluvix_memory_store` | Persists curated facts or preferences to the caller's scoped memory store. |
+| `eluvix_memory_store` | Persists curated facts or preferences to the caller's scoped memory store. Every write passes the forced-strength T5 response gate (shared with Multica transcript ingestion): injection is blocked fail-closed, PII is redacted. |
+| `eluvix_multica_memory_store` | Same gated write, stamped with the Multica issue/run/agent provenance line (`Multica MUL-123 · run run-1 · agent coder`) — for agents running inside a Multica run. |
 | `eluvix_privacy_scrub` | Redacts API keys, SSNs, emails, credit cards, and custom regexes from untrusted text. |
 | `eluvix_generate_image` | Synthesizes local images/video/3D assets via ComfyUI (`flux-txt2img`, `sdxl-txt2img`, `wan21-txt2vid`, `hunyuan3d-mesh`). |
 
 Eluvix also serves read-only MCP resources (`eluvix://config/summary` with `apiKey` fields stripped, `eluvix://telemetry/spend-24h`, and `eluvix://upstreams/health`).
+
+#### Multica agents calling Eluvix
+
+The same server works in reverse for Multica-driven agents: register Eluvix as a workspace MCP server in the Multica library (stdio entry `eluvix-mcp --user <userId>`) and bind it to agents with `multica agent mcp add <agent-id> eluvix`. The agent gets `eluvix_route_chat`, `eluvix_memory_query` (scoped to the spawned user id), and `eluvix_multica_memory_store` (T5-gated, provenance-stamped). Identity is the single configured user (`--user` / `ELUVIX_USER_ID`) — spawn one server process per user; there is no per-call auth, so the trust boundary is the operator machine. No admin operations are exposed over MCP.
 
 ### 2. MCP Tool Node (`mcpToolNode`)
 The visual editor provides dedicated MCP Tool nodes:

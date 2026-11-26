@@ -524,6 +524,85 @@ export function scanResponseContent(
   };
 }
 
+export type MemoryGateAction = 'remember' | 'redacted' | 'blocked';
+
+export interface MemoryGateResult {
+  action: MemoryGateAction;
+  /** Text to store ('' when blocked). */
+  text: string;
+  /** Guard rules that fired (detection types only, never content). */
+  rules: string[];
+}
+
+export interface MemoryGateConfig {
+  promptGuard?: PromptGuardConfig;
+  privacyGuard?: PrivacyGuardConfig;
+}
+
+/**
+ * The forced-strength T5 scan gate for any text about to enter long-term
+ * memory — the single implementation shared by transcript ingestion
+ * (phase d) and the MCP memory-store tools (phase e), so the two can
+ * never drift apart.
+ *
+ * Injection → blocked (fail-closed, never stored). PII without injection
+ * → redacted and the redacted form is stored. Clean → stored verbatim.
+ *
+ * Safety floor: the gate runs at full strength regardless of config.
+ * Operator config is spread first for its additive parts (banned phrases,
+ * custom PII patterns), then every knob that could weaken the scan is
+ * forced back on — all six threat vectors, threshold clamped to at most
+ * 0.80, all six detectPii types. (Note: `enabled` alone never disarmed
+ * it — both scanners ignore that flag — but all-threat-vectors-off, a
+ * raised threshold, or all-detectPii-off did.) The forced config is used
+ * for both the scan and the redaction, so a neutered privacy config
+ * cannot make redaction miss PII either.
+ */
+export function gateTextForMemory(text: string, guardConfig?: MemoryGateConfig): MemoryGateResult {
+  const forcedPromptGuard = {
+    ...(guardConfig?.promptGuard || {}),
+    enabled: true,
+    threshold: Math.min(guardConfig?.promptGuard?.threshold ?? 0.8, 0.8),
+    threatVectors: {
+      instructionOverride: true,
+      danJailbreak: true,
+      systemPromptLeak: true,
+      obfuscation: true,
+      fake_system_token_injection: true,
+      unconditional_compliance: true,
+    },
+  };
+  const forcedPrivacyGuard = {
+    ...(guardConfig?.privacyGuard || {}),
+    enabled: true,
+    action: guardConfig?.privacyGuard?.action ?? 'warn',
+    detectPii: {
+      ...(guardConfig?.privacyGuard?.detectPii || {}),
+      email: true,
+      ssn: true,
+      creditCard: true,
+      apiKey: true,
+      ipAddress: true,
+      phone: true,
+    },
+  };
+  const scan = scanResponseContent(text, {
+    promptGuard: forcedPromptGuard,
+    privacyGuard: forcedPrivacyGuard,
+  });
+  if (!scan.injection.passed) {
+    return { action: 'blocked', text: '', rules: scan.rules };
+  }
+  if (scan.piiTypes.length > 0) {
+    const { redacted } = scanAndMaskPii(text, forcedPrivacyGuard);
+    if (!redacted.trim()) {
+      return { action: 'blocked', text: '', rules: scan.rules };
+    }
+    return { action: 'redacted', text: redacted, rules: scan.rules };
+  }
+  return { action: 'remember', text, rules: [] };
+}
+
 /**
  * Strips detected prompt threats and banned phrases from content
  */
