@@ -8,7 +8,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 export class LightRagContextProvider implements ContextProvider {
   public readonly id = 'lightrag';
@@ -81,7 +81,7 @@ export class LightRagContextProvider implements ContextProvider {
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
       }
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const blocks: RecallBlock[] = [];
       let usedTokens = 0;
 

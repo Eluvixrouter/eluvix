@@ -1,7 +1,7 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { buildHarnessPrompt } from './prompt.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 export async function forwardA2aHarness(
   upstream: UpstreamConfig,
@@ -77,7 +77,7 @@ export async function forwardA2aHarness(
       );
     }
 
-    const rpcRes: any = await res.json();
+    const rpcRes: any = await readCappedJson(res);
     const taskResult = rpcRes?.result || rpcRes;
 
     const parts: string[] = [];

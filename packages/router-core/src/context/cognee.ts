@@ -8,7 +8,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 export class CogneeContextProvider implements ContextProvider {
   public readonly id = 'cognee';
@@ -79,7 +79,7 @@ export class CogneeContextProvider implements ContextProvider {
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
       }
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const allItems: any[] = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
       // Hunt-3 B-M3: never trust the server to have scoped the search
       // to the requesting user (audit H-9, mirroring mem0).

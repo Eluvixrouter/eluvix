@@ -8,7 +8,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -135,7 +135,7 @@ export class OpenVikingContextProvider implements ContextProvider {
         throw new Error(`OpenViking search/find returned HTTP ${res.status}`);
       }
 
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const allItems: any[] = Array.isArray(data?.result?.memories)
         ? data.result.memories
         : Array.isArray(data?.result?.resources)

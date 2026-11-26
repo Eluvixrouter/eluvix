@@ -7,7 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -101,7 +101,7 @@ export class Mem0ContextProvider implements ContextProvider {
         throw new Error(`Mem0 search returned HTTP ${res.status}`);
       }
 
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const allItems: any[] = Array.isArray(data?.results)
         ? data.results
         : Array.isArray(data)

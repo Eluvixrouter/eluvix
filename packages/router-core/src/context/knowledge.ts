@@ -7,7 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 export const KNOWLEDGE_BLOCK_START = '<eluvix-knowledge>';
 export const KNOWLEDGE_BLOCK_END = '</eluvix-knowledge>';
@@ -71,7 +71,7 @@ export async function recallKnowledgeBase(
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: Date.now() - start };
       }
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const allItems: any[] = Array.isArray(data?.result?.memories)
         ? data.result.memories
         : Array.isArray(data?.memories)
@@ -121,7 +121,7 @@ export async function recallKnowledgeBase(
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: Date.now() - start };
       }
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const blocks: RecallBlock[] = [];
       let used = 0;
       // Hunt-3 B-M3: same ownership filter as the resources backend.

@@ -7,7 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
-import { fetchWithSafeRedirects } from '../fetch-policy.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 /**
  * claude-mem worker API version this provider was built and verified
@@ -132,7 +132,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
       }
       let version: unknown;
       try {
-        const data: any = await res.json();
+        const data: any = await readCappedJson(res);
         version = data?.version;
       } catch {
         version = undefined;
@@ -205,7 +205,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
         throw new Error(`ClaudeMem search returned HTTP ${res.status}`);
       }
 
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const observations: any[] = Array.isArray(data?.observations)
         ? data.observations
         : [];
