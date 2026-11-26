@@ -148,7 +148,7 @@ export class LightRagContextProvider implements ContextProvider {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
       const formatted = `User (${scope.userId}): ${userContent}\nAssistant: ${turn.assistant}`;
-      await fetchWithSafeRedirects(`${this.endpoint}/texts`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/texts`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -157,6 +157,12 @@ export class LightRagContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+      // Hunt-3 B-L2: surface a server-rejected write instead of
+      // silently swallowing it (mirrors openviking).
+      if (!res.ok) {
+        console.warn(`[LightRagContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Non-fatal fire-and-forget
     } finally {

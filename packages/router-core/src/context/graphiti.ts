@@ -143,7 +143,7 @@ export class GraphitiContextProvider implements ContextProvider {
     try {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
-      await fetchWithSafeRedirects(`${this.endpoint}/messages`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/messages`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -155,6 +155,12 @@ export class GraphitiContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+      // Hunt-3 B-L2: surface a server-rejected write instead of
+      // silently swallowing it (mirrors openviking).
+      if (!res.ok) {
+        console.warn(`[GraphitiContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Non-fatal fire-and-forget
     } finally {

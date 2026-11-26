@@ -187,7 +187,7 @@ export class Mem0ContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     try {
-      await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/`, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify({
@@ -201,6 +201,14 @@ export class Mem0ContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+      // Hunt-3 B-L2: a server-rejected write must not pass silently —
+      // the operator would otherwise believe memory is being stored
+      // while the server rejects every write (mirrors openviking's
+      // res.ok gate, plus a log line so the failure is visible).
+      if (!res.ok) {
+        console.warn(`[Mem0ContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Fail open
     } finally {

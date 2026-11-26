@@ -130,7 +130,7 @@ export class CogneeContextProvider implements ContextProvider {
     try {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
-      await fetchWithSafeRedirects(`${this.endpoint}/api/v1/add`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/api/v1/add`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -139,6 +139,12 @@ export class CogneeContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+      // Hunt-3 B-L2: surface a server-rejected write instead of
+      // silently swallowing it (mirrors openviking).
+      if (!res.ok) {
+        console.warn(`[CogneeContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Non-fatal
     } finally {
