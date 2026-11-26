@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Regression tests for the Eluvix deep-dive bug hunt #3 (2026-11-23),
@@ -249,5 +252,69 @@ describe('hunt3 slice C regressions: C-M1 inference-route scoping', () => {
     expect(allowed.status).toBe(200);
     const payload: any = await allowed.json();
     expect(Array.isArray(payload?.result?.tools)).toBe(true);
+  });
+});
+
+describe('hunt3 slice C regressions: C-M4 bifrost mode, C-M5 observability redaction', () => {
+  it('C-M5: redactConfigForApi strips observability secrets but keeps configured flags', async () => {
+    const { redactConfigForApi } = await import('@/lib/router');
+    const redacted = redactConfigForApi({
+      strategy: 'lowest-latency',
+      upstreams: [],
+      observability: {
+        enabled: true,
+        exporter: 'langfuse',
+        langfusePublicKey: 'pk-lf-public',
+        langfuseSecretKey: 'sk-lf-repro-secret-12345',
+        headers: {
+          Authorization: 'Bearer super-secret-token',
+          'X-Tenant': 'tenant-1',
+        },
+      },
+    } as any);
+    expect(JSON.stringify(redacted)).not.toContain('sk-lf-repro-secret-12345');
+    expect(JSON.stringify(redacted)).not.toContain('super-secret-token');
+    expect(redacted.observability.langfuseSecretKeyConfigured).toBe(true);
+    expect(redacted.observability.authorizationHeaderConfigured).toBe(true);
+    // Negative controls: non-secret observability data survives redaction.
+    expect(redacted.observability.langfusePublicKey).toBe('pk-lf-public');
+    expect(redacted.observability.headers['X-Tenant']).toBe('tenant-1');
+    expect(redacted.observability.enabled).toBe(true);
+  });
+
+  it('C-M4: writeDockerRuntimeConfigs writes bifrost.yaml 0600', async () => {
+    const { orchestratorManager } = await import('../orchestration/manager');
+    // Under vitest, getRuntimeConfigDir() points at a tmpdir sandbox dir,
+    // not the repo's docker/runtime-config (see manager.ts).
+    const runtimeDir = orchestratorManager.getRuntimeConfigDir();
+    const preExisting = new Set(fs.existsSync(runtimeDir) ? fs.readdirSync(runtimeDir) : []);
+    const logs: string[] = [];
+    try {
+      orchestratorManager.writeDockerRuntimeConfigs(
+        {
+          tier: 'local',
+          compiledConfigs: {
+            bifrostYaml: 'providers:\n  - id: openai-1\n    api_key: "${ELUVIX_UPSTREAM_API_KEY_OPENAI_1}"\n',
+            agentRouterJson: '{}',
+            agentGatewayJson: '{}',
+          },
+        } as any,
+        { strategy: 'lowest-latency', upstreams: [] },
+        logs
+      );
+      const bifrostPath = path.join(runtimeDir, 'bifrost.yaml');
+      expect(fs.existsSync(bifrostPath)).toBe(true);
+      expect(fs.statSync(bifrostPath).mode & 0o777).toBe(0o600);
+      expect(fs.readFileSync(bifrostPath, 'utf-8')).toContain('ELUVIX_UPSTREAM_API_KEY_OPENAI_1');
+    } finally {
+      // Remove only the artifacts this test created.
+      for (const name of ['eluvix.json', 'bifrost.yaml', 'routing.json', 'gateway.json']) {
+        if (!preExisting.has(name)) {
+          try {
+            fs.unlinkSync(path.join(runtimeDir, name));
+          } catch {}
+        }
+      }
+    }
   });
 });
