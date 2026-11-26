@@ -35,7 +35,24 @@ export const CHILD_ENV_DENYLIST: readonly string[] = [
   // documented auth is this variable). The CLI's issue commands spawn no
   // subprocesses, so no grandchild of an Eluvix dispatch can inherit it
   // through the CLI — see harness/multica.ts.
-  'MULTICA_TOKEN'
+  'MULTICA_TOKEN',
+  // BAO_TOKEN / VAULT_TOKEN: the router uses them (secrets.ts) to fetch
+  // upstream API keys from a Vault/Bao server. A spawned agent holding
+  // one can read every SecretRef-stored upstream key (hunt-3 B-M5).
+  'BAO_TOKEN',
+  'VAULT_TOKEN',
+  // PAPERCLIP_ELUVIX_HMAC_SECRET / ELUVIX_PAPERCLIP_HMAC_SECRET: both
+  // spellings of the secret that signs x-paperclip-context-sig headers
+  // (paperclip-auth.ts). A spawned agent holding one can forge paperclip
+  // context signatures — paperclip context drives the memory partition
+  // (userId::pc:<companyId>), so a forged companyId reads another
+  // tenant's builtin memories (hunt-3 B-M5).
+  'PAPERCLIP_ELUVIX_HMAC_SECRET',
+  'ELUVIX_PAPERCLIP_HMAC_SECRET',
+  // Test-only secrets of the same class (hunt-3 B-M5): never let a test
+  // HMAC/upstream secret leak to a spawned agent either.
+  'ELUVIX_PC_TEST_HMAC_SECRET',
+  'ELUVIX_TEST_UPSTREAM_SECRET'
 ];
 
 export const SENSITIVE_CREDENTIALS_DENYLIST: readonly string[] = [
