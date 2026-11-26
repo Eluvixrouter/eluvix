@@ -485,6 +485,7 @@ function recordBanditArmOutcome(params: Parameters<typeof dbModule.recordBanditA
   }
 }
 import { validateChatPrompt, applyPrivacyGuard, stripPromptThreats, scanResponseContent } from './guard.js';
+import { clampTemperature, clampMaxTokens } from './sampling.js';
 import {
   type ContextProvider,
   type KnowledgeBaseConfig,
@@ -1158,6 +1159,26 @@ export class Eluvix {
       ...request,
       model: request.model || this.config.defaultModel || 'auto'
     };
+
+    // Hunt-3 L-A6: clamp sampling parameters at the router entry so no
+    // caller (HTTP, MCP, harness) can push an out-of-range temperature
+    // or an unbounded max_tokens to an upstream. Bounds are documented
+    // in sampling.ts (temperature 0–2, max tokens 1–131072).
+    if (effectiveRequest.temperature !== undefined) {
+      const clamped = clampTemperature(effectiveRequest.temperature);
+      if (clamped === undefined) delete (effectiveRequest as any).temperature;
+      else effectiveRequest.temperature = clamped;
+    }
+    if ((effectiveRequest as any).max_tokens !== undefined) {
+      const clamped = clampMaxTokens((effectiveRequest as any).max_tokens);
+      if (clamped === undefined) delete (effectiveRequest as any).max_tokens;
+      else (effectiveRequest as any).max_tokens = clamped;
+    }
+    if ((effectiveRequest as any).max_completion_tokens !== undefined) {
+      const clamped = clampMaxTokens((effectiveRequest as any).max_completion_tokens);
+      if (clamped === undefined) delete (effectiveRequest as any).max_completion_tokens;
+      else (effectiveRequest as any).max_completion_tokens = clamped;
+    }
 
     // 0a. Privacy Guard Check (PII Detection & Anonymization)
     if (this.config.privacyGuard?.enabled && request.messages) {

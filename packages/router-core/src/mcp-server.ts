@@ -22,6 +22,7 @@ import { gateTextForMemory } from './guard.js';
 // regardless of configured guard modes. The L-A3 imports
 // (applyPrivacyGuard/scanAndMaskPii/validateChatPrompt) are therefore
 // intentionally not re-added here.
+import { clampMaxTokens, clampTemperature } from './sampling.js';
 
 export const ELUVIX_MCP_PROTOCOL_VERSION = '2025-06-18';
 
@@ -76,8 +77,8 @@ export const ELUVIX_MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Target model or virtual alias (default: "auto").',
         },
-        temperature: { type: 'number', description: 'Optional sampling temperature (0.0 - 2.0).' },
-        max_tokens: { type: 'number', description: 'Optional maximum completion tokens.' },
+        temperature: { type: 'number', description: 'Optional sampling temperature, clamped to 0.0 - 2.0.' },
+        max_tokens: { type: 'number', description: 'Optional maximum completion tokens, clamped to 1 - 131072.' },
       },
       required: ['prompt'],
     },
@@ -398,13 +399,20 @@ async function executeMcpToolCall(
       }
       messages.push({ role: 'user', content: prompt });
 
+      // Hunt-3 L-A6: clamp sampling parameters (the router clamps again
+      // at its entry; the MCP layer documents and enforces the same
+      // bounds so callers see the clamped values in the tool contract).
+      const clampedTemperature =
+        typeof args.temperature === 'number' ? clampTemperature(args.temperature) : undefined;
+      const clampedMaxTokens =
+        typeof args.max_tokens === 'number' ? clampMaxTokens(args.max_tokens) : undefined;
       const res = await ctx.router.routeChatCompletion(
         {
           model: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : 'auto',
           messages,
           stream: false,
-          ...(typeof args.temperature === 'number' ? { temperature: args.temperature } : {}),
-          ...(typeof args.max_tokens === 'number' ? { max_tokens: args.max_tokens } : {}),
+          ...(clampedTemperature !== undefined ? { temperature: clampedTemperature } : {}),
+          ...(clampedMaxTokens !== undefined ? { max_tokens: clampedMaxTokens } : {}),
         },
         {
           hops: nextHops,

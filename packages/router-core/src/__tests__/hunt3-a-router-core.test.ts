@@ -533,3 +533,57 @@ describe("L-A5: paperclip modality filter must not exempt 'code'", () => {
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------- L-A6
+
+describe('L-A6: temperature / max_tokens must be clamped', () => {
+  it('clamps helpers to the documented bounds', async () => {
+    const { clampTemperature, clampMaxTokens } = await import('../sampling.js');
+    expect(clampTemperature(99)).toBe(2);
+    expect(clampTemperature(-5)).toBe(0);
+    expect(clampTemperature(1.5)).toBe(1.5);
+    expect(clampTemperature(NaN)).toBeUndefined();
+    expect(clampMaxTokens(999999999)).toBe(131072);
+    expect(clampMaxTokens(0)).toBe(1);
+    expect(clampMaxTokens(-3)).toBe(1);
+    expect(clampMaxTokens(100)).toBe(100);
+    expect(clampMaxTokens(Infinity)).toBeUndefined();
+  });
+
+  it('clamps values before they reach the upstream', async () => {
+    const seenBodies: any[] = [];
+    globalThis.fetch = vi.fn(async (_url: any, init: any) => {
+      if (init?.body) seenBodies.push(JSON.parse(String(init.body)));
+      return jsonUpstream('ok');
+    }) as unknown as typeof fetch;
+    const router = new Eluvix({
+      strategy: 'cost-complexity',
+      upstreams: [
+        {
+          id: 'cloud',
+          name: 'cloud',
+          type: 'openai-compatible',
+          endpoint: 'https://api.example.com/v1',
+          priority: 10,
+          models: ['test-model'],
+        } as any,
+      ],
+    });
+    const res = await router.routeChatCompletion(
+      {
+        model: 'test-model',
+        stream: false,
+        messages: [{ role: 'user', content: 'hi' }],
+        temperature: 99,
+        max_tokens: 999999999,
+      } as any,
+      { scope: { userId: `h3-la6-${Date.now()}` } }
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(seenBodies.length).toBeGreaterThan(0);
+    const last = seenBodies[seenBodies.length - 1];
+    expect(last.temperature).toBe(2);
+    expect(last.max_tokens).toBe(131072);
+  });
+});
