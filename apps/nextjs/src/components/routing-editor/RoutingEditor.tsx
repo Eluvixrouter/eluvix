@@ -5039,6 +5039,7 @@ export default function RoutingEditor() {
                 {(applyDiff.knowledgeChanged ||
                   applyDiff.cacheChanged ||
                   applyDiff.sandboxChanged ||
+                  applyDiff.cascadeChanged ||
                   applyDiff.consensusChanged ||
                   applyDiff.fallbackChainsChanged ||
                   applyDiff.confidentialPolicyChanged ||
@@ -5101,6 +5102,11 @@ export default function RoutingEditor() {
                       {applyDiff.sandboxChanged && (
                         <span className="bg-rose-950/60 border border-rose-500/50 text-rose-200 text-xs px-2 py-0.5 rounded font-mono">
                           📦 Execution Sandbox
+                        </span>
+                      )}
+                      {applyDiff.cascadeChanged && (
+                        <span className="bg-violet-950/60 border border-violet-500/50 text-violet-200 text-xs px-2 py-0.5 rounded font-mono">
+                          🔀 Speculative Cascade
                         </span>
                       )}
                       {applyDiff.consensusChanged && (

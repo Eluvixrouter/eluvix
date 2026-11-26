@@ -12,6 +12,22 @@ export default function AgentGatewayNode({ id, data }: { id: string; data: any }
   const [toolTimeoutMs, setToolTimeoutMs] = useState<number>(data?.toolTimeoutMs ?? 10000);
   const [sanitizeOutput, setSanitizeOutput] = useState<boolean>(data?.sanitizeToolOutput !== false);
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.accessPolicy !== undefined) setAccessPolicy(data.accessPolicy);
+      if (data?.mcpEndpoint !== undefined) setMcpEndpoint(data.mcpEndpoint);
+      if (data?.enableNativeTools !== undefined) setEnableNativeTools(data.enableNativeTools);
+      if (data?.toolTimeoutMs !== undefined) setToolTimeoutMs(data.toolTimeoutMs);
+      if (data?.sanitizeToolOutput !== undefined) setSanitizeOutput(data.sanitizeToolOutput !== false);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // mcpEndpoint uses an `=== undefined` guard because the text input can be

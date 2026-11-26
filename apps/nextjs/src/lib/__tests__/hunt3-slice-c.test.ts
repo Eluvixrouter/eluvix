@@ -729,3 +729,42 @@ describe('hunt3 slice C regressions: C-L4 saveConfig failure, C-L15 deep merge',
     expect(libRouter.getConfig().memory.cloudMode).toBe('filter');
   });
 });
+
+describe('hunt3 slice C regressions: C-L7 cascade badge, C-L13 docker poll reset', () => {
+  it('C-L7: RoutingEditor renders the cascadeChanged flag in the Policies & Topologies block', () => {
+    // The diff itself is covered in config-diff.test.ts; this guards the
+    // actual regression — the modal computed the flag but never rendered it.
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '../../components/routing-editor/RoutingEditor.tsx'),
+      'utf8'
+    );
+    expect(src).toContain('applyDiff.cascadeChanged');
+    expect(src).toMatch(/cascadeChanged && \(\s*<span[^>]*>\s*🔀 Speculative Cascade/s);
+  });
+
+  it('C-L13: the shared docker poll interval resets to the default once polling stops', async () => {
+    // Negative control: pre-fix, stopDockerStatusPolling left activeInterval
+    // at the fastest value any past consumer requested (3000 here), so a
+    // later default consumer kept polling at 3s forever.
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({}) }) as any));
+    const {
+      startDockerStatusPolling,
+      stopDockerStatusPolling,
+      getActiveDockerPollInterval,
+      DEFAULT_DOCKER_POLL_INTERVAL,
+    } = await import('@/hooks/useDockerStatus');
+    try {
+      expect(DEFAULT_DOCKER_POLL_INTERVAL).toBe(5000);
+      startDockerStatusPolling(3000); // NodeHealthIndicator's fast consumer
+      expect(getActiveDockerPollInterval()).toBe(3000);
+      stopDockerStatusPolling(); // last consumer unmounts
+      expect(getActiveDockerPollInterval()).toBe(5000);
+      // And a fresh default consumer starts at the default, not 3000.
+      startDockerStatusPolling(5000);
+      expect(getActiveDockerPollInterval()).toBe(5000);
+    } finally {
+      stopDockerStatusPolling();
+      vi.unstubAllGlobals();
+    }
+  });
+});

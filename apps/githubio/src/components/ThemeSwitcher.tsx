@@ -17,20 +17,22 @@ const CATEGORY_TABS: { key: ThemeCategory | 'all'; label: string }[] = [
 ];
 
 export function ThemeSwitcher() {
-  // Derive the initial theme from storage during render instead of syncing
-  // it through a mount effect. The try/catch also covers server prerender,
-  // where localStorage is not defined.
-  const [currentThemeId, setCurrentThemeId] = useState<string>(() => {
+  // First render always matches the server (DEFAULT_THEME_ID); the stored
+  // theme is applied in a mount effect. Reading localStorage in the lazy
+  // useState initializer (c096581) made the client render differ from the
+  // prerendered HTML whenever a theme was stored — a hydration mismatch.
+  const [currentThemeId, setCurrentThemeId] = useState<string>(DEFAULT_THEME_ID);
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem('eluvix-theme');
       if (saved) {
-        return getThemeById(saved).id;
+        setCurrentThemeId(getThemeById(saved).id);
       }
     } catch {
       // Ignore localStorage security exceptions
     }
-    return DEFAULT_THEME_ID;
-  });
+  }, []);
   const [isOpen, setIsOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState<ThemeCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');

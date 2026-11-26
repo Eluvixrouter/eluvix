@@ -11,6 +11,22 @@ export default function ObservabilityNode({ id, data }: { id: string; data: any 
   const [samplingRate, setSamplingRate] = useState(data?.samplingRate ?? 100);
   const [scrubPii, setScrubPii] = useState(data?.scrubPii !== false);
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.projectName !== undefined) setProjectName(data.projectName);
+      if (data?.exporter !== undefined) setExporter(data.exporter);
+      if (data?.captureInputs !== undefined) setCaptureInputs(data.captureInputs !== false);
+      if (data?.samplingRate !== undefined) setSamplingRate(data.samplingRate);
+      if (data?.scrubPii !== undefined) setScrubPii(data.scrubPii !== false);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // projectName uses an `=== undefined` guard because its text input can

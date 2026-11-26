@@ -24,6 +24,20 @@ export default function TaskRouterNode({ id, data }: { id: string; data: any }) 
   const [preference, setPreference] = useState(data?.preference || 'balanced');
   const [engine, setEngine] = useState(data?.classificationEngine || 'heuristic');
   const [confidenceThreshold, setConfidenceThreshold] = useState(data?.confidenceThreshold ?? 0.75);
+
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.preference !== undefined) setPreference(data.preference);
+      if (data?.classificationEngine !== undefined) setEngine(data.classificationEngine);
+      if (data?.confidenceThreshold !== undefined) setConfidenceThreshold(data.confidenceThreshold);
+    }
+  }
   const routes: TaskIntentRoute[] = data?.routes || DEFAULT_INTENT_ROUTES;
 
   // Persist missing defaults into the node data via the store, never by

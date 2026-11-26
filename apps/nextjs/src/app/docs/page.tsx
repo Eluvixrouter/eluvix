@@ -36,11 +36,13 @@ export default function DocsPage() {
   const handleSelectSection = (id: string) => {
     setActiveSectionId(id);
     if (typeof window !== 'undefined') {
-      // Record the section in the URL for deep-linking. pushState is
-      // exactly equivalent here to assigning location.hash: the page has no
-      // element with the section id, so the assignment never scrolled
-      // anywhere — it only updated the URL and added a history entry.
-      window.history.pushState(null, '', `#${id}`);
+      // Deep-link the section in the URL. Assigning location.hash is a
+      // no-op when the hash is already set (audit hunt-3 C-L10: pushState
+      // added a duplicate history entry on every re-select, so Back
+      // walked through identical #section entries).
+      if (window.location.hash !== `#${id}`) {
+        window.location.hash = id;
+      }
     }
   };
 
