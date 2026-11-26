@@ -1,5 +1,6 @@
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export async function forwardMastraHarness(
   upstream: UpstreamConfig,
@@ -37,7 +38,7 @@ export async function forwardMastraHarness(
   }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithSafeRedirects(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({

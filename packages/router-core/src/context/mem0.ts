@@ -7,6 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 function extractText(msg: ChatMessage): string {
   if (typeof msg.content === 'string') return msg.content;
@@ -47,7 +48,7 @@ export class Mem0ContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(`${this.endpoint}/health`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, {
         method: 'GET',
         headers: this.buildHeaders(),
         signal: controller.signal
@@ -83,7 +84,7 @@ export class Mem0ContextProvider implements ContextProvider {
     }
 
     try {
-      const res = await fetch(`${this.endpoint}/v1/memories/search/`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/search/`, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify({
@@ -100,7 +101,7 @@ export class Mem0ContextProvider implements ContextProvider {
         throw new Error(`Mem0 search returned HTTP ${res.status}`);
       }
 
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const allItems: any[] = Array.isArray(data?.results)
         ? data.results
         : Array.isArray(data)
@@ -186,7 +187,7 @@ export class Mem0ContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
     try {
-      await fetch(`${this.endpoint}/v1/memories/`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/v1/memories/`, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify({
@@ -200,6 +201,14 @@ export class Mem0ContextProvider implements ContextProvider {
         }),
         signal: controller.signal
       });
+      // Hunt-3 B-L2: a server-rejected write must not pass silently —
+      // the operator would otherwise believe memory is being stored
+      // while the server rejects every write (mirrors openviking's
+      // res.ok gate, plus a log line so the failure is visible).
+      if (!res.ok) {
+        console.warn(`[Mem0ContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Fail open
     } finally {

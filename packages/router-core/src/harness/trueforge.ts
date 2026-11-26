@@ -450,10 +450,8 @@ export async function forwardTrueForgeHarness(
     harnessCfg.approvals || harnessCfg.approvalPolicy || 'auto-deny';
   const sessionMode = harnessCfg.sessionMode || 'per-eluvix-session';
   const reuseSession = sessionMode === 'per-eluvix-session' || sessionMode === 'per-conversation';
-  const { mcpServers: effectiveMcpServers } = resolveEffectiveTrueForgeMcpAndAutoApprove(
-    upstream,
-    harnessCfg
-  );
+  const { mcpServers: effectiveMcpServers, autoApproveTools: effectiveAutoApproveTools } =
+    resolveEffectiveTrueForgeMcpAndAutoApprove(upstream, harnessCfg);
 
   const kvPrefixHash = computeHarnessKvPrefixHash(
     request.messages,
@@ -767,7 +765,11 @@ export async function forwardTrueForgeHarness(
             approvalId,
             toolName,
             approvalPolicy,
-            harnessCfg.autoApproveTools,
+            // Hunt-3 B-M1: the reply must use the EFFECTIVE list
+            // (explicit + vectorcraft + artcraft), not the raw config
+            // list — otherwise vectorcraft/artcraft tools the session
+            // was just told Eluvix can use are denied here.
+            effectiveAutoApproveTools,
             controller.signal
           );
         } else if (

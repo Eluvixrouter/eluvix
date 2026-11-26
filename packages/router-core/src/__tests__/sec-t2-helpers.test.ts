@@ -14,6 +14,12 @@ const NEXTAUTH = 'NEXTAUTH' + '_SECRET';
 const MEM0 = 'MEM0' + '_API_KEY';
 const OVK = 'OPENVIKING' + '_API_KEY';
 const MULTICA = 'MULTICA' + '_TOKEN';
+const BAO = 'BAO' + '_TOKEN';
+const VAULT = 'VAULT' + '_TOKEN';
+const PC_HMAC_A = 'PAPERCLIP_ELUVIX_HMAC' + '_SECRET';
+const PC_HMAC_B = 'ELUVIX_PAPERCLIP_HMAC' + '_SECRET';
+const PC_TEST_HMAC = 'ELUVIX_PC_TEST_HMAC' + '_SECRET';
+const TEST_UPSTREAM = 'ELUVIX_TEST_UPSTREAM' + '_SECRET';
 const KEEP = 'ELUVIX_TEST_KEEP_ME';
 
 describe('H-1: buildChildEnv denylist scrub (D3)', () => {
@@ -23,6 +29,12 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     delete process.env[MEM0];
     delete process.env[OVK];
     delete process.env[MULTICA];
+    delete process.env[BAO];
+    delete process.env[VAULT];
+    delete process.env[PC_HMAC_A];
+    delete process.env[PC_HMAC_B];
+    delete process.env[PC_TEST_HMAC];
+    delete process.env[TEST_UPSTREAM];
     delete process.env[KEEP];
   });
 
@@ -32,6 +44,12 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     process.env[MEM0] = 'dummy-mem0';
     process.env[OVK] = 'dummy-ovk';
     process.env[MULTICA] = 'mul_dummy';
+    process.env[BAO] = 'dummy-bao';
+    process.env[VAULT] = 'dummy-vault';
+    process.env[PC_HMAC_A] = 'dummy-pc-a';
+    process.env[PC_HMAC_B] = 'dummy-pc-b';
+    process.env[PC_TEST_HMAC] = 'dummy-pc-test';
+    process.env[TEST_UPSTREAM] = 'dummy-upstream';
     process.env[KEEP] = 'keep-me';
 
     const env = buildChildEnv({ ELUVIX_ORIGIN: 'harness' });
@@ -43,11 +61,23 @@ describe('H-1: buildChildEnv denylist scrub (D3)', () => {
     // the single spawn site that may carry it, via direct assignment
     // after buildChildEnv returns — never via extra, never via process.env.
     expect(env[MULTICA]).toBeUndefined();
+    // Hunt-3 B-M5: the Vault/Bao token and both paperclip HMAC secret
+    // spellings (plus the test-only secrets of the same class) are
+    // scrubbed too — a spawned agent holding them could read every
+    // SecretRef-stored upstream key or forge paperclip context.
+    expect(env[BAO]).toBeUndefined();
+    expect(env[VAULT]).toBeUndefined();
+    expect(env[PC_HMAC_A]).toBeUndefined();
+    expect(env[PC_HMAC_B]).toBeUndefined();
+    expect(env[PC_TEST_HMAC]).toBeUndefined();
+    expect(env[TEST_UPSTREAM]).toBeUndefined();
     expect(env[KEEP]).toBe('keep-me');
     expect(env.ELUVIX_ORIGIN).toBe('harness');
     expect(typeof env.PATH).toBe('string');
-    // The denylist constant itself names exactly the five scrubbed keys.
-    expect([...CHILD_ENV_DENYLIST].sort()).toEqual([ADMIN_PW, MEM0, MULTICA, NEXTAUTH, OVK].sort());
+    // The denylist constant itself names exactly the scrubbed keys.
+    expect([...CHILD_ENV_DENYLIST].sort()).toEqual(
+      [ADMIN_PW, MEM0, MULTICA, NEXTAUTH, OVK, BAO, VAULT, PC_HMAC_A, PC_HMAC_B, PC_TEST_HMAC, TEST_UPSTREAM].sort()
+    );
   });
 
   it('extras cannot re-introduce a denied key', () => {

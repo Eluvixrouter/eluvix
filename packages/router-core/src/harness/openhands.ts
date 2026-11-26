@@ -2,6 +2,7 @@ import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
 import { setBounded } from '../bounded-map.js';
 import { buildHarnessPrompt } from './prompt.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 const openHandsSessionMap = new Map<string, string>();
 
@@ -54,7 +55,7 @@ export async function forwardOpenHandsHarness(
     let usedCached = Boolean(conversationId);
 
     const createConversation = async (): Promise<string> => {
-      const res = await fetch(`${base}/api/conversations`, {
+      const res = await fetchWithSafeRedirects(`${base}/api/conversations`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -78,7 +79,7 @@ export async function forwardOpenHandsHarness(
       usedCached = false;
     }
 
-    let turnRes = await fetch(`${base}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    let turnRes = await fetchWithSafeRedirects(`${base}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -92,7 +93,7 @@ export async function forwardOpenHandsHarness(
     if (turnRes.status === 404 && usedCached) {
       openHandsSessionMap.delete(sessionKey);
       conversationId = await createConversation();
-      turnRes = await fetch(`${base}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      turnRes = await fetchWithSafeRedirects(`${base}/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
         method: 'POST',
         headers,
         body: JSON.stringify({

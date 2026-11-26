@@ -1,14 +1,29 @@
 import type { ChatMessage } from '../index.js';
-import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import {
+  assertProviderEndpointAllowed,
+  filterOwnedRecallItems,
+  type ContextProvider,
+  type MemoryConfig,
+  type RecallBlock,
+  type RecallResult,
+  type RequestScope
+} from './types.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 export class GraphitiContextProvider implements ContextProvider {
   public readonly id = 'graphiti';
   private endpoint: string;
   private apiKey?: string;
+  private readonly timeoutMs: number;
 
   constructor(config?: MemoryConfig) {
     this.endpoint = (config?.endpoint || 'http://localhost:8004').replace(/\/+$/, '');
+    // Hunt-3 B-L5: refuse remote plaintext endpoints at construction,
+    // mirroring mem0/openviking.
+    assertProviderEndpointAllowed(this.endpoint, 'Graphiti');
     this.apiKey = config?.apiKey;
+    // Hunt-3 B-M4: recall timeout, default 1500ms like mem0.
+    this.timeoutMs = config?.recallTimeoutMs ?? 1500;
   }
 
   private headers(): Record<string, string> {
@@ -18,11 +33,18 @@ export class GraphitiContextProvider implements ContextProvider {
   }
 
   public async health(): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(`${this.endpoint}/health`, { method: 'GET' });
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, {
+        method: 'GET',
+        signal: controller.signal
+      });
       return res.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -33,8 +55,20 @@ export class GraphitiContextProvider implements ContextProvider {
     signal?: AbortSignal
   ): Promise<RecallResult> {
     const start = Date.now();
+    // Hunt-3 B-M4: time-box recall like mem0 (recallTimeoutMs, default
+    // 1500ms) and forward the caller signal into the same controller —
+    // a hung memory server must not stall the chat turn indefinitely.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: 0 };
+      }
+      signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
     try {
-      const res = await fetch(`${this.endpoint}/search`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/search`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -42,19 +76,22 @@ export class GraphitiContextProvider implements ContextProvider {
           query,
           max_facts: 10
         }),
-        signal
+        signal: controller.signal
       });
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
       }
-      const data: any = await res.json();
-      const rawFacts: any[] = Array.isArray(data?.facts)
+      const data: any = await readCappedJson(res);
+      const allFacts: any[] = Array.isArray(data?.facts)
         ? data.facts
         : Array.isArray(data?.edges)
         ? data.edges
         : Array.isArray(data)
         ? data
         : [];
+      // Hunt-3 B-M3: never trust the server to have scoped the search
+      // to the requesting user (audit H-9, mirroring mem0).
+      const rawFacts = filterOwnedRecallItems(allFacts, scope.userId || 'default', 'GraphitiContextProvider');
 
       const blocks: RecallBlock[] = [];
       let usedTokens = 0;
@@ -91,6 +128,8 @@ export class GraphitiContextProvider implements ContextProvider {
       };
     } catch {
       return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -98,10 +137,13 @@ export class GraphitiContextProvider implements ContextProvider {
     turn: { user: ChatMessage; assistant: string },
     scope: RequestScope
   ): Promise<void> {
+    // Hunt-3 B-M4: time-box the write like mem0 (3s).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
     try {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
-      await fetch(`${this.endpoint}/messages`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/messages`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({
@@ -110,10 +152,19 @@ export class GraphitiContextProvider implements ContextProvider {
             { role: 'user', content: userContent, timestamp: new Date().toISOString() },
             { role: 'assistant', content: turn.assistant, timestamp: new Date().toISOString() }
           ]
-        })
+        }),
+        signal: controller.signal
       });
+      // Hunt-3 B-L2: surface a server-rejected write instead of
+      // silently swallowing it (mirrors openviking).
+      if (!res.ok) {
+        console.warn(`[GraphitiContextProvider] remember failed: HTTP ${res.status}`);
+        return;
+      }
     } catch {
       // Non-fatal fire-and-forget
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

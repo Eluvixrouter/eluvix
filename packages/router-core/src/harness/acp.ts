@@ -20,6 +20,15 @@ import {
 const ACP_KILL_GRACE_MS = 2000;
 /** Only the tail of the child's stderr is retained for diagnostics. */
 const ACP_STDERR_TAIL_BYTES = 8192;
+/**
+ * Bound on retained ACP output (hunt-3 B-L1): `fullText` (the non-stream
+ * return value) and any single stdout line (`lineBuf`) are each capped
+ * at 1MB. A newline-less stdout stream previously grew `lineBuf`
+ * without limit and `fullText` accumulated every text delta without
+ * cap — only wall-clock time was bounded. Deltas past the cap are still
+ * streamed to the client via onDelta; they are just not retained.
+ */
+const ACP_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 export async function forwardAcpHarness(
   upstream: UpstreamConfig,
@@ -197,7 +206,13 @@ export async function forwardAcpHarness(
           killTimer = null;
         }
         if (!settled) {
-          if (fullText.length > 0 || code === 0) {
+          // Hunt-3 B-L1: a crash after partial output is NOT a
+          // successful turn. The old `fullText.length > 0 || code === 0`
+          // returned 200 / [DONE] for a partial answer, which the memory
+          // tee's M-21 gate then stored as a completed turn. Only a
+          // clean exit counts as success here (a turn that already
+          // settled via its id=3 response is unaffected).
+          if (code === 0) {
             finishOk();
           } else {
             const tail = stderrTail.trim();
@@ -212,6 +227,12 @@ export async function forwardAcpHarness(
 
       child.stdout.on('data', (chunk: Buffer) => {
         lineBuf += chunk.toString('utf8');
+        if (lineBuf.length > ACP_MAX_OUTPUT_BYTES) {
+          // Hunt-3 B-L1: a newline-less stdout stream must not grow
+          // the line buffer without bound — drop the oversized partial
+          // line and keep reading later lines.
+          lineBuf = '';
+        }
         const lines = lineBuf.split('\n');
         lineBuf = lines.pop() ?? '';
 
@@ -260,7 +281,11 @@ export async function forwardAcpHarness(
               update?.text ??
               (typeof update?.delta === 'string' ? update.delta : '');
             if (typeof chunkText === 'string' && chunkText) {
-              fullText += chunkText;
+              // Hunt-3 B-L1: retain at most 1MB of output. Deltas past
+              // the cap are still streamed to the client via onDelta.
+              if (fullText.length < ACP_MAX_OUTPUT_BYTES) {
+                fullText += chunkText.slice(0, ACP_MAX_OUTPUT_BYTES - fullText.length);
+              }
               onDelta(chunkText);
             }
             continue;
@@ -341,7 +366,7 @@ export async function forwardAcpHarness(
               return;
             }
             if (typeof msg.result?.text === 'string' && msg.result.text && !fullText) {
-              fullText += msg.result.text;
+              fullText += msg.result.text.slice(0, ACP_MAX_OUTPUT_BYTES);
               onDelta(msg.result.text);
             }
             finishOk();

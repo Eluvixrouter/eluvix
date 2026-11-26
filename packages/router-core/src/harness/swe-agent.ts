@@ -9,6 +9,7 @@ import {
 } from './deep-guard.js';
 import { buildHarnessPrompt, messageText } from './prompt.js';
 import type { HarnessApprovalPolicy, HarnessConfig } from './types.js';
+import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 interface SweAgentSession {
   id: string;
@@ -281,7 +282,7 @@ export async function forwardSweAgentHarness(
   }
 
   try {
-    const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const res = await fetchWithSafeRedirects(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
