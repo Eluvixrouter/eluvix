@@ -112,9 +112,10 @@ function evaluateCaseDryRun(
   );
 
   const routeOk = !explanation.error && Boolean(explanation.chosenUpstreamId);
-  if (!routeOk) {
-    blockedByGuard = true;
-  }
+  // Hunt-3 L-A8: an unroutable case is NOT a guard block. blockedByGuard
+  // is set only by the prompt/privacy guard checks above; conflating a
+  // failed route resolution with a block made expectBlockedByGuard pass
+  // when the upstream was just down or the route failed to resolve.
 
   const primaryId = explanation.chosenUpstreamId ?? null;
   const primaryUpstream = primaryId
@@ -308,8 +309,23 @@ async function evaluateCaseLive(
     parsed = JSON.parse(rawBody);
   } catch {}
 
+  // Hunt-3 L-A8: only an actual guard block counts. Any non-2xx used to
+  // count (upstream down, 429 loop-limit, 422 schema failure all passed
+  // expectBlockedByGuard). A real block is: a diverted response
+  // (x-eluvix-guard: diverted), a guard error code/type in the body
+  // (prompt-injection 400, privacy-guard 400), or a thrown error whose
+  // message names a guard. Warn-mode (x-eluvix-guard: response-warn)
+  // is telemetry, not a block.
+  const guardErrorCode = typeof parsed?.error?.code === 'string' ? parsed.error.code : '';
+  const guardErrorType = typeof parsed?.error?.type === 'string' ? parsed.error.type : '';
   const blockedByGuard =
-    thrownError !== null || res.status === 400 || res.status === 403 || res.status === 422 || res.status === 429 || !res.ok;
+    res.headers.get('x-eluvix-guard') === 'diverted' ||
+    guardErrorCode === 'content_policy_violation' ||
+    guardErrorCode === 'privacy_guard_violation' ||
+    guardErrorType === 'prompt_injection_violation' ||
+    guardErrorType === 'privacy_guard_violation' ||
+    (thrownError !== null &&
+      /prompt injection|content_policy|privacy guard|semantic guard/i.test(thrownError));
   const servedUpstreamHdr = res.headers.get('x-eluvix-upstream');
   const stepTierHdr = res.headers.get('x-eluvix-step-tier') || dryExplanation.agentStepTier;
   const matchedUpstream =
