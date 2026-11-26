@@ -7,7 +7,7 @@ import {
   type EvalSuite,
   type RouterConfig,
 } from '@eluvix/router-core';
-import { getConfig } from '@/lib/router';
+import { getConfig, validateConfig } from '@/lib/router';
 import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
@@ -123,6 +123,24 @@ export async function POST(req: Request) {
           );
         }
       }
+    }
+    // Hunt-3 C-M8: a live-eval configOverride used to bypass validateConfig
+    // entirely, so the save-path rules (empty upstreams, cliPath allowlist,
+    // memory.provider allowlist, promptGuard.mode, egressPolicy enum) did
+    // not apply to the ephemeral eval router. Validate it like a save —
+    // in dry-run too, so a bad override fails the same way in both modes.
+    try {
+      validateConfig(override);
+    } catch (err: any) {
+      return NextResponse.json(
+        {
+          error: {
+            message: `configOverride failed validation: ${err?.message || 'invalid config'}`,
+            type: 'invalid_request_error',
+          },
+        },
+        { status: 400 }
+      );
     }
     effectiveConfig = override;
   }

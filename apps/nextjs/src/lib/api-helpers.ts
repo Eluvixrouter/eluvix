@@ -192,25 +192,61 @@ export function isValidContainerName(name: string): boolean {
 }
 
 import crypto from 'crypto';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
+
+/**
+ * Hunt-3 C-L3: docker control (up/down/logs) is gated on a real admin
+ * identity — never the Host header. Accepts, in order:
+ *
+ *  1. A bearer token matching the configured admin token env var:
+ *     `ELUVIX_ADMIN_TOKEN` (preferred; `ENCLAVIX_ADMIN_TOKEN` and
+ *     `ADMIN_TOKEN` are accepted aliases). Set one of these in production:
+ *     without it, token-only admin access does not exist.
+ *  2. A proven admin/operator identity: the admin bearer (the auth.json
+ *     admin password) or an admin/operator NextAuth session or named
+ *     `elx_` key, resolved via resolveCallerIdentity.
+ *
+ * Readonly callers are refused. Use this async check in route handlers;
+ * the sync isAuthorizedAdmin() below keeps only the token-env check and
+ * fails closed when no token is configured (its old dev loopback bypass
+ * and prod deny-all behavior are both gone).
+ */
+export async function isAuthorizedAdminAsync(req: Request): Promise<boolean> {
+  const adminSecret =
+    process.env.ELUVIX_ADMIN_TOKEN ||
+    process.env.ENCLAVIX_ADMIN_TOKEN ||
+    process.env.ADMIN_TOKEN;
+  const authHeader = req.headers.get('authorization') || '';
+  const token =
+    authHeader.replace(/^Bearer\s+/i, '').trim() ||
+    req.headers.get('x-admin-token') ||
+    req.headers.get('x-enclavix-token') ||
+    req.headers.get('x-eluvix-token') ||
+    '';
+  if (adminSecret && token) {
+    if (token.length !== adminSecret.length) return false;
+    if (crypto.timingSafeEqual(Buffer.from(token), Buffer.from(adminSecret))) {
+      return true;
+    }
+  }
+
+  const caller = await resolveCallerIdentity(req);
+  return caller.ok && (caller.role === 'admin' || caller.role === 'operator');
+}
 
 export function isAuthorizedAdmin(req: Request): boolean {
   const adminSecret = process.env.ENCLAVIX_ADMIN_TOKEN || process.env.ELUVIX_ADMIN_TOKEN || process.env.ADMIN_TOKEN;
   const authHeader = req.headers.get('authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim() || req.headers.get('x-admin-token') || req.headers.get('x-enclavix-token') || req.headers.get('x-eluvix-token') || '';
 
-  if (adminSecret) {
-    if (!token || token.length !== adminSecret.length) {
-      return false;
-    }
-    return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(adminSecret));
-  }
-
-  // In production, an admin token is strictly required
-  if (process.env.NODE_ENV === 'production') {
+  if (!adminSecret) {
+    // Hunt-3 C-L3: no token configured means no token-based admin access,
+    // in any environment — the old dev loopback bypass (any
+    // credential-less localhost request counted as admin) is gone.
     return false;
   }
-
-  // In development, allow local loopback requests
-  const host = req.headers.get('host') || '';
-  return host.startsWith('localhost') || host.startsWith('127.0.0.1');
+  if (!token || token.length !== adminSecret.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(adminSecret));
 }

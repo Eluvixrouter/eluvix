@@ -118,6 +118,10 @@ describe('Wave 3 — Prometheus /api/v1/metrics, Spend Compiler Round-Trip & Des
       itl_ms: 18.5,
       kv_cache_kb: 256,
       cost_usd: 3.25,
+      // Hunt-3 C-L1: /api/v1/metrics scopes request_logs aggregates to the
+      // caller's userId, so the seeded telemetry must belong to the
+      // scraper key's user for the assertions below to hold.
+      user_id: 'prom_scraper',
     });
 
     // 4. Rejects unregistered elx_ key inside GET /api/v1/metrics

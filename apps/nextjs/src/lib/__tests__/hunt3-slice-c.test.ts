@@ -255,8 +255,7 @@ describe('hunt3 slice C regressions: C-M1 inference-route scoping', () => {
   });
 });
 
-describe('hunt3 slice C regressions: C-M4 bifrost mode, C-M5 observability redaction', () => {
-  it('C-M5: redactConfigForApi strips observability secrets but keeps configured flags', async () => {
+describe('hunt3 slice C regressions: C-M4 bifrost mode, C-M5 observability redaction', () => {  it('C-M5: redactConfigForApi strips observability secrets but keeps configured flags', async () => {
     const { redactConfigForApi } = await import('@/lib/router');
     const redacted = redactConfigForApi({
       strategy: 'lowest-latency',
@@ -316,5 +315,325 @@ describe('hunt3 slice C regressions: C-M4 bifrost mode, C-M5 observability redac
         }
       }
     }
+  });
+});
+
+describe('hunt3 slice C regressions: C-M6 health probe, C-M8 eval override, C-L1 metrics, C-L2 observability, C-L3 docker gate, C-L5 auth status, C-L6 layouts', () => {
+  let core: typeof import('@eluvix/router-core');
+  let libRouter: typeof import('@/lib/router');
+
+  function req(url: string, init: { key?: string; bearer?: string; body?: any; method?: string } = {}) {
+    const headers = new Headers();
+    if (init.key) headers.set('authorization', `Bearer ${init.key}`);
+    if (init.bearer) headers.set('authorization', `Bearer ${init.bearer}`);
+    if (init.body !== undefined) headers.set('content-type', 'application/json');
+    return new Request(`http://localhost:3000${url}`, {
+      method: init.method || 'POST',
+      headers,
+      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+    });
+  }
+
+  beforeAll(async () => {
+    process.env.ADMIN_PASSWORD = 'hunt3-slice-c-admin-pw';
+    delete process.env.LEGACY_ADMIN_PASSWORD;
+    core = await import('@eluvix/router-core');
+    libRouter = await import('@/lib/router');
+    // Seed a config with the Paperclip base URL the health tests probe.
+    libRouter.saveConfig({
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434',
+          priority: 10,
+          models: ['llama3.2:latest'],
+        },
+      ],
+      integrations: { paperclip: { paperclipBaseUrl: 'http://127.0.0.1:3100' } },
+    } as any);
+  }, 60000);
+
+  it('C-M6: a paperclip-scoped key may not probe an arbitrary baseUrl, and the target body is never echoed', async () => {
+    const { GET, POST } = await import('../../app/api/v1/paperclip/health/route');
+    const stamp = Date.now();
+    const paperclipKey = core.createNamedApiKey({
+      label: 'hunt3 c-m6 paperclip',
+      userId: `hunt3-m6-${stamp}`,
+      role: 'operator',
+      scopes: ['paperclip'],
+    }).key;
+
+    // A different target is refused outright (was: probed + body echoed).
+    const refused = await POST(
+      req('/api/v1/paperclip/health', {
+        key: paperclipKey,
+        body: { paperclipBaseUrl: 'http://127.0.0.1:3999' },
+      })
+    );
+    expect(refused.status).toBe(403);
+
+    // The configured target still probes — but the body is not echoed.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: 'internal-secret-marker' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const ok = await POST(
+      req('/api/v1/paperclip/health', {
+        key: paperclipKey,
+        body: { paperclipBaseUrl: 'http://127.0.0.1:3100' },
+      })
+    );
+    expect(ok.status).toBe(200);
+    const okJson: any = await ok.json();
+    expect(okJson.ok).toBe(true);
+    expect(okJson.details).toBeUndefined();
+    expect(JSON.stringify(okJson)).not.toContain('internal-secret-marker');
+
+    // Negative control: an admin caller may still probe a custom target —
+    // and still gets no echoed body.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({ status: 'internal-secret-marker' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const adminOk = await POST(
+      req('/api/v1/paperclip/health', {
+        bearer: 'hunt3-slice-c-admin-pw',
+        body: { paperclipBaseUrl: 'http://127.0.0.1:3999' },
+      })
+    );
+    expect(adminOk.status).toBe(200);
+    const adminJson: any = await adminOk.json();
+    expect(adminJson.ok).toBe(true);
+    expect(adminJson.baseUrl).toBe('http://127.0.0.1:3999');
+    expect(adminJson.details).toBeUndefined();
+    expect(JSON.stringify(adminJson)).not.toContain('internal-secret-marker');
+    vi.restoreAllMocks();
+  });
+
+  it('C-M8: a live-eval configOverride that fails validateConfig is rejected in both modes', async () => {
+    const { POST } = await import('../../app/api/v1/evals/run/route');
+    const stamp = Date.now();
+    const operatorKey = core.createNamedApiKey({
+      label: 'hunt3 c-m8 operator',
+      userId: `hunt3-m8-${stamp}`,
+      role: 'operator',
+    }).key;
+    const badOverride = {
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434',
+          priority: 10,
+          models: ['llama3.2:latest'],
+        },
+      ],
+      // promptGuard.mode 'classifier' was removed (never implemented);
+      // validateConfig rejects it on the save path.
+      promptGuard: { mode: 'classifier' },
+    };
+    for (const mode of ['dry-run', 'live']) {
+      const res = await POST(
+        req('/api/v1/evals/run', { key: operatorKey, body: { mode, configOverride: badOverride } })
+      );
+      expect(res.status).toBe(400);
+      const body: any = await res.json();
+      expect(JSON.stringify(body)).toContain('configOverride failed validation');
+    }
+
+    // Negative control: a valid override runs (dry-run is pure explainRoute).
+    const goodOverride = {
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434',
+          priority: 10,
+          models: ['llama3.2:latest'],
+        },
+      ],
+    };
+    const ok = await POST(
+      req('/api/v1/evals/run', { key: operatorKey, body: { mode: 'dry-run', configOverride: goodOverride } })
+    );
+    expect(ok.status).toBe(200);
+  });
+
+  it('C-L1: metrics aggregates are scoped to the caller; only admin sees the global picture', async () => {
+    const { GET } = await import('../../app/api/v1/metrics/route');
+    const stamp = Date.now();
+    const otherUserId = `hunt3-l1-other-${stamp}`;
+    core.logRequest({
+      model: 'other-users-model-xyz',
+      upstream_id: 'local-ollama',
+      status: 200,
+      duration_ms: 10,
+      prompt_tokens: 5,
+      completion_tokens: 5,
+      cost_usd: 0.5,
+      user_id: otherUserId,
+    });
+    const chatKey = core.createNamedApiKey({
+      label: 'hunt3 c-l1 chat-only',
+      userId: `hunt3-l1-chat-${stamp}`,
+      role: 'operator',
+      scopes: ['chat'],
+    }).key;
+    const scoped = await GET(req('/api/v1/metrics', { key: chatKey, method: 'GET' }));
+    expect(scoped.status).toBe(200);
+    const scopedText = await scoped.text();
+    expect(scopedText).not.toContain('other-users-model-xyz');
+    expect(scopedText).not.toContain('eluvix_rolling_24h_spend_usd 0.500000');
+
+    // Negative control: the admin bearer still sees the global aggregates.
+    const admin = await GET(req('/api/v1/metrics', { bearer: 'hunt3-slice-c-admin-pw', method: 'GET' }));
+    expect(admin.status).toBe(200);
+    const adminText = await admin.text();
+    expect(adminText).toContain('other-users-model-xyz');
+    expect(adminText).toContain('eluvix_rolling_24h_spend_usd 0.500000');
+  });
+
+  it('C-L2: non-admin observability callers see no upstream endpoints or model lists', async () => {
+    const { GET } = await import('../../app/api/v1/observability/route');
+    const stamp = Date.now();
+    const operatorKey = core.createNamedApiKey({
+      label: 'hunt3 c-l2 operator',
+      userId: `hunt3-l2-${stamp}`,
+      role: 'operator',
+    }).key;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    try {
+      const res = await GET(req('/api/v1/observability', { key: operatorKey, method: 'GET' }));
+      expect(res.status).toBe(200);
+      const body: any = await res.json();
+      expect(Array.isArray(body.data.upstreams)).toBe(true);
+      expect(body.data.upstreams.length).toBeGreaterThan(0);
+      for (const u of body.data.upstreams) {
+        expect(u.endpoint).toBeUndefined();
+        expect(u.models).toBeUndefined();
+        expect(u.id).toBeDefined();
+        expect(u.status).toBeDefined();
+      }
+
+      // Negative control: the admin bearer still sees endpoints + models.
+      const admin = await GET(req('/api/v1/observability', { bearer: 'hunt3-slice-c-admin-pw', method: 'GET' }));
+      expect(admin.status).toBe(200);
+      const adminBody: any = await admin.json();
+      expect(adminBody.data.upstreams[0].endpoint).toBe('http://127.0.0.1:11434');
+      expect(adminBody.data.upstreams[0].models).toContain('llama3.2:latest');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('C-L3: docker routes refuse credential-less loopback and readonly keys; admin/operator pass the gate', async () => {
+    const { isAuthorizedAdminAsync, isAuthorizedAdmin } = await import('@/lib/api-helpers');
+    const stamp = Date.now();
+    const readonlyKey = core.createNamedApiKey({
+      label: 'hunt3 c-l3 readonly',
+      userId: `hunt3-l3-ro-${stamp}`,
+      role: 'readonly',
+    }).key;
+    const operatorKey = core.createNamedApiKey({
+      label: 'hunt3 c-l3 operator',
+      userId: `hunt3-l3-op-${stamp}`,
+      role: 'operator',
+    }).key;
+
+    // No credentials at all: refused (was: true on loopback in dev).
+    expect(
+      await isAuthorizedAdminAsync(
+        new Request('http://127.0.0.1:3588/api/v1/docker/logs', { headers: { host: '127.0.0.1:3588' } })
+      )
+    ).toBe(false);
+    expect(
+      isAuthorizedAdmin(new Request('http://127.0.0.1:3588/api/v1/docker/logs', { headers: { host: '127.0.0.1:3588' } }))
+    ).toBe(false);
+    // Readonly key: refused.
+    expect(
+      await isAuthorizedAdminAsync(req('/api/v1/docker/logs', { key: readonlyKey, method: 'GET' }))
+    ).toBe(false);
+    // Negative controls: admin bearer and operator key pass.
+    expect(
+      await isAuthorizedAdminAsync(req('/api/v1/docker/logs', { bearer: 'hunt3-slice-c-admin-pw', method: 'GET' }))
+    ).toBe(true);
+    expect(await isAuthorizedAdminAsync(req('/api/v1/docker/logs', { key: operatorKey, method: 'GET' }))).toBe(
+      true
+    );
+
+    // Route-level: credential-less loopback GET /api/v1/docker/logs is 401.
+    const { GET } = await import('../../app/api/v1/docker/logs/route');
+    const res = await GET(new Request('http://127.0.0.1:3588/api/v1/docker/logs?service=router'));
+    expect(res.status).toBe(401);
+  });
+
+  it('C-L5: unauthenticated auth/status callers do not learn allowLocalBreakGlass', async () => {
+    const { GET } = await import('../../app/api/auth/status/route');
+    const res = await GET(new Request('http://127.0.0.1:3588/api/auth/status'));
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.data.ldapEnabled).toBe(false);
+    expect(body.data.allowLocalBreakGlass).toBeUndefined();
+    expect(body.data.baseDn).toBeUndefined();
+  });
+
+  it('C-L6: layouts require identity, refuse readonly mutations, and no longer leak the layouts dir', async () => {
+    const layoutsRoute = await import('../../app/api/v1/layouts/route');
+    const slugRoute = await import('../../app/api/v1/layouts/[slug]/route');
+    const stamp = Date.now();
+    const readonlyKey = core.createNamedApiKey({
+      label: 'hunt3 c-l6 readonly',
+      userId: `hunt3-l6-ro-${stamp}`,
+      role: 'readonly',
+    }).key;
+    const operatorKey = core.createNamedApiKey({
+      label: 'hunt3 c-l6 operator',
+      userId: `hunt3-l6-op-${stamp}`,
+      role: 'operator',
+    }).key;
+
+    const unauth = await layoutsRoute.GET(new Request('http://127.0.0.1:3588/api/v1/layouts'));
+    expect(unauth.status).toBe(401);
+
+    const list = await layoutsRoute.GET(req('/api/v1/layouts', { key: operatorKey, method: 'GET' }));
+    expect(list.status).toBe(200);
+    const listJson: any = await list.json();
+    expect(listJson.layoutsDir).toBeUndefined();
+
+    const slug = `hunt3-c-l6-${stamp}`;
+    const denied = await layoutsRoute.POST(
+      req('/api/v1/layouts', {
+        key: readonlyKey,
+        body: { slug, name: 'hunt3', nodes: [], edges: [] },
+      })
+    );
+    expect(denied.status).toBe(403);
+
+    const created = await layoutsRoute.POST(
+      req('/api/v1/layouts', {
+        key: operatorKey,
+        body: { slug, name: 'hunt3', nodes: [], edges: [] },
+      })
+    );
+    expect(created.status).toBe(201);
+
+    const deniedDelete = await slugRoute.DELETE(
+      req(`/api/v1/layouts/${slug}`, { key: readonlyKey, method: 'DELETE' })
+    );
+    expect(deniedDelete.status).toBe(403);
+
+    const deleted = await slugRoute.DELETE(
+      req(`/api/v1/layouts/${slug}`, { key: operatorKey, method: 'DELETE' })
+    );
+    expect(deleted.status).toBe(200);
   });
 });

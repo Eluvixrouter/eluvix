@@ -1,10 +1,10 @@
 import { NextRequest } from "next/server";
 import { spawn } from "child_process";
 
-import { isValidContainerName, isAuthorizedAdmin } from '@/lib/api-helpers';
+import { isValidContainerName, isAuthorizedAdminAsync } from '@/lib/api-helpers';
 
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedAdmin(req)) {
+  if (!(await isAuthorizedAdminAsync(req))) {
     return new Response("Unauthorized", { status: 401 });
   }
 
