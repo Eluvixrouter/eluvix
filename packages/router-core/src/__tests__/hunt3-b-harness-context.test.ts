@@ -566,7 +566,24 @@ rl.on('line', (line) => {
       10000
     );
     expect(res.status).toBe(200);
-    const text = await res.text();
+    // The stream errors on the crash (no clean close); read it to the
+    // error and assert the partial output was never terminated with
+    // [DONE].
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    let errored = false;
+    for (;;) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) text += decoder.decode(value, { stream: true });
+      } catch {
+        errored = true;
+        break;
+      }
+    }
+    expect(errored).toBe(true);
     // Pre-fix: the stream ended with 'data: [DONE]', so the memory
     // tee's M-21 gate treated the partial turn as completed.
     expect(text.trimEnd().endsWith('data: [DONE]')).toBe(false);
