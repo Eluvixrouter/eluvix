@@ -438,18 +438,24 @@ docker compose --profile memory up -d
         },
         {
           title: 'Memory REST API (/api/v1/memory)',
-          body: 'Manage memories programmatically with search, add, commit, and clear operations:',
+          body: 'Manage memories programmatically: search (GET), save a note (POST with content), and commit a session transcript (POST with action "commit"); delete one item or clear all with DELETE (?id= or ?clearAll=true). Identity always comes from the caller\'s session or API key — a userId in the query string or body is ignored.',
           code: {
             language: 'bash',
-            content: `# Search user memory
-curl -k "https://127.0.0.1:3588/api/v1/memory?userId=alice&query=react%20state&limit=5" \\
+            content: `# Search user memory (limit defaults to 50, clamped to 1-200)
+curl -k "https://127.0.0.1:3588/api/v1/memory?query=react%20state&limit=50" \\
   -H "Authorization: Bearer <ADMIN_PASSWORD>"
 
-# Add a preference
+# Save a preference (no action field: any POST without action "commit" saves content)
 curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer <ADMIN_PASSWORD>" \\
-  -d '{"action": "add", "userId": "alice", "text": "Always use Tailwind CSS for styling"}'`,
+  -d '{"content": "Always use Tailwind CSS for styling"}'
+
+# Commit a session transcript to the active memory provider
+curl -k -X POST https://127.0.0.1:3588/api/v1/memory \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer <ADMIN_PASSWORD>" \\
+  -d '{"action": "commit", "sessionId": "sess_frontend_123"}'`,
           },
         },
       ],
