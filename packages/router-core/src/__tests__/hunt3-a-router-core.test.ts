@@ -461,3 +461,35 @@ describe('L-A3: MCP eluvix_memory_store must scan before writing memory', () => 
     expect(listMemoryItems(user)[0].content).not.toContain('alice@secret.io');
   });
 });
+
+// ---------------------------------------------------------------- L-A4
+
+describe("L-A4: paperclip usage queries must not skip the user filter for 'default' callers", () => {
+  it("'default' caller cannot read another user's run usage", async () => {
+    const { getDb, logRequest } = await import('../db.js');
+    const { getPaperclipUsageByCorrelation } = await import('../paperclip-store.js');
+    getDb();
+    const runId = `h3-la4-${Date.now()}`;
+    logRequest({
+      timestamp: new Date().toISOString(),
+      model: 'gpt-4o',
+      upstream_id: 'cloud-openai',
+      duration_ms: 120,
+      status: 200,
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      cost_usd: 0.005,
+      user_id: 'user-a',
+      correlation_id: runId,
+      pc_issue_id: 'iss-la4',
+      pc_agent_id: 'agt-la4',
+      pc_company_id: 'cmp-1',
+      pc_priority: 'high',
+    });
+    expect(getPaperclipUsageByCorrelation(runId, 'user-a').requests).toBe(1);
+    expect(getPaperclipUsageByCorrelation(runId, 'default').requests).toBe(0);
+    expect(getPaperclipUsageByCorrelation(runId, 'user-b').requests).toBe(0);
+    // The intended admin bypass still sees it.
+    expect(getPaperclipUsageByCorrelation(runId, 'admin').requests).toBe(1);
+  });
+});
