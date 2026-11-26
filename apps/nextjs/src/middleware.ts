@@ -51,6 +51,10 @@ export function isProtectedMutationPath(pathname: string): boolean {
     pathname.startsWith('/api/secrets') ||
     pathname.startsWith('/api/orchestrator') ||
     pathname.startsWith('/api/v1/chat') ||
+    pathname.startsWith('/api/v1/embeddings') ||
+    pathname.startsWith('/api/v1/audio') ||
+    pathname.startsWith('/api/v1/images') ||
+    pathname.startsWith('/api/v1/mcp') ||
     pathname.startsWith('/api/v1/config') ||
     pathname.startsWith('/api/v1/configurator') ||
     pathname.startsWith('/api/v1/detect-models') ||
