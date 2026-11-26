@@ -808,3 +808,60 @@ describe('L-A10: daily spend cap must be scoped per user', () => {
     expect(explB.steps.some((s) => s.stage === 'budget-guardrail')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------- L-A11
+
+describe('L-A11: parseModelDetails must report Ollama size in GB, not bytes', () => {
+  it('divides the data.data size by 1024^3 like the data.models branch', async () => {
+    const { parseModelDetails } = await import('../discovery.js');
+    const res = parseModelDetails({
+      data: [{ id: 'llama3', size: 4294967296 }],
+    });
+    expect(res.details).toHaveLength(1);
+    expect(res.details[0].size).toBe('4.0 GB');
+  });
+
+  it('matches the data.models branch for the same byte size (negative control)', async () => {
+    const { parseModelDetails } = await import('../discovery.js');
+    const fromData = parseModelDetails({ data: [{ id: 'm1', size: 2147483648 }] });
+    const fromModels = parseModelDetails({ models: [{ name: 'm1', size: 2147483648 }] });
+    expect(fromData.details[0].size).toBe('2.0 GB');
+    expect(fromModels.details[0].size).toBe('2.0 GB');
+  });
+});
+
+// ---------------------------------------------------------------- L-A12
+
+describe('L-A12: MCP transcribe must cap audio_base64', () => {
+  it('rejects an over-limit audio payload without calling the upstream', async () => {
+    const { handleEluvixMcpPayload, MAX_MCP_TRANSCRIBE_AUDIO_BYTES } = await import(
+      '../mcp-server.js'
+    );
+    expect(MAX_MCP_TRANSCRIBE_AUDIO_BYTES).toBe(25 * 1024 * 1024);
+    const config: any = {
+      strategy: 'cost-complexity',
+      upstreams: [stubUpstream('stub-m1')],
+    };
+    const router = new Eluvix(config);
+    let fetchCalls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      fetchCalls++;
+      return jsonUpstream('transcribed');
+    }) as unknown as typeof fetch;
+    const res: any = await handleEluvixMcpPayload(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'eluvix_transcribe_or_speak',
+          arguments: { mode: 'transcribe', audio_base64: 'A'.repeat(40_000_000) },
+        },
+      },
+      { router, config, scope: { userId: `h3-la12-${Date.now()}` }, hops: 0 }
+    );
+    const payload = JSON.parse(res.result.content[0].text);
+    expect(payload.error).toMatch(/exceeds the 25 MiB/i);
+    expect(fetchCalls).toBe(0);
+  });
+});

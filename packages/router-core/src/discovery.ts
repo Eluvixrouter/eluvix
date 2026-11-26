@@ -243,7 +243,10 @@ export function parseModelDetails(data: any): UpstreamDiscoveryResult {
         details.push({
           id,
           name: item?.name || id,
-          size: typeof item?.size === 'number' ? `${item.size} GB` : item?.size,
+          // Hunt-3 L-A11: Ollama reports size in bytes, not GB — divide
+          // by 1024^3 like the data.models branch below. (A 4 GB model
+          // used to display as ~4,000,000,000 GB.)
+          size: typeof item?.size === 'number' ? `${(item.size / (1024 * 1024 * 1024)).toFixed(1)} GB` : item?.size,
           recipe: item?.recipe,
           ownedBy: item?.owned_by,
           labels: Array.isArray(item?.labels) ? item.labels : undefined,

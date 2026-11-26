@@ -26,6 +26,16 @@ import { clampMaxTokens, clampTemperature } from './sampling.js';
 
 export const ELUVIX_MCP_PROTOCOL_VERSION = '2025-06-18';
 
+/**
+ * Maximum decoded audio payload for `eluvix_transcribe_or_speak`
+ * (hunt-3 L-A12): 25 MiB. The tool used to decode an unbounded base64
+ * argument into a buffer (memory exhaustion via a huge argument). The
+ * base64 length is checked before decoding so the allocation itself is
+ * bounded. Follows the clamp pattern of `top_k` (1–25) and
+ * `window_hours` (1–720) in the same file.
+ */
+export const MAX_MCP_TRANSCRIBE_AUDIO_BYTES = 25 * 1024 * 1024;
+
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
   id?: string | number | null;
@@ -517,7 +527,25 @@ async function executeMcpToolCall(
             true
           );
         }
+        // Hunt-3 L-A12: bound the audio payload before decoding it.
+        const maxB64Chars = Math.ceil((MAX_MCP_TRANSCRIBE_AUDIO_BYTES * 4) / 3) + 4;
+        if (b64.length > maxB64Chars) {
+          return mcpTextResult(
+            {
+              error: `Argument "audio_base64" exceeds the ${MAX_MCP_TRANSCRIBE_AUDIO_BYTES / (1024 * 1024)} MiB audio limit.`,
+            },
+            true
+          );
+        }
         const audioBytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        if (audioBytes.byteLength > MAX_MCP_TRANSCRIBE_AUDIO_BYTES) {
+          return mcpTextResult(
+            {
+              error: `Decoded audio exceeds the ${MAX_MCP_TRANSCRIBE_AUDIO_BYTES / (1024 * 1024)} MiB audio limit.`,
+            },
+            true
+          );
+        }
         const res = await ctx.router.routeAudioTranscription(
           {
             file: audioBytes,
