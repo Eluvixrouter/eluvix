@@ -46,6 +46,21 @@ describe('diffRouterConfigs', () => {
     expect(diff.added).toEqual([]);
   });
 
+it('flags a cascade-only change (hunt-3 C-L7: the modal renders this flag)', () => {
+    const current: RouterConfig = { egressPolicy: 'local-only', upstreams: [LEMONADE] };
+    const next: RouterConfig = {
+      egressPolicy: 'local-only',
+      upstreams: [LEMONADE],
+      cascade: { enabled: true, maxHops: 3 },
+    } as RouterConfig;
+    const diff = diffRouterConfigs(current, next);
+    expect(diff.cascadeChanged).toBe(true);
+    expect(diff.isEmpty).toBe(false);
+    const same = diffRouterConfigs(structuredClone(next), structuredClone(next));
+    expect(same.cascadeChanged).toBeUndefined();
+    expect(same.isEmpty).toBe(true);
+  });
+
   it('reports additions and field-level changes without leaking values', () => {
     const current: RouterConfig = { upstreams: [LEMONADE] };
     const next: RouterConfig = {

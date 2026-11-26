@@ -48,7 +48,8 @@ describe('Cloud LLM Providers Compilation Suite', () => {
     expect(result.bifrostYaml).toContain('api_base: https://api.billama.dev');
     expect(result.bifrostYaml).toContain('selected_model: "llama-3.3-70b"');
     expect(result.bifrostYaml).toContain('priority: 18');
-    expect(result.bifrostYaml).toContain('api_key: "billama_sk_test_12345"');
+    expect(result.bifrostYaml).toContain('api_key: "${ELUVIX_UPSTREAM_API_KEY_BILLAMA_1}"');
+    expect(result.bifrostYaml).not.toContain('billama_sk_test_12345');
   });
 
   it('compiles an openaiNode into a native openai-compatible upstream and Bifrost gateway', () => {
@@ -97,7 +98,9 @@ describe('Cloud LLM Providers Compilation Suite', () => {
     expect(result.bifrostYaml).toContain('api_base: https://api.openai.com/v1');
     expect(result.bifrostYaml).toContain('selected_model: "gpt-4o"');
     expect(result.bifrostYaml).toContain('priority: 12');
-    expect(result.bifrostYaml).toContain('api_key: "sk-proj-test_secret_key"');
+    // Hunt-3 C-M4: Bifrost YAML carries an env-var reference, never the raw key.
+    expect(result.bifrostYaml).toContain('api_key: "${ELUVIX_UPSTREAM_API_KEY_OPENAI_1}"');
+    expect(result.bifrostYaml).not.toContain('sk-proj-test_secret_key');
   });
 
   it('compiles a multi-tier hybrid architecture with Switchyard, Billama, and OpenAI', () => {
@@ -236,7 +239,9 @@ describe('Cloud LLM Providers Compilation Suite', () => {
     expect(result.bifrostYaml).toContain('api_base: https://api.anthropic.com/v1');
     expect(result.bifrostYaml).toContain('selected_model: "claude-3-7-sonnet"');
     expect(result.bifrostYaml).toContain('priority: 15');
-    expect(result.bifrostYaml).toContain('api_key: "sk-ant-api03-test_token_123"');
+    // Hunt-3 C-M4: Bifrost YAML carries an env-var reference, never the raw key.
+    expect(result.bifrostYaml).toContain('api_key: "${ELUVIX_UPSTREAM_API_KEY_CLAUDE_1}"');
+    expect(result.bifrostYaml).not.toContain('sk-ant-api03-test_token_123');
   });
 
   it('supports simultaneous routing to both OpenAI Direct (cloud) and OpenAI Codex (agent)', () => {

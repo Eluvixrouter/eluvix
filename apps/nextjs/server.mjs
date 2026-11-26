@@ -2,10 +2,22 @@ import { createServer as createHttpsServer } from 'node:https';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { parse, fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
 import next from 'next';
 import { getOrCreateLocalCert, getOrCreateAuthConfig } from '@eluvix/router-core';
+
+// The startup banner must print the Next.js version actually installed,
+// not a hardcoded string that rots (audit hunt-3 C-L9: it printed 14.2.35
+// while the app ships Next 16).
+const require = createRequire(import.meta.url);
+let nextVersion = 'unknown';
+try {
+  nextVersion = require('next/package.json').version;
+} catch {
+  // Banner only; a missing version must never block startup.
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Captured before getOrCreateAuthConfig() propagates the stored password
@@ -82,9 +94,22 @@ function isLoopbackBind(host) {
   return h === 'localhost' || h === '::1' || h.startsWith('127.');
 }
 const loopbackBind = isLoopbackBind(hostname);
-const httpsPort = parseInt(process.env.PORT || '3588', 10);
+// Parse a port env var. A non-numeric or out-of-range value used to flow
+// straight into listen() and crash startup with ERR_SOCKET_BAD_PORT
+// (audit hunt-3 C-L11); fall back to the default and say so loudly.
+function parsePortEnv(raw, fallback, name) {
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`[Eluvix] Invalid ${name}="${raw}": expected a TCP port 1-65535. Falling back to ${fallback}.`);
+    return fallback;
+  }
+  return n;
+}
+
+const httpsPort = parsePortEnv(process.env.PORT, 3588, 'PORT');
 // HTTP redirect port (default 3580, or customizable via HTTP_PORT)
-const httpPort = parseInt(process.env.HTTP_PORT || '3580', 10);
+const httpPort = parsePortEnv(process.env.HTTP_PORT, 3580, 'HTTP_PORT');
 
 if (!process.env.NEXTAUTH_URL) {
   process.env.NEXTAUTH_URL = `https://${hostname}:${httpsPort}`;
@@ -246,7 +271,7 @@ async function startServer() {
     gateServer.listen(currentPort, hostname, () => {
       process.env.NEXTAUTH_URL = `https://${hostname}:${currentPort}`;
 
-      console.log(`\n  ▲ Next.js 14.2.35`);
+      console.log(`\n  ▲ Next.js ${nextVersion}`);
       console.log(`  - Local:        https://${hostname}:${currentPort}`);
       console.log(`  - Dual Protocol: http://${hostname}:${currentPort} and https://${hostname}:${currentPort} share one port (only browser navigation upgrades to HTTPS; /api/ stays plain HTTP by design)`);
       console.log(`  - TLS:          Enabled (mkcert)`);
@@ -308,7 +333,7 @@ async function startServer() {
 
     server.listen(currentHttpPort, hostname, () => {
       process.env.NEXTAUTH_URL = `http://${hostname}:${currentHttpPort}`;
-      console.log(`\n  ▲ Next.js 14.2.35`);
+      console.log(`\n  ▲ Next.js ${nextVersion}`);
       console.log(`  - Local:        http://${hostname}:${currentHttpPort}`);
       console.log(`  - TLS:          Disabled (loopback bind only — plaintext HTTP is confined to this machine; install mkcert for TLS)`);
       console.log(`  - Admin Pass:   [not printed — stored in ${auth.authFile}]`);

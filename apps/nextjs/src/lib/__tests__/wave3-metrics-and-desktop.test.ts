@@ -118,6 +118,10 @@ describe('Wave 3 — Prometheus /api/v1/metrics, Spend Compiler Round-Trip & Des
       itl_ms: 18.5,
       kv_cache_kb: 256,
       cost_usd: 3.25,
+      // Hunt-3 C-L1: /api/v1/metrics scopes request_logs aggregates to the
+      // caller's userId, so the seeded telemetry must belong to the
+      // scraper key's user for the assertions below to hold.
+      user_id: 'prom_scraper',
     });
 
     // 4. Rejects unregistered elx_ key inside GET /api/v1/metrics
@@ -204,7 +208,9 @@ describe('Wave 3 — Prometheus /api/v1/metrics, Spend Compiler Round-Trip & Des
 
   it('provides DesktopRouterServer parity: default ramalama/comfyui upstreams, SSRF block on /api/detect-models, /v1/route-explain, and /v1/images/generations', async () => {
     const desktop = new DesktopRouterServer(0);
-    const token = desktop.getDesktopToken();
+    // Hunt-3 C-M9: detect-models is an admin route — the chat token gets
+    // 403 insufficient_scope before the SSRF check ever runs.
+    const token = desktop.getDesktopAdminToken();
     const cfg = desktop.getConfig();
 
     expect(cfg.upstreams.some((u) => u.id === 'ramalama' && u.type === 'ramalama')).toBe(true);

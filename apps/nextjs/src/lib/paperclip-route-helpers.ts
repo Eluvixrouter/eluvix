@@ -8,6 +8,7 @@ import {
   mergeEffectiveHops,
   parseVerifiedPaperclipRequestAsync,
   resolveBearerToken,
+  type ApiKeyScope,
   type PaperclipFleetUpstreamSummary,
   type PaperclipIntegrationConfig,
   type PaperclipKeyPolicy,
@@ -97,7 +98,11 @@ export type NamedChatKeyResolution =
       message: string;
     };
 
-export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
+export function resolveNamedScopedApiKey(
+  req: Request,
+  requiredScope: ApiKeyScope,
+  scopeLabel: string = requiredScope
+): NamedChatKeyResolution {
   const rawToken = extractApiTokenFromHeaders(req);
   if (!rawToken || !rawToken.startsWith('elx_')) {
     return {
@@ -107,7 +112,7 @@ export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
       hasPaperclipScope: false,
     };
   }
-  const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope: 'chat' });
+  const resolved = resolveBearerToken(rawToken, undefined, 'eluvix', { requiredScope });
   if (!resolved.valid) {
     const status =
       resolved.reason === 'insufficient-scope'
@@ -117,7 +122,7 @@ export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
           : 401;
     const message =
       resolved.reason === 'insufficient-scope'
-        ? 'API key lacks required "chat" scope.'
+        ? `API key lacks required "${scopeLabel}" scope.`
         : resolved.reason === 'expired'
           ? 'API key has expired.'
           : resolved.reason === 'rate-limited'
@@ -152,6 +157,10 @@ export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
       resolved.scopes.includes('paperclip'),
     paperclipPolicy: resolved.paperclip,
   };
+}
+
+export function resolveNamedChatApiKey(req: Request): NamedChatKeyResolution {
+  return resolveNamedScopedApiKey(req, 'chat');
 }
 
 export async function resolvePaperclipInferenceContext(opts: {

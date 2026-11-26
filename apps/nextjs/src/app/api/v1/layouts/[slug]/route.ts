@@ -8,8 +8,28 @@ import {
   getLastActiveLayoutSlug,
   LayoutError
 } from '@/lib/layouts';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Hunt-3 C-L6: layouts routes had no in-handler identity check. Any
+ * authenticated caller may read; only non-readonly callers may overwrite
+ * or delete shared global layouts.
+ */
+async function requireLayoutCaller(req: Request, mutate: boolean): Promise<NextResponse | null> {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.ok) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (mutate && caller.role === 'readonly') {
+    return NextResponse.json(
+      { error: 'Forbidden: read-only users cannot modify layouts' },
+      { status: 403 }
+    );
+  }
+  return null;
+}
 
 function errorResponse(err: any, fallback: string) {
   if (err instanceof LayoutError) {
@@ -18,7 +38,9 @@ function errorResponse(err: any, fallback: string) {
   return NextResponse.json({ error: err?.message || fallback }, { status: 500 });
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const denied = await requireLayoutCaller(req, false);
+  if (denied) return denied;
   try {
     const slug = sanitizeSlug((await params).slug);
     const layout = readLayout(slug);
@@ -32,6 +54,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug: s
 }
 
 export async function PUT(req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const denied = await requireLayoutCaller(req, true);
+  if (denied) return denied;
   let body: any;
   try {
     body = await req.json();
@@ -79,7 +103,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ slug: st
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ slug: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const denied = await requireLayoutCaller(req, true);
+  if (denied) return denied;
   try {
     const slug = sanitizeSlug((await params).slug);
     if (!deleteLayout(slug)) {

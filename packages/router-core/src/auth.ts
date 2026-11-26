@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getAppPaths } from './paths.js';
+import { getRollingSpendUsd } from './db.js';
 import { recordAuditEvent } from './audit.js';
 import type { PaperclipKeyPolicy } from './paperclip-context.js';
 import {
@@ -18,6 +19,7 @@ export type ApiKeyScope =
   | 'chat'
   | 'embeddings'
   | 'audio'
+  | 'images'
   | 'mcp'
   | 'evals:live'
   | 'export'
@@ -492,23 +494,32 @@ export function resolveBearerToken(
         };
       }
 
-      // 3. Check per-key daily spend cap
-      if (
-        typeof entry.maxDailySpendUsd === 'number' &&
-        entry.maxDailySpendUsd > 0 &&
-        typeof options?.currentDailySpendUsd === 'number' &&
-        options.currentDailySpendUsd >= entry.maxDailySpendUsd
-      ) {
-        return {
-          valid: false,
-          reason: 'budget-exceeded',
-          userId: entry.userId || 'default',
-          role: entry.role || 'operator',
-          origin: entry.origin || 'client',
-          keyId: entry.id,
-          keyLabel: entry.label,
-          maxDailySpendUsd: entry.maxDailySpendUsd,
-        };
+      // 3. Check per-key daily spend cap. Hunt-3 C-M2: the cap used to be
+      // dead code in production — it only fired when the caller passed
+      // currentDailySpendUsd, and no production caller did. The lookup now
+      // happens here, inside resolveBearerToken: an explicit
+      // currentDailySpendUsd still wins (tests / offline callers), otherwise
+      // the key owner's rolling 24h spend is read from the request logs.
+      // request_logs carry user_id, not key id, so the cap is enforced
+      // against the key owner's spend — keys sharing a userId share the
+      // budget, which fails closed rather than letting either key overspend.
+      if (typeof entry.maxDailySpendUsd === 'number' && entry.maxDailySpendUsd > 0) {
+        const currentDailySpendUsd =
+          typeof options?.currentDailySpendUsd === 'number'
+            ? options.currentDailySpendUsd
+            : getRollingSpendUsd(24, entry.userId || 'default');
+        if (currentDailySpendUsd >= entry.maxDailySpendUsd) {
+          return {
+            valid: false,
+            reason: 'budget-exceeded',
+            userId: entry.userId || 'default',
+            role: entry.role || 'operator',
+            origin: entry.origin || 'client',
+            keyId: entry.id,
+            keyLabel: entry.label,
+            maxDailySpendUsd: entry.maxDailySpendUsd,
+          };
+        }
       }
 
       // 4. Check per-key sliding-window RPM rate limit

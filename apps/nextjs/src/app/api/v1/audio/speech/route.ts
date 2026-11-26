@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { resolveBearerToken, type RequestScope } from '@eluvix/router-core';
+import { type RequestScope } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
-import { resolveSessionUserId, extractApiTokenFromHeaders } from '@/lib/caller-identity';
+import { resolveSessionUserId } from '@/lib/caller-identity';
+import { resolveNamedScopedApiKey } from '@/lib/paperclip-route-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,23 +15,23 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   let keyUserId: string | undefined;
   let keyOrigin: RequestScope['origin'] | undefined;
-  const rawToken = extractApiTokenFromHeaders(req);
-  if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken);
-    if (!resolved.valid) {
-      return NextResponse.json(
-        {
-          error: {
-            message: 'Incorrect API key provided.',
-            type: 'invalid_request_error',
-            code: 'invalid_api_key',
-          },
+  // Hunt-3 C-M1: the chat pattern (required scope + readonly 403).
+  const keyAuth = resolveNamedScopedApiKey(req, 'audio');
+  if (!keyAuth.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          message: keyAuth.message,
+          type: 'invalid_request_error',
+          code: keyAuth.code,
         },
-        { status: 401 }
-      );
-    }
-    keyUserId = resolved.userId;
-    keyOrigin = resolved.origin;
+      },
+      { status: keyAuth.status }
+    );
+  }
+  if (keyAuth.isApiKey) {
+    keyUserId = keyAuth.userId;
+    keyOrigin = keyAuth.origin;
   }
 
   let body: Record<string, any>;

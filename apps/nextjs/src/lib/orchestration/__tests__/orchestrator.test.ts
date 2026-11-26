@@ -111,7 +111,7 @@ describe('Orchestration Subsystem', () => {
     expect(written.upstreams.some((u: any) => u.type === 'antigravity')).toBe(false);
   });
 
-  it('should sync OpenCode models authoritatively and resolve the key from auth.json', async () => {
+  it('should sync OpenCode models authoritatively and mint a scoped key, never the admin password', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const os = await import('node:os');
@@ -121,6 +121,7 @@ describe('Orchestration Subsystem', () => {
     const openCodePath = path.join(root, 'opencode', 'opencode.json');
     fs.mkdirSync(eluvixDir, { recursive: true });
     fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
+    const { listNamedApiKeys } = await import('@eluvix/router-core');
     fs.writeFileSync(
       path.join(eluvixDir, 'auth.json'),
       JSON.stringify({ ['admin' + 'Password']: 'test-admin-pw' }),
@@ -157,9 +158,27 @@ describe('Orchestration Subsystem', () => {
     expect(Object.keys(written.provider.Eluvix.models).sort()).toEqual(['Qwen3.5-4B-MTP-GGUF', 'auto']);
     // A still-served model keeps its user customization
     expect(written.provider.Eluvix.models['Qwen3.5-4B-MTP-GGUF'].name).toBe('Custom Label');
-    // The key comes from auth.json — not the stale key, never the old hardcoded placeholder
-    expect(written.provider.Eluvix.options.apiKey).toBe('test-admin-pw');
+    // Hunt-3 C-M3: the key is a scoped `configurator:opencode` named key —
+    // never the admin password from auth.json, and never the stale key.
+    const writtenKey = written.provider.Eluvix.options.apiKey as string;
+    expect(writtenKey).toMatch(/^elx_[A-Za-z]{24,64}$/);
+    expect(writtenKey).not.toBe('test-admin-pw');
+    expect(writtenRaw).not.toContain('test-admin-pw');
     expect(writtenRaw).not.toContain('BPlOdDCF');
+    // A second sync reuses the still-valid scoped key instead of minting
+    // another one — exactly one live configurator:opencode key exists.
+    const scopedAfterFirst = listNamedApiKeys().filter((k) => k.label === 'configurator:opencode');
+    expect(scopedAfterFirst.length).toBe(1);
+    expect(scopedAfterFirst[0].keyPrefix).toBe(writtenKey.slice(0, 8));
+    orchestratorManager.syncOpenCodeConfig(
+      { upstreams: [{ id: 'lemonade-1', name: 'Lemonade Engine', type: 'lemonade', endpoint: 'http://localhost:13305', priority: 30, models: ['Qwen3.5-4B-MTP-GGUF'] }] },
+      eluvixDir,
+      openCodePath,
+      []
+    );
+    const rewritten = JSON.parse(fs.readFileSync(openCodePath, 'utf-8'));
+    expect(rewritten.provider.Eluvix.options.apiKey).toBe(writtenKey);
+    expect(listNamedApiKeys().filter((k) => k.label === 'configurator:opencode').length).toBe(1);
     // Unrelated providers are untouched
     expect(written.provider.OtherProvider.models['their-model'].name).toBe('Theirs');
   });

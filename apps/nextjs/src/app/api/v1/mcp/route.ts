@@ -79,17 +79,35 @@ export async function GET(req: Request) {
  * with strict two-layer `elx_` authentication and `x-eluvix-hops` loop prevention.
  */
 export async function POST(req: Request) {
-  const caller = await resolveCallerIdentity(req);
+  // Hunt-3 C-M1: MCP tool calls spend quota and can write memory — require
+  // the 'mcp' scope and refuse readonly keys, mirroring chat/completions.
+  const caller = await resolveCallerIdentity(req, { requiredScope: 'mcp' });
   if (!caller.ok) {
+    const status = caller.reason === 'insufficient-scope' ? 403 : 401;
     return NextResponse.json(
       {
         error: {
-          message: 'Incorrect or missing API key provided.',
+          message:
+            caller.reason === 'insufficient-scope'
+              ? 'API key lacks required "mcp" scope.'
+              : 'Incorrect or missing API key provided.',
           type: 'authentication_error',
-          code: 'invalid_api_key',
+          code: caller.reason === 'insufficient-scope' ? 'insufficient_scope' : 'invalid_api_key',
         },
       },
-      { status: 401 }
+      { status }
+    );
+  }
+  if (caller.role === 'readonly') {
+    return NextResponse.json(
+      {
+        error: {
+          message: 'Forbidden: read-only users cannot execute MCP tool calls.',
+          type: 'authentication_error',
+          code: 'forbidden_readonly_user',
+        },
+      },
+      { status: 403 }
     );
   }
 

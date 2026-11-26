@@ -72,11 +72,35 @@ async function probePaperclipHealth(req: Request, requestedBaseUrl?: string) {
     );
   }
 
+  // Hunt-3 C-M6: a caller-supplied baseUrl turns this endpoint into a
+  // loopback/LAN SSRF probe for the lowest-privilege key class. Only an
+  // admin (or an admin:config-scoped key, which resolved via the fallback
+  // above) may probe an arbitrary baseUrl; everyone else probes the
+  // configured paperclipBaseUrl only, and a supplied URL is refused
+  // outright rather than silently ignored.
+  const mayChooseTarget =
+    caller.role === 'admin' ||
+    (!callerPaperclip.ok && callerPaperclip.reason === 'insufficient-scope');
+  const supplied = typeof requestedBaseUrl === 'string' ? requestedBaseUrl.trim() : '';
+
   const cfg = getConfig();
-  const targetBaseUrl =
-    (typeof requestedBaseUrl === 'string' && requestedBaseUrl.trim()) ||
-    cfg.integrations?.paperclip?.paperclipBaseUrl ||
-    'http://127.0.0.1:3100';
+  const configuredBaseUrl =
+    cfg.integrations?.paperclip?.paperclipBaseUrl || 'http://127.0.0.1:3100';
+  // Supplying exactly the configured URL changes nothing, so it is allowed
+  // for any caller; supplying anything else is an admin-only probe target.
+  const suppliedIsConfigured =
+    supplied.replace(/\/$/, '') === configuredBaseUrl.replace(/\/$/, '');
+  if (supplied && !suppliedIsConfigured && !mayChooseTarget) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: 'Only admin callers may probe a custom Paperclip baseUrl.',
+      },
+      { status: 403 }
+    );
+  }
+
+  const targetBaseUrl = (mayChooseTarget && supplied) || configuredBaseUrl;
 
   const validated = await resolveAndValidatePaperclipBaseUrl(targetBaseUrl);
   if (!validated.ok) {
@@ -104,18 +128,14 @@ async function probePaperclipHealth(req: Request, requestedBaseUrl?: string) {
         error: 'Redirect responses from Paperclip health endpoint are blocked',
       });
     }
-    let details: unknown = null;
-    try {
-      details = await res.json();
-    } catch {
-      details = null;
-    }
+    // Hunt-3 C-M6: never echo the target's response body — the probe
+    // reports reachability only (status + latency). Echoing the JSON let
+    // a paperclip-scoped key exfiltrate arbitrary loopback/LAN payloads.
     return NextResponse.json({
       ok: res.ok,
       status: res.status,
       latencyMs,
       baseUrl: validated.normalizedBaseUrl,
-      details,
     });
   } catch (err: any) {
     return NextResponse.json({

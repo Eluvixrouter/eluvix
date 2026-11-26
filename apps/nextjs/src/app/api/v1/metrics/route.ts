@@ -4,9 +4,9 @@ import {
   getRollingSpendUsd,
   getVramArbiterStats,
   globalCircuitBreaker,
-  resolveBearerToken,
 } from '@eluvix/router-core';
 import { getConfig, getRouter } from '@/lib/router';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,29 +30,27 @@ function computePercentile(sortedValues: number[], p: number): number {
  * named `elx_` API keys, Admin Bearer token, or authenticated NextAuth session.
  */
 export async function GET(req: Request) {
-  const authHeader = req.headers.get('authorization');
-  const xApiKey = req.headers.get('x-api-key');
-  const rawToken =
-    authHeader && authHeader.startsWith('Bearer ')
-      ? authHeader.slice(7).trim()
-      : xApiKey && xApiKey.trim()
-        ? xApiKey.trim()
-        : null;
-  if (rawToken && rawToken.startsWith('elx_')) {
-    const resolved = resolveBearerToken(rawToken);
-    if (!resolved.valid) {
-      return NextResponse.json(
-        {
-          error: {
-            message: 'Incorrect API key provided.',
-            type: 'invalid_request_error',
-            code: 'invalid_api_key',
-          },
+  // Hunt-3 C-L1: metrics used to expose global aggregates to any valid
+  // elx_ key — a chat-only key's scrape contained other users' models and
+  // global spend. Resolve the caller and scope every request_logs-derived
+  // aggregate to their userId; only an admin sees the global picture.
+  // Config/hardware counters (upstreams, circuit breakers, VRAM) are not
+  // per-user data and stay global.
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          message: 'Incorrect API key provided.',
+          type: 'invalid_request_error',
+          code: 'invalid_api_key',
         },
-        { status: 401 }
-      );
-    }
+      },
+      { status: 401 }
+    );
   }
+  const isAdmin = caller.role === 'admin';
+  const scopeUserId = isAdmin ? undefined : caller.userId;
 
   try {
     const db = getDb();
@@ -60,37 +58,71 @@ export async function GET(req: Request) {
     const router = getRouter();
     const upstreams = router.getUpstreams();
 
-    const groupedRequests = db
-      .prepare(
-        `SELECT upstream_id, model, status, COUNT(*) AS cnt
-         FROM request_logs
-         GROUP BY upstream_id, model, status`
-      )
-      .all() as Array<{ upstream_id: string; model: string; status: number; cnt: number }>;
+    const groupedRequests = (
+      scopeUserId
+        ? db
+            .prepare(
+              `SELECT upstream_id, model, status, COUNT(*) AS cnt
+               FROM request_logs
+               WHERE user_id = ?
+               GROUP BY upstream_id, model, status`
+            )
+            .all(scopeUserId)
+        : db
+            .prepare(
+              `SELECT upstream_id, model, status, COUNT(*) AS cnt
+               FROM request_logs
+               GROUP BY upstream_id, model, status`
+            )
+            .all()
+    ) as Array<{ upstream_id: string; model: string; status: number; cnt: number }>;
 
-    const tokenTotals = (db
-      .prepare(
-        `SELECT
-           COALESCE(SUM(prompt_tokens), 0) AS prompt_total,
-           COALESCE(SUM(completion_tokens), 0) AS completion_total,
-           COALESCE(SUM(kv_cache_kb), 0) AS kv_kb_total
-         FROM request_logs`
-      )
-      .get() || { prompt_total: 0, completion_total: 0, kv_kb_total: 0 }) as {
+    const tokenTotals = (scopeUserId
+      ? db
+          .prepare(
+            `SELECT
+               COALESCE(SUM(prompt_tokens), 0) AS prompt_total,
+               COALESCE(SUM(completion_tokens), 0) AS completion_total,
+               COALESCE(SUM(kv_cache_kb), 0) AS kv_kb_total
+             FROM request_logs
+             WHERE user_id = ?`
+          )
+          .get(scopeUserId)
+      : db
+          .prepare(
+            `SELECT
+               COALESCE(SUM(prompt_tokens), 0) AS prompt_total,
+               COALESCE(SUM(completion_tokens), 0) AS completion_total,
+               COALESCE(SUM(kv_cache_kb), 0) AS kv_kb_total
+             FROM request_logs`
+          )
+          .get() || { prompt_total: 0, completion_total: 0, kv_kb_total: 0 }) as {
       prompt_total: number;
       completion_total: number;
       kv_kb_total: number;
     };
 
-    const recentSuccess = db
-      .prepare(
-        `SELECT duration_ms, ttft_ms, itl_ms
-         FROM request_logs
-         WHERE status >= 200 AND status < 400
-         ORDER BY id DESC
-         LIMIT 500`
-      )
-      .all() as Array<{ duration_ms: number | null; ttft_ms: number | null; itl_ms: number | null }>;
+    const recentSuccess = (
+      scopeUserId
+        ? db
+            .prepare(
+              `SELECT duration_ms, ttft_ms, itl_ms
+               FROM request_logs
+               WHERE user_id = ? AND status >= 200 AND status < 400
+               ORDER BY id DESC
+               LIMIT 500`
+            )
+            .all(scopeUserId)
+        : db
+            .prepare(
+              `SELECT duration_ms, ttft_ms, itl_ms
+               FROM request_logs
+               WHERE status >= 200 AND status < 400
+               ORDER BY id DESC
+               LIMIT 500`
+            )
+            .all()
+    ) as Array<{ duration_ms: number | null; ttft_ms: number | null; itl_ms: number | null }>;
 
     const durations = recentSuccess
       .map(r => Number(r.duration_ms || 0))
@@ -110,7 +142,7 @@ export async function GET(req: Request) {
     const ttftP99 = Math.round(computePercentile(ttfts, 99));
     const itlP50 = Number(computePercentile(itls, 50).toFixed(2));
 
-    const rolling24hSpendUsd = getRollingSpendUsd(24);
+    const rolling24hSpendUsd = getRollingSpendUsd(24, scopeUserId);
     const dailySpendCapUsd = Number(config.switchyard?.maxDailySpendUsd || 0);
     const kvCacheBytesTotal = Math.round(Number(tokenTotals.kv_kb_total || 0) * 1024);
 

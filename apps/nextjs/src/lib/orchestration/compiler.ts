@@ -1678,6 +1678,27 @@ function generateEluvixConfig(
   };
 }
 
+/**
+ * Hunt-3 C-M4: Bifrost YAML must never carry a raw upstream API key — the
+ * file is written into docker/runtime-config and mounted into containers.
+ * Emit an environment-variable reference the Bifrost runtime resolves
+ * (`${ELUVIX_UPSTREAM_API_KEY_<NODE_ID>}`); the deploy must export one
+ * variable per keyed upstream into the Bifrost container's environment.
+ * A key already stored as an `env:VAR` secret reference resolves to
+ * `${VAR}` directly.
+ */
+function bifrostApiKeyReference(nodeId: string, apiKey: string): string {
+  const trimmed = String(apiKey || '').trim();
+  if (trimmed.startsWith('env:')) {
+    const name = trimmed.slice(4).trim();
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return `\${${name}}`;
+  }
+  const safeId = String(nodeId || 'upstream')
+    .replace(/[^A-Za-z0-9_]/g, '_')
+    .toUpperCase();
+  return `\${ELUVIX_UPSTREAM_API_KEY_${safeId}}`;
+}
+
 function generateBifrostYaml(
   nodes: Node[],
   localEngines: Node[] = [],
@@ -1797,7 +1818,7 @@ function generateBifrostYaml(
     yaml += `    selected_model: "${selected}"\n`;
     yaml += `    priority: ${data.priority ?? 15}\n`;
     if (data.apiKey) {
-      yaml += `    api_key: "${data.apiKey}"\n`;
+      yaml += `    api_key: "${bifrostApiKeyReference(node.id, data.apiKey)}"\n`;
     }
     if (data.maxContextTokens) {
       yaml += `    max_context_tokens: ${data.maxContextTokens}\n`;
@@ -1820,7 +1841,7 @@ function generateBifrostYaml(
     yaml += `    selected_model: "${selected}"\n`;
     yaml += `    priority: ${data.priority ?? 10}\n`;
     if (data.apiKey) {
-      yaml += `    api_key: "${data.apiKey}"\n`;
+      yaml += `    api_key: "${bifrostApiKeyReference(node.id, data.apiKey)}"\n`;
     }
     if (data.maxContextTokens) {
       yaml += `    max_context_tokens: ${data.maxContextTokens}\n`;
@@ -1843,7 +1864,7 @@ function generateBifrostYaml(
     yaml += `    selected_model: "${selected}"\n`;
     yaml += `    priority: ${data.priority ?? 10}\n`;
     if (data.apiKey) {
-      yaml += `    api_key: "${data.apiKey}"\n`;
+      yaml += `    api_key: "${bifrostApiKeyReference(node.id, data.apiKey)}"\n`;
     }
     if (data.maxContextTokens) {
       yaml += `    max_context_tokens: ${data.maxContextTokens}\n`;

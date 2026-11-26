@@ -696,6 +696,14 @@ export class EluvixProviderAgent extends EventEmitter {
         throw new Error(urlError);
       }
     }
+    // Hunt-3 C-M10: the node token is no longer returned to clients, so
+    // the renderer sends no token when the operator leaves the field
+    // blank. An empty string here must mean "keep the stored token", not
+    // "clear it" — otherwise the first save after the redaction would
+    // silently wipe the marketplace credential.
+    if (updates.nodeToken === '') {
+      delete (updates as Record<string, unknown>).nodeToken;
+    }
     this.config = { ...this.config, ...updates };
     saveProviderSettings({
       server_url: this.config.serverUrl,

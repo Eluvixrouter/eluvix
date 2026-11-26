@@ -15,6 +15,25 @@ export default function PrivacyGuardNode({ id, data }: { id: string; data: any }
 
   const [redactionStyle, setRedactionStyle] = useState(data?.redactionStyle || 'token');
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.action !== undefined) setAction(data.action);
+      if (data?.detectPii?.apiKey !== undefined) setMaskApiKey(data.detectPii.apiKey !== false);
+      if (data?.detectPii?.ssn !== undefined) setMaskSsn(data.detectPii.ssn !== false);
+      if (data?.detectPii?.creditCard !== undefined) setMaskCreditCard(data.detectPii.creditCard !== false);
+      if (data?.detectPii?.email !== undefined) setMaskEmail(data.detectPii.email !== false);
+      if (data?.detectPii?.phone !== undefined) setMaskPhone(data.detectPii.phone !== false);
+      if (data?.detectPii?.ipAddress !== undefined) setMaskIpAddress(data.detectPii.ipAddress !== false);
+      if (data?.redactionStyle !== undefined) setRedactionStyle(data.redactionStyle);
+    }
+  }
+
   const dataRef = useRef(data);
   // Keep the ref current after render; reading/writing it during render is
   // what react-hooks/refs forbids. Callbacks below read the latest node data

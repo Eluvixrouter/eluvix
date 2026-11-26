@@ -356,6 +356,38 @@ export function redactConfigForApi(config: RouterConfig): any {
       hmacSigningConfigured: configured,
     };
   }
+  // Hunt-3 C-M5: the observability section carries live credentials too —
+  // langfuseSecretKey is the Basic-auth password for Langfuse export and
+  // headers.Authorization is a bearer token. Both reached operator and
+  // readonly sessions via GET /api/v1/config before this redaction.
+  if (clone.observability && typeof clone.observability === 'object') {
+    const obs: any = clone.observability;
+    if ('langfuseSecretKey' in obs) {
+      const { langfuseSecretKey, ...rest } = obs;
+      clone.observability = {
+        ...rest,
+        langfuseSecretKeyConfigured:
+          typeof langfuseSecretKey === 'string' && langfuseSecretKey.length > 0,
+      };
+    }
+    if (obs.headers && typeof obs.headers === 'object') {
+      const headers: Record<string, string> = { ...obs.headers };
+      // Authorization (any casing) is a credential; other headers (tenant
+      // ids, trace labels) are display-safe.
+      for (const name of Object.keys(headers)) {
+        if (name.toLowerCase() === 'authorization') {
+          delete headers[name];
+        }
+      }
+      clone.observability = {
+        ...clone.observability,
+        headers,
+        ...(Object.keys(obs.headers).some((n) => n.toLowerCase() === 'authorization')
+          ? { authorizationHeaderConfigured: true }
+          : {}),
+      };
+    }
+  }
   return clone;
 }
 
@@ -407,6 +439,32 @@ function preserveStoredApiKeys(newConfig: RouterConfig): void {
       }
     }
   }
+  // Hunt-3 C-M5 companion: redactConfigForApi strips the observability
+  // secrets, so a redacted config posted back must inherit the stored
+  // values — otherwise the first editor save after the redaction would
+  // silently drop the Langfuse secret and the Authorization header.
+  const incomingObs = (newConfig as any).observability;
+  const storedObs = (activeConfig as any).observability;
+  if (incomingObs && typeof incomingObs === 'object' && storedObs && typeof storedObs === 'object') {
+    if (typeof incomingObs.langfuseSecretKey !== 'string' || incomingObs.langfuseSecretKey.length === 0) {
+      if (typeof storedObs.langfuseSecretKey === 'string' && storedObs.langfuseSecretKey) {
+        incomingObs.langfuseSecretKey = storedObs.langfuseSecretKey;
+      } else if ('langfuseSecretKey' in incomingObs) {
+        delete incomingObs.langfuseSecretKey;
+      }
+    }
+    if (incomingObs.headers && typeof incomingObs.headers === 'object') {
+      const storedHeaders = storedObs.headers;
+      if (storedHeaders && typeof storedHeaders === 'object') {
+        for (const name of Object.keys(storedHeaders)) {
+          if (name.toLowerCase() === 'authorization') {
+            const hasAuth = Object.keys(incomingObs.headers).some((n) => n.toLowerCase() === 'authorization');
+            if (!hasAuth) incomingObs.headers[name] = storedHeaders[name];
+          }
+        }
+      }
+    }
+  }
 }
 
 export function saveConfig(newConfig: RouterConfig): RouterConfig {
@@ -427,14 +485,17 @@ export function saveConfig(newConfig: RouterConfig): RouterConfig {
   }
   preserveStoredApiKeys(newConfig);
   validateConfig(newConfig);
+  // Hunt-3 C-L4: construct the new router BEFORE swapping it in — the old
+  // order assigned activeConfig first, so a constructor throw left the
+  // config and the router inconsistent. And a persistence failure used to
+  // be swallowed (console.error only) while saveConfig returned the new
+  // config, so memory and disk silently diverged until a restart reverted
+  // the change. Both now fail loudly: the throw propagates to the caller.
+  const nextRouter = new Eluvix(newConfig);
   activeConfig = newConfig;
-  activeRouter = new Eluvix(activeConfig);
-  try {
-    const configFile = getConfigPath();
-    atomicWriteFile(configFile, JSON.stringify(activeConfig, null, 2));
-  } catch (err) {
-    console.error('[Eluvix] Failed to persist config file:', err);
-  }
+  activeRouter = nextRouter;
+  const configFile = getConfigPath();
+  atomicWriteFile(configFile, JSON.stringify(activeConfig, null, 2));
   return activeConfig;
 }
 

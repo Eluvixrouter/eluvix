@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getAppPaths } from '@eluvix/router-core';
-import { Layout, LayoutMetadata, LayoutsState } from './types';
+import { Layout, LayoutMetadata, LayoutsState, KNOWN_NODE_TYPES, validateLayoutNodeData } from './types';
 import { EXAMPLE_LAYOUTS } from './examples';
 
 const MAX_LAYOUT_SIZE_BYTES = 1024 * 1024; // 1MB limit
@@ -135,11 +135,26 @@ function validateGraph(nodes: unknown, edges: unknown): void {
       throw new LayoutError(`Duplicate node id "${n.id}"`, 'invalid_graph', 400);
     }
     ids.add(n.id);
+    // Hunt-3 C-L12: unknown node types and unvalidated node data used to
+    // sail through — a crafted layout could plant an Antigravity node with
+    // an arbitrary cliPath/endpoint that the compiler copies verbatim into
+    // an upstream. Validate the type against the registry and the data
+    // contents (cliPath/endpoint) before anything is persisted.
+    if (!KNOWN_NODE_TYPES.has(n.type)) {
+      throw new LayoutError(`Unknown node type "${n.type}"`, 'invalid_graph', 400);
+    }
+    const dataProblem = validateLayoutNodeData(n.data);
+    if (dataProblem) {
+      throw new LayoutError(`Node "${n.id}": ${dataProblem}`, 'invalid_graph', 400);
+    }
   }
   for (const e of edges as any[]) {
     if (!e || typeof e !== 'object' || typeof e.id !== 'string' ||
         typeof e.source !== 'string' || typeof e.target !== 'string') {
       throw new LayoutError('Each edge requires string "id", "source" and "target"', 'invalid_graph', 400);
+    }
+    if (!ids.has(e.source) || !ids.has(e.target)) {
+      throw new LayoutError(`Edge "${e.id}" references an unknown node`, 'invalid_graph', 400);
     }
   }
 }

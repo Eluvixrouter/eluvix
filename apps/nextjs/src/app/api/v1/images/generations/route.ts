@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { resolveBearerToken } from '@eluvix/router-core';
 import { getRouter, getProviderAgent } from '@/lib/router';
+import { resolveNamedScopedApiKey } from '@/lib/paperclip-route-helpers';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,25 +16,23 @@ export async function POST(req: Request) {
   // (router-core M7): without this every image turn lands under 'default'
   // and non-admin request history for images is always empty.
   let callerUserId: string | undefined;
-  const authHeader = req.headers.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.startsWith('elx_')) {
-      const resolved = resolveBearerToken(token);
-      if (!resolved.valid) {
-        return NextResponse.json(
-          {
-            error: {
-              message: 'Incorrect API key provided.',
-              type: 'invalid_request_error',
-              code: 'invalid_api_key',
-            },
-          },
-          { status: 401 }
-        );
-      }
-      callerUserId = resolved.userId;
-    }
+  // Hunt-3 C-M1: the chat pattern (required scope + readonly 403) — a
+  // readonly or wrongly-scoped named key must not spend image quota.
+  const keyAuth = resolveNamedScopedApiKey(req, 'images');
+  if (!keyAuth.ok) {
+    return NextResponse.json(
+      {
+        error: {
+          message: keyAuth.message,
+          type: 'invalid_request_error',
+          code: keyAuth.code,
+        },
+      },
+      { status: keyAuth.status }
+    );
+  }
+  if (keyAuth.isApiKey) {
+    callerUserId = keyAuth.userId;
   }
 
   let body: any;

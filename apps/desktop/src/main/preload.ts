@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('eluvixAPI', {
   // direct fetches to the local server can authenticate (audit C-1,
   // decision D1). The token is never served over the HTTP API itself.
   getDesktopToken: () => ipcRenderer.invoke('get-desktop-token'),
+  // Hunt-3 C-M9: the admin token, for admin-only fetches (config, provider,
+  // keys, export, webhooks). The chat token above stays least-privilege.
+  getDesktopAdminToken: () => ipcRenderer.invoke('get-desktop-admin-token'),
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: any) => ipcRenderer.invoke('save-config', config),
   detectModels: (params?: any) => ipcRenderer.invoke('detect-models', params),

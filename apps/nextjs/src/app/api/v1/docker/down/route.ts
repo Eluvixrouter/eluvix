@@ -3,7 +3,7 @@ import { exec } from 'child_process';
 import util from 'util';
 import path from 'path';
 import fs from 'fs';
-import { isValidContainerName, isAuthorizedAdmin } from '@/lib/api-helpers';
+import { isValidContainerName, isAuthorizedAdminAsync } from '@/lib/api-helpers';
 import {
   type DockerServiceCategory,
   getServicesByCategory
@@ -26,7 +26,7 @@ function getProjectRoot(): string {
 }
 
 export async function POST(req: Request) {
-  if (!isAuthorizedAdmin(req)) {
+  if (!(await isAuthorizedAdminAsync(req))) {
     return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   }
   try {

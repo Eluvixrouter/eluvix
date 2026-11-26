@@ -11,6 +11,21 @@ export default function ModelGatewayNode({ id, data }: { id: string; data: any }
   const cacheTtl = data?.cacheTtlSeconds ?? 3600;
   const [rateLimitRpm, setRateLimitRpm] = useState(data?.rateLimitRpm ?? 60);
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.primaryModel !== undefined) setPrimaryModel(data.primaryModel);
+      if (data?.fallbackStrategy !== undefined) setFallbackStrategy(data.fallbackStrategy);
+      if (data?.cacheEnabled !== undefined) setCacheEnabled(data.cacheEnabled !== false);
+      if (data?.rateLimitRpm !== undefined) setRateLimitRpm(data.rateLimitRpm);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // primaryModel uses an `=== undefined` guard because its text input can
