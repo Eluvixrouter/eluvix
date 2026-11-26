@@ -485,14 +485,17 @@ export function saveConfig(newConfig: RouterConfig): RouterConfig {
   }
   preserveStoredApiKeys(newConfig);
   validateConfig(newConfig);
+  // Hunt-3 C-L4: construct the new router BEFORE swapping it in — the old
+  // order assigned activeConfig first, so a constructor throw left the
+  // config and the router inconsistent. And a persistence failure used to
+  // be swallowed (console.error only) while saveConfig returned the new
+  // config, so memory and disk silently diverged until a restart reverted
+  // the change. Both now fail loudly: the throw propagates to the caller.
+  const nextRouter = new Eluvix(newConfig);
   activeConfig = newConfig;
-  activeRouter = new Eluvix(activeConfig);
-  try {
-    const configFile = getConfigPath();
-    atomicWriteFile(configFile, JSON.stringify(activeConfig, null, 2));
-  } catch (err) {
-    console.error('[Eluvix] Failed to persist config file:', err);
-  }
+  activeRouter = nextRouter;
+  const configFile = getConfigPath();
+  atomicWriteFile(configFile, JSON.stringify(activeConfig, null, 2));
   return activeConfig;
 }
 

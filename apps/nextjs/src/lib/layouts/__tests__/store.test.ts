@@ -172,12 +172,101 @@ describe('Layout Storage & Template System', () => {
     const bigNodes: any[] = [];
     // 400 nodes <= 500 max limit, but each has 3KB data => ~1.2MB payload > 1MB limit
     for (let i = 0; i < 400; i++) {
-      bigNodes.push({ id: `big-${i}`, type: 'test', position: { x: 0, y: 0 }, data: { padding: 'x'.repeat(3000) } });
+      bigNodes.push({ id: `big-${i}`, type: 'inputNode', position: { x: 0, y: 0 }, data: { padding: 'x'.repeat(3000) } });
     }
 
     expect(() => writeLayout('oversized-layout', { nodes: bigNodes, edges: [] })).toThrowError(
       expect.objectContaining({ code: 'payload_too_large' })
     );
+  });
+
+  it('hunt3 C-L12: rejects unknown node types and unvalidated node data', () => {
+    const base = { position: { x: 0, y: 0 }, edges: [] as any[] };
+    // Unknown node type
+    expect(() =>
+      writeLayout('bad-type', {
+        nodes: [{ id: 'n1', type: 'evilNode', ...base }],
+        edges: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+    // Arbitrary cliPath planted on an Antigravity node
+    expect(() =>
+      writeLayout('bad-clipath', {
+        nodes: [
+          {
+            id: 'agy-1',
+            type: 'antigravityNode',
+            position: { x: 0, y: 0 },
+            data: { cliPath: '/tmp/evil-agy', endpoint: 'cli://agy' },
+          },
+        ],
+        edges: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+    // Shell metacharacters in cliPath
+    expect(() =>
+      writeLayout('bad-clipath-shell', {
+        nodes: [
+          {
+            id: 'agy-1',
+            type: 'antigravityNode',
+            position: { x: 0, y: 0 },
+            data: { cliPath: 'agy; rm -rf /' },
+          },
+        ],
+        edges: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+    // Disallowed endpoint scheme / embedded credentials
+    expect(() =>
+      writeLayout('bad-endpoint', {
+        nodes: [
+          {
+            id: 'o1',
+            type: 'ollamaNode',
+            position: { x: 0, y: 0 },
+            data: { endpoint: 'gopher://example.com' },
+          },
+        ],
+        edges: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+    expect(() =>
+      writeLayout('bad-endpoint-creds', {
+        nodes: [
+          {
+            id: 'o1',
+            type: 'ollamaNode',
+            position: { x: 0, y: 0 },
+            data: { endpoint: 'http://user:pass@127.0.0.1:11434' },
+          },
+        ],
+        edges: [],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+    // Edge referencing a missing node
+    expect(() =>
+      writeLayout('bad-edge', {
+        nodes: [{ id: 'input-1', type: 'inputNode', position: { x: 0, y: 0 }, data: {} }],
+        edges: [{ id: 'e1', source: 'input-1', target: 'ghost' }],
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_graph' }));
+
+    // Negative controls: a well-formed Antigravity node and a plain
+    // http endpoint are accepted.
+    const ok = writeLayout('good-agy', {
+      nodes: [
+        {
+          id: 'agy-1',
+          type: 'antigravityNode',
+          position: { x: 0, y: 0 },
+          data: { cliPath: 'agy', endpoint: 'cli://agy' },
+        },
+        { id: 'o1', type: 'ollamaNode', position: { x: 10, y: 0 }, data: { endpoint: 'http://127.0.0.1:11434' } },
+      ],
+      edges: [{ id: 'e1', source: 'agy-1', target: 'o1' }],
+    });
+    expect(ok.nodes).toHaveLength(2);
   });
 
   it('tracks last active layout slug in state file', () => {

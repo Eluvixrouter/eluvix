@@ -79,7 +79,7 @@ import {
   type EvalSuite,
   type EvalSuiteResult,
 } from '@eluvix/router-core/eval-types';
-import { LayoutMetadata } from '@/lib/layouts/types';
+import { LayoutMetadata, KNOWN_NODE_TYPES, validateLayoutNodeData } from '@/lib/layouts/types';
 
 const DEFAULT_NODE_DATA: Record<string, any> = {
   memoryNode: {
@@ -1210,6 +1210,23 @@ export default function RoutingEditor() {
         const parsed = JSON.parse(event.target?.result as string);
         if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
           throw new Error('Imported JSON must contain "nodes" and "edges" arrays');
+        }
+        // Hunt-3 C-L12: validate the imported graph before it reaches the
+        // canvas — the compiler copies node data verbatim into upstreams,
+        // so a crafted file could otherwise plant an arbitrary cliPath or
+        // endpoint (or an unknown node type). The server re-validates on
+        // save; this stops the plant from ever compiling via Apply.
+        for (const n of parsed.nodes as any[]) {
+          if (!n || typeof n !== 'object' || typeof n.id !== 'string' || typeof n.type !== 'string') {
+            throw new Error('Each imported node requires string "id" and "type"');
+          }
+          if (!KNOWN_NODE_TYPES.has(n.type)) {
+            throw new Error(`Unknown node type "${n.type}"`);
+          }
+          const dataProblem = validateLayoutNodeData(n.data);
+          if (dataProblem) {
+            throw new Error(`Node "${n.id}": ${dataProblem}`);
+          }
         }
         const baseSlug = String(parsed.id || file.name.replace(/\.json$/i, ''))
           .toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'imported-layout';

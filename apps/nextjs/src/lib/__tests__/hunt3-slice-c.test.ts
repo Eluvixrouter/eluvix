@@ -627,13 +627,105 @@ describe('hunt3 slice C regressions: C-M6 health probe, C-M8 eval override, C-L1
     expect(created.status).toBe(201);
 
     const deniedDelete = await slugRoute.DELETE(
-      req(`/api/v1/layouts/${slug}`, { key: readonlyKey, method: 'DELETE' })
+      req(`/api/v1/layouts/${slug}`, { key: readonlyKey, method: 'DELETE' }),
+      { params: Promise.resolve({ slug }) }
     );
     expect(deniedDelete.status).toBe(403);
 
     const deleted = await slugRoute.DELETE(
-      req(`/api/v1/layouts/${slug}`, { key: operatorKey, method: 'DELETE' })
+      req(`/api/v1/layouts/${slug}`, { key: operatorKey, method: 'DELETE' }),
+      { params: Promise.resolve({ slug }) }
     );
     expect(deleted.status).toBe(200);
+  });
+});
+
+describe('hunt3 slice C regressions: C-L4 saveConfig failure, C-L15 deep merge', () => {
+  let core: typeof import('@eluvix/router-core');
+  let libRouter: typeof import('@/lib/router');
+
+  beforeAll(async () => {
+    process.env.ADMIN_PASSWORD = 'hunt3-slice-c-admin-pw';
+    delete process.env.LEGACY_ADMIN_PASSWORD;
+    core = await import('@eluvix/router-core');
+    libRouter = await import('@/lib/router');
+  }, 60000);
+
+  it('C-L4: saveConfig throws when persistence fails instead of silently diverging', () => {
+    const valid = {
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434',
+          priority: 10,
+          models: ['llama3.2:latest'],
+        },
+      ],
+    } as any;
+    // Point persistence at an unwritable location (the hunt's repro).
+    const prev = process.env.ELUVIX_CONFIG_PATH;
+    process.env.ELUVIX_CONFIG_PATH = '/proc/1/eluvix-hunt3-c-config.json';
+    try {
+      expect(() => libRouter.saveConfig(valid)).toThrow();
+    } finally {
+      if (prev === undefined) delete process.env.ELUVIX_CONFIG_PATH;
+      else process.env.ELUVIX_CONFIG_PATH = prev;
+    }
+    // Negative control: with a writable path the same config saves fine
+    // and memory + disk agree again.
+    const saved = libRouter.saveConfig(valid);
+    expect(saved.upstreams[0].id).toBe('local-ollama');
+  });
+
+  it('C-L15: config POST deep-merges nested sections instead of replacing them wholesale', async () => {
+    const { POST } = await import('../../app/api/v1/config/route');
+    const stamp = Date.now();
+    const operatorKey = core.createNamedApiKey({
+      label: 'hunt3 c-l15 operator',
+      userId: `hunt3-l15-${stamp}`,
+      role: 'operator',
+    }).key;
+    libRouter.saveConfig({
+      strategy: 'lowest-latency',
+      upstreams: [
+        {
+          id: 'local-ollama',
+          name: 'Local Ollama',
+          type: 'ollama',
+          endpoint: 'http://127.0.0.1:11434',
+          priority: 10,
+          models: ['llama3.2:latest'],
+        },
+      ],
+      memory: {
+        provider: 'builtin',
+        cloudMode: 'filter',
+        recallBudgetTokens: 1234,
+        writeBack: { enabled: true },
+      },
+    } as any);
+
+    const res = await POST(
+      new Request('http://localhost:3000/api/v1/config', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${operatorKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ memory: { provider: 'mem0' } }),
+      })
+    );
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    // The partial nested object changed only what it named.
+    expect(body.config.memory.provider).toBe('mem0');
+    expect(body.config.memory.cloudMode).toBe('filter');
+    expect(body.config.memory.recallBudgetTokens).toBe(1234);
+    expect(body.config.memory.writeBack.enabled).toBe(true);
+    // And the stored config agrees (not just the response).
+    expect(libRouter.getConfig().memory.cloudMode).toBe('filter');
   });
 });
