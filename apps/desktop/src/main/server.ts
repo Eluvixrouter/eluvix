@@ -32,6 +32,7 @@ import {
   saveStoredResponse,
   PAPERCLIP_VIRTUAL_MODELS,
   parseVerifiedPaperclipRequestAsync,
+  isLoopbackRemoteAddress,
   sanitizePaperclipIntegrationForDisplay,
   sanitizePaperclipKeyPolicyForDisplay,
   mergeEffectiveHops,
@@ -728,6 +729,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: (chatReq as any).paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -925,6 +927,7 @@ export class DesktopRouterServer extends EventEmitter {
         const explainPaperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: explainPcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveExplainHops = mergeEffectiveHops(baseExplainHops, explainPaperclip);
@@ -989,6 +992,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -1112,6 +1116,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -2217,7 +2222,11 @@ export class DesktopRouterServer extends EventEmitter {
       const pcUsageMatch = /^\/(?:api\/)?v1\/paperclip\/usage\/([^/]+)$/.exec(pathname);
       if (pcUsageMatch && req.method === 'GET') {
         const runId = decodeURIComponent(pcUsageMatch[1]);
-        const summary = getPaperclipUsageByCorrelation(runId, 'default');
+        // Hunt-3 L-A4: 'default' no longer bypasses the user filter in
+        // paperclip-store queries — the desktop daemon is the local
+        // operator (loopback-bound, token-authenticated), so it uses the
+        // intended 'admin' bypass for its usage view.
+        const summary = getPaperclipUsageByCorrelation(runId, 'admin');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
         return;

@@ -1,4 +1,4 @@
-import { applyPrivacyGuard, type PrivacyGuardConfig } from './guard.js';
+import { applyPrivacyGuard, checkPromptHeuristics, type PrivacyGuardConfig } from './guard.js';
 import { evaluateDraftQuality } from './cascade.js';
 import * as dbModule from './db.js';
 import type { DistillationPairRecord } from './db.js';
@@ -8,12 +8,24 @@ export interface ScrubbedDistillationPayload {
   chosenText: string;
   rejectedText: string;
   privacyScrubbed: boolean;
+  /** True when any part of the pair matched a prompt-injection pattern. */
+  injectionDetected: boolean;
+  injectionRule?: string;
 }
 
 /**
  * Scrubs PII, API keys, emails, SSNs, credit cards, phone numbers, and custom regexes
  * from prompt history, Teacher (`chosen`), and Student (`rejected`) completions BEFORE
  * persisting any distillation training row to SQLite.
+ *
+ * Hunt-3 L-A9: the pair is ALSO prompt-guard scanned (prompt, chosen,
+ * and rejected) at full strength. A teacher/verified output carrying
+ * injected instructions used to be persisted as SFT/DPO training data
+ * and later exported for fine-tuning — a training-data-poisoning
+ * channel. Injected pairs are flagged here and refused by
+ * captureDistillationPair; they are never silently stripped, because
+ * stripping an injection out of a chosen completion would leave a
+ * truncated, misleading training example behind.
  */
 export function scrubForDistillation(
   promptMessages: Array<Record<string, any>>,
@@ -53,11 +65,46 @@ export function scrubForDistillation(
       ? scrubbedRejectedRes.modifiedMessages[0].content
       : rejectedText || '';
 
+  // Hunt-3 L-A9: injection scan at full strength over every part of the
+  // pair (prompt + both completions). The scan runs on the PII-scrubbed
+  // text, matching what would actually be persisted.
+  let injectionDetected = false;
+  let injectionRule: string | undefined;
+  const scanTexts: Array<{ text: string; where: string }> = [
+    ...((scrubbedPromptRes.modifiedMessages as Array<Record<string, any>>) || []).map(
+      (m: any) => ({ text: typeof m?.content === 'string' ? m.content : '', where: 'prompt' })
+    ),
+    { text: safeChosen, where: 'chosen' },
+    { text: safeRejected, where: 'rejected' },
+  ];
+  for (const { text, where } of scanTexts) {
+    if (!text) continue;
+    const check = checkPromptHeuristics(text, {
+      enabled: true,
+      threshold: 0.8,
+      threatVectors: {
+        instructionOverride: true,
+        danJailbreak: true,
+        systemPromptLeak: true,
+        obfuscation: true,
+        fake_system_token_injection: true,
+        unconditional_compliance: true,
+      },
+    });
+    if (!check.passed) {
+      injectionDetected = true;
+      injectionRule = `${where}:${check.matchedRule || 'injection'}`;
+      break;
+    }
+  }
+
   return {
     promptMessages: (scrubbedPromptRes.modifiedMessages as Array<Record<string, any>>) || promptMessages,
     chosenText: safeChosen,
     rejectedText: safeRejected,
     privacyScrubbed: true,
+    injectionDetected,
+    ...(injectionRule ? { injectionRule } : {}),
   };
 }
 
@@ -139,6 +186,11 @@ export function captureDistillationPair(input: {
     input.rejectedText || '',
     input.privacyConfig
   );
+
+  // Hunt-3 L-A9: never persist an injection-carrying pair as training data.
+  if (scrubbed.injectionDetected) {
+    return null;
+  }
 
   const judgeScore =
     typeof input.judgeScoreOverride === 'number' && Number.isFinite(input.judgeScoreOverride)
