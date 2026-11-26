@@ -1,15 +1,29 @@
 import type { ChatMessage } from '../index.js';
-import type { ContextProvider, MemoryConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import {
+  assertProviderEndpointAllowed,
+  filterOwnedRecallItems,
+  type ContextProvider,
+  type MemoryConfig,
+  type RecallBlock,
+  type RecallResult,
+  type RequestScope
+} from './types.js';
 import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export class LightRagContextProvider implements ContextProvider {
   public readonly id = 'lightrag';
   private endpoint: string;
   private apiKey?: string;
+  private readonly timeoutMs: number;
 
   constructor(config?: MemoryConfig) {
     this.endpoint = (config?.endpoint || 'http://localhost:9621').replace(/\/+$/, '');
+    // Hunt-3 B-L5: refuse remote plaintext endpoints at construction,
+    // mirroring mem0/openviking.
+    assertProviderEndpointAllowed(this.endpoint, 'LightRag');
     this.apiKey = config?.apiKey;
+    // Hunt-3 B-M4: recall timeout, default 1500ms like mem0.
+    this.timeoutMs = config?.recallTimeoutMs ?? 1500;
   }
 
   private headers(): Record<string, string> {
@@ -19,11 +33,18 @@ export class LightRagContextProvider implements ContextProvider {
   }
 
   public async health(): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, { method: 'GET' });
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/health`, {
+        method: 'GET',
+        signal: controller.signal
+      });
       return res.ok;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -34,6 +55,17 @@ export class LightRagContextProvider implements ContextProvider {
     signal?: AbortSignal
   ): Promise<RecallResult> {
     const start = Date.now();
+    // Hunt-3 B-M4: time-box recall like mem0 (recallTimeoutMs, default
+    // 1500ms) and forward the caller signal into the same controller.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: 0 };
+      }
+      signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
     try {
       const res = await fetchWithSafeRedirects(`${this.endpoint}/query`, {
         method: 'POST',
@@ -44,7 +76,7 @@ export class LightRagContextProvider implements ContextProvider {
           only_need_context: true,
           user_id: scope.userId
         }),
-        signal
+        signal: controller.signal
       });
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
@@ -53,8 +85,15 @@ export class LightRagContextProvider implements ContextProvider {
       const blocks: RecallBlock[] = [];
       let usedTokens = 0;
 
-      if (Array.isArray(data?.results) && data.results.length > 0) {
-        for (const r of data.results) {
+      // Hunt-3 B-M3: never trust the server to have scoped the search
+      // to the requesting user (audit H-9, mirroring mem0). The
+      // synthesized `data.response` string below has no per-item owner
+      // to check and is left as-is.
+      const rawResults = Array.isArray(data?.results)
+        ? filterOwnedRecallItems(data.results, scope.userId || 'default', 'LightRagContextProvider')
+        : [];
+      if (rawResults.length > 0) {
+        for (const r of rawResults) {
           let text = String(r.text || r.content || '').trim();
           if (!text) continue;
           const est = Math.ceil(text.length / 4);
@@ -93,6 +132,8 @@ export class LightRagContextProvider implements ContextProvider {
       };
     } catch {
       return { blocks: [], tokenEstimate: 0, provider: this.id, latencyMs: Date.now() - start };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -100,6 +141,9 @@ export class LightRagContextProvider implements ContextProvider {
     turn: { user: ChatMessage; assistant: string },
     scope: RequestScope
   ): Promise<void> {
+    // Hunt-3 B-M4: time-box the write like mem0 (3s).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
     try {
       const userContent =
         typeof turn.user.content === 'string' ? turn.user.content : JSON.stringify(turn.user.content);
@@ -110,10 +154,13 @@ export class LightRagContextProvider implements ContextProvider {
         body: JSON.stringify({
           texts: [formatted],
           file_source: `session:${scope.userId}:${scope.sessionId || 'default'}`
-        })
+        }),
+        signal: controller.signal
       });
     } catch {
       // Non-fatal fire-and-forget
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

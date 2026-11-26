@@ -146,3 +146,51 @@ export interface ContextProvider {
   ): Promise<void>;
   commit?(scope: RequestScope): Promise<void>;
 }
+
+/**
+ * Audit H-9 ownership filter (hunt-3 B-M3), shared by the providers the
+ * T5 fix never reached (graphiti, lightrag, cognee, supermemory) and the
+ * knowledge backends. Mirrors the mem0/openviking inline filters: never
+ * trust the server to have scoped the search to the requesting user.
+ * Drop any entry whose owner field names someone else; entries with NO
+ * owner field are kept but counted as unattributed — the count is logged,
+ * never the content — because these response formats do not guarantee an
+ * owner field (the documented H-9 deviation).
+ *
+ * Owner fields checked: user_id / userId / owner / metadata.user_id,
+ * plus the per-provider scoping hints (group_id for graphiti,
+ * dataset / dataset_name for cognee).
+ */
+export function filterOwnedRecallItems<T extends Record<string, any>>(
+  items: T[],
+  requestingUser: string,
+  providerName: string
+): T[] {
+  let foreignDropped = 0;
+  let unattributed = 0;
+  const kept = items.filter((entry) => {
+    const owner =
+      entry?.user_id ??
+      entry?.userId ??
+      entry?.owner ??
+      entry?.group_id ??
+      entry?.dataset ??
+      entry?.dataset_name ??
+      entry?.metadata?.user_id;
+    if (owner != null && String(owner) !== '') {
+      if (String(owner) !== requestingUser) {
+        foreignDropped++;
+        return false;
+      }
+      return true;
+    }
+    unattributed++;
+    return true;
+  });
+  if (foreignDropped > 0 || unattributed > 0) {
+    console.log(
+      `[${providerName}] recall ownership filter: dropped ${foreignDropped} foreign-owned, kept ${unattributed} unattributed (no owner field) of ${items.length} returned`
+    );
+  }
+  return kept;
+}

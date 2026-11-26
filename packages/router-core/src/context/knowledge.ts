@@ -1,5 +1,12 @@
 import type { ChatMessage } from '../index.js';
-import type { KnowledgeBaseConfig, RecallBlock, RecallResult, RequestScope } from './types.js';
+import {
+  assertProviderEndpointAllowed,
+  filterOwnedRecallItems,
+  type KnowledgeBaseConfig,
+  type RecallBlock,
+  type RecallResult,
+  type RequestScope
+} from './types.js';
 import { fetchWithSafeRedirects } from '../fetch-policy.js';
 
 export const KNOWLEDGE_BLOCK_START = '<eluvix-knowledge>';
@@ -21,9 +28,35 @@ export async function recallKnowledgeBase(
   const maxTokens = Math.max(100, config.maxTokens ?? 1000);
   const collectionUri = config.collectionUri || 'viking://resources/repo-docs';
 
+  // Hunt-3 B-L5: refuse remote plaintext endpoints before any fetch,
+  // mirroring the memory providers. Validated here — not inside the
+  // try below — so a refused endpoint fails loudly instead of returning
+  // an empty recall that looks like "no results".
+  const endpoint =
+    backend === 'lightrag'
+      ? (config.endpoint || 'http://localhost:9621').replace(/\/+$/, '')
+      : (config.endpoint || 'http://localhost:1933').replace(/\/+$/, '');
+  if (backend !== 'local-fts') {
+    assertProviderEndpointAllowed(endpoint, 'KnowledgeBase');
+  }
+
+  // Hunt-3 B-M4: time-box recall like the memory providers
+  // (recallTimeoutMs, default 1500ms) and forward the caller signal
+  // into the same controller — a hung knowledge server must not stall
+  // the chat turn indefinitely.
+  const timeoutMs = config.recallTimeoutMs ?? 1500;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: 0 };
+    }
+    signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   try {
     if (backend === 'openviking-resources') {
-      const endpoint = (config.endpoint || 'http://localhost:1933').replace(/\/+$/, '');
       const res = await fetchWithSafeRedirects(`${endpoint}/api/v1/search/find`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -33,19 +66,23 @@ export async function recallKnowledgeBase(
           limit: topK,
           level: 'L1'
         }),
-        signal
+        signal: controller.signal
       });
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: Date.now() - start };
       }
       const data: any = await res.json();
-      const items: any[] = Array.isArray(data?.result?.memories)
+      const allItems: any[] = Array.isArray(data?.result?.memories)
         ? data.result.memories
         : Array.isArray(data?.memories)
         ? data.memories
         : Array.isArray(data?.results)
         ? data.results
         : [];
+      // Hunt-3 B-M3: never trust the server to have scoped the results
+      // to the requesting user (audit H-9, mirroring mem0). Entries
+      // with no owner field are kept (shared repo-docs carry none).
+      const items = filterOwnedRecallItems(allItems, scope.userId || 'default', 'KnowledgeBase');
       const blocks: RecallBlock[] = [];
       let used = 0;
       for (const item of items.slice(0, topK)) {
@@ -71,7 +108,6 @@ export async function recallKnowledgeBase(
     }
 
     if (backend === 'lightrag') {
-      const endpoint = (config.endpoint || 'http://localhost:9621').replace(/\/+$/, '');
       const res = await fetchWithSafeRedirects(`${endpoint}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,7 +116,7 @@ export async function recallKnowledgeBase(
           mode: 'hybrid',
           only_need_context: true
         }),
-        signal
+        signal: controller.signal
       });
       if (!res.ok) {
         return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: Date.now() - start };
@@ -88,8 +124,14 @@ export async function recallKnowledgeBase(
       const data: any = await res.json();
       const blocks: RecallBlock[] = [];
       let used = 0;
-      if (Array.isArray(data?.results)) {
-        for (const r of data.results.slice(0, topK)) {
+      // Hunt-3 B-M3: same ownership filter as the resources backend.
+      // The synthesized `data.response` string below has no per-item
+      // owner to check and is left as-is.
+      const rawResults = Array.isArray(data?.results)
+        ? filterOwnedRecallItems(data.results, scope.userId || 'default', 'KnowledgeBase')
+        : [];
+      if (rawResults.length > 0) {
+        for (const r of rawResults.slice(0, topK)) {
           let text = String(r.text || r.content || '').trim();
           if (!text) continue;
           const est = Math.ceil(text.length / 4);
@@ -122,6 +164,8 @@ export async function recallKnowledgeBase(
     return await builtin.recall(query, { ...scope, userId: collectionUri }, maxTokens);
   } catch {
     return { blocks: [], tokenEstimate: 0, provider: backend, latencyMs: Date.now() - start };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
