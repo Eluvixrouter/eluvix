@@ -80,6 +80,13 @@ jobs:
     - name: Build Desktop Application
       run: pnpm --filter @eluvix/desktop build
 
+    # Hunt-3 D-H3-01: the changelog once advertised four releases that
+    # never shipped (v1.1.0-v1.3.1) while omitting the four that did.
+    # Fail CI if the current VERSION has no entry in the releases page,
+    # so the next release cannot go out undocumented.
+    - name: Check releases page lists current version
+      run: grep -q "^## v$(cat VERSION) " apps/githubio/src/app/docs/releases/page.mdx
+
     - name: Build GitHub Pages Documentation Site
       run: pnpm --filter githubio build
       env:
