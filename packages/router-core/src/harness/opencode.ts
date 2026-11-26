@@ -832,6 +832,11 @@ export function createEluvixOpenCodeServer(
     (Array.isArray(defaultAutoApprove) && defaultAutoApprove.length > 0
       ? 'auto-approve-readonly'
       : 'never');
+  // Hunt-3 B-L4: permIds must be unique even when two messages land in
+  // the same millisecond — `perm_${Date.now()}_${i}` collided across
+  // messages (same ms, same tool index) and the second message
+  // overwrote the first message's pending permission record.
+  let permCounter = 0;
 
   const parseJsonBody = (req: http.IncomingMessage): Promise<any> =>
     new Promise((resolve, reject) => {
@@ -987,13 +992,39 @@ export function createEluvixOpenCodeServer(
         .map(p => p.text)
         .join('\n');
 
-      const policy: HarnessApprovalPolicy =
-        body?.eluvix?.approvalPolicy || defaultPolicy;
+      // Hunt-3 B-L4: a per-request body must never widen the server's
+      // approval posture beyond the operator-configured server defaults
+      // — any local process can call this loopback server, so the body
+      // is untrusted. The body may only NARROW: the effective policy is
+      // the requested one only when it is no more permissive than the
+      // default (an approving policy requested against a non-approving
+      // default is ignored), and the effective auto-approve list is the
+      // intersection of the requested list with the server defaults.
+      const APPROVING_POLICIES: ReadonlySet<HarnessApprovalPolicy> = new Set([
+        'auto-approve-readonly',
+        'read-only',
+      ]);
+      const KNOWN_POLICIES: ReadonlySet<string> = new Set([
+        'auto-deny',
+        'auto-approve-readonly',
+        'read-only',
+        'surface',
+        'never',
+      ]);
+      const requestedPolicy =
+        typeof body?.eluvix?.approvalPolicy === 'string' ? body.eluvix.approvalPolicy : undefined;
+      let policy: HarnessApprovalPolicy = defaultPolicy;
+      if (requestedPolicy && KNOWN_POLICIES.has(requestedPolicy)) {
+        const requestedApproves = APPROVING_POLICIES.has(requestedPolicy as HarnessApprovalPolicy);
+        if (!requestedApproves || APPROVING_POLICIES.has(defaultPolicy)) {
+          policy = requestedPolicy as HarnessApprovalPolicy;
+        }
+      }
+      const requestedList: string[] = Array.isArray(body?.eluvix?.autoApproveTools)
+        ? body.eluvix.autoApproveTools.filter((t: unknown): t is string => typeof t === 'string')
+        : [...defaultAutoApprove];
       const autoApproveList: string[] = Array.from(
-        new Set([
-          ...defaultAutoApprove,
-          ...(Array.isArray(body?.eluvix?.autoApproveTools) ? body.eluvix.autoApproveTools : []),
-        ])
+        new Set(requestedList.filter((t) => defaultAutoApprove.includes(t)))
       );
 
       const promptGuardCheck = inspectHarnessObservation(
@@ -1030,7 +1061,7 @@ export function createEluvixOpenCodeServer(
         const approved = permApproved || isToolAutoApproved(policy, [toolName], autoApproveList);
 
         if (!approved) {
-          const permId = `perm_${Date.now()}_${i}`;
+          const permId = `perm_${Date.now()}_${++permCounter}_${Math.random().toString(36).slice(2, 8)}`;
           session.permissions.set(permId, { id: permId, tool: toolName, status: 'pending' });
           outParts.push({
             type: 'permission_request',
