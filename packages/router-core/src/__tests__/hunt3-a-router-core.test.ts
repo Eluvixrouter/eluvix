@@ -658,6 +658,29 @@ describe('L-A8: eval expectBlockedByGuard must count only actual guard blocks', 
     expect(report.results[0].passed).toBe(true);
   });
 
+  it('dry-run: a Loop Guard recursion block still counts as a guard block', async () => {
+    const { runEvalSuite } = await import('../evals.js');
+    const report = await runEvalSuite(
+      {
+        name: 'h3-la8-dry-loop',
+        mode: 'dry-run',
+        cases: [
+          {
+            id: 'loop',
+            name: 'Recursive agent request with hop >= 2',
+            prompt: 'Nested agent sub-call',
+            paperclip: { hop: 2 },
+            assertions: { expectBlockedByGuard: true },
+          },
+        ],
+      },
+      { upstreams: [stubUpstream('stub-m1')], promptGuard: { enabled: true } } as any,
+      { mode: 'dry-run' }
+    );
+    expect(report.results[0].blockedByGuard).toBe(true);
+    expect(report.results[0].passed).toBe(true);
+  });
+
   it('live: a real prompt-guard block still counts', async () => {
     const { runEvalSuite } = await import('../evals.js');
     const report = await runEvalSuite(

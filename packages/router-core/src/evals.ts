@@ -113,9 +113,14 @@ function evaluateCaseDryRun(
 
   const routeOk = !explanation.error && Boolean(explanation.chosenUpstreamId);
   // Hunt-3 L-A8: an unroutable case is NOT a guard block. blockedByGuard
-  // is set only by the prompt/privacy guard checks above; conflating a
-  // failed route resolution with a block made expectBlockedByGuard pass
-  // when the upstream was just down or the route failed to resolve.
+  // is set only by the prompt/privacy guard checks above — except the
+  // Loop Guard: a hops>=2 recursion block IS a deliberate guard
+  // rejection (the starter suite's pc-hop-recursion-firewall case
+  // asserts it), so it still counts. A route that merely fails to
+  // resolve (no upstreams, no match) does not.
+  if (!routeOk && /routing loop|recursion/i.test(explanation.error || '')) {
+    blockedByGuard = true;
+  }
 
   const primaryId = explanation.chosenUpstreamId ?? null;
   const primaryUpstream = primaryId
@@ -313,19 +318,21 @@ async function evaluateCaseLive(
   // count (upstream down, 429 loop-limit, 422 schema failure all passed
   // expectBlockedByGuard). A real block is: a diverted response
   // (x-eluvix-guard: diverted), a guard error code/type in the body
-  // (prompt-injection 400, privacy-guard 400), or a thrown error whose
-  // message names a guard. Warn-mode (x-eluvix-guard: response-warn)
-  // is telemetry, not a block.
+  // (prompt-injection 400, privacy-guard 400), a Loop Guard recursion
+  // block (hops>=2, thrown as agent_recursion_limit_exceeded), or a
+  // thrown error whose message names a guard. Warn-mode
+  // (x-eluvix-guard: response-warn) is telemetry, not a block.
   const guardErrorCode = typeof parsed?.error?.code === 'string' ? parsed.error.code : '';
   const guardErrorType = typeof parsed?.error?.type === 'string' ? parsed.error.type : '';
   const blockedByGuard =
     res.headers.get('x-eluvix-guard') === 'diverted' ||
     guardErrorCode === 'content_policy_violation' ||
     guardErrorCode === 'privacy_guard_violation' ||
+    guardErrorCode === 'agent_recursion_limit_exceeded' ||
     guardErrorType === 'prompt_injection_violation' ||
     guardErrorType === 'privacy_guard_violation' ||
     (thrownError !== null &&
-      /prompt injection|content_policy|privacy guard|semantic guard/i.test(thrownError));
+      /prompt injection|content_policy|privacy guard|semantic guard|routing loop|recursion limit/i.test(thrownError));
   const servedUpstreamHdr = res.headers.get('x-eluvix-upstream');
   const stepTierHdr = res.headers.get('x-eluvix-step-tier') || dryExplanation.agentStepTier;
   const matchedUpstream =
