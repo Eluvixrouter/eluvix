@@ -235,7 +235,7 @@ describe('Wave 3 Next.js & Desktop Parity: /api/v1/mcp, /api/v1/evals/run & VRAM
         },
       ],
     });
-    const token = desktop.getDesktopToken();
+    const token = desktop.getDesktopAdminToken(); // Hunt-3 C-M9: /v1/mcp and /v1/evals/run are admin routes.
     const server = http.createServer((req, res) => (desktop as any).handleRequest(req, res));
     const port = await new Promise<number>((resolve, reject) => {
       server.once('error', reject);

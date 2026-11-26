@@ -208,7 +208,9 @@ describe('Wave 3 — Prometheus /api/v1/metrics, Spend Compiler Round-Trip & Des
 
   it('provides DesktopRouterServer parity: default ramalama/comfyui upstreams, SSRF block on /api/detect-models, /v1/route-explain, and /v1/images/generations', async () => {
     const desktop = new DesktopRouterServer(0);
-    const token = desktop.getDesktopToken();
+    // Hunt-3 C-M9: detect-models is an admin route — the chat token gets
+    // 403 insufficient_scope before the SSRF check ever runs.
+    const token = desktop.getDesktopAdminToken();
     const cfg = desktop.getConfig();
 
     expect(cfg.upstreams.some((u) => u.id === 'ramalama' && u.type === 'ramalama')).toBe(true);
