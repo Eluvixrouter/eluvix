@@ -13,6 +13,8 @@ export * from './openhands.js';
 export * from './mastra.js';
 export * from './letta.js';
 export * from './a2a.js';
+export * from './multica.js';
+export * from './multica-ingestion.js';
 
 import type { RequestScope } from '../context/types.js';
 import type { ChatRequest, UpstreamConfig } from '../index.js';
@@ -22,6 +24,8 @@ import { forwardAiderHarness } from './aider.js';
 import { forwardClineHarness } from './cline.js';
 import { forwardLettaHarness } from './letta.js';
 import { forwardMastraHarness } from './mastra.js';
+import { forwardMulticaHarness } from './multica.js';
+import type { MulticaIngestionDeps } from './multica-ingestion.js';
 import { forwardOpencodeHarness } from './opencode.js';
 import { forwardOpenHandsHarness } from './openhands.js';
 import { forwardPlandexHarness } from './plandex.js';
@@ -71,7 +75,8 @@ export async function forwardHarnessRequest(
   timeoutMs = 60000,
   clientSignal?: AbortSignal,
   scope?: RequestScope,
-  hops = 0
+  hops = 0,
+  ingestionDeps?: MulticaIngestionDeps
 ): Promise<Response> {
   const kind = resolveHarnessKind(upstream);
   if (kind === 'trueforge') {
@@ -106,6 +111,9 @@ export async function forwardHarnessRequest(
   }
   if (kind === 'a2a') {
     return forwardA2aHarness(upstream, request, timeoutMs, clientSignal, scope, hops);
+  }
+  if (kind === 'multica') {
+    return forwardMulticaHarness(upstream, request, timeoutMs, clientSignal, scope, hops, ingestionDeps);
   }
 
   // kind === 'hermes': OpenAI-compatible HTTP endpoint with origin + hop headers

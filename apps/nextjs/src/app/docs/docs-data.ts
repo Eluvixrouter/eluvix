@@ -272,13 +272,13 @@ pnpm dev`,
     category: 'Agent Ecosystem',
     icon: '🤖',
     badge: 'NEW',
-    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, OpenHands, Mastra, Letta, A2A, opencode, ACP, and Hermes, protected by the Loop Guard firewall.',
+    summary: 'Orchestrate stateful multi-turn agent loops with TrueForge, OpenHands, Mastra, Letta, A2A, opencode, ACP, Hermes, and Multica, protected by the Loop Guard firewall.',
     content: {
-      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates 8 Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
+      overview: 'Traditional LLM routers are purely reactive. Eluvix integrates 9 Agent Harnesses—runtimes that manage autonomous execution loops, tool calling, human-in-the-loop approvals, and sub-agent spawning.',
       subsections: [
         {
           title: 'Supported Agent Harnesses',
-          body: 'Eluvix provides native protocol adapters for 8 self-hosted and federated agent runtimes:',
+          body: 'Eluvix provides native protocol adapters for 9 self-hosted and federated agent runtimes:',
           table: {
             headers: ['Harness Kind', 'Default Port', 'Protocol & Primary Use Case'],
             rows: [
@@ -290,6 +290,7 @@ pnpm dev`,
               ['opencode', ':4096', 'Terminal-first autonomous coding server with session message streaming'],
               ['acp', 'stdio', 'Agent Client Protocol JSON-RPC 2.0 over stdio (e.g. Goose, Zed agents)'],
               ['hermes', ':8642', 'Lightweight OpenAI-compatible multi-step tool loop'],
+              ['multica', ':8080', 'Dispatch work to Multica agents: create issue, assign agent, poll runs, steer — CLI-spawn, review-gated'],
             ],
           },
         },
@@ -321,6 +322,46 @@ docker compose up -d trueforge openhands
         {
           title: 'Agent Client Protocol (ACP) & opencode',
           body: 'Eluvix supports opencode (autonomous coding agent server on port 4096) and the Agent Client Protocol (ACP), a standardized JSON-RPC 2.0 stdio protocol created by Zed and Anthropic for bidirectional editor-to-agent communication.',
+        },
+        {
+          title: 'Multica Harness — Dispatch Work to Multica Agents (Eluvix → Multica)',
+          body: 'Multica is a source-available team workspace where humans assign work to AI coding agents running on runtimes the operator controls. The Multica harness lets an Eluvix flow dispatch real coding work into a separately deployed Multica server (self-hosted, e.g. the VOW Helm install, or Multica Cloud) and read the run back: the adapter spawns the operator-installed `multica` CLI, creates an issue from the prompt, assigns the configured agent (assigning is what starts a run), polls `issue runs` until the run is terminal or the request deadline hits, then returns the run transcript as the chat completion. A run that is still working at the deadline is reported, never cancelled. Follow-up turns on a per-session harness steer the live run (`issue comment add --steer`) instead of opening a new issue. Auth is the calling user\'s own Multica PAT (`mul_…`) on the upstream apiKey (literal or SecretRef) — never a shared token, never a run-scoped `mat_…` token, which the adapter refuses. The server URL is validated with the SSRF guard (loopback/LAN carve-out) before it reaches the CLI, the CLI binary is resolved through the spawn gate (`MULTICA_CLI_BINARIES`), and the PAT is injected into the direct child\'s environment only. Dispatches are review-gated: issues are created with `--pr-auto-complete off`, so a human approves the result in Multica before anything merges. This integration is built on Multica (https://github.com/multica-ai/multica): Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it. Topology: the Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine; runs execute on the daemon machine, not in the cluster. Transcript ingestion (opt-in, `harness.multica.ingestTranscripts: true`, default off): a background poller (default every 60s, `ingestPollIntervalMs`, clamped 10s–10min) re-reads terminal runs for Eluvix-dispatched issues and remembers their messages — one L1 record per agent message, with the issue key, run id, and agent carried as provenance, under the dispatching user only. Runs still working at the dispatch deadline are what ingestion closes: their transcripts otherwise never reach memory. Every message passes the T5 response-guard scan first (prompt-guard + PII scrub): an injection detection blocks the record entirely, PII is redacted and the redacted form stored. User-role messages (dispatch prompts, steering) are skipped — they are already in memory via the standard write-back. Dedup is a per-run high-water mark (`run-messages --since`) plus a content-hash backstop, so re-ingesting a run writes nothing new.',
+          code: {
+            language: 'json',
+            content: `// Upstream entry (model: "harness/multica"). The apiKey is the
+// calling user's own Multica PAT — a SecretRef is preferred.
+{
+  "id": "multica-1",
+  "name": "Multica Dispatch",
+  "type": "harness",
+  "endpoint": "http://localhost:8080",
+  "models": ["harness/multica"],
+  "apiKey": "env:MULTICA_PAT",
+  "harness": {
+    "kind": "multica",
+    "agentId": "Backend Agent",
+    "approvals": "surface",
+    "sessionMode": "per-eluvix-session",
+    "multica": { "workspaceId": "ws-uuid", "project": "Core" }
+  }
+}
+
+// Opt-in transcript ingestion (default off): a background poller pulls
+// terminal runs for Eluvix-dispatched issues into memory. Every message
+// is T5-scan-gated (injection blocked, PII redacted) and stored under
+// the dispatching user only.
+//   "multica": { "ingestTranscripts": true, "ingestPollIntervalMs": 60000 }
+
+// CLI commands the adapter runs (operator-installed binary only):
+//   multica --server-url <url> [--workspace-id <id>] issue create
+//     --title "<first line>" --description-stdin --pr-auto-complete off
+//   multica issue assign MUL-123 --to "Backend Agent"
+//   multica issue runs MUL-123
+//   multica issue run-messages <run-id> --issue MUL-123
+//   multica issue comment add MUL-123 --content-stdin --steer <run-id>
+//   multica issue cancel-task <run-id> --issue MUL-123
+//   multica issue rerun-task <run-id> --issue MUL-123 [--fresh]`,
+          },
         },
         {
           title: 'Infinite Loop Guard & Hop Limiter (x-eluvix-hops)',
@@ -775,6 +816,7 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
               ['Continue.dev', '~/.continue/config.json', 'OpenAI-compatible provider block'],
               ['Cline / Roo-Code', 'VSCode Settings > Cline', 'Custom OpenAI Endpoint'],
               ['OpenHands', 'config.toml', 'LLM base_url configuration'],
+              ['OpenCode', '~/.config/opencode/opencode.json', 'OpenAI-compatible provider block (see Multica recipe below)'],
               ['Python OpenAI SDK', 'os.environ["OPENAI_BASE_URL"]', 'export OPENAI_BASE_URL="https://127.0.0.1:3588/api/v1"'],
             ],
           },
@@ -782,6 +824,33 @@ ramalama serve --port 8080 --network=none --selinux=true ollama://qwen2.5-coder:
         {
           title: 'Admin Scoped API Key & Paperclip Policy Manager (/api/v1/keys)',
           body: 'Use the Scoped Keys tab on /configurator (admin role required) to mint, list, and revoke elx_ API keys with custom scopes, rpm limits, maxDailySpendUsd caps, and Paperclip governance policies (companyIds allowlist, maxTier, maxCostPer1kUsd, and SecretRef hmacSecret bindings). Plaintext keys are shown once on creation and literal hmacSecret values are masked in listings.',
+        },
+        {
+          title: 'OpenCode as a Multica model backend (Eluvix → Multica)',
+          body: 'Multica drives agent CLIs on operator machines and never proxies model calls, so Eluvix serves as the model backend by pointing the daemon machine\'s OpenCode provider at Eluvix\'s OpenAI-compatible endpoint. The web gateway (port 3588) is the primary target: mint a chat-scoped elx_ key in the Scoped Keys tab above (set maxDailySpendUsd to cap what Multica runs can spend), then add the provider to ~/.config/opencode/opencode.json on the daemon machine. Use the exact model ids from GET /api/v1/models (or GET /v1/models on the desktop server); the example below uses qwen2.5-coder from the default local Ollama upstream. The desktop server is the alternative target: baseURL http://127.0.0.1:3001/v1 with the per-install desktop token from ~/.config/eluvix/desktop-token as the credential (send it as Authorization: Bearer or the x-eluvix-desktop-token header). Eluvix verifies the full path live: streaming SSE with tool_calls, non-streaming JSON, model discovery, and the 401 auth envelope, including SSE synthesis when an upstream answers JSON to a stream:true request. Topology: the Multica server runs in-cluster (VOW Helm install) while the Multica daemon and Eluvix run on the same operator machine, so OpenCode reaches Eluvix over loopback (http://127.0.0.1:3588/api/v1 — plain HTTP on loopback stays plain by design; use https://127.0.0.1:3588/api/v1 with NODE_EXTRA_CA_CERTS="$HOME/.local/share/mkcert/rootCA.pem" only if the tool requires TLS). This integration is built on Multica (https://github.com/multica-ai/multica): Eluvix talks to a separately deployed Multica over its API/CLI and never bundles, vendors, or embeds it.',
+          code: {
+            language: 'json',
+            content: `{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "eluvix": {
+      "name": "Eluvix",
+      "env": ["ELUVIX_API_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:3588/api/v1"
+      },
+      "models": {
+        "qwen2.5-coder": { "name": "Qwen 2.5 Coder (via Eluvix)" }
+      }
+    }
+  }
+}`,
+          },
+        },
+        {
+          title: 'Wiring the Eluvix provider into Multica',
+          body: 'Put the provider block above in opencode.json on the machine that runs the Multica daemon (usually ~/.config/opencode/opencode.json), and put the elx_ key in the daemon environment as ELUVIX_API_KEY — never in the JSON file or in git. Per-agent delivery uses Multica\'s own env injection: `multica agent create --custom-env-file ./eluvix-env.json` at creation, or `multica agent env set <agent-id> --custom-env-stdin < ./eluvix-env.json` afterwards (it replaces the whole set; keys set to `****` keep their existing value). The model is then referenced as `eluvix/qwen2.5-coder` when creating the agent or picking a model, and Multica\'s picker lists the Eluvix-served models from the runtime catalog. Runs execute on the daemon machine, not in the cluster — the cluster only hosts the Multica server. Verify with `opencode models Eluvix` on the daemon machine, then assign a Multica issue to the agent and watch the run tokens flow through Eluvix routing, cost caps, and observability.',
         },
       ],
     },

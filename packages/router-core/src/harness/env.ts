@@ -24,7 +24,18 @@ export const CHILD_ENV_DENYLIST: readonly string[] = [
   'ADMIN_PASSWORD',
   'NEXTAUTH_SECRET',
   'MEM0_API_KEY',
-  'OPENVIKING_API_KEY'
+  'OPENVIKING_API_KEY',
+  // MULTICA_TOKEN: the caller's Multica PAT (`mul_…`). The multica harness
+  // adapter is the ONE spawn site that may carry it, and it injects it by
+  // direct assignment onto the env object AFTER buildChildEnv returns —
+  // the denylist strips it everywhere else, including from any other
+  // harness spawn and from a polluted process.env. The token never lives
+  // in process.env: it is resolved per call from the upstream SecretRef
+  // and handed to exactly one direct child (the `multica` CLI, whose own
+  // documented auth is this variable). The CLI's issue commands spawn no
+  // subprocesses, so no grandchild of an Eluvix dispatch can inherit it
+  // through the CLI — see harness/multica.ts.
+  'MULTICA_TOKEN'
 ];
 
 export const SENSITIVE_CREDENTIALS_DENYLIST: readonly string[] = [

@@ -1107,6 +1107,8 @@ function generateEluvixConfig(
         ? 'http://localhost:8283'
         : kind === 'a2a'
         ? 'http://localhost:8900'
+        : kind === 'multica'
+        ? 'http://localhost:8080'
         : 'http://localhost:8642/v1';
     const tierInfo = tierMap.get(node.id) || {
       tierId: 'tier-3',
@@ -1203,6 +1205,27 @@ function generateEluvixConfig(
     const baseApproveTools = Array.isArray(node.data?.autoApproveTools)
       ? node.data.autoApproveTools.map((t: any) => String(t))
       : [];
+    // Multica dispatch options (kind 'multica' only): server override,
+    // workspace, CLI profile, project. Emitted only when set.
+    const multicaOpts =
+      node.data?.multica && typeof node.data.multica === 'object'
+        ? (node.data.multica as Record<string, any>)
+        : null;
+    const multicaCfg = multicaOpts
+      ? {
+          ...(multicaOpts.serverUrl ? { serverUrl: String(multicaOpts.serverUrl) } : {}),
+          ...(multicaOpts.workspaceId ? { workspaceId: String(multicaOpts.workspaceId) } : {}),
+          ...(multicaOpts.profile ? { profile: String(multicaOpts.profile) } : {}),
+          ...(multicaOpts.project ? { project: String(multicaOpts.project) } : {}),
+          ...(multicaOpts.pollIntervalMs !== undefined
+            ? { pollIntervalMs: Number(multicaOpts.pollIntervalMs) }
+            : {}),
+          ...(multicaOpts.ingestTranscripts === true ? { ingestTranscripts: true } : {}),
+          ...(multicaOpts.ingestPollIntervalMs !== undefined
+            ? { ingestPollIntervalMs: Number(multicaOpts.ingestPollIntervalMs) }
+            : {})
+        }
+      : null;
     const vcApproveTools = harnessAc
       ? resolveArtCraftAutoApproveTools(harnessAc)
       : harnessVc
@@ -1256,6 +1279,7 @@ function generateEluvixConfig(
         ...(typeof node.data?.deepIntegration === 'boolean' ? { deepIntegration: node.data.deepIntegration } : {}),
         ...(node.data?.architectModel ? { architectModel: String(node.data.architectModel) } : {}),
         ...(node.data?.editorModel ? { editorModel: String(node.data.editorModel) } : {}),
+        ...(multicaCfg ? { multica: multicaCfg } : {}),
         ...(node.data?.repoMapTokens !== undefined ? { repoMapTokens: Number(node.data.repoMapTokens) } : {}),
         ...(node.data?.editFormat ? { editFormat: String(node.data.editFormat) } : {}),
         ...(node.data?.aciProfile ? { aciProfile: String(node.data.aciProfile) } : {}),
@@ -1867,7 +1891,7 @@ function generateBifrostYaml(
 
   harnessNodes.forEach(node => {
     const kind = String(node.data?.kind || 'trueforge');
-    const endpoint = String(node.data?.endpoint || (kind === 'trueforge' ? 'http://localhost:8790' : kind === 'opencode' ? 'http://localhost:4096' : 'acp://goose'));
+    const endpoint = String(node.data?.endpoint || (kind === 'trueforge' ? 'http://localhost:8790' : kind === 'opencode' ? 'http://localhost:4096' : kind === 'multica' ? 'http://localhost:8080' : 'acp://goose'));
     const agentId = String(node.data?.agentId || 'default');
     const approvalPolicy = String(node.data?.approvals || node.data?.approvalPolicy || 'auto-approve-readonly');
     yaml += `  - id: ${node.id}\n`;

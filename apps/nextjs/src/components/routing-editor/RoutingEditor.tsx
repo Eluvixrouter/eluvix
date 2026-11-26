@@ -2211,7 +2211,7 @@ export default function RoutingEditor() {
                 <span className="text-lg">⚒️</span>
                 <div>
                   <div className="font-semibold text-xs text-amber-300 group-hover:text-amber-200">Agent Harness</div>
-                  <div className="text-[10px] text-gray-400 font-mono">TrueForge • OpenHands • Letta • A2A</div>
+                  <div className="text-[10px] text-gray-400 font-mono">TrueForge • OpenHands • Letta • A2A • Multica</div>
                 </div>
               </div>
               <span className="text-[10px] text-gray-400 group-hover:text-amber-400">+ Add</span>
@@ -4546,6 +4546,7 @@ export default function RoutingEditor() {
                             else if (next === 'mastra') updateData('endpoint', 'http://localhost:4111');
                             else if (next === 'letta') updateData('endpoint', 'http://localhost:8283');
                             else if (next === 'a2a') updateData('endpoint', 'http://localhost:8900');
+                            else if (next === 'multica') updateData('endpoint', 'http://localhost:8080');
                             else updateData('endpoint', 'http://localhost:8642/v1');
                           }}
                         >
@@ -4553,6 +4554,7 @@ export default function RoutingEditor() {
                           <option value="opencode">OpenCode Server (:4096)</option>
                           <option value="acp">ACP Agent (stdio)</option>
                           <option value="hermes">Hermes Agent (:8642)</option>
+                          <option value="multica">Multica — dispatch to Multica agents (:8080)</option>
                           <option value="openhands">OpenHands SWE Agent (:3000)</option>
                           <option value="mastra">Mastra TS Agent (:4111)</option>
                           <option value="letta">Letta Stateful Agent (:8283)</option>

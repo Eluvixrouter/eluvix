@@ -1014,8 +1014,43 @@ export class Eluvix {
    */
   private assistantTextSafeForMemory(text: string): boolean {
     const scan = scanResponseContent(text, {
-      promptGuard: { enabled: true, ...(this.config.promptGuard || {}) },
-      privacyGuard: this.config.privacyGuard
+      // Safety floor: the gate runs at full strength regardless of the
+      // configured guard modes (see the doc comment above). Operator config
+      // is spread first for its additive parts (banned phrases, custom PII
+      // patterns), then every knob that could weaken the scan is forced
+      // back on — a config must never be able to neuter this gate.
+      // (Note: `enabled` alone never disarmed it — both scanners ignore
+      // that flag — but all-threat-vectors-off, a raised threshold, or
+      // all-detectPii-off did. All three are closed here.)
+      promptGuard: {
+        ...(this.config.promptGuard || {}),
+        enabled: true,
+        threshold: Math.min(this.config.promptGuard?.threshold ?? 0.80, 0.80),
+        threatVectors: {
+          instructionOverride: true,
+          danJailbreak: true,
+          systemPromptLeak: true,
+          obfuscation: true,
+          fake_system_token_injection: true,
+          unconditional_compliance: true
+        }
+      },
+      privacyGuard: {
+        ...(this.config.privacyGuard || {}),
+        enabled: true,
+        // `action` is required by the type; the gate only needs detection,
+        // so default to the T5 warn-redact mode when the operator set none.
+        action: this.config.privacyGuard?.action ?? 'warn',
+        detectPii: {
+          ...(this.config.privacyGuard?.detectPii || {}),
+          email: true,
+          ssn: true,
+          creditCard: true,
+          apiKey: true,
+          ipAddress: true,
+          phone: true
+        }
+      }
     });
     if (scan.detected) {
       console.warn(
@@ -4861,7 +4896,21 @@ export class Eluvix {
     };
 
     if (upstream.type === 'harness' || upstream.endpoint.startsWith('acp://')) {
-      return forwardHarnessRequest(upstream, effectiveRequest, timeoutMs, clientSignal, scope, hops);
+      // Transcript ingestion deps (phase d): only the Multica adapter
+      // reads them. The memory switch here mirrors canRemember minus
+      // the last-user-query condition — ingestion has no user query.
+      return forwardHarnessRequest(upstream, effectiveRequest, timeoutMs, clientSignal, scope, hops, {
+        getUpstreams: () => this.config.upstreams,
+        getContextProvider: () => this.contextProvider ?? undefined,
+        canRemember: () =>
+          Boolean(this.contextProvider) &&
+          Boolean(this.config.memory?.enabled) &&
+          this.config.memory?.writeBack !== false,
+        guardConfig: {
+          promptGuard: this.config.promptGuard,
+          privacyGuard: this.config.privacyGuard
+        }
+      });
     }
 
     if (upstream.type === 'antigravity' || upstream.endpoint.startsWith('cli://')) {

@@ -309,7 +309,8 @@ function upstreamProblem(upstream: any): string | null {
         'aider',
         'swe-agent',
         'cline',
-        'plandex'
+        'plandex',
+        'multica'
       ].includes(upstream.harness.kind)
     ) {
       return `invalid harness.kind "${upstream.harness.kind}"`;

@@ -105,6 +105,62 @@ export interface RequestLog {
   streaming: boolean;
 }
 
+/**
+ * Synthesize standard OpenAI SSE chunks from a non-streaming JSON chat
+ * completion. Mirrors the Next.js gateway's synthesis: a streaming client
+ * (e.g. OpenCode's OpenAI-compatible provider) asked for `stream: true`
+ * but the upstream answered JSON, so the JSON is re-expressed as
+ * role/content/tool_calls/finish chunks plus `data: [DONE]` instead of
+ * returning `application/json` to a client parsing an event stream.
+ */
+export function synthesizeChatCompletionSse(
+  data: Record<string, any>,
+  fallbackModel: string,
+  opts: { includeUsageEstimate?: boolean; estimatedPromptTokens?: number; costUsd?: number } = {}
+): string {
+  const message = data?.choices?.[0]?.message ?? {};
+  const content = message.content ?? data?.choices?.[0]?.text ?? '';
+  const toolCalls = message.tool_calls;
+  const finishReason = data?.choices?.[0]?.finish_reason || (toolCalls ? 'tool_calls' : 'stop');
+  const model = data?.model || fallbackModel;
+  const id = data?.id || `chatcmpl-${Date.now()}`;
+  const created = data?.created || Math.floor(Date.now() / 1000);
+  const chunk = (delta: unknown, finish: string | null, usage?: unknown) => ({
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model,
+    choices: [{ index: 0, delta, finish_reason: finish }],
+    ...(usage ? { usage } : {}),
+  });
+  const parts: string[] = [];
+  parts.push(`data: ${JSON.stringify(chunk({ role: 'assistant', content: '' }, null))}\n\n`);
+  if (content) {
+    parts.push(`data: ${JSON.stringify(chunk({ content }, null))}\n\n`);
+  }
+  if (toolCalls) {
+    parts.push(`data: ${JSON.stringify(chunk({ tool_calls: toolCalls }, null))}\n\n`);
+  }
+  // Usage: prefer the upstream's own usage (cost already injected by the
+  // caller); otherwise estimate when the client asked for it, mirroring
+  // the gateway's stream_options.include_usage handling.
+  let usage =
+    data?.usage && typeof data.usage === 'object' ? { ...data.usage } : undefined;
+  if (!usage && opts.includeUsageEstimate) {
+    const estPrompt = opts.estimatedPromptTokens || 0;
+    const estCompletion = Math.max(1, Math.ceil(String(content || '').length / 4));
+    usage = {
+      prompt_tokens: estPrompt,
+      completion_tokens: estCompletion,
+      total_tokens: estPrompt + estCompletion,
+      ...(Number.isFinite(opts.costUsd) ? { cost: opts.costUsd } : {}),
+    };
+  }
+  parts.push(`data: ${JSON.stringify(chunk({}, finishReason, usage))}\n\n`);
+  parts.push('data: [DONE]\n\n');
+  return parts.join('');
+}
+
 export class DesktopRouterServer extends EventEmitter {
   private server: net.Server | http.Server | https.Server | null = null;
   private router: Eluvix;
@@ -464,6 +520,9 @@ export class DesktopRouterServer extends EventEmitter {
       if (pathname === '/v1/models' && req.method === 'GET') {
         const upstreams = this.router.getUpstreams();
         const modelSet = new Set<string>();
+        // 'auto' is a routable model id (the router resolves it to a
+        // concrete upstream model); list it like the Next.js gateway does.
+        modelSet.add('auto');
         for (const vm of PAPERCLIP_VIRTUAL_MODELS) {
           modelSet.add(vm.id);
         }
@@ -750,6 +809,27 @@ export class DesktopRouterServer extends EventEmitter {
               };
             }
           }
+        }
+        // Streaming was requested but the upstream answered JSON (not SSE):
+        // synthesize OpenAI SSE chunks instead of returning JSON to a
+        // client parsing an event stream. Error responses keep their JSON
+        // shape and status — synthesis is success-only.
+        if (chatReq.stream && upstreamResponse.ok) {
+          const sse = synthesizeChatCompletionSse(data, chatReq.model || 'auto', {
+            includeUsageEstimate:
+              chatReq.stream_options?.include_usage === true || Boolean(paperclip?.runId),
+            estimatedPromptTokens:
+              parseInt(upstreamResponse.headers.get('x-eluvix-tokens') || '0', 10) || 0,
+            costUsd: costHdr !== null ? Number(costHdr) : NaN,
+          });
+          res.writeHead(upstreamResponse.status, {
+            ...forwardedHeaders,
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+          });
+          res.end(sse);
+          return;
         }
         res.writeHead(upstreamResponse.status, {
           ...forwardedHeaders,

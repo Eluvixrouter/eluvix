@@ -1051,7 +1051,7 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                           <select
                             value={upstream.harness?.kind || 'trueforge'}
                             onChange={(e) => {
-                              const nextKind = e.target.value as 'trueforge' | 'opencode' | 'acp' | 'hermes';
+                              const nextKind = e.target.value as 'trueforge' | 'opencode' | 'acp' | 'hermes' | 'multica';
                               const updated = [...config.upstreams];
                               updated[index] = {
                                 ...upstream,
@@ -1068,6 +1068,7 @@ OPENAI_API_KEY="sk-eluvix-local"`}
                             <option value="opencode">OpenCode (:4096)</option>
                             <option value="acp">ACP Agent (stdio)</option>
                             <option value="hermes">Hermes (:8642)</option>
+                            <option value="multica">Multica — dispatch to Multica agents (:8080)</option>
                           </select>
                         </div>
                         <div>
