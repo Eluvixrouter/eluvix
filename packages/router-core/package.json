@@ -126,15 +126,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
-    "ldapts": "^9.2.0"
+    "better-sqlite3": "^13.2.0",
+    "ldapts": "^9.3.3"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^1.8.0",
+    "@anthropic-ai/sdk": "^1.14.0",
     "@types/autocannon": "^7.12.7",
     "@types/better-sqlite3": "^9.6.0",
     "autocannon": "^9.0.0",
-    "openai": "^7.55.0",
+    "openai": "^7.64.0",
     "typescript": "^5.0.0",
     "vitest": "^2.1.9"
   }
