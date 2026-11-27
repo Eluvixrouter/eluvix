@@ -159,6 +159,11 @@ export async function POST(req: Request) {
       keyPolicy: keyPaperclipPolicy,
       hasPaperclipScope: keyHasPaperclipScope,
       isAdminOrSessionCaller,
+      // Hunt-3 M-A2: App Router route handlers cannot observe the peer
+      // socket address, and x-forwarded-for is client-controlled, so no
+      // loopback determination is possible here — never claim loopback.
+      // Loopback trust in Next.js requires a scoped key or HMAC instead.
+      isLoopbackCaller: false,
       bodyPaperclip: body.paperclip,
     });
     const rawCompanyHdr = req?.headers?.get('x-paperclip-company-id')?.trim();

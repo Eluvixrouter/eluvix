@@ -48,6 +48,9 @@ export default function HarnessNode({ id, data }: { id: string; data: any }) {
         setApprovals(data.approvals || data.approvalPolicy);
       }
       if (data?.sessionMode !== undefined) setSessionMode(data.sessionMode);
+      if (data?.providerIsLocal !== undefined) {
+        setLocality(data.providerIsLocal === true ? 'local' : data.providerIsLocal === false ? 'remote' : 'auto');
+      }
       if (data?.command !== undefined) {
         setCommand(
           typeof data.command === 'string'

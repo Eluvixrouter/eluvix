@@ -109,7 +109,7 @@ Add this block to `~/.config/opencode/opencode.json` on the machine that runs th
 }
 ```
 
-The desktop server is the alternative target: `baseURL` `http://127.0.0.1:3001/v1` with the per-install desktop token from `~/.config/eluvix/desktop-token` as the credential (send it as `Authorization: Bearer` or the `x-eluvix-desktop-token` header). Both servers are verified for the OpenCode path: streaming SSE with `tool_calls`, non-streaming JSON, model discovery (`GET /v1/models` lists configured models plus `auto`), and the 401 auth envelope — including SSE synthesis when an upstream answers JSON to a `stream: true` request.
+The desktop server is the alternative target: `baseURL` `http://127.0.0.1:3001/v1` with the per-install chat desktop token from `~/.config/eluvix/desktop-token` as the credential (inference + read-only discovery only; admin routes need the admin token in `desktop-admin-token` — send it as `Authorization: Bearer` or the `x-eluvix-desktop-token` header). Both servers are verified for the OpenCode path: streaming SSE with `tool_calls`, non-streaming JSON, model discovery (`GET /v1/models` lists configured models plus `auto`), and the 401 auth envelope — including SSE synthesis when an upstream answers JSON to a `stream: true` request.
 
 ### 3. Wire the provider into Multica
 

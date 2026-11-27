@@ -67,6 +67,8 @@ scrape_configs:
 
 Exported metric families include `eluvix_requests_total`, `eluvix_tokens_total`, `eluvix_kv_cache_transferred_bytes_total`, `eluvix_latency_p50_ms`, `eluvix_ttft_p50_ms`, `eluvix_ttft_p99_ms`, `eluvix_itl_p50_ms`, `eluvix_rolling_24h_spend_usd`, `eluvix_daily_spend_cap_usd`, `eluvix_upstreams_configured_total`, `eluvix_circuit_breaker_open`, `eluvix_vram_evictions_total{engine="ollama|comfyui"}`, and `eluvix_vram_active_workloads{kind="llm|media"}`.
 
+Aggregates and rolling spend are scoped to the caller's `userId`; only admin callers see global aggregates. Non-admin callers listing upstreams see id, name, type, status, latency, and `modelsCount` only — no endpoints or model lists.
+
 ---
 
 ## Interactive Audit Feed & Tooling

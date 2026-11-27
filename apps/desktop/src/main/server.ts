@@ -13,8 +13,10 @@ import {
   TlsCertificates,
   EluvixProviderAgent,
   getProviderSettings,
+  redactProviderSettings,
   getProviderJobLogs,
   getOrCreateDesktopToken,
+  getOrCreateDesktopAdminToken,
   isTrustedLocalOrigin,
   isAllowedLocalHost,
   desktopTokenEquals,
@@ -32,6 +34,7 @@ import {
   saveStoredResponse,
   PAPERCLIP_VIRTUAL_MODELS,
   parseVerifiedPaperclipRequestAsync,
+  isLoopbackRemoteAddress,
   sanitizePaperclipIntegrationForDisplay,
   sanitizePaperclipKeyPolicyForDisplay,
   mergeEffectiveHops,
@@ -161,6 +164,115 @@ export function synthesizeChatCompletionSse(
   return parts.join('');
 }
 
+/**
+ * Hunt-3 C-M9: the chat token is least-privilege — it may only reach
+ * inference and read-only discovery routes. Everything else (config,
+ * provider, keys, export, webhooks, MCP, evals, audit, observability,
+ * prompts/files/batches, distillation votes, paperclip health/feedback,
+ * and any unknown route — fail closed) requires the admin token.
+ * The admin token works everywhere, so the renderer can keep using one
+ * token for its own UI calls while external tools get the chat token.
+ */
+export function isDesktopAdminRoute(pathname: string, method: string): boolean {
+  const m = method.toUpperCase();
+  // Health + model discovery.
+  if (m === 'GET' && (pathname === '/' || pathname === '/health' || pathname === '/v1/health')) return false;
+  if (m === 'GET' && pathname === '/v1/models') return false;
+  // Inference.
+  if (m === 'POST' && pathname === '/v1/chat/completions') return false;
+  if (m === 'POST' && (pathname === '/v1/images/generations' || pathname === '/api/v1/images/generations')) return false;
+  if (m === 'POST' && (pathname === '/v1/route-explain' || pathname === '/api/v1/route-explain')) return false;
+  if (m === 'POST' && (pathname === '/v1/messages' || pathname === '/api/v1/messages')) return false;
+  if (
+    (pathname === '/v1/responses' || pathname === '/api/v1/responses' ||
+      pathname.startsWith('/v1/responses/') || pathname.startsWith('/api/v1/responses/'))
+  ) return false;
+  if (m === 'POST' && (pathname === '/v1/embeddings' || pathname === '/api/v1/embeddings')) return false;
+  if (m === 'POST' && (pathname === '/v1/audio/transcriptions' || pathname === '/api/v1/audio/transcriptions')) return false;
+  if (m === 'POST' && (pathname === '/v1/audio/speech' || pathname === '/api/v1/audio/speech')) return false;
+  if (m === 'POST' && (pathname === '/v1/rerank' || pathname === '/api/v1/rerank')) return false;
+  // Read-only paperclip discovery + pure inference helpers.
+  if (m === 'GET' && (pathname === '/v1/paperclip/whoami' || pathname === '/api/v1/paperclip/whoami')) return false;
+  if (m === 'GET' && (pathname === '/v1/paperclip/capabilities' || pathname === '/api/v1/paperclip/capabilities')) return false;
+  if (m === 'POST' && (pathname === '/v1/paperclip/classify' || pathname === '/api/v1/paperclip/classify')) return false;
+  if (m === 'POST' && (pathname === '/v1/paperclip/recommend-assignee' || pathname === '/api/v1/paperclip/recommend-assignee')) return false;
+  return true;
+}
+
+/** Config validation failures are client errors (400), not server errors. */
+function badDesktopConfig(message: string): Error {
+  const e: any = new Error(message);
+  e.statusCode = 400;
+  e.code = 'invalid_config';
+  return e;
+}
+
+const DESKTOP_UPSTREAM_KNOWN_FIELDS = new Set([
+  'id', 'name', 'type', 'endpoint', 'apiKey', 'priority', 'models',
+  'costPer1kTokens', 'cacheReadMultiplier', 'cacheWriteMultiplier',
+  'tier', 'tierName', 'maxComplexityScore', 'maxContextTokens',
+  'maxParallelRequests', 'monthlySpendLimit', 'latencyMs', 'capabilities',
+  'antigravity', 'codex', 'claudeCode', 'organization', 'harness',
+  'disaggregation', 'confidential', 'quantization', 'fabric', 'crs',
+  'vectorcraft', 'artcraft', 'attentionKernel', 'ramalama', 'comfyui',
+  'audio', 'supportsStructuredOutputs',
+]);
+
+/**
+ * Hunt-3 C-L18: schema-validate one upstream entry from POST /api/config.
+ * Rejects null/non-object entries, missing identity fields, non-numeric
+ * priority, non-string model lists, and unknown fields (a typo'd key
+ * previously sailed into the stored config and broke compilation later).
+ */
+export function validateDesktopUpstreamEntry(entry: unknown): void {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw badDesktopConfig('each upstream must be an object');
+  }
+  const u = entry as Record<string, unknown>;
+  for (const field of ['id', 'name', 'type', 'endpoint']) {
+    if (typeof u[field] !== 'string' || !(u[field] as string).trim()) {
+      throw badDesktopConfig(`upstream.${field} must be a non-empty string`);
+    }
+  }
+  if (u.priority !== undefined && (typeof u.priority !== 'number' || !Number.isFinite(u.priority))) {
+    throw badDesktopConfig('upstream.priority must be a finite number');
+  }
+  if (u.models !== undefined) {
+    if (!Array.isArray(u.models) || u.models.some((m) => typeof m !== 'string')) {
+      throw badDesktopConfig('upstream.models must be an array of strings');
+    }
+  }
+  for (const key of Object.keys(u)) {
+    if (!DESKTOP_UPSTREAM_KNOWN_FIELDS.has(key)) {
+      throw badDesktopConfig(`upstream has unknown field "${key}"`);
+    }
+  }
+}
+
+function isDesktopPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Hunt-3 C-L18: deep-merge a partial config over the current one. Plain
+ * objects merge key-by-key (so a partial nested section keeps stored
+ * sub-keys); arrays and scalars replace wholesale.
+ */
+export function deepMergeDesktopConfig(
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (isDesktopPlainObject(value) && isDesktopPlainObject(out[key])) {
+      out[key] = deepMergeDesktopConfig(out[key], value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export class DesktopRouterServer extends EventEmitter {
   private server: net.Server | http.Server | https.Server | null = null;
   private router: Eluvix;
@@ -171,6 +283,8 @@ export class DesktopRouterServer extends EventEmitter {
   private isHttps: boolean = false;
   private desktopToken: string;
   private desktopTokenFile: string;
+  private desktopAdminToken: string;
+  private desktopAdminTokenFile: string;
 
   constructor(port = 3001) {
     super();
@@ -184,6 +298,14 @@ export class DesktopRouterServer extends EventEmitter {
     const desktopToken = getOrCreateDesktopToken();
     this.desktopToken = desktopToken.token;
     this.desktopTokenFile = desktopToken.tokenFile;
+
+    // Hunt-3 C-M9: the admin token is a second per-install token with the
+    // same 0o600 discipline. The chat token above is least-privilege
+    // (inference + read-only discovery); the admin token is required for
+    // config, provider, keys, export, webhook, MCP and eval routes.
+    const desktopAdminToken = getOrCreateDesktopAdminToken();
+    this.desktopAdminToken = desktopAdminToken.token;
+    this.desktopAdminTokenFile = desktopAdminToken.tokenFile;
 
     // Default configuration with Billama as a first-class citizen alongside local engines
     this.config = {
@@ -318,6 +440,16 @@ export class DesktopRouterServer extends EventEmitter {
     return this.desktopTokenFile;
   }
 
+  /** The per-install ADMIN token (hunt-3 C-M9). Main-process/IPC use only — never routed. */
+  public getDesktopAdminToken(): string {
+    return this.desktopAdminToken;
+  }
+
+  /** Path of the 0o600 admin token file, for the startup banner. */
+  public getDesktopAdminTokenFile(): string {
+    return this.desktopAdminTokenFile;
+  }
+
   public async getProviderStatus() {
     return await this.providerAgent.getStatus();
   }
@@ -328,7 +460,9 @@ export class DesktopRouterServer extends EventEmitter {
 
   public updateProviderConfig(config: any) {
     this.providerAgent.updateConfig(config);
-    return getProviderSettings();
+    // Hunt-3 C-M10: the node token is a bearer credential for the
+    // marketplace — never return its value to an HTTP client.
+    return redactProviderSettings(getProviderSettings());
   }
 
   public async runProviderBenchmark(model?: string) {
@@ -340,13 +474,28 @@ export class DesktopRouterServer extends EventEmitter {
   }
 
   public updateConfig(newConfig: Partial<RouterConfig>) {
-    if (newConfig.upstreams && !Array.isArray(newConfig.upstreams)) {
-      throw new Error('upstreams must be an array');
+    if (!newConfig || typeof newConfig !== 'object' || Array.isArray(newConfig)) {
+      throw badDesktopConfig('config must be an object');
+    }
+    if (newConfig.upstreams !== undefined) {
+      if (!Array.isArray(newConfig.upstreams)) {
+        throw badDesktopConfig('upstreams must be an array');
+      }
+      // Hunt-3 C-L18: validate each upstream entry — a bare [null] used to
+      // be stored and then crash every later config read/compile.
+      for (const u of newConfig.upstreams as unknown[]) {
+        validateDesktopUpstreamEntry(u);
+      }
     }
     // Construct first, then swap: if the Eluvix constructor throws on the
     // merged config, the old config/router pair stays intact instead of
     // leaving config updated while the router still serves the old one.
-    const nextConfig = { ...this.config, ...newConfig };
+    // Hunt-3 C-L18: deep-merge nested sections — a partial {memory: {...}}
+    // used to replace the whole stored section wholesale.
+    const nextConfig = deepMergeDesktopConfig(
+      this.config as unknown as Record<string, unknown>,
+      newConfig as unknown as Record<string, unknown>
+    ) as unknown as RouterConfig;
     const nextRouter = new Eluvix(nextConfig);
     this.config = nextConfig;
     this.router = nextRouter;
@@ -384,6 +533,7 @@ export class DesktopRouterServer extends EventEmitter {
         const protocol = this.isHttps ? 'https' : 'http';
         console.log(`[Eluvix Desktop] Server listening on ${protocol}://127.0.0.1:${this.port} (TLS: ${this.isHttps ? 'Enabled via mkcert' : 'Disabled'})`);
         console.log(`[Eluvix Desktop] API token file: ${this.desktopTokenFile} (send it as the '${DESKTOP_TOKEN_HEADER}' header or 'Authorization: Bearer <token>')`);
+        console.log(`[Eluvix Desktop] Admin token file: ${this.desktopAdminTokenFile} (chat token cannot use admin routes; the admin token works everywhere)`);
         resolve(this.port);
       };
 
@@ -490,9 +640,13 @@ export class DesktopRouterServer extends EventEmitter {
 
     // 4. Token auth on EVERY route (audit C-1/H-12/H-13): no route —
     //    config, provider, detect-models, chat, health — is reachable
-    //    without the per-install token.
+    //    without a per-install token. Hunt-3 C-M9: either token passes
+    //    this step; the chat token is then scoped to inference routes
+    //    below, and the admin token works everywhere.
     const providedToken = extractDesktopToken(req.headers);
-    if (!providedToken || !desktopTokenEquals(providedToken, this.desktopToken)) {
+    const isAdminToken = !!providedToken && desktopTokenEquals(providedToken, this.desktopAdminToken);
+    const isChatToken = !!providedToken && desktopTokenEquals(providedToken, this.desktopToken);
+    if (!isAdminToken && !isChatToken) {
       this.rejectJson(res, 401, 'Missing or invalid desktop API token.', 'invalid_api_key');
       return;
     }
@@ -500,6 +654,13 @@ export class DesktopRouterServer extends EventEmitter {
     const baseUrl = this.getBaseUrl();
     const url = new URL(req.url || '/', baseUrl);
     const pathname = url.pathname;
+
+    // 4b. Chat-token scope (hunt-3 C-M9): a chat credential that reaches
+    // an admin route gets 403, not the route's own response.
+    if (isChatToken && !isAdminToken && isDesktopAdminRoute(pathname, req.method || 'GET')) {
+      this.rejectJson(res, 403, 'The chat token cannot access admin routes. Use the admin token.', 'insufficient_scope');
+      return;
+    }
 
     try {
       // Health / Status check
@@ -553,7 +714,7 @@ export class DesktopRouterServer extends EventEmitter {
 
       if (pathname === '/api/config' && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const newConfig = JSON.parse(bodyStr);
+        const newConfig = this.parseJsonBody(bodyStr);
         this.updateConfig(newConfig);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', config: this.config }));
@@ -563,7 +724,7 @@ export class DesktopRouterServer extends EventEmitter {
       // Model detection endpoint for desktop GUI
       if (pathname === '/api/detect-models' && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
 
         if (body.all) {
           const detectedMap = await this.router.detectAllModels(5000);
@@ -656,7 +817,8 @@ export class DesktopRouterServer extends EventEmitter {
       // Provider API endpoints for GUI and external tools
       if (pathname === '/api/provider/status' && req.method === 'GET') {
         const status = await this.providerAgent.getStatus();
-        const settings = getProviderSettings();
+        // Hunt-3 C-M10: node_token never leaves the process.
+        const settings = redactProviderSettings(getProviderSettings());
         const recentJobs = getProviderJobLogs(15);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, status, settings, recentJobs }));
@@ -665,7 +827,7 @@ export class DesktopRouterServer extends EventEmitter {
 
       if (pathname === '/api/provider/toggle' && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         const status = await this.providerAgent.setEnabled(Boolean(body.enabled));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, status }));
@@ -674,10 +836,11 @@ export class DesktopRouterServer extends EventEmitter {
 
       if (pathname === '/api/provider/config' && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         this.providerAgent.updateConfig(body);
         const status = await this.providerAgent.getStatus();
-        const settings = getProviderSettings();
+        // Hunt-3 C-M10: node_token never leaves the process.
+        const settings = redactProviderSettings(getProviderSettings());
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, status, settings }));
         return;
@@ -685,7 +848,7 @@ export class DesktopRouterServer extends EventEmitter {
 
       if (pathname === '/api/provider/benchmark' && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         const result = await this.providerAgent.runBenchmark(body.model);
         const status = await this.providerAgent.getStatus();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -700,7 +863,7 @@ export class DesktopRouterServer extends EventEmitter {
 
         const startTime = Date.now();
         const bodyStr = await this.readBody(req);
-        const chatReq: ChatRequest = JSON.parse(bodyStr);
+        const chatReq: ChatRequest = this.parseJsonBody(bodyStr);
 
         let chosenUpstreamName = 'unknown';
         // chatReq.model is optional (the router defaults it); an absent
@@ -728,16 +891,37 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: (chatReq as any).paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
 
-        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
-          signal: abortController.signal,
-          scope: { userId: 'default', origin: 'client' },
-          hops: effectiveHops,
-          paperclip,
-        });
+        const upstreamResponse = await (async () => {
+          try {
+            return await this.router.routeChatCompletion(chatReq, {
+              signal: abortController.signal,
+              scope: { userId: 'default', origin: 'client' },
+              hops: effectiveHops,
+              paperclip,
+            });
+          } catch (err: any) {
+            // Hunt-3 C-L22: a failed chat used to emit no request log at
+            // all — the failure was invisible in the renderer's request
+            // feed and in spend accounting. Log the failure with the
+            // status the caller will see, then rethrow so the outer
+            // catch still returns the error response.
+            this.emit('request-logged', {
+              id: `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              model: chatReq.model || 'auto',
+              upstream: chosenUpstreamName,
+              status: typeof err?.statusCode === 'number' ? err.statusCode : 500,
+              durationMs: Date.now() - startTime,
+              streaming: Boolean(chatReq.stream),
+            } satisfies RequestLog);
+            throw err;
+          }
+        })();
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || chosenUpstreamName;
 
@@ -847,7 +1031,7 @@ export class DesktopRouterServer extends EventEmitter {
         this.providerAgent.notifyConsumerActive(30000);
         const startTime = Date.now();
         const bodyStr = await this.readBody(req);
-        const imgReq = JSON.parse(bodyStr || '{}');
+        const imgReq = this.parseJsonBody(bodyStr);
 
         const rawHops = req.headers['x-eluvix-hops'];
         const hopsHeader = Array.isArray(rawHops) ? rawHops[0] : rawHops;
@@ -902,7 +1086,7 @@ export class DesktopRouterServer extends EventEmitter {
         req.method === 'POST'
       ) {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         if (!Array.isArray(body.messages) || body.messages.length === 0) {
           this.rejectJson(res, 400, 'Request must include a non-empty messages array.', 'missing_required_parameter');
           return;
@@ -925,6 +1109,7 @@ export class DesktopRouterServer extends EventEmitter {
         const explainPaperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: explainPcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveExplainHops = mergeEffectiveHops(baseExplainHops, explainPaperclip);
@@ -963,7 +1148,7 @@ export class DesktopRouterServer extends EventEmitter {
         this.providerAgent.notifyConsumerActive(30000);
         const startTime = Date.now();
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
 
         if (!Array.isArray(body.messages) || body.messages.length === 0) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -989,6 +1174,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -1000,12 +1186,29 @@ export class DesktopRouterServer extends EventEmitter {
           }
         });
 
-        const upstreamResponse = await this.router.routeChatCompletion(chatReq, {
-          signal: abortController.signal,
-          scope: { userId: 'default', origin: 'client' },
-          hops: effectiveHops,
-          paperclip,
-        });
+        const upstreamResponse = await (async () => {
+          try {
+            return await this.router.routeChatCompletion(chatReq, {
+              signal: abortController.signal,
+              scope: { userId: 'default', origin: 'client' },
+              hops: effectiveHops,
+              paperclip,
+            });
+          } catch (err: any) {
+            // Hunt-3 C-L22 (same gap as /v1/chat/completions): log the
+            // failure, then rethrow so the outer catch returns the error.
+            this.emit('request-logged', {
+              id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+              timestamp: new Date().toLocaleTimeString(),
+              model: requestedModel,
+              upstream: 'unknown',
+              status: typeof err?.statusCode === 'number' ? err.statusCode : 500,
+              durationMs: Date.now() - startTime,
+              streaming: Boolean(chatReq.stream),
+            } satisfies RequestLog);
+            throw err;
+          }
+        })();
         const durationMs = Date.now() - startTime;
         const actualUpstream = upstreamResponse.headers.get('x-eluvix-upstream') || 'unknown';
 
@@ -1077,7 +1280,7 @@ export class DesktopRouterServer extends EventEmitter {
       ) {
         this.providerAgent.notifyConsumerActive(30000);
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         if (body.input === undefined || body.input === null) {
           this.rejectJson(res, 400, "Missing required parameter: 'input' is required.", 'missing_required_parameter');
           return;
@@ -1112,6 +1315,7 @@ export class DesktopRouterServer extends EventEmitter {
         const paperclip = await parseVerifiedPaperclipRequestAsync(req.headers, {
           config: pcCfg,
           isAdminOrSessionCaller: true,
+          isLoopbackCaller: isLoopbackRemoteAddress(req.socket?.remoteAddress),
           bodyPaperclip: body.paperclip,
         });
         const effectiveHops = mergeEffectiveHops(hops, paperclip);
@@ -1243,7 +1447,7 @@ export class DesktopRouterServer extends EventEmitter {
       ) {
         this.providerAgent.notifyConsumerActive(15000);
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         if (body.input === undefined || body.input === null) {
           this.rejectJson(res, 400, "Missing required parameter: 'input' is required.", 'missing_required_parameter');
           return;
@@ -1339,7 +1543,7 @@ export class DesktopRouterServer extends EventEmitter {
       ) {
         this.providerAgent.notifyConsumerActive(30000);
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         if (typeof body.input !== 'string' || !body.input.trim()) {
           this.rejectJson(res, 400, "Missing required parameter: 'input' must be a non-empty string.", 'missing_required_parameter');
           return;
@@ -1411,11 +1615,20 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         const db = getDb();
+        // Hunt-3 C-L21: the chat branch used to dump the entire history
+        // unbounded — sft/dpo already cap at 5000. Honor the same limit
+        // (default 1000, max 5000), counted in sessions (one JSONL line
+        // per session), at the query, not after loading rows.
         const messages = db
           .prepare(
-            'SELECT session_id, role, content FROM chat_history WHERE user_id = ? ORDER BY session_id, id ASC'
+            `SELECT session_id, role, content FROM chat_history
+             WHERE user_id = ? AND session_id IN (
+               SELECT session_id FROM chat_history WHERE user_id = ?
+               GROUP BY session_id ORDER BY MIN(id) ASC LIMIT ?
+             )
+             ORDER BY session_id, id ASC`
           )
-          .all('default') as Array<{ session_id: string; role: string; content: string }>;
+          .all('default', 'default', limit) as Array<{ session_id: string; role: string; content: string }>;
         const sessions = new Map<string, any[]>();
         for (const msg of messages) {
           if (!sessions.has(msg.session_id)) sessions.set(msg.session_id, []);
@@ -1436,7 +1649,7 @@ export class DesktopRouterServer extends EventEmitter {
         req.method === 'POST'
       ) {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         const chosenText = typeof body.chosenText === 'string' ? body.chosenText.trim() : '';
         const rejectedText = typeof body.rejectedText === 'string' ? body.rejectedText.trim() : '';
         if (!chosenText || !rejectedText) {
@@ -1540,7 +1753,7 @@ export class DesktopRouterServer extends EventEmitter {
           const bodyStr = await this.readBody(req);
           let parsed: unknown;
           try {
-            parsed = JSON.parse(bodyStr || '{}');
+            parsed = this.parseJsonBody(bodyStr);
           } catch {
             res.writeHead(400, {
               'Content-Type': 'application/json',
@@ -1585,7 +1798,7 @@ export class DesktopRouterServer extends EventEmitter {
         req.method === 'POST'
       ) {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         const mode = body?.mode === 'live' ? 'live' : 'dry-run';
 
         const suite =
@@ -1644,7 +1857,7 @@ export class DesktopRouterServer extends EventEmitter {
       // Cross-Encoder & Sovereign Reranker (`/v1/rerank` & `/api/v1/rerank`)
       if ((pathname === '/v1/rerank' || pathname === '/api/v1/rerank') && req.method === 'POST') {
         const bodyStr = await this.readBody(req);
-        const body = JSON.parse(bodyStr || '{}');
+        const body = this.parseJsonBody(bodyStr);
         const rerankRes = await this.router.routeRerank(body, { userId: 'default' });
         const outText = await rerankRes.text();
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1701,7 +1914,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         if (req.method === 'POST') {
-          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const body = this.parseJsonBody(await this.readBody(req));
           if (body?.action === 'promote') {
             const aliasRec = promotePromptAlias({
               promptId: String(body.promptId || body.id || ''),
@@ -1735,7 +1948,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         if (req.method === 'POST') {
-          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const body = this.parseJsonBody(await this.readBody(req));
           const created = createBatchFile({
             filename: body.filename || 'batch.jsonl',
             purpose: body.purpose || 'batch',
@@ -1768,7 +1981,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         if (req.method === 'POST') {
-          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const body = this.parseJsonBody(await this.readBody(req));
           const job = createBatchJob({
             input_file_id: String(body.input_file_id || ''),
             endpoint: body.endpoint,
@@ -1826,7 +2039,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         if (req.method === 'POST') {
-          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const body = this.parseJsonBody(await this.readBody(req));
           if (body?.action === 'test') {
             const dispatched = await dispatchAlertWebhooks({
               event: body.event || 'budget.threshold',
@@ -1873,7 +2086,7 @@ export class DesktopRouterServer extends EventEmitter {
           return;
         }
         if (req.method === 'POST') {
-          const body = JSON.parse((await this.readBody(req)) || '{}');
+          const body = this.parseJsonBody(await this.readBody(req));
           const rawPc = body?.paperclip && typeof body.paperclip === 'object' ? body.paperclip : undefined;
           const paperclip: PaperclipKeyPolicy | undefined = rawPc
             ? {
@@ -1929,7 +2142,7 @@ export class DesktopRouterServer extends EventEmitter {
           let id = url.searchParams.get('id')?.trim() || '';
           if (!id) {
             try {
-              const body = JSON.parse((await this.readBody(req)) || '{}');
+              const body = this.parseJsonBody(await this.readBody(req));
               if (typeof body?.id === 'string') id = body.id.trim();
             } catch {}
           }
@@ -2005,7 +2218,7 @@ export class DesktopRouterServer extends EventEmitter {
         let requestedBaseUrl: string | undefined;
         if (req.method === 'POST') {
           try {
-            const body = JSON.parse((await this.readBody(req)) || '{}');
+            const body = this.parseJsonBody(await this.readBody(req));
             if (typeof body?.paperclipBaseUrl === 'string' && body.paperclipBaseUrl.trim()) {
               requestedBaseUrl = body.paperclipBaseUrl.trim();
             }
@@ -2102,7 +2315,7 @@ export class DesktopRouterServer extends EventEmitter {
       }
 
       if ((pathname === '/v1/paperclip/classify' || pathname === '/api/v1/paperclip/classify') && req.method === 'POST') {
-        const body = JSON.parse((await this.readBody(req)) || '{}');
+        const body = this.parseJsonBody(await this.readBody(req));
         const issueId = typeof body.issueId === 'string' ? body.issueId : undefined;
         const companyId = typeof body.companyId === 'string' ? body.companyId : undefined;
         const classification = classifyPaperclipTask({
@@ -2129,7 +2342,7 @@ export class DesktopRouterServer extends EventEmitter {
       }
 
       if ((pathname === '/v1/paperclip/recommend-assignee' || pathname === '/api/v1/paperclip/recommend-assignee') && req.method === 'POST') {
-        const body = JSON.parse((await this.readBody(req)) || '{}');
+        const body = this.parseJsonBody(await this.readBody(req));
         const task = {
           issueId: typeof body.task?.issueId === 'string' ? body.task.issueId : undefined,
           title: String(body.task?.title || ''),
@@ -2189,7 +2402,7 @@ export class DesktopRouterServer extends EventEmitter {
       }
 
       if ((pathname === '/v1/paperclip/feedback' || pathname === '/api/v1/paperclip/feedback') && req.method === 'POST') {
-        const body = JSON.parse((await this.readBody(req)) || '{}');
+        const body = this.parseJsonBody(await this.readBody(req));
         const result = resolveAndRecordPaperclipFeedback({
           userId: 'default',
           companyId: typeof body.companyId === 'string' ? body.companyId : undefined,
@@ -2217,7 +2430,11 @@ export class DesktopRouterServer extends EventEmitter {
       const pcUsageMatch = /^\/(?:api\/)?v1\/paperclip\/usage\/([^/]+)$/.exec(pathname);
       if (pcUsageMatch && req.method === 'GET') {
         const runId = decodeURIComponent(pcUsageMatch[1]);
-        const summary = getPaperclipUsageByCorrelation(runId, 'default');
+        // Hunt-3 L-A4: 'default' no longer bypasses the user filter in
+        // paperclip-store queries — the desktop daemon is the local
+        // operator (loopback-bound, token-authenticated), so it uses the
+        // intended 'admin' bypass for its usage view.
+        const summary = getPaperclipUsageByCorrelation(runId, 'admin');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(summary));
         return;
@@ -2347,5 +2564,23 @@ export class DesktopRouterServer extends EventEmitter {
 
   private readBody(req: IncomingMessage): Promise<string> {
     return this.readBodyBuffer(req).then((buf) => buf.toString('utf8'));
+  }
+
+  /**
+   * Hunt-3 C-L22: malformed request JSON is a 400, not a 500. The outer
+   * catch maps err.statusCode, so a SyntaxError here must carry one.
+   * An empty body parses as {} (the same default the old `|| '{}'`
+   * call sites already used).
+   */
+  private parseJsonBody(bodyStr: string): any {
+    if (!bodyStr || !bodyStr.trim()) return {};
+    try {
+      return JSON.parse(bodyStr);
+    } catch {
+      const e: any = new Error('Malformed JSON in request body.');
+      e.statusCode = 400;
+      e.code = 'invalid_json';
+      throw e;
+    }
   }
 }

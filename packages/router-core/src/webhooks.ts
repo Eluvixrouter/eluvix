@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb } from './db.js';
 import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
+import { fetchWithSafeRedirects } from './fetch-redirects.js';
 
 export type AlertWebhookEventType =
   | 'budget.threshold'
@@ -192,7 +193,10 @@ export async function dispatchAlertWebhooks(
       : db.prepare('SELECT * FROM alert_webhooks WHERE enabled = 1').all()
   ) as Array<Record<string, any>>;
 
-  const fetchFn = options?.fetchImpl || globalThis.fetch;
+  // Hunt-3 L-A2: X-Eluvix-Signature must not ride a cross-origin redirect.
+  const fetchFn =
+    options?.fetchImpl ||
+    ((input: string, init?: RequestInit) => fetchWithSafeRedirects(input, init));
   let delivered = 0;
   let failed = 0;
 

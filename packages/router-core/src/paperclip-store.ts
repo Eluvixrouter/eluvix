@@ -50,7 +50,7 @@ export function getPaperclipUsageByCorrelation(
   allowedCompanyIds?: string[]
 ): PaperclipRunUsageSummary {
   const db = getDb();
-  const hasUserFilter = Boolean(userId && userId !== 'admin' && userId !== 'default');
+  const hasUserFilter = Boolean(userId && userId !== 'admin');
   const companies = Array.isArray(allowedCompanyIds)
     ? allowedCompanyIds.filter((c) => typeof c === 'string' && c.length > 0)
     : [];
@@ -184,7 +184,7 @@ export function getPaperclipIssueClassification(
 ): { taskClass: string; companyId?: string; title?: string; priority?: string } | null {
   if (!issueId) return null;
   const db = getDb();
-  const hasUser = Boolean(userId && userId !== 'admin' && userId !== 'default');
+  const hasUser = Boolean(userId && userId !== 'admin');
   const companies = Array.isArray(allowedCompanyIds)
     ? allowedCompanyIds.filter((c) => typeof c === 'string' && c.length > 0)
     : [];
@@ -426,7 +426,7 @@ export function getPaperclipOutcomePriors(
   options?: { decayHalfLifeDays?: number; nowMs?: number }
 ): Record<string, PaperclipOutcomePrior> {
   const db = getDb();
-  const hasUser = Boolean(userId && userId !== 'admin' && userId !== 'default');
+  const hasUser = Boolean(userId && userId !== 'admin');
   const companies = Array.isArray(companyIds)
     ? companyIds.filter((c) => typeof c === 'string' && c.length > 0)
     : [];
@@ -588,7 +588,7 @@ export function getPaperclipObservabilitySummary(opts?: {
   limit?: number;
 }): PaperclipObservabilitySummary {
   const db = getDb();
-  const hasUser = Boolean(opts?.userId && opts.userId !== 'admin' && opts.userId !== 'default');
+  const hasUser = Boolean(opts?.userId && opts.userId !== 'admin');
   const companies = Array.isArray(opts?.companyIds)
     ? opts!.companyIds.filter((c) => typeof c === 'string' && c.length > 0)
     : [];

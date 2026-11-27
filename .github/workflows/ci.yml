@@ -40,6 +40,17 @@ jobs:
     - name: Build Router Core
       run: pnpm --filter @eluvix/router-core build
 
+    # Hunt-3 D-H3-03: the offline Paperclip E2E harness
+    # (scripts/paperclip-e2e.mjs) was never executed by CI, so the
+    # paperclip routes it defines went unexercised. It needs the
+    # router-core, plugin, and adapter dists built first; it stays
+    # offline/mock-based (loopback HTTP + SQLite), no network.
+    - name: Build Paperclip Plugin & Adapter
+      run: pnpm --filter @eluvix/paperclip-plugin build && pnpm --filter @eluvix/paperclip-adapter build
+
+    - name: Run Offline Paperclip E2E
+      run: node scripts/paperclip-e2e.mjs
+
     - name: Run Unit Tests (Router Core)
       run: pnpm --filter @eluvix/router-core test
 
@@ -68,6 +79,20 @@ jobs:
 
     - name: Build Desktop Application
       run: pnpm --filter @eluvix/desktop build
+
+    # Hunt-3 D-H3-01: the changelog once advertised four releases that
+    # never shipped (v1.1.0-v1.3.1) while omitting the four that did.
+    # Fail CI if the current VERSION has no entry in the releases page,
+    # so the next release cannot go out undocumented.
+    - name: Check releases page lists current version
+      run: grep -q "^## v$(cat VERSION) " apps/githubio/src/app/docs/releases/page.mdx
+
+    # Hunt-3 D-H3-07: README test counts went stale with no check on
+    # them. The script asserts the per-suite file counts and summed
+    # total match the on-disk inventory (test totals are verified by
+    # the suites themselves in CI).
+    - name: Check README test counts match inventory
+      run: node scripts/check-readme-counts.mjs
 
     - name: Build GitHub Pages Documentation Site
       run: pnpm --filter githubio build

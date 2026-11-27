@@ -24,7 +24,8 @@ export interface DockerStatusResponse {
 let cachedStatus: DockerStatusResponse | null = null;
 const subscribers: Set<(status: DockerStatusResponse | null) => void> = new Set();
 let pollTimer: NodeJS.Timeout | null = null;
-let activeInterval = 5000;
+export const DEFAULT_DOCKER_POLL_INTERVAL = 5000;
+let activeInterval = DEFAULT_DOCKER_POLL_INTERVAL;
 
 async function fetchStatus() {
   try {
@@ -53,9 +54,28 @@ function stopPolling() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  // Reset the ratchet: a fast (3s) consumer used to drag the shared interval
+  // down permanently (audit hunt-3 C-L13) — once the last consumer unmounts,
+  // the next mount starts again at the default instead of inheriting the
+  // fastest interval any past consumer ever requested.
+  activeInterval = DEFAULT_DOCKER_POLL_INTERVAL;
 }
 
-export function useDockerStatus(pollingInterval = 5000) {
+// Polling controls, exported for tests: the hook itself needs a DOM to
+// mount, but the interval ratchet/reset logic is plain module state.
+export function startDockerStatusPolling(intervalMs: number) {
+  startPolling(intervalMs);
+}
+
+export function stopDockerStatusPolling() {
+  stopPolling();
+}
+
+export function getActiveDockerPollInterval() {
+  return activeInterval;
+}
+
+export function useDockerStatus(pollingInterval = DEFAULT_DOCKER_POLL_INTERVAL) {
   const [status, setStatus] = useState<DockerStatusResponse | null>(cachedStatus);
 
   useEffect(() => {

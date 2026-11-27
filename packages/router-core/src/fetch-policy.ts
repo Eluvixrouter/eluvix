@@ -36,99 +36,61 @@
  */
 import { lookup } from 'node:dns/promises';
 
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-
-export const MAX_SAFE_REDIRECTS = 3;
+export { fetchWithSafeRedirects, MAX_SAFE_REDIRECTS } from './fetch-redirects.js';
 
 /**
- * fetch() with redirect: 'manual' plus the policy above. Drop-in
- * replacement for fetch at call sites that talk to configured
- * endpoints. Throws on cross-origin redirects and on redirect loops.
+ * Maximum response body a memory provider (or the A2A adapter) will parse
+ * as JSON (hunt-3 B-L6). Matches the repo's 10MB body cap
+ * (`apps/desktop/src/main/server.ts: MAX_BODY_BYTES`). The body is read
+ * incrementally and the parse is refused as soon as the cap is crossed,
+ * so a compromised server returning a multi-hundred-MB body cannot OOM
+ * the router process while recall sits on the chat hot path.
  */
-export async function fetchWithSafeRedirects(
-  input: string | URL,
-  init: RequestInit = {},
-  maxRedirects: number = MAX_SAFE_REDIRECTS
-): Promise<Response> {
-  // Keep the URL a string end to end: call sites pass strings, and
-  // fetch mocks in tests legitimately expect a string first argument.
-  let currentUrl = input.toString();
-  let currentOrigin: string;
-  try {
-    currentOrigin = new URL(currentUrl).origin;
-  } catch {
-    // Unparseable URL (e.g. a synthetic test endpoint such as
-    // http://localhost:11434-stub-m1, whose port is not numeric): no
-    // origin can be established, so no redirect policy can apply.
-    // Fall through to a plain fetch and let it fail on its own terms,
-    // exactly as the old call sites did — the underlying fetch rejects
-    // truly invalid URLs itself, so nothing invalid is ever fetched.
-    return fetch(currentUrl, init);
+export const MAX_PROVIDER_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+export async function readCappedJson(
+  res: Response,
+  maxBytes: number = MAX_PROVIDER_RESPONSE_BYTES
+): Promise<any> {
+  const body = res.body;
+  if (!body || typeof (body as ReadableStream<Uint8Array>).getReader !== 'function') {
+    // Non-streaming stub (e.g. a test double exposing only .json()).
+    return await res.json();
   }
-  let currentInit: RequestInit = { ...init };
-  let followed = 0;
-
-  for (;;) {
-    const res = await fetch(currentUrl, { ...currentInit, redirect: 'manual' });
-    if (!REDIRECT_STATUSES.has(res.status)) return res;
-    const location = res.headers.get('location');
-    if (!location) return res;
-
-    let nextUrl: URL;
-    try {
-      nextUrl = new URL(location, currentUrl);
-    } catch {
-      return res;
-    }
-
-    // Discard the redirect body so the connection can close cleanly.
-    try {
-      await res.body?.cancel();
-    } catch {
-      // Ignore: the body may already be disturbed.
-    }
-
-    const headers = new Headers(currentInit.headers);
-    if (nextUrl.origin !== currentOrigin) {
-      // Credentials must never cross origins. The redirect is refused
-      // outright below, so nothing is sent — these deletes keep the
-      // invariant explicit in the code, not just implied by the throw.
-      headers.delete('authorization');
-      headers.delete('x-api-key');
-      console.warn(
-        `[Eluvix Fetch] Refusing cross-origin redirect ${currentOrigin} -> ${nextUrl.origin} (configured-endpoint fetches only follow redirects within the same origin)`
-      );
-      throw new Error(
-        `Refused cross-origin redirect from ${currentOrigin} to ${nextUrl.origin}: ` +
-          'fetches to configured endpoints never follow a redirect to a different origin, ' +
-          'so request bodies and credentials cannot be bounced to an attacker-chosen host'
-      );
-    }
-
-    if (followed >= maxRedirects) {
-      throw new Error(
-        `Too many redirects (more than ${maxRedirects}) while fetching ${currentOrigin}`
-      );
-    }
-    followed++;
-
-    // Method rewriting per the fetch spec: 303 always converts to GET;
-    // 301/302 convert POST to GET. 307/308 preserve method and body.
-    const method = (currentInit.method || 'GET').toUpperCase();
-    const nextInit: RequestInit = { ...currentInit, headers };
-    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
-      if (method !== 'GET' && method !== 'HEAD') {
-        nextInit.method = 'GET';
-        delete nextInit.body;
-        headers.delete('content-type');
-        headers.delete('content-length');
+  const reader = (body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          try {
+            await reader.cancel();
+          } catch {}
+          throw new Error(
+            `Response body exceeds the ${maxBytes}-byte JSON parse cap; refusing to parse`
+          );
+        }
+        chunks.push(value);
       }
     }
-    currentInit = nextInit;
-    currentUrl = nextUrl.toString();
-    currentOrigin = nextUrl.origin;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {}
   }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(merged));
 }
+
 
 const METADATA_HOSTNAMES = new Set(['metadata.google.internal']);
 

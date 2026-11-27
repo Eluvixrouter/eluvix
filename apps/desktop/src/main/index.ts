@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, clipboard 
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { DesktopRouterServer } from './server.js';
-import { getProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
+import { getProviderSettings, redactProviderSettings, getProviderJobLogs } from '@eluvix/router-core';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +44,12 @@ async function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // Hunt-3 C-L23: sandbox the renderer. The preload uses only
+      // contextBridge/ipcRenderer (verified: no node:* imports, no
+      // Buffer/setImmediate/events/timers/url shims), so the sandbox
+      // removes the renderer's Node.js access without breaking the bridge.
+      sandbox: true
     }
   });
 
@@ -130,6 +135,13 @@ function setupIpcHandlers() {
     return server ? server.getDesktopToken() : null;
   });
 
+  // Hunt-3 C-M9: the admin token, same channel, same trust check. The
+  // renderer holds both and uses the admin token only for admin fetches.
+  ipcMain.handle('get-desktop-admin-token', (event) => {
+    assertTrustedSender(event);
+    return server ? server.getDesktopAdminToken() : null;
+  });
+
   ipcMain.handle('get-config', (event) => {
     assertTrustedSender(event);
     return server ? server.getConfig() : null;
@@ -200,7 +212,8 @@ function setupIpcHandlers() {
     assertTrustedSender(event);
     if (!server) return { success: false, error: 'Server not ready' };
     const status = await server.getProviderStatus();
-    const settings = getProviderSettings();
+    // Hunt-3 C-M10: node_token never leaves the process, even over IPC.
+    const settings = redactProviderSettings(getProviderSettings());
     const recentJobs = getProviderJobLogs(15);
     return { success: true, status, settings, recentJobs };
   });

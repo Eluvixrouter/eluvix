@@ -15,8 +15,26 @@ import type { RequestScope } from './context/types.js';
 import { addMemoryItem, searchMemoryItems, getRollingSpendUsd, listBanditArms } from './db.js';
 import { getVramArbiterStats } from './vram-arbiter.js';
 import { gateTextForMemory } from './guard.js';
+// NOTE (rebase onto main 7589d53 / PR #39): hunt-3 L-A3's inline MCP
+// memory-store scan is subsumed by phase (e)'s shared forced-strength
+// gate — executeMemoryStore() routes every MCP memory write through
+// gateTextForMemory(), which blocks injection fail-closed and redacts PII
+// regardless of configured guard modes. The L-A3 imports
+// (applyPrivacyGuard/scanAndMaskPii/validateChatPrompt) are therefore
+// intentionally not re-added here.
+import { clampMaxTokens, clampTemperature } from './sampling.js';
 
 export const ELUVIX_MCP_PROTOCOL_VERSION = '2025-06-18';
+
+/**
+ * Maximum decoded audio payload for `eluvix_transcribe_or_speak`
+ * (hunt-3 L-A12): 25 MiB. The tool used to decode an unbounded base64
+ * argument into a buffer (memory exhaustion via a huge argument). The
+ * base64 length is checked before decoding so the allocation itself is
+ * bounded. Follows the clamp pattern of `top_k` (1–25) and
+ * `window_hours` (1–720) in the same file.
+ */
+export const MAX_MCP_TRANSCRIBE_AUDIO_BYTES = 25 * 1024 * 1024;
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -69,8 +87,8 @@ export const ELUVIX_MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Target model or virtual alias (default: "auto").',
         },
-        temperature: { type: 'number', description: 'Optional sampling temperature (0.0 - 2.0).' },
-        max_tokens: { type: 'number', description: 'Optional maximum completion tokens.' },
+        temperature: { type: 'number', description: 'Optional sampling temperature, clamped to 0.0 - 2.0.' },
+        max_tokens: { type: 'number', description: 'Optional maximum completion tokens, clamped to 1 - 131072.' },
       },
       required: ['prompt'],
     },
@@ -391,13 +409,20 @@ async function executeMcpToolCall(
       }
       messages.push({ role: 'user', content: prompt });
 
+      // Hunt-3 L-A6: clamp sampling parameters (the router clamps again
+      // at its entry; the MCP layer documents and enforces the same
+      // bounds so callers see the clamped values in the tool contract).
+      const clampedTemperature =
+        typeof args.temperature === 'number' ? clampTemperature(args.temperature) : undefined;
+      const clampedMaxTokens =
+        typeof args.max_tokens === 'number' ? clampMaxTokens(args.max_tokens) : undefined;
       const res = await ctx.router.routeChatCompletion(
         {
           model: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : 'auto',
           messages,
           stream: false,
-          ...(typeof args.temperature === 'number' ? { temperature: args.temperature } : {}),
-          ...(typeof args.max_tokens === 'number' ? { max_tokens: args.max_tokens } : {}),
+          ...(clampedTemperature !== undefined ? { temperature: clampedTemperature } : {}),
+          ...(clampedMaxTokens !== undefined ? { max_tokens: clampedMaxTokens } : {}),
         },
         {
           hops: nextHops,
@@ -502,7 +527,25 @@ async function executeMcpToolCall(
             true
           );
         }
+        // Hunt-3 L-A12: bound the audio payload before decoding it.
+        const maxB64Chars = Math.ceil((MAX_MCP_TRANSCRIBE_AUDIO_BYTES * 4) / 3) + 4;
+        if (b64.length > maxB64Chars) {
+          return mcpTextResult(
+            {
+              error: `Argument "audio_base64" exceeds the ${MAX_MCP_TRANSCRIBE_AUDIO_BYTES / (1024 * 1024)} MiB audio limit.`,
+            },
+            true
+          );
+        }
         const audioBytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        if (audioBytes.byteLength > MAX_MCP_TRANSCRIBE_AUDIO_BYTES) {
+          return mcpTextResult(
+            {
+              error: `Decoded audio exceeds the ${MAX_MCP_TRANSCRIBE_AUDIO_BYTES / (1024 * 1024)} MiB audio limit.`,
+            },
+            true
+          );
+        }
         const res = await ctx.router.routeAudioTranscription(
           {
             file: audioBytes,

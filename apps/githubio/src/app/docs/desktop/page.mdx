@@ -13,6 +13,19 @@ The Eluvix Desktop client (located in `apps/desktop`) packages the full Eluvix r
 
 ---
 
+## Split Desktop Tokens (Chat vs Admin)
+
+The desktop server mints two per-install `0o600` tokens in `~/.config/eluvix/`:
+
+- `desktop-token` is the **chat token** — inference plus read-only discovery only (health, model list, chat completions, embeddings, audio, images, rerank, route-explain, messages, responses, and read-only Paperclip discovery).
+- `desktop-admin-token` is the **admin token** — required for config, provider, keys, export, webhooks, MCP, evals, and every other route, and works everywhere.
+
+A chat token presented to an admin route gets `403` ("The chat token cannot access admin routes. Use the admin token."), and unknown routes fail closed as admin-only. The renderer fetches both over IPC and uses the admin token only for admin fetches; the user-facing snippet still shows the chat token.
+
+Provider status and config responses redact secrets (`node_token_configured: true` instead of the value); the settings UI leaves the token field blank with a "leave blank to keep" placeholder and omits an empty token on save, so redaction can never wipe the stored token. `POST /api/config` schema-validates upstreams (`[null]` is rejected with `400`) and deep-merges nested sections. Chat export honors `limit` (default `1000`, max `5000`). Malformed request JSON is `400` at every body-parse site, and failed chat calls are written to the request log. The desktop window runs sandboxed (`sandbox: true`) with `connect-src` allowing `https://127.0.0.1:*` and `https://localhost:*`.
+
+---
+
 ## Development
 
 To run the desktop application in development mode:

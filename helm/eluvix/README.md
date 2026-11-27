@@ -40,7 +40,8 @@ explanation:
 The chart's routing ConfigMap (`templates/configmap-routing.yaml`) lists
 only the ollama upstream, so a Helm dashboard silently lacks the memory
 and harness features the compose dashboard exposes. The `nextjs` service
-is chart-only (it is not a compose service).
+is deployed by both the chart and compose (`docker-compose.prod.yml`
+builds the same dashboard from `apps/nextjs`).
 
 ## Auth notes
 

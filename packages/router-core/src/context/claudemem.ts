@@ -7,6 +7,7 @@ import {
   type RecallResult,
   type RequestScope
 } from './types.js';
+import { fetchWithSafeRedirects, readCappedJson } from '../fetch-policy.js';
 
 /**
  * claude-mem worker API version this provider was built and verified
@@ -117,7 +118,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2000);
     try {
-      const res = await fetch(`${this.endpoint}/api/health`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/api/health`, {
         method: 'GET',
         headers: this.buildHeaders(),
         signal: controller.signal
@@ -131,7 +132,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
       }
       let version: unknown;
       try {
-        const data: any = await res.json();
+        const data: any = await readCappedJson(res);
         version = data?.version;
       } catch {
         version = undefined;
@@ -194,7 +195,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
         format: 'json',
         limit: '8'
       });
-      const res = await fetch(`${this.endpoint}/api/search?${params}`, {
+      const res = await fetchWithSafeRedirects(`${this.endpoint}/api/search?${params}`, {
         method: 'GET',
         headers: this.buildHeaders(),
         signal: controller.signal
@@ -204,7 +205,7 @@ export class ClaudeMemContextProvider implements ContextProvider {
         throw new Error(`ClaudeMem search returned HTTP ${res.status}`);
       }
 
-      const data: any = await res.json();
+      const data: any = await readCappedJson(res);
       const observations: any[] = Array.isArray(data?.observations)
         ? data.observations
         : [];

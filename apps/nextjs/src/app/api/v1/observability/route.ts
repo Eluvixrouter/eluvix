@@ -156,6 +156,23 @@ export async function GET(req: Request) {
     // Check upstream health in parallel
     const upstreamsHealth = await Promise.all(upstreams.map(u => checkUpstreamHealth(u)));
 
+    // Hunt-3 C-L2: readonly (and other non-admin) sessions used to receive
+    // full upstream endpoints + model lists. Strip both for non-admin
+    // callers — status, latency and model counts are enough for an
+    // auditor's health view. (The antigravity cliPath --version probe
+    // behind checkUpstreamHealth is already bounded by the 10s
+    // agyHealthCache, so no per-GET spawn change is needed here.)
+    const visibleUpstreams = isAdmin
+      ? upstreamsHealth
+      : upstreamsHealth.map((u) => ({
+          id: u.id,
+          name: u.name,
+          type: u.type,
+          status: u.status,
+          latencyMs: u.latencyMs,
+          modelsCount: u.modelsCount,
+        }));
+
     // Filter logs if requested
     let logs = rawLogs;
     if (filterStatus === 'success') {
@@ -279,7 +296,7 @@ export async function GET(req: Request) {
         ),
         modelDistribution,
         upstreamDistribution,
-        upstreams: upstreamsHealth,
+        upstreams: visibleUpstreams,
         vramArbiter: getVramArbiterStats(),
         banditArms: listBanditArms(),
         logs,

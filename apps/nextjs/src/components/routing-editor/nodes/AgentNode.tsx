@@ -12,6 +12,23 @@ export default function AgentNode({ id, data }: { id: string; data: any }) {
   const [maxTokens, setMaxTokens] = useState(data?.maxTokens ?? 2048);
   const [memoryEnabled, setMemoryEnabled] = useState(data?.memoryEnabled !== false);
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.agentName !== undefined) setAgentName(data.agentName);
+      if (data?.modelName !== undefined) setModelName(data.modelName);
+      if (data?.systemInstructions !== undefined) setSystemInstructions(data.systemInstructions);
+      if (data?.temperature !== undefined) setTemperature(data.temperature);
+      if (data?.maxTokens !== undefined) setMaxTokens(data.maxTokens);
+      if (data?.memoryEnabled !== undefined) setMemoryEnabled(data.memoryEnabled !== false);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // agentName/modelName/systemInstructions use `=== undefined` guards

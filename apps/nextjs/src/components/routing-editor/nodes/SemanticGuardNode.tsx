@@ -10,6 +10,21 @@ export default function SemanticGuardNode({ id, data }: { id: string; data: any 
   const [similarityThreshold, setSimilarityThreshold] = useState(data?.threshold ?? 0.82);
   const [action, setAction] = useState(data?.enforcementAction || data?.action || 'block');
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.routeName !== undefined) setRouteName(data.routeName);
+      if (data?.encoder !== undefined) setEncoder(data.encoder);
+      if (data?.threshold !== undefined) setSimilarityThreshold(data.threshold);
+      if (data?.enforcementAction !== undefined || data?.action !== undefined) setAction(data.enforcementAction || data.action);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // routeName uses an `=== undefined` guard because its text input can be

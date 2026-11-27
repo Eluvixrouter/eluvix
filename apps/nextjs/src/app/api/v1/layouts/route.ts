@@ -4,19 +4,40 @@ import {
   writeLayout,
   getLastActiveLayoutSlug,
   setLastActiveLayoutSlug,
-  getLayoutsDirectoryPath,
   LayoutError,
   sanitizeSlug
 } from '@/lib/layouts';
+import { resolveCallerIdentity } from '@/lib/caller-identity';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+/**
+ * Hunt-3 C-L6: layouts routes had no in-handler identity check (they
+ * relied on middleware, which passes operator sessions through) and GET
+ * leaked the absolute layouts dir. Any authenticated caller may read;
+ * only non-readonly callers may create/overwrite shared global layouts.
+ */
+async function requireLayoutCaller(req: Request, mutate: boolean): Promise<NextResponse | null> {
+  const caller = await resolveCallerIdentity(req);
+  if (!caller.ok) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (mutate && caller.role === 'readonly') {
+    return NextResponse.json(
+      { error: 'Forbidden: read-only users cannot modify layouts' },
+      { status: 403 }
+    );
+  }
+  return null;
+}
+
+export async function GET(req: Request) {
+  const denied = await requireLayoutCaller(req, false);
+  if (denied) return denied;
   try {
     const layouts = listLayouts();
     const activeSlug = getLastActiveLayoutSlug();
-    const layoutsDir = getLayoutsDirectoryPath();
-    return NextResponse.json({ layouts, activeSlug, layoutsDir });
+    return NextResponse.json({ layouts, activeSlug });
   } catch (err: any) {
     console.error('[API /api/v1/layouts GET] Error:', err);
     return NextResponse.json(
@@ -27,6 +48,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const denied = await requireLayoutCaller(req, true);
+  if (denied) return denied;
   let body: any;
   try {
     body = await req.json();

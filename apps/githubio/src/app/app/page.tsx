@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { MockupDashboard } from '@/components/mockup/MockupDashboard';
 import { MockupEditor } from '@/components/mockup/MockupEditor';
@@ -21,17 +21,19 @@ const TABS: { id: AppTab; label: string; icon: string; badge?: string }[] = [
 ];
 
 export default function AppMockupPage() {
-  // Derive the initial tab from the URL hash during render (e.g. /app#editor
-  // or /app#playground) instead of syncing it through a mount effect.
-  const [activeTab, setActiveTab] = useState<AppTab>(() => {
-    if (typeof window !== 'undefined') {
-      const hash = window.location.hash.replace('#', '') as AppTab;
-      if (TABS.some((t) => t.id === hash)) {
-        return hash;
-      }
+  // First render always matches the server ('dashboard'); the URL hash is
+  // applied in a mount effect. Reading window.location.hash in the lazy
+  // useState initializer (c096581) made the client render differ from the
+  // prerendered HTML whenever the URL carried a hash — a hydration
+  // mismatch — and any tab switch after mount is a normal state update.
+  const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
+
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '') as AppTab;
+    if (TABS.some((t) => t.id === hash)) {
+      setActiveTab(hash);
     }
-    return 'dashboard';
-  });
+  }, []);
 
   function handleSelectTab(tabId: AppTab) {
     setActiveTab(tabId);

@@ -22,13 +22,14 @@ export async function GET(req: Request) {
       },
     });
   } catch (err: any) {
+    // Hunt-3 C-L5: the error path used to leak allowLocalBreakGlass: true
+    // to anyone. Unauthenticated callers learn nothing beyond ldapEnabled.
     return NextResponse.json(
       {
         success: false,
         error: err.message || 'Failed to query auth status',
         data: {
           ldapEnabled: false,
-          allowLocalBreakGlass: true,
         },
       },
       { status: 500 }

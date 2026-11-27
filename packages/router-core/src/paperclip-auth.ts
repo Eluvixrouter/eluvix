@@ -16,6 +16,24 @@ import {
 
 export const PAPERCLIP_DEFAULT_MAX_SKEW_MS = 300_000;
 
+/**
+ * True when a peer socket address is a loopback address (hunt-3 M-A2).
+ * Accepts the IPv4 loopback range 127.0.0.0/8, IPv6 ::1, and IPv4-mapped
+ * IPv6 loopback (::ffff:127.x.x.x). Anything else — including a missing
+ * address — is NOT loopback. Callers must pass a real peer address
+ * (e.g. `req.socket.remoteAddress`); a client-controlled header such as
+ * `x-forwarded-for` must never be used as this signal.
+ */
+export function isLoopbackRemoteAddress(address?: string | null): boolean {
+  if (!address || typeof address !== 'string') return false;
+  const a = address.trim().toLowerCase();
+  if (a === '::1' || a === 'localhost') return true;
+  if (a.startsWith('::ffff:')) return isLoopbackRemoteAddress(a.slice('::ffff:'.length));
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  if (!m) return false;
+  return Number(m[1]) === 127;
+}
+
 export type HeaderInput =
   | Record<string, string | string[] | undefined>
   | Headers
@@ -275,7 +293,11 @@ export function parseVerifiedPaperclipRequest(
   const baseTrusted = Boolean(
     opts.hasPaperclipScope ||
       opts.isAdminOrSessionCaller ||
-      (config?.trustHeadersFrom === 'loopback' && (opts.isLoopbackCaller ?? true))
+      // Hunt-3 M-A2: 'loopback' trust used to default isLoopbackCaller to
+      // true and no caller ever passed it, so ANY caller could assert
+      // paperclip headers unsigned. Default is now false: a caller must
+      // prove loopback with a real peer-address determination.
+      (config?.trustHeadersFrom === 'loopback' && (opts.isLoopbackCaller ?? false))
   );
 
   const secret =

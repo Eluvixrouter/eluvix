@@ -9,7 +9,7 @@ This file defines mandatory repository-wide instructions for AI coding agents (G
 | Workspace Package | Directory | Responsibility |
 | :--- | :--- | :--- |
 | `@eluvix/router-core` | `packages/router-core` | Headless TypeScript routing engine, Switchyard L7 balancer, modality classifier, SQLite persistence (`node:sqlite` with `better-sqlite3` fallback), security/privacy/SSRF guards, harness/memory adapters, and hardware co-design modules (TEE, RDMA/Clos, NVFP4, FA3, CRS, ComfyUI, RamaLama, ArtCraft). |
-| `nextjs` | `apps/nextjs` | Primary Next.js 14 web gateway (dual-protocol HTTP→HTTPS byte-sniffing demuxer on `:3588`), **Eluvix Visual Node Routing Editor** (`/editor`), Playground 2.0 (`/playground`), Observability (`/observability`), Provider Lab (`/provider`), `/api/v1/*` routes, and offline docs (`/docs`). |
+| `nextjs` | `apps/nextjs` | Primary Next.js 16.4.2 web gateway (dual-protocol HTTP→HTTPS byte-sniffing demuxer on `:3588`), **Eluvix Visual Node Routing Editor** (`/editor`), Playground 2.0 (`/playground`), Observability (`/observability`), Provider Lab (`/provider`), `/api/v1/*` routes, and offline docs (`/docs`). |
 | `githubio` | `apps/githubio` | Static MDX documentation website (`output: 'export'`) and interactive live demo mockup (`MockupEditor`) deployed to GitHub Pages. |
 | `@eluvix/desktop` | `apps/desktop` | Cross-platform Electron desktop shell, system tray controller, and standalone `DesktopRouterServer` daemon with per-install `0o600` token authentication. |
 | `@eluvix/opencode-harness` | `packages/opencode-eluvix` | Eluvix-integrated OpenCode autonomous SWE harness loop with mid-loop DLP and step tiering. |
@@ -58,19 +58,19 @@ Run these commands in order (always build `@eluvix/router-core` first so downstr
 
 ```bash
 # 1. Build & test @eluvix/router-core
-npm --prefix packages/router-core run build && npm --prefix packages/router-core test
+pnpm --filter @eluvix/router-core build && pnpm --filter @eluvix/router-core test
 
 # 2. Run Next.js unit & integration test suite
-npm --prefix apps/nextjs test
+pnpm --filter nextjs test
 
 # 3. Verify Desktop TypeScript compilation & asset copy
-npm --prefix apps/desktop run build
+pnpm --filter @eluvix/desktop build
 
 # 4. Verify Next.js production build (types, ESLint, client/server bundle boundaries)
-npm --prefix apps/nextjs run build
+pnpm --filter nextjs build
 
 # 5. Verify GitHub Pages static MDX export build
-npm --prefix apps/githubio run build
+pnpm --filter githubio build
 ```
 
 ---

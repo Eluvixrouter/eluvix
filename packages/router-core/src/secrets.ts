@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { getAppPaths } from './paths.js';
 import { validateUpstreamHttpEndpoint } from './ssrf-guard.js';
+import { fetchWithSafeRedirects } from './fetch-redirects.js';
 
 export type SecretReferenceScheme = 'env' | 'file' | 'bao' | 'vault' | 'keychain' | 'literal';
 
@@ -231,7 +232,10 @@ export async function resolveUpstreamSecret(
     return undefined;
   }
 
-  const fetchFn = options?.fetchImpl || globalThis.fetch;
+  // Hunt-3 L-A2: X-Vault-Token must not ride a cross-origin redirect.
+  const fetchFn =
+    options?.fetchImpl ||
+    ((input: string, init?: RequestInit) => fetchWithSafeRedirects(input, init));
   try {
     const res = await fetchFn(fullUrl, {
       method: 'GET',

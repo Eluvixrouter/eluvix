@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { executeSafeCommand } from './executor';
-import { getCachedAntigravityModels, getOrCreateAuthConfig, inferModelMetadata, getAppPaths } from '@eluvix/router-core';
+import { getCachedAntigravityModels, inferModelMetadata, getAppPaths, createNamedApiKey, listNamedApiKeys, resolveBearerToken, revokeNamedApiKey } from '@eluvix/router-core';
 import { getConfigPath, redactConfigForApi, saveConfig, validateConfig } from '@/lib/router';
 import {
   DOCKER_SERVICE_CATALOG,
@@ -336,6 +336,10 @@ export class OrchestrationManager {
    * containers (switchyard, agent-router, agentgateway). Raw API keys and
    * HMAC literals are stripped via redactConfigForApi so mounted files carry
    * zero raw credentials while containers run as unprivileged `node`.
+   * Hunt-3 C-M4: bifrost.yaml is written 0600, not 0644 — even though its
+   * api_key entries are now env-var references (see
+   * bifrostApiKeyReference in compiler.ts), a mounted group-readable file
+   * must not be the place a credential-adjacent value lives.
    */
   public writeDockerRuntimeConfigs(
     req: DeploymentRequest,
@@ -348,15 +352,20 @@ export class OrchestrationManager {
     const redactedRouter = redactConfigForApi(validatedConfig);
     const written: string[] = [];
 
-    const writeArtifact = (filename: string, content: string) => {
+    const writeArtifact = (filename: string, content: string, mode = 0o644) => {
       const fullPath = path.join(runtimeDir, filename);
-      fs.writeFileSync(fullPath, content, { encoding: 'utf-8', mode: 0o644 });
+      fs.writeFileSync(fullPath, content, { encoding: 'utf-8', mode });
+      // writeFileSync's mode is creation-only: tighten a pre-existing
+      // loose file the same way (hunt-3 C-M4 / C-L19 class).
+      try {
+        fs.chmodSync(fullPath, mode);
+      } catch {}
       written.push(filename);
     };
 
     writeArtifact('eluvix.json', JSON.stringify(redactedRouter, null, 2));
     if (typeof req.compiledConfigs?.bifrostYaml === 'string' && req.compiledConfigs.bifrostYaml.trim()) {
-      writeArtifact('bifrost.yaml', req.compiledConfigs.bifrostYaml);
+      writeArtifact('bifrost.yaml', req.compiledConfigs.bifrostYaml, 0o600);
     }
     writeArtifact(
       'routing.json',
@@ -559,25 +568,32 @@ export class OrchestrationManager {
       } catch {}
     }
 
-    // Resolve the current Eluvix admin password / bearer token from the real
-    // auth store — never a hardcoded placeholder. Order: the deployment's
-    // auth.json, then any key already configured in OpenCode, then the shared
-    // getOrCreateAuthConfig() the router itself uses (creates auth.json with
-    // a fresh random password when none exists yet).
-    let apiKey: string | undefined = existingOpenCode?.provider?.Eluvix?.options?.apiKey || undefined;
-    const authFile = path.join(eluvixConfigDir, 'auth.json');
-    if (fs.existsSync(authFile)) {
+    // Hunt-3 C-M3: the OpenCode provider authenticates with a scoped
+    // `configurator:opencode` named key — the same key configurator/apply
+    // mints — NEVER the admin password. The old code resolved apiKey from
+    // auth.json.adminPassword and overwrote the scoped key on every deploy,
+    // re-installing the master password into a client config (audit
+    // H-10/H-11). Reuse the key already in opencode.json while it still
+    // resolves; otherwise mint a fresh scoped key and revoke stale ones
+    // with the same label once the new config is safely on disk.
+    const opencodeKeyLabel = 'configurator:opencode';
+    let apiKey: string | undefined;
+    let staleOpencodeKeyIds: string[] = [];
+    const existingKey = existingOpenCode?.provider?.Eluvix?.options?.apiKey;
+    if (typeof existingKey === 'string' && existingKey.startsWith('elx_')) {
       try {
-        const authJson = JSON.parse(fs.readFileSync(authFile, 'utf-8'));
-        if (authJson.adminPassword) {
-          apiKey = authJson.adminPassword;
-        }
+        if (resolveBearerToken(existingKey).valid) apiKey = existingKey;
       } catch {}
     }
     if (!apiKey) {
       try {
-        apiKey = getOrCreateAuthConfig().adminPassword;
-      } catch {}
+        staleOpencodeKeyIds = listNamedApiKeys()
+          .filter((k) => k.label === opencodeKeyLabel)
+          .map((k) => k.id);
+        apiKey = createNamedApiKey({ label: opencodeKeyLabel, origin: 'client', userId: 'client-opencode' }).key;
+      } catch {
+        apiKey = undefined;
+      }
     }
 
     if (!existingOpenCode.provider || typeof existingOpenCode.provider !== 'object') {
@@ -659,6 +675,14 @@ export class OrchestrationManager {
 
     fs.mkdirSync(path.dirname(openCodePath), { recursive: true });
     fs.writeFileSync(openCodePath, JSON.stringify(existingOpenCode, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    // The new config is on disk: the freshly minted scoped key is live, so
+    // stale configurator:opencode keys can be revoked (mirrors the
+    // commit/rollback discipline of configurator/apply's mintClientKey).
+    for (const id of staleOpencodeKeyIds) {
+      try {
+        revokeNamedApiKey(id);
+      } catch {}
+    }
     logs.push(`✓ Synchronized ${Object.keys(syncedModels).length} models to ${openCodePath}`);
   }
 

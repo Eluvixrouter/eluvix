@@ -18,6 +18,30 @@ export async function GET(req: Request) {
   return NextResponse.json(redactConfigForApi(rawConfig));
 }
 
+function isPlainObject(v: unknown): v is Record<string, any> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+/**
+ * Hunt-3 C-L15: the non-authoritative merge was a shallow top-level spread,
+ * so a partial `{memory: {provider: 'mem0'}}` silently dropped every other
+ * stored memory sub-key (cloudMode, recallBudgetTokens, writeBack, ...).
+ * Deep-merge plain objects; arrays and scalars replace wholesale (an
+ * upstreams array is a whole new list, not a patch).
+ */
+function deepMergeConfig(current: any, patch: any): any {
+  if (!isPlainObject(current) || !isPlainObject(patch)) return patch;
+  const out: Record<string, any> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (isPlainObject(value) && isPlainObject(out[key])) {
+      out[key] = deepMergeConfig(out[key], value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export async function POST(req: Request) {
   const identity = await resolveCallerIdentity(req);
   if (identity.ok && identity.role === 'readonly') {
@@ -52,7 +76,7 @@ export async function POST(req: Request) {
             : {}),
           ...body
         }
-      : { ...current, ...body };
+      : deepMergeConfig(current, body);
     const updated = saveConfig(nextConfig);
     const isAdmin = identity.ok && identity.role === 'admin';
     if (isAdmin) {

@@ -10,6 +10,21 @@ export default function McpToolNode({ id, data }: { id: string; data: any }) {
   const [executionMode, setExecutionMode] = useState<'auto' | 'confirm' | 'dry-run'>(data?.executionMode || 'auto');
   const [timeoutMs, setTimeoutMs] = useState<number>(data?.timeoutMs ?? 5000);
 
+  // Keep local editable state in sync when the node data reference changes
+  // (layout load, undo/redo, decompile). Adjusting state during render is the
+  // React-sanctioned replacement for a resync effect: React discards this
+  // render and re-renders with the new state before committing.
+  const [prevData, setPrevData] = useState(data);
+  if (data !== prevData) {
+    setPrevData(data);
+    if (data) {
+      if (data?.toolName !== undefined) setToolName(data.toolName);
+      if (data?.mcpEndpoint !== undefined) setMcpEndpoint(data.mcpEndpoint);
+      if (data?.executionMode !== undefined) setExecutionMode(data.executionMode);
+      if (data?.timeoutMs !== undefined) setTimeoutMs(data.timeoutMs);
+    }
+  }
+
   // Persist missing defaults into the node data via the store, never by
   // mutating the `data` prop. Guarded so each default is written once.
   // toolName/mcpEndpoint use `=== undefined` guards because their text
