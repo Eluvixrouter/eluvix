@@ -14,7 +14,7 @@ import { globalCircuitBreaker } from './circuit-breaker.js';
 import type { RequestScope } from './context/types.js';
 import { addMemoryItem, searchMemoryItems, getRollingSpendUsd, listBanditArms } from './db.js';
 import { getVramArbiterStats } from './vram-arbiter.js';
-import { applyPrivacyGuard } from './guard.js';
+import { gateTextForMemory } from './guard.js';
 
 export const ELUVIX_MCP_PROTOCOL_VERSION = '2025-06-18';
 
@@ -146,7 +146,7 @@ export const ELUVIX_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'eluvix_memory_store',
     description:
-      'Store a durable user-scoped fact, preference, or architectural note into the Eluvix sovereign memory fabric (scrubbed through PrivacyGuard when enabled).',
+      'Store a durable user-scoped fact, preference, or architectural note into the Eluvix sovereign memory fabric. Every write passes the forced-strength T5 response gate (shared with Multica transcript ingestion): injection is blocked fail-closed and never stored, PII is redacted and the redacted form stored — regardless of the configured guard modes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -158,6 +158,32 @@ export const ELUVIX_MCP_TOOLS: McpToolDefinition[] = [
         },
       },
       required: ['content'],
+    },
+  },
+  {
+    name: 'eluvix_multica_memory_store',
+    description:
+      'Store a durable user-scoped memory from a Multica run into the Eluvix sovereign memory fabric, stamped with the Multica issue/run/agent provenance line (same convention as transcript ingestion). The write passes the same forced-strength T5 response gate: injection — including injection smuggled inside a provenance field — is blocked fail-closed, PII is redacted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'Memory text to persist.' },
+        level: {
+          type: 'string',
+          enum: ['L0', 'L1', 'L2'],
+          description: 'Memory tier level (default: "L1").',
+        },
+        issue_key: {
+          type: 'string',
+          description: 'Multica issue key, e.g. "MUL-123" (required).',
+        },
+        run_id: { type: 'string', description: 'Multica run id, e.g. "run-1".' },
+        agent: {
+          type: 'string',
+          description: 'Agent name that produced the memory (default: "unassigned").',
+        },
+      },
+      required: ['content', 'issue_key'],
     },
   },
   {
@@ -266,6 +292,68 @@ function mcpTextResult(payload: unknown, isError = false) {
     content: [{ type: 'text', text }],
     ...(isError ? { isError: true } : {}),
   };
+}
+
+/** Strip control characters, trim, and cap a caller-supplied provenance field. */
+function sanitizeProvenanceField(value: unknown, maxLen = 120): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+  return cleaned || undefined;
+}
+
+/**
+ * The one gated memory-write path for every MCP tool that stores memory
+ * (phase e). The text — including any provenance line, so injection
+ * smuggled inside a provenance field is caught too — passes the shared
+ * forced-strength T5 gate (`gateTextForMemory`, same code path as
+ * Multica transcript ingestion): injection is blocked fail-closed and
+ * never stored, PII is redacted and the redacted form stored. There is
+ * no raw write path: a disabled or neutered guard config cannot disarm
+ * this gate.
+ */
+function executeMemoryStore(
+  args: Record<string, any>,
+  ctx: EluvixMcpContext,
+  userId: string,
+  provenance?: { line: string; meta: Record<string, string> }
+) {
+  const rawContent = typeof args.content === 'string' ? args.content.trim() : '';
+  if (!rawContent) {
+    return mcpTextResult({ error: 'Argument "content" must be a non-empty string.' }, true);
+  }
+  const textToGate = provenance ? `${provenance.line}\n${rawContent}` : rawContent;
+  const gated = gateTextForMemory(textToGate, {
+    promptGuard: ctx.config.promptGuard,
+    privacyGuard: ctx.config.privacyGuard,
+  });
+  if (gated.action === 'blocked') {
+    return mcpTextResult(
+      {
+        action: 'blocked',
+        error: 'Memory write blocked by the response guard: injection detected.',
+        rules: gated.rules,
+      },
+      true
+    );
+  }
+  const level = args.level === 'L0' || args.level === 'L1' || args.level === 'L2' ? args.level : 'L1';
+  const stored = addMemoryItem({
+    userId,
+    level,
+    content: gated.text,
+    metadata: { source: 'mcp_tool', ...(provenance ? provenance.meta : {}) },
+  });
+  return mcpTextResult({
+    stored: Boolean(stored),
+    action: gated.action,
+    rules: gated.rules,
+    item: stored
+      ? { id: stored.id, uri: stored.uri, level: stored.level, created_at: stored.created_at }
+      : null,
+  });
 }
 
 async function executeMcpToolCall(
@@ -478,33 +566,26 @@ async function executeMcpToolCall(
     }
 
     case 'eluvix_memory_store': {
-      const rawContent = typeof args.content === 'string' ? args.content.trim() : '';
-      if (!rawContent) {
-        return mcpTextResult({ error: 'Argument "content" must be a non-empty string.' }, true);
+      return executeMemoryStore(args, ctx, userId);
+    }
+
+    case 'eluvix_multica_memory_store': {
+      const issueKey = sanitizeProvenanceField(args.issue_key, 64);
+      if (!issueKey) {
+        return mcpTextResult({ error: 'Argument "issue_key" must be a non-empty string.' }, true);
       }
-      let safeContent = rawContent;
-      if (ctx.config.privacyGuard?.enabled) {
-        const scrubbed = applyPrivacyGuard(
-          [{ role: 'user', content: rawContent }],
-          { ...ctx.config.privacyGuard, action: 'anonymize' }
-        );
-        const msgContent = scrubbed.modifiedMessages[0]?.content;
-        if (typeof msgContent === 'string') {
-          safeContent = msgContent;
-        }
-      }
-      const level = args.level === 'L0' || args.level === 'L1' || args.level === 'L2' ? args.level : 'L1';
-      const stored = addMemoryItem({
-        userId,
-        level,
-        content: safeContent,
-        metadata: { source: 'mcp_tool' },
-      });
-      return mcpTextResult({
-        stored: Boolean(stored),
-        item: stored
-          ? { id: stored.id, uri: stored.uri, level: stored.level, created_at: stored.created_at }
-          : null,
+      const runId = sanitizeProvenanceField(args.run_id, 64);
+      const agent = sanitizeProvenanceField(args.agent, 120) || 'unassigned';
+      const parts = [`Multica ${issueKey}`];
+      if (runId) parts.push(`run ${runId}`);
+      parts.push(`agent ${agent}`);
+      return executeMemoryStore(args, ctx, userId, {
+        line: parts.join(' · '),
+        meta: {
+          multica_issue_key: issueKey,
+          ...(runId ? { multica_run_id: runId } : {}),
+          multica_agent: agent,
+        },
       });
     }
 
@@ -647,7 +728,7 @@ export async function handleEluvixMcpMessage(
             },
             serverInfo: {
               name: 'eluvix-sovereign-ai-os',
-              version: '1.0.21',
+              version: '1.0.23',
             },
           },
         };

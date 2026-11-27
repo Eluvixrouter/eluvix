@@ -234,3 +234,25 @@ A dispatch returns the transcript when the run finishes inside the request deadl
 - User-role messages (dispatch prompts, steering) are skipped — they are already in memory via the standard write-back. Failed and cancelled runs are ingested; what went wrong is signal for future runs.
 - Dedup is a per-run high-water mark (`run-messages --since`) plus a content-hash backstop, so re-ingesting a run writes nothing new. Per-request issues stop being polled once their run is done; session issues keep being watched for new runs.
 - Ingestion is keyed off a persisted registry in `eluvix.db`, not the in-memory session map, so a restart resumes where the poller left off. Issues created outside Eluvix (directly in the Multica UI) are not tracked.
+
+### Eluvix as an MCP server for Multica agents (reverse direction)
+
+The harness above is Eluvix calling into Multica. The reverse direction lets a Multica-driven agent call back into Eluvix over MCP. Multica's MCP model is a *library*: workspace MCP servers are entries an agent must be explicitly given — creating one gives it to nobody, which is what keeps shared credentials from spreading to agents no one opted in.
+
+1. **Register Eluvix as a workspace MCP server** in the Multica library (Multica web UI / API), named `eluvix`, with the stdio entry:
+   ```json
+   { "command": "eluvix-mcp", "args": ["--user", "alice"], "env": { "ELUVIX_CONFIG_PATH": "/home/operator/.config/eluvix/config.json" } }
+   ```
+   The `eluvix-mcp` binary is the `@eluvix/router-core` stdio server; it must resolve on the operator machine (the Multica daemon runs the agent CLIs there, and the MCP server runs alongside them).
+2. **Bind it to agents** with `multica agent mcp add <agent-id> eluvix` (and `multica agent mcp enable <agent-id> eluvix` if it was disabled). The daemon folds bound servers into the agent's `mcpServers` config before the run; the agent's own `eluvix` entry, if any, wins on collision. Check bindings with `multica agent mcp list <agent-id>`.
+3. **Identity is the single configured user** (`--user` / `ELUVIX_USER_ID`): spawn one server process per user. The stdio server carries no per-call auth, so the trust boundary is the operator machine and the daemon's workdir isolation — a compromised agent process sees only that user's memories. Deliver the user id per agent the same way (a) delivers `ELUVIX_API_KEY`: `multica agent env set` or `multica agent create --custom-env-file`.
+
+The tools a Multica-driven agent gets from Eluvix:
+
+- `eluvix_route_chat` — route a chat completion through the Eluvix router (same `routeChatCompletion` the harness uses), with the standard write-back and `x-eluvix-hops` loop protection.
+- `eluvix_memory_query` — recall scoped to the spawned user id; the caller only ever sees its own user's records (enforced by the `user_id` partition in `eluvix.db`).
+- `eluvix_multica_memory_store` — store a memory stamped with the Multica issue/run/agent provenance line (`Multica MUL-123 · run run-1 · agent coder`), the same convention transcript ingestion uses.
+
+Every memory write — via `eluvix_memory_store` or `eluvix_multica_memory_store` — passes the forced-strength T5 response gate shared with transcript ingestion (one implementation, `gateTextForMemory`): injection is blocked fail-closed and never stored, PII is redacted and the redacted form stored, regardless of the configured guard modes. The gate scans the full text including the provenance line, so injection smuggled inside a provenance field is caught too. To recall records ingested for a workspace, spawn with the suffixed user id (`--user 'alice::pc:<workspace-id>'`), matching the ingestion partition.
+
+No admin operations are exposed over MCP: no key minting, no config apply, no provider secrets. The tool list carries only the routing, memory, media, telemetry, and Switchyard capability tools.
