@@ -36,12 +36,14 @@ export default function DocsPage() {
   const handleSelectSection = (id: string) => {
     setActiveSectionId(id);
     if (typeof window !== 'undefined') {
-      // Deep-link the section in the URL. Assigning location.hash is a
-      // no-op when the hash is already set (audit hunt-3 C-L10: pushState
+      // Deep-link the section in the URL. replaceState updates the hash
+      // without adding a history entry (audit hunt-3 C-L10: pushState
       // added a duplicate history entry on every re-select, so Back
-      // walked through identical #section entries).
+      // walked through identical #section entries), and unlike assigning
+      // location.hash it does not mutate a global, which the React
+      // Compiler forbids. The guard keeps it a no-op when already set.
       if (window.location.hash !== `#${id}`) {
-        window.location.hash = id;
+        window.history.replaceState(null, '', `#${id}`);
       }
     }
   };
