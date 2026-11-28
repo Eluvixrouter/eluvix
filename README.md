@@ -131,18 +131,16 @@ Eluvix features a split, pick-and-choose compose architecture in `docker/compose
 
 ```bash
 # Start Core Gateway & UI only
-docker compose -f docker/compose/core.yml up -d
+# (Fragments cannot run standalone: they reference the eluvix-net network
+# defined in the root compose, and every service is profile-gated, so use
+# the root compose with --profile.)
+docker compose --profile core up -d
 
 # Start Core + Local Inference Engines (vLLM & SGLang)
-docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d
+docker compose --profile core --profile inference up -d
 
 # Start Full Production Mesh (Gateway + Inference + SWE Harnesses + Memory)
-docker compose \
-  -f docker/compose/core.yml \
-  -f docker/compose/inference.yml \
-  -f docker/compose/harnesses.yml \
-  -f docker/compose/memory.yml \
-  up -d
+docker compose --profile core --profile inference --profile harnesses --profile memory up -d
 ```
 
 ---
@@ -164,7 +162,7 @@ docker compose \
 Eluvix maintains a comprehensive test suite across the monorepo:
 
 ```bash
-# Test router core (58 active test files, 652 passing tests; 1 opt-in live-ollama smoke skip)
+# Test router core (59 active test files, 656 passing tests; 1 opt-in live-ollama smoke skip)
 npm --prefix packages/router-core test
 
 # Test Paperclip plugin & adapter packages (3 test files, 20 tests)
@@ -173,7 +171,7 @@ npm --prefix packages/paperclip-plugin test && npm --prefix packages/paperclip-a
 # Run offline Paperclip x Eluvix full-stack E2E harness (loopback HTTP + SQLite + adapter + plugin; also run in CI)
 node scripts/paperclip-e2e.mjs
 
-# Test Next.js application & Eluvix Visual Node Routing Editor (25 test files, 231 tests)
+# Test Next.js application & Eluvix Visual Node Routing Editor (27 test files, 246 tests)
 npm --prefix apps/nextjs test
 
 # Test Desktop application (2 test files, 22 tests)
@@ -182,7 +180,7 @@ npm --prefix apps/desktop test
 # Run Golden Routing & Security Regression Eval Suite from CLI
 npx eluvix-eval run suite.json
 
-# Run full monorepo production build (builds only — run the test commands above to verify the suites; 88 passing Vitest files / 925 tests + offline E2E)
+# Run full monorepo production build (builds only — run the test commands above to verify the suites; 91 passing Vitest files / 944 tests + offline E2E)
 pnpm build
 ```
 

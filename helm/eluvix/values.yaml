@@ -57,6 +57,15 @@ nextjs:
   # /app/apps/nextjs/data, a path the app never reads, so it persisted
   # nothing. App state lives under $XDG_CONFIG_HOME/eluvix inside the pod
   # and is ephemeral unless an operator mounts that path deliberately.
+    # NEXTAUTH_URL: public URL of the dashboard (auth callbacks). Leave
+    # empty to keep the current behaviour (NextAuth derives it per request).
+    NEXTAUTH_URL: ""
+    # NEXTAUTH_SECRET: long random secret for NextAuth session encryption.
+    # Hunt-2 S9: leaving this empty means the app generates an ephemeral
+    # secret into auth.json on the container's writable layer, so every
+    # pod restart invalidates all sessions.
+    # Set a stable value here for sessions that survive restarts.
+    NEXTAUTH_SECRET: ""
   resources:
     limits:
       cpu: 1000m

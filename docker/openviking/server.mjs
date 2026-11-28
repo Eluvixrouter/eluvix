@@ -47,8 +47,8 @@ memoryStore.set(defaultUri, [
     uri: `${defaultUri}/architecture`,
     score: 0.88,
     l0: 'Eluvix sovereign gateway on port 3588 with dual-protocol demuxing',
-    l1: 'Infrastructure setup: Next.js console running on port 3588 with same-port HTTP/1.1 308 auto-upgrade to HTTPS.',
-    l2: 'Architecture details: Port 3588 performs TCP first-byte sniffing to transparently upgrade cleartext HTTP clients to TLS without protocol mismatch errors.'
+    l1: 'Infrastructure setup: Next.js console running on port 3588 demuxes TLS and plain HTTP on the same port by first-byte sniffing; /api requests are served directly over plain HTTP with no redirect.',
+    l2: 'Architecture details: Port 3588 reads the first byte (0x16 means TLS, otherwise HTTP). Cleartext HTTP clients are NOT upgraded to TLS; only non-API browser navigation gets an HTTP/1.1 308 redirect to HTTPS.'
   })
 ]);
 

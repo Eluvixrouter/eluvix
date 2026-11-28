@@ -79,7 +79,7 @@ Runs the standalone Eluvix-Forked OpenCode HTTP server (`createEluvixOpenCodeSer
 
 #### 1. Start the Server via Docker Compose
 ```bash
-docker compose -f docker/compose/harnesses.yml --profile harness up -d opencode
+docker compose -f docker/compose/harnesses.yml --profile harnesses up -d opencode
 ```
 Or run it programmatically in Node.js / TypeScript:
 ```ts

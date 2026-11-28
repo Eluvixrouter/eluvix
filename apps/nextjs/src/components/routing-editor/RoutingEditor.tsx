@@ -2578,8 +2578,9 @@ export default function RoutingEditor() {
              <button 
                type="button"
                onClick={onApplyToRouter}
-               className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2.5 px-3 rounded-lg text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25"
-               title="Compile graph & deploy live router configuration"
+               className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2.5 px-3 rounded-lg text-xs transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 disabled:opacity-50"
+               title={nodes.length === 0 ? 'Add at least one node to the canvas before applying' : 'Compile graph & deploy live router configuration'}
+               disabled={nodes.length === 0}
              >
                <span>🚀</span>
                <span>Apply to Router</span>
@@ -2882,8 +2883,9 @@ export default function RoutingEditor() {
               <button
                 type="button"
                 onClick={onApplyToRouter}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow flex items-center gap-1.5"
-                title="Compile graph & deploy live router configuration"
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition shadow flex items-center gap-1.5 disabled:opacity-50"
+                title={nodes.length === 0 ? 'Add at least one node to the canvas before applying' : 'Compile graph & deploy live router configuration'}
+                disabled={nodes.length === 0}
               >
                 <span>🚀</span>
                 <span>Apply to Router</span>
@@ -5509,8 +5511,8 @@ export default function RoutingEditor() {
                   <button
                     onClick={handleDeploy}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg shadow-emerald-950/50"
-                    title={`Submit and deploy configuration to ${selectedTier.toUpperCase()}`}
-                    disabled={isDeploying || isCreatingCluster}
+                    title={nodes.length === 0 ? 'Add at least one node to the canvas before deploying' : `Submit and deploy configuration to ${selectedTier.toUpperCase()}`}
+                    disabled={isDeploying || isCreatingCluster || nodes.length === 0}
                   >
                     <span>{isDeploying ? '⏳' : '🚀'}</span>
                     <span>

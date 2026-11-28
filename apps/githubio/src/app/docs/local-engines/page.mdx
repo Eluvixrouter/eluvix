@@ -57,7 +57,11 @@ Eluvix provides modular Docker Compose overlays to support both NVIDIA CUDA and 
 ### Hardware Overlays
 
 - **NVIDIA CUDA (`docker-compose.nvidia.yml`)**:
-  Enables the NVIDIA Container Toolkit runtime with `capabilities: [gpu]` for vLLM.
+  Reserves the GPU for vLLM via `capabilities: [gpu]`. The override only
+  takes effect when the host already has the NVIDIA driver and the NVIDIA
+  Container Toolkit installed and configured as the Docker runtime
+  (`sudo nvidia-ctk runtime configure --runtime=docker`, then restart
+  Docker) — without the toolkit the container sees no GPU.
   ```bash
   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d
   ```

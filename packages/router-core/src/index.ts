@@ -1117,6 +1117,12 @@ export class Eluvix {
       hops?: number;
       paperclip?: PaperclipRequestContext;
       silent?: boolean;
+      /**
+       * Skip memory write-back for this call. Internal probes (e.g. the
+       * observability health ping) must not pollute any partition's memory
+       * with a fixed probe exchange — see hunt-2 suspect S-C2.
+       */
+      skipMemoryWriteBack?: boolean;
     }
   ): Promise<Response> {
     const hops = mergeEffectiveHops(options?.hops ?? 0, options?.paperclip);
@@ -2049,6 +2055,7 @@ export class Eluvix {
       Boolean(this.contextProvider) &&
       Boolean(this.config.memory?.enabled) &&
       this.config.memory?.writeBack !== false &&
+      !options?.skipMemoryWriteBack &&
       lastUserQuery.trim().length > 0;
 
     // Consensus Group Execution (Mixture-of-Agents / Parallel Judge / Fastest-First)

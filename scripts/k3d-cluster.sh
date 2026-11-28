@@ -77,8 +77,13 @@ get_status() {
       pods="$(kubectl get pods -n "${NAMESPACE}" --context "k3d-${CLUSTER_NAME}" -o json 2>/dev/null | jq -c '[.items[] | {name: .metadata.name, status: .status.phase, ready: (.status.containerStatuses[0].ready // false), restarts: (.status.containerStatuses[0].restartCount // 0), component: .metadata.labels["app.kubernetes.io/component"]}]' 2>/dev/null || echo '[]')"
 
       # Query helm release
-      if helm status eluvix -n "${NAMESPACE}" --kube-context "k3d-${CLUSTER_NAME}" &>/dev/null; then
-        release_status="deployed"
+      # NOTE (hunt-2 S2): `helm status` exits 0 for ANY existing release
+      # (deployed, failed, pending), so its exit code only proves the
+      # release exists. Parse the JSON status instead of trusting it.
+      local helm_status=""
+      helm_status="$(helm status eluvix -n "${NAMESPACE}" --kube-context "k3d-${CLUSTER_NAME}" -o json 2>/dev/null | jq -r '.info.status // empty' 2>/dev/null || true)"
+      if [ -n "${helm_status}" ]; then
+        release_status="${helm_status}"
       fi
     fi
   fi

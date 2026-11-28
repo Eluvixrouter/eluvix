@@ -14,6 +14,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./cli-exec": {
+      "types": "./dist/cli-exec.d.ts",
+      "import": "./dist/cli-exec.js",
+      "default": "./dist/cli-exec.js"
+    },
     "./clos-fabric": {
       "types": "./dist/clos-fabric-routing.d.ts",
       "import": "./dist/clos-fabric-routing.js",

@@ -54,6 +54,15 @@ jobs:
     - name: Run Unit Tests (Router Core)
       run: pnpm --filter @eluvix/router-core test
 
+    # Hunt-2 M5: CI previously never built or tested
+    # @eluvix/opencode-harness, so a breaking change confined to it merged
+    # with green CI. Build after router-core (the harness depends on it).
+    - name: Build OpenCode Harness
+      run: pnpm --filter @eluvix/opencode-harness build
+
+    - name: Run Unit Tests (OpenCode Harness)
+      run: pnpm --filter @eluvix/opencode-harness test
+
     - name: Run Unit Tests (Next.js Dashboard)
       run: pnpm --filter nextjs test
 

@@ -70,48 +70,38 @@ Context augmentation databases:
 
 ### Minimal Core Only (Gateway + UI)
 ```bash
-docker compose -f docker/compose/core.yml up -d
+docker compose --profile core up -d
 ```
 
 ### Core + Local Inference (vLLM & SGLang)
 ```bash
-docker compose -f docker/compose/core.yml -f docker/compose/inference.yml up -d
+docker compose --profile core --profile inference up -d
 ```
 
 ### Core + Memory & Knowledge Graphs
 ```bash
-docker compose -f docker/compose/core.yml -f docker/compose/memory.yml up -d
+docker compose --profile core --profile memory up -d
 ```
 
 ### Full Production Mesh (All Subsystems)
 ```bash
-docker compose \
-  -f docker/compose/core.yml \
-  -f docker/compose/inference.yml \
-  -f docker/compose/harnesses.yml \
-  -f docker/compose/memory.yml \
-  up -d
+docker compose --profile core --profile inference --profile harnesses --profile memory up -d
 ```
 
 ### Inspecting Logs by Subsystem
 ```bash
 # View only core gateway logs
-docker compose -f docker/compose/core.yml logs -f eluvix
+docker compose logs -f switchyard
 
 # View inference engine logs
-docker compose -f docker/compose/inference.yml logs -f sglang vllm
+docker compose logs -f sglang vllm
 ```
 
 ### Tearing Down Subsystems Independently
 ```bash
 # Stop inference without stopping the gateway
-docker compose -f docker/compose/inference.yml down
+docker compose --profile inference down
 
 # Stop entire stack
-docker compose \
-  -f docker/compose/core.yml \
-  -f docker/compose/inference.yml \
-  -f docker/compose/harnesses.yml \
-  -f docker/compose/memory.yml \
-  down
+docker compose --profile core --profile inference --profile harnesses --profile memory down
 ```

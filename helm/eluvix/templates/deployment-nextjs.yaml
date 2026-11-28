@@ -37,6 +37,14 @@ spec:
           env:
             - name: NODE_ENV
               value: {{ .Values.nextjs.env.NODE_ENV | quote }}
+            {{- if .Values.nextjs.env.NEXTAUTH_URL }}
+            - name: NEXTAUTH_URL
+              value: {{ .Values.nextjs.env.NEXTAUTH_URL | quote }}
+            {{- end }}
+            {{- if .Values.nextjs.env.NEXTAUTH_SECRET }}
+            - name: NEXTAUTH_SECRET
+              value: {{ .Values.nextjs.env.NEXTAUTH_SECRET | quote }}
+            {{- end }}
             - name: PORT
               value: "{{ .Values.nextjs.port }}"
             - name: ELUVIX_CONFIG_PATH
