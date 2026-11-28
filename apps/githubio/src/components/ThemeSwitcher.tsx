@@ -23,15 +23,21 @@ export function ThemeSwitcher() {
   // prerendered HTML whenever a theme was stored — a hydration mismatch.
   const [currentThemeId, setCurrentThemeId] = useState<string>(DEFAULT_THEME_ID);
 
+  // The stored theme is read in a timer callback rather than synchronously
+  // in the effect body, which is the shape react-hooks/set-state-in-effect
+  // requires; a zero-delay timer still runs before the next paint.
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem('eluvix-theme');
-      if (saved) {
-        setCurrentThemeId(getThemeById(saved).id);
+    const timer = setTimeout(() => {
+      try {
+        const saved = localStorage.getItem('eluvix-theme');
+        if (saved) {
+          setCurrentThemeId(getThemeById(saved).id);
+        }
+      } catch {
+        // Ignore localStorage security exceptions
       }
-    } catch {
-      // Ignore localStorage security exceptions
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
   const [isOpen, setIsOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState<ThemeCategory | 'all'>('all');

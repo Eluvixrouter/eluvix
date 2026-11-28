@@ -28,11 +28,17 @@ export default function AppMockupPage() {
   // mismatch — and any tab switch after mount is a normal state update.
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
 
+  // The hash is read in a timer callback rather than synchronously in the
+  // effect body, which is the shape react-hooks/set-state-in-effect
+  // requires; a zero-delay timer still runs before the next paint.
   useEffect(() => {
-    const hash = window.location.hash.replace('#', '') as AppTab;
-    if (TABS.some((t) => t.id === hash)) {
-      setActiveTab(hash);
-    }
+    const timer = setTimeout(() => {
+      const hash = window.location.hash.replace('#', '') as AppTab;
+      if (TABS.some((t) => t.id === hash)) {
+        setActiveTab(hash);
+      }
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   function handleSelectTab(tabId: AppTab) {

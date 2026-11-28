@@ -33,10 +33,10 @@ Eluvix integrates with **OpenBao / HashiCorp Vault** secret engines (`/api/secre
 
 Eluvix natively supports the **Model Context Protocol (MCP)**—acting both as an MCP client/gateway to external tool servers and as a **Sovereign MCP `2025-06-18` Server** that exposes Eluvix's own routing intelligence, DLP scrubber, memory engine, and ComfyUI synthesis to Claude Desktop, Cursor, Windsurf, Google Antigravity (`agy`), OpenCode, and Codex CLI.
 
-### 1. Eluvix Native Sovereign MCP Server (`POST /api/v1/mcp` & `npx eluvix-mcp`)
+### 1. Eluvix Native Sovereign MCP Server (`POST /api/v1/mcp` & `eluvix-mcp` stdio)
 External AI IDEs and agents can connect to Eluvix over two transports:
 - **Streamable-HTTP JSON-RPC 2.0**: `POST https://127.0.0.1:3588/api/v1/mcp` (authenticated via `Authorization: Bearer` or `x-api-key`).
-- **Stdio CLI Binary**: `npx eluvix-mcp` (pure NDJSON over `stdout` with diagnostic logs routed to `stderr` so JSON-RPC frames are never corrupted).
+- **Stdio CLI Binary**: `node <checkout>/packages/router-core/dist/mcp-stdio.js --user <userId>` (pure NDJSON over `stdout` with diagnostic logs routed to `stderr` so JSON-RPC frames are never corrupted). Once the package is linked globally (`npm link` from `packages/router-core`), the shorter `eluvix-mcp --user <userId>` form works too. Do not use `npx eluvix-mcp`: `@eluvix/router-core` is not published to npm, so `npx` cannot resolve it.
 
 | Sovereign MCP Tool | Capability |
 | :--- | :--- |
@@ -53,7 +53,9 @@ Eluvix also serves read-only MCP resources (`eluvix://config/summary` with `apiK
 
 #### Multica agents calling Eluvix
 
-The same server works in reverse for Multica-driven agents: register Eluvix as a workspace MCP server in the Multica library (stdio entry `eluvix-mcp --user <userId>`) and bind it to agents with `multica agent mcp add <agent-id> eluvix`. The agent gets `eluvix_route_chat`, `eluvix_memory_query` (scoped to the spawned user id), and `eluvix_multica_memory_store` (T5-gated, provenance-stamped). Identity is the single configured user (`--user` / `ELUVIX_USER_ID`) — spawn one server process per user; there is no per-call auth, so the trust boundary is the operator machine. No admin operations are exposed over MCP.
+The same server works in reverse for Multica-driven agents: register Eluvix as a workspace MCP server in the Multica library (stdio entry `node <checkout>/packages/router-core/dist/mcp-stdio.js --user <userId>`, or `eluvix-mcp --user <userId>` once linked globally) and bind it to agents with `multica agent mcp add <agent-id> eluvix`. The agent gets `eluvix_route_chat`, `eluvix_memory_query` (scoped to the spawned user id), and `eluvix_multica_memory_store` (T5-gated, provenance-stamped). Identity is the single configured user (`--user` / `ELUVIX_USER_ID`) — spawn one server process per user; there is no per-call auth, so the trust boundary is the operator machine. No admin operations are exposed over MCP.
+
+Paperclip agents reach the same server over Streamable HTTP instead: register Eluvix as an `mcp_remote` tool connection pointing at `http://127.0.0.1:3588/api/v1/mcp` with an `mcp`-scoped `elx_` key sent as a `Bearer` header credential, grant the agent access, and Paperclip's run-scoped native gateway proxies the 12 tools to the agent's Claude or Codex adapter. See the harnesses docs for the full Paperclip wiring. Point the connection at the Next.js gateway, not the desktop daemon: the daemon's `/v1/mcp` accepts only the admin desktop token and serves every caller under the single `default` user.
 
 ### 2. MCP Tool Node (`mcpToolNode`)
 The visual editor provides dedicated MCP Tool nodes:

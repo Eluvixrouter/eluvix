@@ -99,11 +99,29 @@ export async function runEluvixEvalCli(argv: string[] = process.argv.slice(2)): 
   return report.passed ? 0 : 1;
 }
 
+/**
+ * Whether this module was executed directly as the eval CLI.
+ *
+ * Matches both the source/built filename (`eval-cli.ts`, `eval-cli.js`)
+ * and the installed bin name (`eluvix-eval`, declared in package.json).
+ * The bin form matters: when the kernel executes the bin via its shebang,
+ * `process.argv[1]` is the bin path (`/usr/bin/eluvix-eval`), not the
+ * `dist/eval-cli.js` path — matching only the filename silently exits 0
+ * without running the suite, which is exactly how an installed `eluvix-eval`
+ * dies on first invocation.
+ */
+export function isEvalCliDirectExecution(argv1: unknown): boolean {
+  return (
+    typeof argv1 === 'string' &&
+    Boolean(argv1) &&
+    /(?:eval-cli(?:\.[cm]?[jt]s)?|eluvix-eval)$/.test(argv1)
+  );
+}
+
 const isDirectExecution =
   typeof process !== 'undefined' &&
   Array.isArray(process.argv) &&
-  Boolean(process.argv[1]) &&
-  /eval-cli(?:\.[cm]?[jt]s)?$/.test(process.argv[1]);
+  isEvalCliDirectExecution(process.argv[1]);
 
 if (isDirectExecution) {
   runEluvixEvalCli()

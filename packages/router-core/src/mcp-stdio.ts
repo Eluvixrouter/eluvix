@@ -95,11 +95,29 @@ export async function runEluvixMcpStdioServer(argv: string[] = process.argv.slic
   }
 }
 
+/**
+ * Whether this module was executed directly as the MCP stdio server.
+ *
+ * Matches both the source/built filename (`mcp-stdio.ts`, `mcp-stdio.js`)
+ * and the installed bin name (`eluvix-mcp`, declared in package.json).
+ * The bin form matters: when the kernel executes the bin via its shebang,
+ * `process.argv[1]` is the bin path (`/usr/bin/eluvix-mcp`), not the
+ * `dist/mcp-stdio.js` path — matching only the filename silently exits 0
+ * without starting the server, which is exactly how a Multica agent's
+ * stdio MCP server dies on first spawn.
+ */
+export function isMcpStdioDirectExecution(argv1: unknown): boolean {
+  return (
+    typeof argv1 === 'string' &&
+    Boolean(argv1) &&
+    /(?:mcp-stdio(?:\.[cm]?[jt]s)?|eluvix-mcp)$/.test(argv1)
+  );
+}
+
 const isDirectExecution =
   typeof process !== 'undefined' &&
   Array.isArray(process.argv) &&
-  Boolean(process.argv[1]) &&
-  /mcp-stdio(?:\.[cm]?[jt]s)?$/.test(process.argv[1]);
+  isMcpStdioDirectExecution(process.argv[1]);
 
 if (isDirectExecution) {
   runEluvixMcpStdioServer().catch((err) => {

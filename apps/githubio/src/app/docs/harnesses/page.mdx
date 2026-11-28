@@ -241,9 +241,13 @@ The harness above is Eluvix calling into Multica. The reverse direction lets a M
 
 1. **Register Eluvix as a workspace MCP server** in the Multica library (Multica web UI / API), named `eluvix`, with the stdio entry:
    ```json
+   { "command": "node", "args": ["/home/operator/eluvix/packages/router-core/dist/mcp-stdio.js", "--user", "alice"], "env": { "ELUVIX_CONFIG_PATH": "/home/operator/.config/eluvix/config.json" } }
+   ```
+   The entry spawns the `@eluvix/router-core` stdio server on the operator machine (the Multica daemon runs the agent CLIs there, and the MCP server runs alongside them), so the path must be the checkout on that machine, built first (`pnpm --filter @eluvix/router-core build`). The shorter bin form works too once the package is linked globally (`npm link` from `packages/router-core`, which puts `eluvix-mcp` on `PATH`):
+   ```json
    { "command": "eluvix-mcp", "args": ["--user", "alice"], "env": { "ELUVIX_CONFIG_PATH": "/home/operator/.config/eluvix/config.json" } }
    ```
-   The `eluvix-mcp` binary is the `@eluvix/router-core` stdio server; it must resolve on the operator machine (the Multica daemon runs the agent CLIs there, and the MCP server runs alongside them).
+   Do not use `npx eluvix-mcp`: `@eluvix/router-core` is not published to npm, so `npx` cannot resolve it. Which agents get the server depends on the agent CLI: Claude, Codex, OpenCode, Hermes, Kimi, Cursor, and CodeBuddy consume `mcpServers` entries; Antigravity (`agy`) has no MCP-server support in Multica, so `agy` agents get nothing from this entry.
 2. **Bind it to agents** with `multica agent mcp add <agent-id> eluvix` (and `multica agent mcp enable <agent-id> eluvix` if it was disabled). The daemon folds bound servers into the agent's `mcpServers` config before the run; the agent's own `eluvix` entry, if any, wins on collision. Check bindings with `multica agent mcp list <agent-id>`.
 3. **Identity is the single configured user** (`--user` / `ELUVIX_USER_ID`): spawn one server process per user. The stdio server carries no per-call auth, so the trust boundary is the operator machine and the daemon's workdir isolation — a compromised agent process sees only that user's memories. Deliver the user id per agent the same way (a) delivers `ELUVIX_API_KEY`: `multica agent env set` or `multica agent create --custom-env-file`.
 
@@ -256,3 +260,27 @@ The tools a Multica-driven agent gets from Eluvix:
 Every memory write — via `eluvix_memory_store` or `eluvix_multica_memory_store` — passes the forced-strength T5 response gate shared with transcript ingestion (one implementation, `gateTextForMemory`): injection is blocked fail-closed and never stored, PII is redacted and the redacted form stored, regardless of the configured guard modes. The gate scans the full text including the provenance line, so injection smuggled inside a provenance field is caught too. To recall records ingested for a workspace, spawn with the suffixed user id (`--user 'alice::pc:<workspace-id>'`), matching the ingestion partition.
 
 No admin operations are exposed over MCP: no key minting, no config apply, no provider secrets. The tool list carries only the routing, memory, media, telemetry, and Switchyard capability tools.
+
+### Eluvix as an MCP server for Paperclip agents (shared context, same server)
+
+The same Eluvix MCP server serves Paperclip agents too — but over Streamable HTTP, not stdio. Paperclip's runtime MCP model is URL-based: an agent never connects to an upstream MCP server directly. Instead, the operator registers Eluvix as a remote MCP tool connection, grants the agent access, and at run start Paperclip builds a run-scoped native gateway (one server, one-hour token) that proxies the allowed tools. The agent's Claude or Codex adapter writes that gateway into the run's `mcp-config.json` (`0o600`) and the agent sees Eluvix's 12 tools through it.
+
+1. **Mint an `elx_` key with the `mcp` scope** (`POST /api/v1/keys` as admin, or Configurator → Scoped Keys). The key's owner (`userId`) is the memory partition the agent reads and writes — one key per agent (with a distinct owner per agent) if spend caps and recall must be isolated per agent; keys sharing an owner share one daily cap.
+2. **Register Eluvix as a tool connection** (`POST /companies/:companyId/tools/connections`, admin):
+   ```json
+   {
+     "name": "eluvix",
+     "transport": "mcp_remote",
+     "credentialPolicy": "shared",
+     "config": { "url": "http://127.0.0.1:3588/api/v1/mcp" },
+     "credentialRefs": [
+       { "name": "eluvix-api-key", "secretId": "<paperclip-secret-guid>", "placement": "header", "key": "Authorization", "prefix": "Bearer " }
+     ]
+   }
+   ```
+   The `elx_` key itself lives in Paperclip's secret store and is referenced by GUID — never put it in `config` (the connection schema rejects sensitive config keys). The gateway sends it as `Authorization: Bearer <key>` on every upstream call, including the `initialize` → `tools/list` discovery handshake. Point the connection at the Next.js gateway (`http://127.0.0.1:3588/api/v1/mcp`), not the desktop daemon: the daemon's `/v1/mcp` accepts only the admin desktop token (the chat token gets 403) and serves every caller under the single `default` user, so per-agent memory isolation is impossible there.
+3. **Grant the agent access** to the connection (Paperclip admin UI / tool-access profiles). At run start Paperclip mints the run-scoped gateway token (one hour, `tools/list` + `tools/call` only) and the agent's adapter delivers it; no per-run configuration is needed after the grant.
+
+Which Paperclip agents get the tools: Claude (`claude-local`) and Codex (`codex-local`) consume Paperclip runtime MCP servers — verified in their adapters. `agy`, Hermes, OpenCode, and Pi do not consume runtime MCP servers in their adapters, so they get nothing from this wiring; that is a Paperclip-adapter limitation, not an Eluvix one. Memory written through the gateway passes the same forced-strength T5 gate as every other MCP write (injection blocked fail-closed, PII redacted), and `eluvix_multica_memory_store` is usable from Paperclip runs too when the caller passes a Multica `issue_key`.
+
+Live verification status: the Eluvix side of this handshake is proven (the stdio server passes a real JSON-RPC smoke test; the HTTP endpoint speaks the same `2025-06-18` protocol and answers `initialize`/`tools/list`/`tools/call`). Binding the library entry in a live Multica daemon, and a live Paperclip agent consuming the gateway, are still unproven — no live Multica daemon or Paperclip server exists in the sandbox.
