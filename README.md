@@ -164,7 +164,7 @@ docker compose \
 Eluvix maintains a comprehensive test suite across the monorepo:
 
 ```bash
-# Test router core (57 active test files, 637 passing tests; 1 opt-in live-ollama smoke skip)
+# Test router core (58 active test files, 652 passing tests; 1 opt-in live-ollama smoke skip)
 npm --prefix packages/router-core test
 
 # Test Paperclip plugin & adapter packages (3 test files, 20 tests)
@@ -182,7 +182,7 @@ npm --prefix apps/desktop test
 # Run Golden Routing & Security Regression Eval Suite from CLI
 npx eluvix-eval run suite.json
 
-# Run full monorepo production build (builds only — run the test commands above to verify the suites; 87 passing Vitest files / 910 tests + offline E2E)
+# Run full monorepo production build (builds only — run the test commands above to verify the suites; 88 passing Vitest files / 925 tests + offline E2E)
 pnpm build
 ```
 
